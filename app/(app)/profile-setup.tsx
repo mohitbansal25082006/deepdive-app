@@ -1,7 +1,6 @@
 // app/(app)/profile-setup.tsx
 // Profile Setup — shown ONLY ONCE to new users after registration.
-// After completing setup, profile_completed is set to TRUE in database.
-// The user will never see this screen again after that.
+// FIXED: Duplicate username shows "Username already taken" instead of raw DB error.
 
 import React, { useState } from 'react';
 import {
@@ -29,7 +28,6 @@ import { GradientButton } from '../../src/components/common/GradientButton';
 import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
-// Preset interest tags the user can select
 const INTEREST_OPTIONS = [
   'Technology', 'Science', 'Business', 'Finance', 'Health',
   'Politics', 'Environment', 'AI & ML', 'Startups', 'Research',
@@ -40,7 +38,7 @@ export default function ProfileSetupScreen() {
   const { user, refreshProfile } = useAuth();
   const { updateProfile, uploadAvatar, updating, uploading } = useProfile();
 
-  const [step, setStep] = useState(1); // 3-step setup wizard
+  const [step, setStep] = useState(1);
   const [username, setUsername] = useState('');
   const [bio, setBio] = useState('');
   const [occupation, setOccupation] = useState('');
@@ -50,27 +48,23 @@ export default function ProfileSetupScreen() {
 
   const totalSteps = 3;
 
-  // Pick an image from the photo library
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Permission needed', 'Please allow access to your photos.');
       return;
     }
-
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
-      aspect: [1, 1], // Square crop
+      aspect: [1, 1],
       quality: 0.8,
     });
-
     if (!result.canceled) {
       setAvatarUri(result.assets[0].uri);
     }
   };
 
-  // Toggle interest selection
   const toggleInterest = (interest: string) => {
     setSelectedInterests((prev) =>
       prev.includes(interest)
@@ -80,27 +74,22 @@ export default function ProfileSetupScreen() {
   };
 
   const validateStep1 = () => {
+    const newErrors: typeof errors = {};
     if (!username.trim()) {
-      setErrors({ username: 'Username is required' });
-      return false;
+      newErrors.username = 'Username is required';
+    } else if (username.length < 3) {
+      newErrors.username = 'Username must be at least 3 characters';
+    } else if (!/^[a-z0-9_]+$/.test(username.toLowerCase())) {
+      newErrors.username = 'Only letters, numbers, and underscores allowed';
     }
-    if (username.length < 3) {
-      setErrors({ username: 'Username must be at least 3 characters' });
-      return false;
-    }
-    if (!/^[a-z0-9_]+$/.test(username.toLowerCase())) {
-      setErrors({ username: 'Username can only contain letters, numbers, and underscores' });
-      return false;
-    }
-    setErrors({});
-    return true;
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
   };
 
-  // Final step — save everything to database
   const handleComplete = async () => {
     if (!user) return;
 
-    let avatarUrl: string | undefined;
+    let avatarUrl: string | null = null;
 
     // Upload avatar if selected
     if (avatarUri) {
@@ -109,7 +98,7 @@ export default function ProfileSetupScreen() {
         Alert.alert('Upload Error', error);
         return;
       }
-      avatarUrl = url ?? undefined;
+      avatarUrl = url;
     }
 
     // Save profile to database
@@ -118,22 +107,34 @@ export default function ProfileSetupScreen() {
       bio: bio.trim() || null,
       occupation: occupation.trim() || null,
       interests: selectedInterests.length > 0 ? selectedInterests : null,
-      avatar_url: avatarUrl ?? null,
-      profile_completed: true, // This is the key flag!
+      avatar_url: avatarUrl,
+      profile_completed: true,
     });
 
     if (error) {
-      Alert.alert('Error', error);
+      // ── FIXED: Catch duplicate username DB error and show friendly message ──
+      // Supabase returns "duplicate key value violates unique constraint"
+      // when the username is already taken. We catch that and show a clear
+      // message instead of the raw database error.
+      if (
+        error.toLowerCase().includes('duplicate key') ||
+        error.toLowerCase().includes('unique constraint') ||
+        error.toLowerCase().includes('profiles_username_key')
+      ) {
+        // Go back to step 1 and show the error under the username field
+        setStep(1);
+        setErrors({ username: 'This username is already taken. Please choose another.' });
+      } else {
+        Alert.alert('Error', error);
+      }
       return;
     }
 
-    // Refresh profile in context so app knows setup is done
     await refreshProfile();
-    // Navigate to main app
     router.replace('/(app)/(tabs)/home');
   };
 
-  // Step 1: Basic info
+  // ── STEP 1: Basic info ──────────────────────────────────────────────────────
   const renderStep1 = () => (
     <Animated.View entering={SlideInRight.duration(400)}>
       <Text style={styles.stepTitle}>Basic Information</Text>
@@ -165,16 +166,17 @@ export default function ProfileSetupScreen() {
         leftIcon="document-text-outline"
         multiline
         numberOfLines={3}
-        style={{ height: 90 }}
       />
     </Animated.View>
   );
 
-  // Step 2: Profile photo
+  // ── STEP 2: Profile photo ───────────────────────────────────────────────────
   const renderStep2 = () => (
     <Animated.View entering={SlideInRight.duration(400)} style={{ alignItems: 'center' }}>
       <Text style={styles.stepTitle}>Profile Photo</Text>
-      <Text style={styles.stepSubtitle}>Add a photo to personalize your profile</Text>
+      <Text style={styles.stepSubtitle}>
+        Add a photo to personalise your profile
+      </Text>
 
       <TouchableOpacity onPress={pickImage} style={{ marginVertical: SPACING.xl }}>
         {avatarUri ? (
@@ -190,12 +192,8 @@ export default function ProfileSetupScreen() {
               }}
             />
             <View style={{
-              position: 'absolute',
-              bottom: 4,
-              right: 4,
-              backgroundColor: COLORS.primary,
-              borderRadius: 20,
-              padding: 8,
+              position: 'absolute', bottom: 4, right: 4,
+              backgroundColor: COLORS.primary, borderRadius: 20, padding: 8,
             }}>
               <Ionicons name="camera" size={18} color="#FFF" />
             </View>
@@ -204,13 +202,9 @@ export default function ProfileSetupScreen() {
           <LinearGradient
             colors={['#1A1A35', '#12122A']}
             style={{
-              width: 140,
-              height: 140,
-              borderRadius: 70,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderWidth: 2,
-              borderColor: COLORS.border,
+              width: 140, height: 140, borderRadius: 70,
+              alignItems: 'center', justifyContent: 'center',
+              borderWidth: 2, borderColor: COLORS.border,
               borderStyle: 'dashed',
             }}
           >
@@ -228,12 +222,12 @@ export default function ProfileSetupScreen() {
     </Animated.View>
   );
 
-  // Step 3: Interests
+  // ── STEP 3: Interests ───────────────────────────────────────────────────────
   const renderStep3 = () => (
     <Animated.View entering={SlideInRight.duration(400)}>
       <Text style={styles.stepTitle}>Your Interests</Text>
       <Text style={styles.stepSubtitle}>
-        Select topics you want to research. This helps personalize your experience.
+        Select topics you want to research. This helps personalise your experience.
       </Text>
 
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: SPACING.md }}>
@@ -266,11 +260,7 @@ export default function ProfileSetupScreen() {
       </View>
 
       {selectedInterests.length > 0 && (
-        <Text style={{
-          color: COLORS.primary,
-          fontSize: FONTS.sizes.sm,
-          marginTop: SPACING.md,
-        }}>
+        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, marginTop: SPACING.md }}>
           {selectedInterests.length} interest{selectedInterests.length !== 1 ? 's' : ''} selected
         </Text>
       )}
@@ -302,18 +292,14 @@ export default function ProfileSetupScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Header */}
+          {/* Header with progress bar */}
           <Animated.View entering={FadeIn.duration(600)} style={{ marginBottom: SPACING.xl }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.xl }}>
               <LinearGradient
                 colors={COLORS.gradientPrimary}
                 style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: 12,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginRight: 12,
+                  width: 44, height: 44, borderRadius: 12,
+                  alignItems: 'center', justifyContent: 'center', marginRight: 12,
                 }}
               >
                 <Ionicons name="person" size={22} color="#FFF" />
@@ -329,11 +315,7 @@ export default function ProfileSetupScreen() {
             </View>
 
             {/* Progress bar */}
-            <View style={{
-              height: 4,
-              backgroundColor: COLORS.border,
-              borderRadius: 2,
-            }}>
+            <View style={{ height: 4, backgroundColor: COLORS.border, borderRadius: 2 }}>
               <LinearGradient
                 colors={COLORS.gradientPrimary}
                 start={{ x: 0, y: 0 }}
@@ -368,7 +350,6 @@ export default function ProfileSetupScreen() {
               loading={updating || uploading}
             />
 
-            {/* Skip / Back button */}
             {step > 1 && (
               <TouchableOpacity
                 onPress={() => setStep(step - 1)}
@@ -380,7 +361,6 @@ export default function ProfileSetupScreen() {
               </TouchableOpacity>
             )}
 
-            {/* Skip profile setup entirely (step 2 and 3) */}
             {step >= 2 && (
               <TouchableOpacity
                 onPress={step === totalSteps ? handleComplete : () => setStep(step + 1)}
