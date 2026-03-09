@@ -1,24 +1,34 @@
 // src/context/AuthContext.tsx
-// A React Context is like a global state that any component can access.
-// This AuthContext tells every screen whether the user is logged in or not.
+//
+// FIXED: Removed the impossible comparison inside the SIGNED_OUT block.
+// (event === 'INITIAL_SESSION' can never be true when event === 'SIGNED_OUT')
+//
+// KEY RULE: onAuthStateChange callback must be SYNCHRONOUS.
+// Any await on a Supabase call inside it deadlocks the auth lock.
+// Profile fetching is deferred via setTimeout to avoid this.
 
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  ReactNode,
+} from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { Profile } from '../types';
 
-// Define what data the context provides
 interface AuthContextType {
-  session: Session | null;          // The auth session (contains tokens)
-  user: User | null;                // The logged-in user object
-  profile: Profile | null;          // The user's profile from our database
-  loading: boolean;                 // True while checking auth status
-  profileLoading: boolean;          // True while loading profile
-  refreshProfile: () => Promise<void>; // Call this to reload profile data
-  signOut: () => Promise<void>;     // Call this to sign out
+  session: Session | null;
+  user: User | null;
+  profile: Profile | null;
+  loading: boolean;
+  profileLoading: boolean;
+  refreshProfile: () => Promise<void>;
+  signOut: () => Promise<void>;
 }
 
-// Create the context with default values
 const AuthContext = createContext<AuthContextType>({
   session: null,
   user: null,
@@ -29,7 +39,6 @@ const AuthContext = createContext<AuthContextType>({
   signOut: async () => {},
 });
 
-// AuthProvider wraps the whole app and provides auth data to all screens
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -37,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
 
-  // Fetch the user's profile from the database
+  // Called via setTimeout — never directly inside onAuthStateChange
   const fetchProfile = async (userId: string) => {
     setProfileLoading(true);
     try {
@@ -46,10 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .select('*')
         .eq('id', userId)
         .single();
-
-      if (error) {
-        console.error('Error fetching profile:', error);
-      } else {
+      if (!error && data) {
         setProfile(data as Profile);
       }
     } catch (err) {
@@ -59,47 +65,84 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // refreshProfile is called after user updates their profile
   const refreshProfile = async () => {
-    if (user) {
-      await fetchProfile(user.id);
-    }
+    if (user) await fetchProfile(user.id);
   };
 
-  // Sign out the user
   const signOut = async () => {
-    await supabase.auth.signOut();
+    setSession(null);
+    setUser(null);
     setProfile(null);
+    await supabase.auth.signOut();
   };
 
-  // This runs once when the app starts
-  // It checks if the user is already logged in (has a saved session)
   useEffect(() => {
-    // Get the current session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
+    let mounted = true;
+
+    // ── SYNCHRONOUS callback — no async, no await ─────────────────────────
+    // Using async here or awaiting any Supabase method inside will deadlock
+    // the auth internal lock, causing signInWithPassword / updateUser to hang
+    // after receiving a 200 OK from the server.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (!mounted) return;
+
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+        setLoading(false);
+        return;
       }
-      setLoading(false);
+
+      if (event === 'INITIAL_SESSION') {
+        // Synchronously set state from the stored session
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+        // Mark loading done — this unblocks index.tsx routing
+        setLoading(false);
+        // Defer profile fetch to after this callback returns (lock released)
+        if (newSession?.user) {
+          const uid = newSession.user.id;
+          setTimeout(() => { if (mounted) fetchProfile(uid); }, 0);
+        }
+        return;
+      }
+
+      // SIGNED_IN, TOKEN_REFRESHED, USER_UPDATED, PASSWORD_RECOVERY, etc.
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+
+      if (newSession?.user) {
+        const uid = newSession.user.id;
+        // Defer profile fetch — must not await inside this callback
+        setTimeout(() => { if (mounted) fetchProfile(uid); }, 0);
+      } else {
+        setProfile(null);
+      }
     });
 
-    // Listen for auth changes (sign in, sign out, token refresh)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          fetchProfile(session.user.id);
-        } else {
-          setProfile(null);
-        }
-      }
-    );
+    // Trigger the INITIAL_SESSION event above
+    supabase.auth.getSession().catch((err) => {
+      console.error('getSession error:', err);
+      if (mounted) setLoading(false);
+    });
 
-    // Cleanup listener when component unmounts
-    return () => subscription.unsubscribe();
+    const handleAppStateChange = (state: AppStateStatus) => {
+      if (state === 'active') {
+        supabase.auth.startAutoRefresh();
+      } else {
+        supabase.auth.stopAutoRefresh();
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+      appStateSub.remove();
+    };
   }, []);
 
   return (
@@ -111,7 +154,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// Custom hook — makes it easy to use auth in any component
-// Instead of: const auth = useContext(AuthContext)
-// You write: const { user } = useAuth()
 export const useAuth = () => useContext(AuthContext);
