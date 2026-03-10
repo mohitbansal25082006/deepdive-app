@@ -1,11 +1,12 @@
 // app/(auth)/signup.tsx
 // Sign Up — OTP based email verification.
 //
-// FLOW:
-// STEP 1 (form): User fills name, email, password → signUp() called
-//                Supabase sends 8-digit OTP to email
-// STEP 2 (otp):  User enters 8-digit OTP → verifyOtp({ type: 'signup' })
-//                On success → navigate to profile-setup directly
+// FIXED: When user signs up, goes to OTP screen, presses back without
+// verifying, then tries to sign up again with the same email:
+// - Previously showed "already registered" alert
+// - Now detects unverified account, shows a banner with a
+//   "Send Verification Code" button that resends the OTP and
+//   transitions to the OTP screen directly
 
 import React, { useState, useRef } from 'react';
 import {
@@ -32,10 +33,9 @@ import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 const OTP_LENGTH = 8;
 
 export default function SignUpScreen() {
-  // 'form' = registration form, 'otp' = code entry
   const [step, setStep] = useState<'form' | 'otp'>('form');
 
-  // Form state
+  // Form fields
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -47,7 +47,11 @@ export default function SignUpScreen() {
     confirmPassword?: string;
   }>({});
 
-  // OTP state
+  // Banner shown when account exists but not verified
+  const [showUnverifiedBanner, setShowUnverifiedBanner] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+
+  // OTP fields
   const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill(''));
   const [otpError, setOtpError] = useState('');
   const otpRefs = useRef<Array<TextInput | null>>(Array(OTP_LENGTH).fill(null));
@@ -77,45 +81,84 @@ export default function SignUpScreen() {
     return Object.keys(e).length === 0;
   };
 
-  // ── STEP 1: Create account ────────────────────────────────────────────────
+  // ── STEP 1: Create account ─────────────────────────────────────────────────
   const handleSignUp = async () => {
     if (!validateForm()) return;
+    setShowUnverifiedBanner(false);
     setLoading(true);
 
-    const { data, error } = await supabase.auth.signUp({
+    const { error } = await supabase.auth.signUp({
       email: email.trim().toLowerCase(),
       password,
       options: {
         data: { full_name: fullName.trim() },
-        // No emailRedirectTo — we use OTP not a link
       },
     });
 
     setLoading(false);
 
     if (error) {
-      if (error.message.toLowerCase().includes('already registered')) {
-        Alert.alert(
-          'Email Already Used',
-          'An account with this email already exists.',
-          [
-            { text: 'Sign In', onPress: () => router.replace('/(auth)/signin') },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
+      const msg = error.message.toLowerCase();
+
+      if (
+        msg.includes('already registered') ||
+        msg.includes('user already registered') ||
+        msg.includes('email address is already') ||
+        msg.includes('duplicate')
+      ) {
+        // Account exists — could be unverified (came back here after pressing back)
+        // or a fully verified account. Show the unverified banner which lets them
+        // send an OTP. If they're already verified, the sign in screen is also offered.
+        setShowUnverifiedBanner(true);
       } else {
         Alert.alert('Sign Up Failed', error.message);
       }
       return;
     }
 
-    // If Supabase confirms email is required, it returns a user
-    // with no session — OTP was sent to email.
-    // Move to OTP step.
+    // New registration succeeded — OTP sent automatically by Supabase
     setStep('otp');
   };
 
-  // ── OTP digit handlers ────────────────────────────────────────────────────
+  // ── Send OTP for existing unverified account ───────────────────────────────
+  // Called when user taps "Send Verification Code" in the unverified banner
+  const handleSendOtpForUnverified = async () => {
+    setSendingOtp(true);
+    setShowUnverifiedBanner(false);
+
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: email.trim().toLowerCase(),
+    });
+
+    setSendingOtp(false);
+
+    if (error) {
+      // If resend fails it likely means the account IS already verified
+      // Direct them to sign in instead
+      if (
+        error.message.toLowerCase().includes('already confirmed') ||
+        error.message.toLowerCase().includes('already verified')
+      ) {
+        Alert.alert(
+          'Already Verified',
+          'This account is already verified. Please sign in.',
+          [{ text: 'Sign In', onPress: () => router.replace('/(auth)/signin') }]
+        );
+      } else {
+        Alert.alert('Error', error.message);
+        setShowUnverifiedBanner(true);
+      }
+      return;
+    }
+
+    // OTP sent — move to OTP screen
+    setOtp(Array(OTP_LENGTH).fill(''));
+    setOtpError('');
+    setStep('otp');
+  };
+
+  // ── OTP digit handlers ─────────────────────────────────────────────────────
   const handleOtpChange = (value: string, index: number) => {
     const digit = value.replace(/[^0-9]/g, '').slice(-1);
     const next = [...otp];
@@ -136,7 +179,7 @@ export default function SignUpScreen() {
     }
   };
 
-  // ── STEP 2: Verify OTP ────────────────────────────────────────────────────
+  // ── STEP 2: Verify OTP ─────────────────────────────────────────────────────
   const handleVerify = async () => {
     const code = otp.join('');
     if (code.length < OTP_LENGTH) {
@@ -159,7 +202,6 @@ export default function SignUpScreen() {
       return;
     }
 
-    // Verified — navigate directly to profile setup
     if (data.user) {
       try {
         const { data: profileData } = await supabase
@@ -178,7 +220,7 @@ export default function SignUpScreen() {
     }
   };
 
-  // ── Resend OTP ────────────────────────────────────────────────────────────
+  // ── Resend OTP ─────────────────────────────────────────────────────────────
   const handleResend = async () => {
     setResending(true);
     setOtp(Array(OTP_LENGTH).fill(''));
@@ -199,7 +241,7 @@ export default function SignUpScreen() {
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 2 — OTP SCREEN
+  // OTP SCREEN
   // ═══════════════════════════════════════════════════════════════════════════
   if (step === 'otp') {
     return (
@@ -223,7 +265,6 @@ export default function SignUpScreen() {
               </TouchableOpacity>
 
               <Animated.View entering={SlideInRight.duration(400)}>
-                {/* Icon */}
                 <LinearGradient
                   colors={COLORS.gradientPrimary}
                   style={{
@@ -378,12 +419,15 @@ export default function SignUpScreen() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 1 — REGISTRATION FORM
+  // REGISTRATION FORM
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
-        <LoadingOverlay visible={loading} message="Creating account..." />
+        <LoadingOverlay
+          visible={loading || sendingOtp}
+          message={sendingOtp ? 'Sending code...' : 'Creating account...'}
+        />
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1 }}
@@ -419,6 +463,87 @@ export default function SignUpScreen() {
             </Animated.View>
 
             <Animated.View entering={FadeInDown.duration(600).delay(200)}>
+
+              {/* Unverified account banner */}
+              {showUnverifiedBanner && (
+                <Animated.View
+                  entering={FadeInDown.duration(400)}
+                  style={{
+                    backgroundColor: `${COLORS.warning}15`,
+                    borderRadius: RADIUS.lg,
+                    padding: SPACING.md,
+                    marginBottom: SPACING.xl,
+                    borderWidth: 1,
+                    borderColor: `${COLORS.warning}40`,
+                  }}
+                >
+                  <View style={{
+                    flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm,
+                  }}>
+                    <Ionicons name="warning" size={20} color={COLORS.warning}
+                      style={{ marginRight: 10, marginTop: 1 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{
+                        color: COLORS.warning, fontSize: FONTS.sizes.sm,
+                        fontWeight: '700', marginBottom: 4,
+                      }}>
+                        Account Already Exists
+                      </Text>
+                      <Text style={{
+                        color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18,
+                      }}>
+                        This email is registered but not yet verified. Send a{' '}
+                        <Text style={{ color: COLORS.textPrimary, fontWeight: '600' }}>
+                          verification code
+                        </Text>
+                        {' '}to your email to complete sign up.
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setShowUnverifiedBanner(false)}
+                      style={{ marginLeft: 8 }}
+                    >
+                      <Ionicons name="close" size={16} color={COLORS.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Send OTP button */}
+                  <TouchableOpacity
+                    onPress={handleSendOtpForUnverified}
+                    disabled={sendingOtp}
+                    style={{
+                      backgroundColor: COLORS.primary,
+                      borderRadius: RADIUS.md,
+                      paddingVertical: 10,
+                      paddingHorizontal: 16,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      marginBottom: SPACING.sm,
+                    }}
+                  >
+                    <Ionicons name="shield-checkmark-outline" size={16} color="#FFF" />
+                    <Text style={{
+                      color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700',
+                    }}>
+                      {sendingOtp ? 'Sending Code...' : 'Send Verification Code'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Sign in link if they already verified elsewhere */}
+                  <TouchableOpacity
+                    onPress={() => router.replace('/(auth)/signin')}
+                    style={{ alignItems: 'center', paddingTop: 4 }}
+                  >
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                      Already verified?{' '}
+                      <Text style={{ color: COLORS.primary, fontWeight: '600' }}>Sign In</Text>
+                    </Text>
+                  </TouchableOpacity>
+                </Animated.View>
+              )}
+
               <AnimatedInput
                 label="Full Name"
                 value={fullName}
@@ -430,7 +555,10 @@ export default function SignUpScreen() {
               <AnimatedInput
                 label="Email Address"
                 value={email}
-                onChangeText={setEmail}
+                onChangeText={(text) => {
+                  setEmail(text);
+                  setShowUnverifiedBanner(false);
+                }}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoComplete="email"
@@ -454,7 +582,6 @@ export default function SignUpScreen() {
                 error={formErrors.confirmPassword}
               />
 
-              {/* FIXED text — says 8-digit code, not verification email */}
               <View style={{
                 backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.md,
                 padding: SPACING.md, marginBottom: SPACING.xl,
