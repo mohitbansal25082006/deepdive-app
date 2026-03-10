@@ -1,7 +1,6 @@
 // src/services/agents/reportAgent.ts
-// REPORT GENERATOR AGENT
-// Takes all gathered intelligence and produces a structured, 
-// publication-quality research report with full citations.
+// FIXED: Added null guards on batch.results — some SerpAPI batches can return
+// undefined results when a search query fails, causing .slice() to crash.
 
 import { chatCompletionJSON } from '../openaiClient';
 import {
@@ -33,21 +32,26 @@ export async function runReportAgent(
   searchBatches: SearchBatch[]
 ): Promise<ReportOutput> {
 
-  // Build citations from search results
+  // Build citations safely — guard against undefined results
   const citationMap = new Map<string, Citation>();
   let citationCounter = 0;
 
   searchBatches.forEach((batch) => {
-    batch.results.slice(0, 5).forEach((r) => {
+    // FIXED: guard against undefined/null results array
+    const results = Array.isArray(batch?.results) ? batch.results : [];
+    results.slice(0, 5).forEach((r) => {
+      if (!r?.url) return; // skip malformed results
       if (!citationMap.has(r.url)) {
         citationCounter++;
+        let hostname = r.url;
+        try { hostname = new URL(r.url).hostname; } catch { /* keep raw url */ }
         citationMap.set(r.url, {
           id: `c${citationCounter}`,
-          title: r.title,
+          title: r.title ?? 'Untitled',
           url: r.url,
-          source: r.source ?? new URL(r.url).hostname,
+          source: r.source ?? hostname,
           date: r.date,
-          snippet: r.snippet.slice(0, 200),
+          snippet: (r.snippet ?? '').slice(0, 200),
         });
       }
     });
@@ -55,6 +59,7 @@ export async function runReportAgent(
 
   const citations = Array.from(citationMap.values()).slice(0, 20);
   const citationIds = citations.map((c) => c.id);
+  const availableCitationIds = citationIds.slice(0, 15).join(', ');
 
   const systemPrompt = `You are a senior research director and expert technical writer. You create authoritative, comprehensive research reports that are:
 - Written in a clear, professional yet engaging style
@@ -65,49 +70,56 @@ export async function runReportAgent(
 
 Your reports rival those produced by top consulting firms (McKinsey, Gartner, CB Insights).`;
 
-  const contextSummary = `
-VERIFIED FACTS (${factCheck.verifiedFacts.length}):
-${factCheck.verifiedFacts.slice(0, 10).map((f) => `• ${f.claim}`).join('\n')}
+  // Safely build context — guard all array accesses
+  const verifiedFacts = Array.isArray(factCheck?.verifiedFacts) ? factCheck.verifiedFacts : [];
+  const statistics = Array.isArray(analysis?.statistics) ? analysis.statistics : [];
+  const trends = Array.isArray(analysis?.trends) ? analysis.trends : [];
+  const companies = Array.isArray(analysis?.companies) ? analysis.companies : [];
+  const keyThemes = Array.isArray(analysis?.keyThemes) ? analysis.keyThemes : [];
+  const subtopics = Array.isArray(plan?.subtopics) ? plan.subtopics : [];
+  const researchGoals = Array.isArray(plan?.researchGoals) ? plan.researchGoals : [];
 
-KEY STATISTICS (${analysis.statistics.length}):
-${analysis.statistics.slice(0, 10).map((s) => `• ${s.value}: ${s.context}`).join('\n')}
+  const contextSummary = `
+VERIFIED FACTS (${verifiedFacts.length}):
+${verifiedFacts.slice(0, 10).map((f) => `• ${f?.claim ?? ''}`).join('\n')}
+
+KEY STATISTICS (${statistics.length}):
+${statistics.slice(0, 10).map((s) => `• ${s?.value ?? ''}: ${s?.context ?? ''}`).join('\n')}
 
 KEY TRENDS:
-${analysis.trends.map((t) => `• [${t.direction.toUpperCase()}] ${t.trend}`).join('\n')}
+${trends.map((t) => `• [${(t?.direction ?? 'unknown').toUpperCase()}] ${t?.trend ?? ''}`).join('\n')}
 
-KEY COMPANIES: ${analysis.companies.join(', ')}
-KEY THEMES: ${analysis.keyThemes.join(', ')}
+KEY COMPANIES: ${companies.join(', ')}
+KEY THEMES: ${keyThemes.join(', ')}
 
-RELIABILITY SCORE: ${factCheck.reliabilityScore}/10
-ANALYST NOTES: ${factCheck.notes}
+RELIABILITY SCORE: ${factCheck?.reliabilityScore ?? 'N/A'}/10
+ANALYST NOTES: ${factCheck?.notes ?? 'None'}
 `;
 
-  const availableCitationIds = citationIds.slice(0, 15).join(', ');
+  const userPrompt = `Create a comprehensive research report on: "${plan?.topic ?? input.query}"
 
-  const userPrompt = `Create a comprehensive research report on: "${plan.topic}"
-
-RESEARCH GOALS: ${plan.researchGoals.join('; ')}
-SUBTOPICS TO COVER: ${plan.subtopics.join(', ')}
+RESEARCH GOALS: ${researchGoals.join('; ')}
+SUBTOPICS TO COVER: ${subtopics.join(', ')}
 DEPTH LEVEL: ${input.depth.toUpperCase()}
 
 INTELLIGENCE GATHERED:
 ${contextSummary}
 
-AVAILABLE CITATION IDs: ${availableCitationIds}
+AVAILABLE CITATION IDs: ${availableCitationIds || 'none'}
 
-Write a complete, detailed research report. Return ONLY valid JSON:
+Write a complete, detailed research report. Return ONLY valid JSON with NO markdown formatting:
 {
   "title": "Compelling, specific report title",
-  "executiveSummary": "3-4 paragraph executive summary covering the key findings, market state, and outlook. Be specific with data points.",
+  "executiveSummary": "3-4 paragraph executive summary covering key findings, market state, and outlook. Be specific with data points.",
   "sections": [
     {
       "id": "s1",
       "title": "Section Title",
-      "content": "3-4 paragraphs of detailed, data-backed content. Reference specific statistics and findings.",
+      "content": "3-4 paragraphs of detailed, data-backed content.",
       "bullets": ["Key point 1", "Key point 2", "Key point 3"],
-      "statistics": [{"value": "stat", "context": "explanation", "source": "src", "url": "url"}],
+      "statistics": [],
       "citationIds": ["c1", "c2"],
-      "icon": "ionicon-name-outline"
+      "icon": "analytics-outline"
     }
   ],
   "keyFindings": ["Finding 1 with specific data", "Finding 2", "Finding 3", "Finding 4", "Finding 5"],
@@ -117,24 +129,32 @@ Write a complete, detailed research report. Return ONLY valid JSON:
 }
 
 Create EXACTLY 6 sections covering:
-1. Topic Overview & Current State
-2. Key Players & Market Landscape  
-3. Technology & Innovation Trends
-4. Market Data & Statistics
-5. Challenges & Risks
-6. Future Outlook & Predictions
+1. Topic Overview & Current State — icon: "newspaper-outline"
+2. Key Players & Market Landscape — icon: "business-outline"
+3. Technology & Innovation Trends — icon: "flash-outline"
+4. Market Data & Statistics — icon: "stats-chart-outline"
+5. Challenges & Risks — icon: "warning-outline"
+6. Future Outlook & Predictions — icon: "telescope-outline"
 
-Each section must have 3-4 paragraphs of substantive content. Use these icon names: analytics-outline, business-outline, flash-outline, stats-chart-outline, warning-outline, telescope-outline`;
+Each section must have at least 2 paragraphs of substantive content and 3 bullet points.`;
 
   const reportRaw = await chatCompletionJSON<ReportOutput>([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
   ], { temperature: 0.5, maxTokens: 5000 });
 
-  // Inject the actual citation objects and statistics
+  // Validate the response has the expected shape
+  if (!reportRaw?.title) {
+    throw new Error('Report agent returned an invalid response. Please try again.');
+  }
+
+  // Inject the real citation objects we built (AI returns empty array per prompt)
   return {
     ...reportRaw,
+    sections: Array.isArray(reportRaw.sections) ? reportRaw.sections : [],
+    keyFindings: Array.isArray(reportRaw.keyFindings) ? reportRaw.keyFindings : [],
+    futurePredictions: Array.isArray(reportRaw.futurePredictions) ? reportRaw.futurePredictions : [],
     citations,
-    statistics: analysis.statistics,
+    statistics: statistics, // use the ones extracted by analysisAgent
   };
 }

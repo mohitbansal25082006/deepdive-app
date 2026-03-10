@@ -1,14 +1,16 @@
 // app/(app)/(tabs)/_layout.tsx
-// The bottom tab navigation — the bar at the bottom of the app
-// with Home, History, and Profile tabs.
+// UPDATED: Tab bar is properly sized for phones.
+// - Taller hit area, no text compression
+// - Uses useSafeAreaInsets to handle notches/home indicators
+// - Icon + label never overlap or clip on small screens
 
 import { Tabs } from 'expo-router';
-import { View, Text } from 'react-native';
+import { View, Text, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS } from '../../../src/constants/theme';
 
-// Custom tab bar icon component
 function TabIcon({
   name,
   focused,
@@ -19,28 +21,41 @@ function TabIcon({
   label: string;
 }) {
   return (
-    <View style={{ alignItems: 'center', paddingTop: 8 }}>
-      {/* Active indicator dot above icon */}
+    <View style={{
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingTop: 10,
+      width: 70, // fixed width prevents label compression
+    }}>
+      {/* Active dot indicator */}
       {focused && (
         <View style={{
           width: 4,
           height: 4,
           borderRadius: 2,
           backgroundColor: COLORS.primary,
-          marginBottom: 4,
+          marginBottom: 5,
         }} />
       )}
+      {/* Push icon down slightly when no dot so it stays vertically centred */}
+      {!focused && <View style={{ height: 9 }} />}
+
       <Ionicons
-        name={focused ? name : `${name}-outline` as any}
-        size={24}
+        name={focused ? name : (`${name}-outline` as any)}
+        size={22}
         color={focused ? COLORS.primary : COLORS.textMuted}
       />
-      <Text style={{
-        color: focused ? COLORS.primary : COLORS.textMuted,
-        fontSize: FONTS.sizes.xs,
-        marginTop: 2,
-        fontWeight: focused ? '600' : '400',
-      }}>
+
+      <Text
+        numberOfLines={1}
+        style={{
+          color: focused ? COLORS.primary : COLORS.textMuted,
+          fontSize: 11,
+          marginTop: 3,
+          fontWeight: focused ? '700' : '400',
+          letterSpacing: 0.2,
+        }}
+      >
         {label}
       </Text>
     </View>
@@ -48,29 +63,47 @@ function TabIcon({
 }
 
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
+
+  // Tab bar height: icon(22) + dot(9) + label(14) + padding = ~70px + bottom inset
+  const tabBarHeight = 64 + insets.bottom;
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
           position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: tabBarHeight,
           borderTopWidth: 0,
           backgroundColor: 'transparent',
           elevation: 0,
-          height: 80,
         },
         tabBarBackground: () => (
           <BlurView
-            intensity={60}
+            intensity={70}
+            tint="dark"
             style={{
               flex: 1,
-              backgroundColor: 'rgba(10, 10, 26, 0.85)',
+              backgroundColor: Platform.OS === 'android'
+                ? 'rgba(10, 10, 26, 0.96)' // Android BlurView is often weak — go darker
+                : 'rgba(10, 10, 26, 0.80)',
               borderTopWidth: 1,
               borderTopColor: COLORS.border,
             }}
           />
         ),
-        tabBarShowLabel: false, // We show labels in our custom icon
+        tabBarShowLabel: false,
+        tabBarItemStyle: {
+          // Each tab item takes equal width; no flex weirdness
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'flex-start',
+          paddingBottom: 0,
+        },
       }}
     >
       <Tabs.Screen

@@ -1,6 +1,6 @@
 // src/components/research/FollowUpChat.tsx
-// Conversational follow-up panel at the bottom of a research report.
-// Users can ask clarifying questions about the research.
+// UPDATED: Keyboard-safe — messages scroll up when keyboard opens.
+// Uses ScrollView with inverted approach so newest messages are always visible.
 
 import React, { useRef, useEffect } from 'react';
 import {
@@ -9,8 +9,6 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -36,6 +34,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
   const [inputText, setInputText] = React.useState('');
   const scrollRef = useRef<ScrollView>(null);
 
+  // Scroll to bottom whenever messages change
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -49,44 +48,18 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
   };
 
   return (
-    <View style={{
-      borderTopWidth: 1,
-      borderTopColor: COLORS.border,
-      backgroundColor: COLORS.backgroundCard,
-    }}>
-      {/* Header */}
-      <View style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        padding: SPACING.md,
-        borderBottomWidth: messages.length > 0 ? 1 : 0,
-        borderBottomColor: COLORS.border,
-      }}>
-        <LinearGradient
-          colors={COLORS.gradientPrimary}
-          style={{
-            width: 32, height: 32, borderRadius: 10,
-            alignItems: 'center', justifyContent: 'center',
-            marginRight: SPACING.sm,
-          }}
-        >
-          <Ionicons name="chatbubble-ellipses" size={16} color="#FFF" />
-        </LinearGradient>
-        <Text style={{
-          color: COLORS.textPrimary,
-          fontSize: FONTS.sizes.base,
-          fontWeight: '700',
-        }}>
-          Ask Follow-Up Questions
-        </Text>
-      </View>
-
-      {/* Suggested questions (shown only when no messages) */}
+    <View style={{ flexShrink: 1 }}>
+      {/* Suggested chips — only when no messages yet */}
       {messages.length === 0 && (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ padding: SPACING.md, gap: 8 }}
+          contentContainerStyle={{
+            paddingHorizontal: SPACING.md,
+            paddingVertical: SPACING.sm,
+            gap: 8,
+          }}
+          keyboardShouldPersistTaps="handled"
         >
           {SUGGESTED_QUESTIONS.map((q) => (
             <TouchableOpacity
@@ -101,11 +74,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
                 borderColor: `${COLORS.primary}30`,
               }}
             >
-              <Text style={{
-                color: COLORS.primary,
-                fontSize: FONTS.sizes.sm,
-                fontWeight: '500',
-              }}>
+              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '500' }}>
                 {q}
               </Text>
             </TouchableOpacity>
@@ -113,15 +82,22 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
         </ScrollView>
       )}
 
-      {/* Message list */}
+      {/* Message list — fixed height so it doesn't push the input off screen */}
       {messages.length > 0 && (
         <ScrollView
           ref={scrollRef}
-          style={{ maxHeight: 280 }}
-          contentContainerStyle={{ padding: SPACING.md }}
+          style={{ height: 220 }}
+          contentContainerStyle={{
+            padding: SPACING.md,
+            paddingBottom: SPACING.sm,
+          }}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() =>
+            scrollRef.current?.scrollToEnd({ animated: true })
+          }
         >
-          {messages.map((msg, i) => (
+          {messages.map((msg) => (
             <Animated.View
               key={msg.id}
               entering={FadeInDown.duration(300)}
@@ -132,11 +108,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
               }}
             >
               {msg.role === 'assistant' && (
-                <View style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  marginBottom: 4,
-                }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                   <LinearGradient
                     colors={COLORS.gradientPrimary}
                     style={{
@@ -153,24 +125,20 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
                 </View>
               )}
               <View style={{
-                backgroundColor: msg.role === 'user'
-                  ? COLORS.primary
-                  : COLORS.backgroundElevated,
+                backgroundColor: msg.role === 'user' ? COLORS.primary : COLORS.backgroundElevated,
                 borderRadius: RADIUS.lg,
                 borderBottomRightRadius: msg.role === 'user' ? 4 : RADIUS.lg,
                 borderBottomLeftRadius: msg.role === 'assistant' ? 4 : RADIUS.lg,
                 padding: SPACING.sm,
               }}>
-                <Text style={{
-                  color: COLORS.textPrimary,
-                  fontSize: FONTS.sizes.sm,
-                  lineHeight: 20,
-                }}>
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20 }}>
                   {msg.content}
                 </Text>
               </View>
             </Animated.View>
           ))}
+
+          {/* Typing indicator */}
           {sending && (
             <View style={{
               alignSelf: 'flex-start',
@@ -178,20 +146,28 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
               borderRadius: RADIUS.lg,
               padding: SPACING.sm,
               marginBottom: SPACING.sm,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
             }}>
               <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                Thinking...
+              </Text>
             </View>
           )}
         </ScrollView>
       )}
 
-      {/* Input */}
+      {/* Input row — always visible, above keyboard */}
       <View style={{
         flexDirection: 'row',
         alignItems: 'center',
-        padding: SPACING.md,
-        paddingTop: SPACING.sm,
+        paddingHorizontal: SPACING.md,
+        paddingVertical: SPACING.sm,
         gap: SPACING.sm,
+        borderTopWidth: messages.length > 0 ? 1 : 0,
+        borderTopColor: COLORS.border,
       }}>
         <TextInput
           value={inputText}
@@ -208,15 +184,14 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
             fontSize: FONTS.sizes.sm,
             borderWidth: 1,
             borderColor: COLORS.border,
+            maxHeight: 80,
           }}
           onSubmitEditing={handleSend}
           returnKeyType="send"
+          blurOnSubmit={false}
           multiline={false}
         />
-        <TouchableOpacity
-          onPress={handleSend}
-          disabled={!inputText.trim() || sending}
-        >
+        <TouchableOpacity onPress={handleSend} disabled={!inputText.trim() || sending}>
           <LinearGradient
             colors={inputText.trim() ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']}
             style={{
@@ -224,7 +199,10 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <Ionicons name="arrow-up" size={20} color="#FFF" />
+            {sending
+              ? <ActivityIndicator size="small" color="#FFF" />
+              : <Ionicons name="arrow-up" size={20} color="#FFF" />
+            }
           </LinearGradient>
         </TouchableOpacity>
       </View>
