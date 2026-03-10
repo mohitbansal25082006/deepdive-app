@@ -1,43 +1,35 @@
 // src/constants/theme.ts
-// This is your design system — all colors, fonts, spacing, etc.
-// Changing a value here updates it everywhere in the app.
+// Part 3: Added pro/enterprise colors, notification colors
 
 export const COLORS = {
-  // Primary brand colors
-  primary: '#6C63FF',        // Purple — main brand color
-  primaryLight: '#8B85FF',   // Lighter purple for hover states
-  primaryDark: '#4A42CC',    // Darker purple for pressed states
-
-  // Secondary accent
-  secondary: '#FF6584',      // Pink accent
-  accent: '#43E97B',         // Green for success states
-
-  // Background layers
-  background: '#0A0A1A',     // Deepest background (nearly black)
-  backgroundCard: '#12122A', // Card background
-  backgroundElevated: '#1A1A35', // Slightly elevated surfaces
-
-  // Text colors
-  textPrimary: '#FFFFFF',    // Main text
-  textSecondary: '#A0A0C0',  // Subtitles, captions
-  textMuted: '#5A5A7A',      // Placeholder, disabled text
-
-  // Border colors
-  border: '#2A2A4A',         // Subtle border
-  borderFocus: '#6C63FF',    // Focused input border
-
-  // Status colors
+  primary: '#6C63FF',
+  primaryLight: '#8B85FF',
+  primaryDark: '#4A42CC',
+  secondary: '#FF6584',
+  accent: '#43E97B',
+  background: '#0A0A1A',
+  backgroundCard: '#12122A',
+  backgroundElevated: '#1A1A35',
+  textPrimary: '#FFFFFF',
+  textSecondary: '#A0A0C0',
+  textMuted: '#5A5A7A',
+  border: '#2A2A4A',
+  borderFocus: '#6C63FF',
   success: '#43E97B',
   error: '#FF4757',
   warning: '#FFA726',
   info: '#29B6F6',
-
-  // Gradients (used with LinearGradient)
+  // Part 3 additions
+  pro: '#FFD700',
+  proGradient: ['#FFD700', '#FFA500'] as const,
+  enterprise: '#E8D5FF',
+  notification: '#FF6B6B',
   gradientPrimary: ['#6C63FF', '#8B5CF6'] as const,
   gradientSecondary: ['#FF6584', '#FF8E53'] as const,
   gradientDark: ['#0A0A1A', '#12122A'] as const,
   gradientCard: ['#1A1A35', '#12122A'] as const,
   gradientSuccess: ['#43E97B', '#38F9D7'] as const,
+  gradientPro: ['#FFD700', '#FF8C00'] as const,
 };
 
 export const FONTS = {
@@ -96,5 +88,12 @@ export const SHADOWS = {
     shadowOpacity: 0.35,
     shadowRadius: 24,
     elevation: 16,
+  },
+  pro: {
+    shadowColor: '#FFD700',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 8,
   },
 };

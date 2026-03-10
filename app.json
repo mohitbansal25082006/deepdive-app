@@ -2,7 +2,7 @@
   "expo": {
     "name": "DeepDive AI",
     "slug": "deepdive-app",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "deepdiveai",
@@ -14,7 +14,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.deepdive.ai"
+      "bundleIdentifier": "com.deepdive.ai",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries.",
+        "NSSpeechRecognitionUsageDescription": "DeepDive AI uses speech recognition to convert your spoken research queries to text."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +28,13 @@
         "backgroundColor": "#0A0A1A"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.deepdive.ai"
+      "package": "com.deepdive.ai",
+      "permissions": [
+        "RECORD_AUDIO",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -40,6 +50,22 @@
         {
           "photosPermission": "DeepDive AI needs access to your photos to set your profile picture.",
           "cameraPermission": "DeepDive AI needs access to your camera to take a profile picture."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "DeepDive AI uses your microphone for voice research queries."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#6C63FF",
+          "sounds": [],
+          "androidMode": "default",
+          "androidCollapsedTitle": "DeepDive AI"
         }
       ]
     ],

@@ -1,5 +1,5 @@
 // src/types/index.ts
-// Full type definitions for Part 1 + Part 2
+// Full type definitions for Part 1 + Part 2 + Part 3
 
 // ─── Auth & Profile ──────────────────────────────────────────────────────────
 
@@ -59,10 +59,10 @@ export interface AgentStep {
   status: AgentStatus;
   startedAt?: number;
   completedAt?: number;
-  detail?: string; // e.g. "Searching: quantum computing startups 2025"
+  detail?: string;
 }
 
-// ─── Research Plan (Planner Agent output) ─────────────────────────────────────
+// ─── Research Plan ────────────────────────────────────────────────────────────
 
 export interface ResearchPlan {
   topic: string;
@@ -70,7 +70,7 @@ export interface ResearchPlan {
   searchQueries: string[];
   researchGoals: string[];
   estimatedDepth: ResearchDepth;
-  keyEntities: string[]; // Companies, people, technologies to track
+  keyEntities: string[];
 }
 
 // ─── Web Search Results ───────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ export interface ExtractedFact {
   claim: string;
   source: string;
   url: string;
-  confidence: number; // 0–1
+  confidence: number;
 }
 
 export interface ExtractedStatistic {
@@ -125,8 +125,8 @@ export interface AnalysisOutput {
 export interface FactCheckOutput {
   verifiedFacts: ExtractedFact[];
   flaggedClaims: { claim: string; reason: string }[];
-  reliabilityScore: number; // 0–10
-  sourceDiversity: number;  // 0–10
+  reliabilityScore: number;
+  sourceDiversity: number;
   notes: string;
 }
 
@@ -148,7 +148,7 @@ export interface ReportSection {
   bullets?: string[];
   statistics?: ExtractedStatistic[];
   citationIds: string[];
-  icon?: string; // Ionicon name
+  icon?: string;
 }
 
 export interface ResearchReport {
@@ -173,6 +173,12 @@ export interface ResearchReport {
   status: ResearchStatus;
   errorMessage?: string;
   agentLogs: AgentStep[];
+
+  // Part 3 additions
+  isPinned?: boolean;
+  tags?: string[];
+  exportCount?: number;
+  viewCount?: number;
 
   createdAt: string;
   completedAt?: string;
@@ -206,4 +212,51 @@ export interface OrchestratorCallbacks {
   onStepDetail: (agent: AgentName, detail: string) => void;
   onComplete: (report: ResearchReport) => void;
   onError: (message: string) => void;
+}
+
+// ─── Part 3: Stats ────────────────────────────────────────────────────────────
+
+export interface UserStats {
+  totalReports: number;
+  completedReports: number;
+  totalSources: number;
+  avgReliability: number;
+  favoriteTopic: string | null;
+  reportsThisMonth: number;
+  hoursResearched: number;
+}
+
+// ─── Part 3: Subscription ─────────────────────────────────────────────────────
+
+export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
+
+export interface UserSubscription {
+  id: string;
+  userId: string;
+  tier: SubscriptionTier;
+  reportsUsedThisMonth: number;
+  reportsLimit: number;
+  resetDate: string;
+}
+
+// ─── Part 3: Saved Topic ──────────────────────────────────────────────────────
+
+export interface SavedTopic {
+  id: string;
+  userId: string;
+  topic: string;
+  lastCheckedAt: string;
+  notifyOnUpdate: boolean;
+  createdAt: string;
+}
+
+// ─── Part 3: Citation Formats ─────────────────────────────────────────────────
+
+export type CitationFormat = 'apa' | 'mla' | 'chicago';
+
+export interface FormattedCitation {
+  id: string;
+  format: CitationFormat;
+  formatted: string;
+  raw: Citation;
 }

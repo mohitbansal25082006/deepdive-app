@@ -1,20 +1,11 @@
 // app/(app)/research-report.tsx
-// FIXED: Follow-up button paddingBottom = insets.bottom + SPACING.sm only.
-// This screen is a stack modal — there is no tab bar behind it, so we must
-// NOT add extra 68px for the tab bar height. insets.bottom alone handles
-// the iPhone home indicator / Android gesture bar.
+// Part 3 update: PDF export, citation modal, offline cache, view count
 
 import React, { useState, useEffect } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  Share,
-  Alert,
-  Linking,
-  KeyboardAvoidingView,
-  Platform,
+  View, Text, ScrollView, TouchableOpacity,
+  Share, Alert, Linking, KeyboardAvoidingView, Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,15 +15,17 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../src/lib/supabase';
 import { ReportSectionCard } from '../../src/components/research/ReportSection';
 import { FollowUpChat } from '../../src/components/research/FollowUpChat';
+import { CitationModal } from '../../src/components/research/CitationModal';
 import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 import { ResearchReport } from '../../src/types';
 import { useConversation } from '../../src/hooks/useConversation';
+import { exportReportAsPDF } from '../../src/services/pdfExport';
+import { cacheReport, getCachedReport } from '../../src/lib/offlineCache';
+import { scheduleResearchCompleteNotification } from '../../src/lib/notifications';
 
 const DEPTH_LABELS: Record<string, string> = {
-  quick: 'Quick Scan',
-  deep: 'Deep Dive',
-  expert: 'Expert Mode',
+  quick: 'Quick Scan', deep: 'Deep Dive', expert: 'Expert Mode',
 };
 
 export default function ResearchReportScreen() {
@@ -42,6 +35,9 @@ export default function ResearchReportScreen() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'report' | 'findings' | 'sources'>('report');
   const [showChat, setShowChat] = useState(false);
+  const [showCitations, setShowCitations] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [isFromCache, setIsFromCache] = useState(false);
 
   useEffect(() => {
     if (!reportId) return;
@@ -51,6 +47,15 @@ export default function ResearchReportScreen() {
   const loadReport = async () => {
     setLoading(true);
     try {
+      // Try cache first for instant load
+      const cached = await getCachedReport(reportId);
+      if (cached) {
+        setReport(cached);
+        setIsFromCache(true);
+        setLoading(false);
+      }
+
+      // Always try fresh from Supabase
       const { data, error } = await supabase
         .from('research_reports')
         .select('*')
@@ -58,32 +63,41 @@ export default function ResearchReportScreen() {
         .single();
 
       if (error || !data) {
-        Alert.alert('Error', 'Could not load report.');
-        router.back();
+        if (!cached) {
+          Alert.alert('Error', 'Could not load report.');
+          router.back();
+        }
         return;
       }
 
-      setReport({
-        id: data.id,
-        userId: data.user_id,
-        query: data.query,
-        depth: data.depth,
-        focusAreas: data.focus_areas ?? [],
+      const mapped: ResearchReport = {
+        id: data.id, userId: data.user_id, query: data.query,
+        depth: data.depth, focusAreas: data.focus_areas ?? [],
         title: data.title ?? data.query,
         executiveSummary: data.executive_summary ?? '',
-        sections: data.sections ?? [],
-        keyFindings: data.key_findings ?? [],
+        sections: data.sections ?? [], keyFindings: data.key_findings ?? [],
         futurePredictions: data.future_predictions ?? [],
-        citations: data.citations ?? [],
-        statistics: data.statistics ?? [],
+        citations: data.citations ?? [], statistics: data.statistics ?? [],
         searchQueries: data.search_queries ?? [],
         sourcesCount: data.sources_count ?? 0,
         reliabilityScore: data.reliability_score ?? 0,
-        status: data.status,
-        agentLogs: data.agent_logs ?? [],
-        createdAt: data.created_at,
-        completedAt: data.completed_at,
-      });
+        status: data.status, agentLogs: data.agent_logs ?? [],
+        isPinned: data.is_pinned ?? false,
+        createdAt: data.created_at, completedAt: data.completed_at,
+      };
+
+      setReport(mapped);
+      setIsFromCache(false);
+
+      // Cache for offline access
+      await cacheReport(mapped);
+
+      // Increment view count
+      await supabase
+        .from('research_reports')
+        .update({ view_count: (data.view_count ?? 0) + 1 })
+        .eq('id', reportId);
+
     } catch (err) {
       console.error(err);
     } finally {
@@ -103,276 +117,195 @@ export default function ResearchReportScreen() {
     } catch {}
   };
 
-  const openURL = async (url: string) => {
+  const handleExportPDF = async () => {
+    if (!report || exporting) return;
+    setExporting(true);
     try {
-      const supported = await Linking.canOpenURL(url);
-      if (supported) {
-        await Linking.openURL(url);
-      } else {
-        Alert.alert('Cannot open URL', url);
-      }
-    } catch {
-      Alert.alert('Error', 'Could not open this link.');
+      await exportReportAsPDF(report);
+      // Increment export count
+      await supabase
+        .from('research_reports')
+        .update({ export_count: (report.exportCount ?? 0) + 1 })
+        .eq('id', report.id);
+    } catch (err) {
+      Alert.alert('Export Error', 'Could not generate PDF. Please try again.');
+    } finally {
+      setExporting(false);
     }
   };
 
+  const openURL = async (url: string) => {
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) await Linking.openURL(url);
+      else Alert.alert('Cannot open URL', url);
+    } catch { Alert.alert('Error', 'Could not open this link.'); }
+  };
+
   const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString('en-US', {
-      month: 'short', day: 'numeric', year: 'numeric',
-    });
+    new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   const reliabilityColor =
     (report?.reliabilityScore ?? 0) >= 8 ? COLORS.success
     : (report?.reliabilityScore ?? 0) >= 6 ? COLORS.warning
     : COLORS.error;
 
-  if (loading) return <LoadingOverlay visible message="Loading report..." />;
+  if (loading && !report) return <LoadingOverlay visible message="Loading report..." />;
   if (!report) return null;
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-      {/* edges={['top']} — we manage bottom spacing manually */}
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 
-          {/* ── Header ──────────────────────────────────────────────── */}
-          <Animated.View
-            entering={FadeIn.duration(400)}
-            style={{
-              flexDirection: 'row', alignItems: 'center',
-              padding: SPACING.lg, paddingBottom: SPACING.sm,
-              borderBottomWidth: 1, borderBottomColor: COLORS.border,
-            }}
-          >
+          {/* Header */}
+          <Animated.View entering={FadeIn.duration(400)} style={{
+            flexDirection: 'row', alignItems: 'center', padding: SPACING.lg, paddingBottom: SPACING.sm,
+            borderBottomWidth: 1, borderBottomColor: COLORS.border,
+          }}>
             <TouchableOpacity
               onPress={() => router.push('/(app)/(tabs)/home' as any)}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center',
-                marginRight: SPACING.sm,
-              }}
+              style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}
             >
               <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
             </TouchableOpacity>
-
             <View style={{ flex: 1 }}>
-              <Text
-                style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}
-                numberOfLines={1}
-              >
-                {report.title}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {isFromCache && (
+                  <View style={{ backgroundColor: `${COLORS.info}20`, borderRadius: RADIUS.sm, paddingHorizontal: 6, paddingVertical: 2 }}>
+                    <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '700' }}>OFFLINE</Text>
+                  </View>
+                )}
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1 }} numberOfLines={1}>
+                  {report.title}
+                </Text>
+              </View>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
                 {formatDate(report.createdAt)} · {DEPTH_LABELS[report.depth]}
               </Text>
             </View>
-
+            {/* Export PDF button */}
+            <TouchableOpacity
+              onPress={handleExportPDF}
+              disabled={exporting}
+              style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', marginRight: 8 }}
+            >
+              {exporting
+                ? <ActivityIndicator size="small" color={COLORS.primary} />
+                : <Ionicons name="download-outline" size={20} color={COLORS.textSecondary} />
+              }
+            </TouchableOpacity>
+            {/* Share */}
             <TouchableOpacity
               onPress={handleShare}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center',
-              }}
+              style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center' }}
             >
               <Ionicons name="share-outline" size={20} color={COLORS.textSecondary} />
             </TouchableOpacity>
           </Animated.View>
 
-          {/* ── Tabs ────────────────────────────────────────────────── */}
-          <View style={{
-            flexDirection: 'row',
-            paddingHorizontal: SPACING.lg,
-            paddingVertical: SPACING.sm,
-            gap: SPACING.sm,
-          }}>
+          {/* Tabs */}
+          <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, gap: SPACING.sm }}>
             {(['report', 'findings', 'sources'] as const).map((tab) => (
               <TouchableOpacity
-                key={tab}
-                onPress={() => setActiveTab(tab)}
+                key={tab} onPress={() => setActiveTab(tab)}
                 style={{
                   flex: 1, paddingVertical: 8, borderRadius: RADIUS.md,
                   backgroundColor: activeTab === tab ? COLORS.primary : COLORS.backgroundElevated,
                   alignItems: 'center',
                 }}
               >
-                <Text style={{
-                  color: activeTab === tab ? '#FFF' : COLORS.textMuted,
-                  fontSize: FONTS.sizes.xs, fontWeight: '600',
-                }}>
-                  {tab === 'findings' ? 'Findings' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                <Text style={{ color: activeTab === tab ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* ── Scrollable content ───────────────────────────────────── */}
+          {/* Scroll content */}
           <ScrollView
-            contentContainerStyle={{
-              padding: SPACING.lg,
-              // When chat is hidden: leave room for the follow-up button bar.
-              // Button bar height ≈ 52px button + 8px top pad + insets.bottom
-              paddingBottom: showChat ? SPACING.md : insets.bottom + 80,
-            }}
+            contentContainerStyle={{ padding: SPACING.lg, paddingBottom: showChat ? SPACING.md : insets.bottom + 80 }}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
             {/* Stats row */}
-            <Animated.View entering={FadeInDown.duration(400)} style={{
-              flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg,
-            }}>
+            <Animated.View entering={FadeInDown.duration(400)} style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
               {[
                 { label: 'Sources', value: String(report.sourcesCount), icon: 'globe-outline', color: COLORS.info },
                 { label: 'Citations', value: String(report.citations.length), icon: 'link-outline', color: COLORS.primary },
                 { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
               ].map((stat) => (
-                <View key={stat.label} style={{
-                  flex: 1, backgroundColor: COLORS.backgroundCard,
-                  borderRadius: RADIUS.lg, padding: SPACING.sm,
-                  alignItems: 'center', borderWidth: 1, borderColor: COLORS.border,
-                }}>
+                <View key={stat.label} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.sm, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
                   <Ionicons name={stat.icon as any} size={16} color={stat.color} />
-                  <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '800', marginTop: 4 }}>
-                    {stat.value}
-                  </Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-                    {stat.label}
-                  </Text>
+                  <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '800', marginTop: 4 }}>{stat.value}</Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{stat.label}</Text>
                 </View>
               ))}
             </Animated.View>
 
-            {/* ── REPORT TAB ──────────────────────────────────────────── */}
+            {/* REPORT TAB */}
             {activeTab === 'report' && (
               <>
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                   <LinearGradient
                     colors={['#1A1A35', '#12122A']}
-                    style={{
-                      borderRadius: RADIUS.xl, padding: SPACING.lg,
-                      marginBottom: SPACING.lg, borderWidth: 1,
-                      borderColor: `${COLORS.primary}25`,
-                    }}
+                    style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25` }}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
                       <LinearGradient
                         colors={COLORS.gradientPrimary}
-                        style={{
-                          width: 32, height: 32, borderRadius: 10,
-                          alignItems: 'center', justifyContent: 'center',
-                          marginRight: SPACING.sm,
-                        }}
+                        style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}
                       >
                         <Ionicons name="newspaper-outline" size={16} color="#FFF" />
                       </LinearGradient>
-                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                        Executive Summary
-                      </Text>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Executive Summary</Text>
                     </View>
-                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>
-                      {report.executiveSummary}
-                    </Text>
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>{report.executiveSummary}</Text>
                   </LinearGradient>
                 </Animated.View>
-
                 {report.sections.map((section, i) => (
-                  <ReportSectionCard
-                    key={section.id ?? i}
-                    section={section}
-                    citations={report.citations}
-                    index={i}
-                  />
+                  <ReportSectionCard key={section.id ?? i} section={section} citations={report.citations} index={i} />
                 ))}
               </>
             )}
 
-            {/* ── FINDINGS TAB ────────────────────────────────────────── */}
+            {/* FINDINGS TAB */}
             {activeTab === 'findings' && (
               <>
-                <Text style={{
-                  color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                  letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
-                }}>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>
                   Key Findings
                 </Text>
                 {report.keyFindings.map((finding, i) => (
-                  <View key={i} style={{
-                    backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
-                    padding: SPACING.md, marginBottom: SPACING.sm,
-                    flexDirection: 'row', alignItems: 'flex-start',
-                    borderWidth: 1, borderColor: COLORS.border,
-                    borderLeftWidth: 3, borderLeftColor: COLORS.primary,
-                  }}>
-                    <View style={{
-                      width: 24, height: 24, borderRadius: 12,
-                      backgroundColor: `${COLORS.primary}20`,
-                      alignItems: 'center', justifyContent: 'center',
-                      marginRight: SPACING.sm, flexShrink: 0,
-                    }}>
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
-                        {i + 1}
-                      </Text>
+                  <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
+                    <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
+                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{i + 1}</Text>
                     </View>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
-                      {finding}
-                    </Text>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{finding}</Text>
                   </View>
                 ))}
-
                 {report.futurePredictions.length > 0 && (
                   <>
-                    <Text style={{
-                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                      letterSpacing: 1, textTransform: 'uppercase',
-                      marginBottom: SPACING.md, marginTop: SPACING.lg,
-                    }}>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md, marginTop: SPACING.lg }}>
                       Future Predictions
                     </Text>
                     {report.futurePredictions.map((pred, i) => (
-                      <View key={i} style={{
-                        backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg,
-                        padding: SPACING.md, marginBottom: SPACING.sm,
-                        flexDirection: 'row', alignItems: 'flex-start',
-                        borderWidth: 1, borderColor: `${COLORS.warning}25`,
-                      }}>
-                        <Ionicons name="telescope-outline" size={16} color={COLORS.warning}
-                          style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
-                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
-                          {pred}
-                        </Text>
+                      <View key={i} style={{ backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderColor: `${COLORS.warning}25` }}>
+                        <Ionicons name="telescope-outline" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
+                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{pred}</Text>
                       </View>
                     ))}
                   </>
                 )}
-
                 {report.statistics.length > 0 && (
                   <>
-                    <Text style={{
-                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                      letterSpacing: 1, textTransform: 'uppercase',
-                      marginBottom: SPACING.md, marginTop: SPACING.lg,
-                    }}>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md, marginTop: SPACING.lg }}>
                       Key Statistics
                     </Text>
                     {report.statistics.slice(0, 10).map((stat, i) => (
-                      <View key={i} style={{
-                        backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
-                        padding: SPACING.md, marginBottom: SPACING.sm,
-                        borderWidth: 1, borderColor: COLORS.border,
-                      }}>
-                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>
-                          {stat.value}
-                        </Text>
-                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginTop: 4 }}>
-                          {stat.context}
-                        </Text>
-                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>
-                          Source: {stat.source}
-                        </Text>
+                      <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border }}>
+                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>{stat.value}</Text>
+                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginTop: 4 }}>{stat.context}</Text>
+                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Source: {stat.source}</Text>
                       </View>
                     ))}
                   </>
@@ -380,80 +313,51 @@ export default function ResearchReportScreen() {
               </>
             )}
 
-            {/* ── SOURCES TAB ─────────────────────────────────────────── */}
+            {/* SOURCES TAB */}
             {activeTab === 'sources' && (
               <>
-                <Text style={{
-                  color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                  letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
-                }}>
-                  {report.citations.length} Sources Used
-                </Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' }}>
+                    {report.citations.length} Sources Used
+                  </Text>
+                  {/* Citation generator button */}
+                  <TouchableOpacity
+                    onPress={() => setShowCitations(true)}
+                    style={{ backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: `${COLORS.primary}30` }}
+                  >
+                    <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
+                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
+                  </TouchableOpacity>
+                </View>
 
                 {report.citations.map((c, i) => (
                   <TouchableOpacity
-                    key={c.id ?? i}
-                    onPress={() => openURL(c.url)}
-                    activeOpacity={0.7}
-                    style={{
-                      backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
-                      padding: SPACING.md, marginBottom: SPACING.sm,
-                      borderWidth: 1, borderColor: COLORS.border,
-                    }}
+                    key={c.id ?? i} onPress={() => openURL(c.url)} activeOpacity={0.7}
+                    style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border }}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
-                      <View style={{
-                        width: 22, height: 22, borderRadius: 6,
-                        backgroundColor: `${COLORS.primary}20`,
-                        alignItems: 'center', justifyContent: 'center',
-                        marginRight: 8, flexShrink: 0,
-                      }}>
-                        <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>
-                          {i + 1}
-                        </Text>
+                      <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', marginRight: 8, flexShrink: 0 }}>
+                        <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{i + 1}</Text>
                       </View>
-                      <Text style={{
-                        color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
-                        fontWeight: '600', flex: 1, lineHeight: 20,
-                      }}>
-                        {c.title}
-                      </Text>
-                      <Ionicons name="open-outline" size={16} color={COLORS.primary}
-                        style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 }}>{c.title}</Text>
+                      <Ionicons name="open-outline" size={16} color={COLORS.primary} style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
                     </View>
-                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>
-                      {c.source}{c.date ? ` · ${c.date}` : ''}
-                    </Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
-                      {c.snippet}
-                    </Text>
-                    <View style={{
-                      flexDirection: 'row', alignItems: 'center', marginTop: 8,
-                      backgroundColor: `${COLORS.primary}10`,
-                      borderRadius: RADIUS.sm, paddingHorizontal: 8, paddingVertical: 4,
-                    }}>
+                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>{c.source}{c.date ? ` · ${c.date}` : ''}</Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>{c.snippet}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.sm, paddingHorizontal: 8, paddingVertical: 4 }}>
                       <Ionicons name="link-outline" size={12} color={COLORS.primary} style={{ marginRight: 4 }} />
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, flex: 1 }} numberOfLines={1}>
-                        {c.url}
-                      </Text>
+                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, flex: 1 }} numberOfLines={1}>{c.url}</Text>
                     </View>
                   </TouchableOpacity>
                 ))}
 
                 {report.searchQueries.length > 0 && (
                   <View style={{ marginTop: SPACING.lg }}>
-                    <Text style={{
-                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                      letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
-                    }}>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>
                       Search Queries Executed
                     </Text>
                     {report.searchQueries.map((q, i) => (
-                      <View key={i} style={{
-                        backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md,
-                        paddingHorizontal: SPACING.md, paddingVertical: 8,
-                        marginBottom: 6, flexDirection: 'row', alignItems: 'center',
-                      }}>
+                      <View key={i} style={{ backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 8, marginBottom: 6, flexDirection: 'row', alignItems: 'center' }}>
                         <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 8 }} />
                         <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs }}>{q}</Text>
                       </View>
@@ -464,87 +368,49 @@ export default function ResearchReportScreen() {
             )}
           </ScrollView>
 
-          {/* ── Follow-up button ─────────────────────────────────────── */}
+          {/* Follow-up button */}
           {!showChat && (
-            <View style={{
-              paddingHorizontal: SPACING.lg,
-              paddingTop: SPACING.sm,
-              // insets.bottom = home indicator / gesture bar clearance only.
-              // No tab bar on this screen so no extra 64px needed.
-              paddingBottom: insets.bottom + SPACING.sm,
-              backgroundColor: 'rgba(10,10,26,0.96)',
-              borderTopWidth: 1,
-              borderTopColor: COLORS.border,
-            }}>
+            <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: 'rgba(10,10,26,0.96)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <TouchableOpacity onPress={() => setShowChat(true)} activeOpacity={0.85}>
                 <LinearGradient
-                  colors={COLORS.gradientPrimary}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={{
-                    borderRadius: RADIUS.full,
-                    paddingVertical: 14,
-                    alignItems: 'center',
-                    flexDirection: 'row',
-                    justifyContent: 'center',
-                    gap: 8,
-                  }}
+                  colors={COLORS.gradientPrimary} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                  style={{ borderRadius: RADIUS.full, paddingVertical: 14, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
                 >
                   <Ionicons name="chatbubble-ellipses-outline" size={18} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                    Ask Follow-Up Questions
-                  </Text>
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>Ask Follow-Up Questions</Text>
                 </LinearGradient>
               </TouchableOpacity>
             </View>
           )}
 
-          {/* ── Follow-up chat panel ─────────────────────────────────── */}
+          {/* Follow-up chat */}
           {showChat && (
-            <View style={{
-              backgroundColor: COLORS.backgroundCard,
-              borderTopWidth: 1,
-              borderTopColor: COLORS.border,
-              // Push the whole panel up by the home indicator height
-              paddingBottom: insets.bottom,
-            }}>
+            <View style={{ backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border, paddingBottom: insets.bottom }}>
               <TouchableOpacity
                 onPress={() => setShowChat(false)}
-                style={{
-                  flexDirection: 'row', alignItems: 'center',
-                  justifyContent: 'space-between',
-                  paddingHorizontal: SPACING.lg,
-                  paddingVertical: SPACING.sm,
-                  borderBottomWidth: 1,
-                  borderBottomColor: COLORS.border,
-                }}
+                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <LinearGradient
-                    colors={COLORS.gradientPrimary}
-                    style={{
-                      width: 28, height: 28, borderRadius: 8,
-                      alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
+                  <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}>
                     <Ionicons name="chatbubble-ellipses" size={14} color="#FFF" />
                   </LinearGradient>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
-                    Follow-Up Questions
-                  </Text>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Follow-Up Questions</Text>
                 </View>
                 <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
               </TouchableOpacity>
-
-              <FollowUpChat
-                messages={conversation.messages}
-                sending={conversation.sending}
-                onSend={conversation.sendMessage}
-              />
+              <FollowUpChat messages={conversation.messages} sending={conversation.sending} onSend={conversation.sendMessage} />
             </View>
           )}
 
         </KeyboardAvoidingView>
       </SafeAreaView>
+
+      {/* Citation Modal */}
+      <CitationModal
+        visible={showCitations}
+        citations={report.citations}
+        onClose={() => setShowCitations(false)}
+      />
     </LinearGradient>
   );
 }

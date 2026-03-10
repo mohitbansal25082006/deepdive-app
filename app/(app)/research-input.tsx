@@ -1,9 +1,9 @@
 // app/(app)/research-input.tsx
 // Research configuration screen (modal).
-// Users refine their query, choose depth, and add focus areas
-// before starting the multi-agent pipeline.
+// Users refine their query, choose depth, add focus areas,
+// and can use voice input (Whisper) before starting the pipeline.
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,16 +11,34 @@ import {
   TouchableOpacity,
   TextInput,
   Alert,
+  Vibration,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  FadeIn,
+  FadeInDown,
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { GradientButton } from '../../src/components/common/GradientButton';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 import { ResearchDepth } from '../../src/types';
 import { useResearch } from '../../src/hooks/useResearch';
+import {
+  startRecording,
+  stopRecording,
+  cancelRecording,
+  transcribeAudio,
+  formatDuration,
+} from '../../src/services/voiceResearch';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEPTH_OPTIONS: {
   key: ResearchDepth;
@@ -71,6 +89,8 @@ const FOCUS_OPTIONS = [
   'Recent News',
 ];
 
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
 export default function ResearchInputScreen() {
   const params = useLocalSearchParams<{ query: string }>();
   const { startResearch } = useResearch();
@@ -80,21 +100,115 @@ export default function ResearchInputScreen() {
   const [focusAreas, setFocusAreas] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
 
+  // ── Voice state ──────────────────────────────────────────────────────────
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingMs, setRecordingMs] = useState(0);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceTranscribed, setVoiceTranscribed] = useState(false);
+
+  const micScale = useSharedValue(1);
+  const micGlow  = useSharedValue(0);
+
+  useEffect(() => {
+    if (isRecording) {
+      micScale.value = withRepeat(
+        withSequence(
+          withTiming(1.2, { duration: 500 }),
+          withTiming(1.0, { duration: 500 }),
+        ),
+        -1,
+        false,
+      );
+      micGlow.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 650 }),
+          withTiming(0.2, { duration: 650 }),
+        ),
+        -1,
+        false,
+      );
+    } else {
+      micScale.value = withTiming(1, { duration: 200 });
+      micGlow.value  = withTiming(0, { duration: 200 });
+    }
+  }, [isRecording]);
+
+  const micAnimStyle  = useAnimatedStyle(() => ({ transform: [{ scale: micScale.value }] }));
+  const glowAnimStyle = useAnimatedStyle(() => ({ opacity: micGlow.value }));
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
   const toggleFocus = (area: string) => {
     setFocusAreas((prev) =>
-      prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area]
+      prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area],
     );
   };
+
+  // ── Voice handlers ───────────────────────────────────────────────────────
+
+  const handleVoicePress = async () => {
+    if (transcribing) return;
+
+    if (isRecording) {
+      // ── Stop → transcribe ──────────────────────────────────────────
+      setIsRecording(false);
+      setRecordingMs(0);
+      setTranscribing(true);
+      try {
+        const uri = await stopRecording();
+        if (uri) {
+          const text = await transcribeAudio(uri);
+          if (text) {
+            setQuery(text);
+            setVoiceTranscribed(true);
+            Vibration.vibrate(60);
+          } else {
+            Alert.alert('No Speech Detected', 'Please try speaking more clearly.');
+          }
+        }
+      } catch {
+        Alert.alert(
+          'Transcription Error',
+          'Could not transcribe. Please type your query instead.',
+        );
+      } finally {
+        setTranscribing(false);
+      }
+    } else {
+      // ── Start recording ────────────────────────────────────────────
+      setVoiceTranscribed(false);
+      const started = await startRecording((ms) => setRecordingMs(ms));
+      if (started) {
+        setIsRecording(true);
+        Vibration.vibrate(40);
+      } else {
+        Alert.alert(
+          'Microphone Permission',
+          'Please grant microphone access in Settings to use voice input.',
+        );
+      }
+    }
+  };
+
+  const handleVoiceCancel = () => {
+    cancelRecording();
+    setIsRecording(false);
+    setRecordingMs(0);
+  };
+
+  // ── Launch ────────────────────────────────────────────────────────────────
 
   const handleStart = async () => {
     if (!query.trim()) {
       Alert.alert('Query Required', 'Please enter a research topic.');
       return;
     }
+    if (isRecording) {
+      handleVoiceCancel();
+      return;
+    }
 
     setStarting(true);
-
-    // Navigate to progress screen immediately, pass the input as params
     router.replace({
       pathname: '/(app)/research-progress' as any,
       params: {
@@ -105,13 +219,16 @@ export default function ResearchInputScreen() {
     });
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
+
   return (
     <LinearGradient
       colors={[COLORS.backgroundCard, COLORS.background]}
       style={{ flex: 1 }}
     >
       <SafeAreaView style={{ flex: 1 }}>
-        {/* Header */}
+
+        {/* ── Header ───────────────────────────────────────────────────── */}
         <Animated.View
           entering={FadeIn.duration(400)}
           style={{
@@ -132,6 +249,7 @@ export default function ResearchInputScreen() {
           >
             <Ionicons name="close" size={20} color={COLORS.textSecondary} />
           </TouchableOpacity>
+
           <View style={{ flex: 1 }}>
             <Text style={{
               color: COLORS.textPrimary,
@@ -141,7 +259,7 @@ export default function ResearchInputScreen() {
               Configure Research
             </Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
-              Customize your research parameters
+              Type or speak your research topic
             </Text>
           </View>
         </Animated.View>
@@ -151,45 +269,292 @@ export default function ResearchInputScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Query input */}
+
+          {/* ── Research Topic ──────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(400).delay(50)}>
-            <Text style={{
-              color: COLORS.textSecondary,
-              fontSize: FONTS.sizes.sm,
-              fontWeight: '600',
-              letterSpacing: 0.8,
-              textTransform: 'uppercase',
+
+            {/* Row: label + voice badge */}
+            <View style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
               marginBottom: SPACING.sm,
             }}>
-              Research Topic
-            </Text>
+              <Text style={{
+                color: COLORS.textSecondary,
+                fontSize: FONTS.sizes.sm,
+                fontWeight: '600',
+                letterSpacing: 0.8,
+                textTransform: 'uppercase',
+              }}>
+                Research Topic
+              </Text>
 
+              {/* Voice-ready badge */}
+              <View style={{
+                flexDirection: 'row', alignItems: 'center', gap: 4,
+                backgroundColor: `${COLORS.primary}15`,
+                borderRadius: RADIUS.full,
+                paddingHorizontal: 10, paddingVertical: 4,
+                borderWidth: 1, borderColor: `${COLORS.primary}25`,
+              }}>
+                <Ionicons name="mic-outline" size={12} color={COLORS.primary} />
+                <Text style={{
+                  color: COLORS.primary,
+                  fontSize: FONTS.sizes.xs,
+                  fontWeight: '600',
+                }}>
+                  Voice Input
+                </Text>
+              </View>
+            </View>
+
+            {/* Recording banner */}
+            {isRecording && (
+              <Animated.View
+                entering={FadeIn.duration(250)}
+                style={{
+                  backgroundColor: `${COLORS.error}12`,
+                  borderRadius: RADIUS.lg,
+                  padding: SPACING.md,
+                  marginBottom: SPACING.sm,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  borderWidth: 1,
+                  borderColor: `${COLORS.error}35`,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Animated.View style={[
+                    { width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.error },
+                    glowAnimStyle,
+                  ]} />
+                  <Text style={{
+                    color: COLORS.error,
+                    fontSize: FONTS.sizes.sm,
+                    fontWeight: '700',
+                  }}>
+                    Recording  {formatDuration(recordingMs)}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={handleVoiceCancel}
+                  style={{
+                    backgroundColor: `${COLORS.error}20`,
+                    borderRadius: RADIUS.sm,
+                    paddingHorizontal: 10, paddingVertical: 5,
+                  }}
+                >
+                  <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
+            {/* Transcribing banner */}
+            {transcribing && (
+              <Animated.View
+                entering={FadeIn.duration(250)}
+                style={{
+                  backgroundColor: `${COLORS.primary}12`,
+                  borderRadius: RADIUS.lg,
+                  padding: SPACING.md,
+                  marginBottom: SPACING.sm,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  borderWidth: 1,
+                  borderColor: `${COLORS.primary}25`,
+                }}
+              >
+                <Ionicons name="mic" size={16} color={COLORS.primary} />
+                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
+                  Transcribing your voice...
+                </Text>
+              </Animated.View>
+            )}
+
+            {/* Success banner */}
+            {voiceTranscribed && !isRecording && !transcribing && query.trim() && (
+              <Animated.View
+                entering={FadeIn.duration(300)}
+                style={{
+                  backgroundColor: `${COLORS.success}10`,
+                  borderRadius: RADIUS.lg,
+                  padding: SPACING.sm,
+                  marginBottom: SPACING.sm,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  borderWidth: 1,
+                  borderColor: `${COLORS.success}25`,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="checkmark-circle" size={16} color={COLORS.success} />
+                  <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                    Transcribed — edit if needed
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => { setQuery(''); setVoiceTranscribed(false); }}
+                >
+                  <Ionicons name="close-circle-outline" size={16} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
+            {/* Text input card with embedded mic button */}
             <View style={{
               backgroundColor: COLORS.backgroundElevated,
               borderRadius: RADIUS.lg,
-              padding: SPACING.md,
               borderWidth: 1.5,
-              borderColor: COLORS.borderFocus,
-              marginBottom: SPACING.xl,
+              borderColor: isRecording
+                ? COLORS.error
+                : voiceTranscribed
+                ? COLORS.success
+                : COLORS.borderFocus,
+              marginBottom: SPACING.sm,
+              overflow: 'hidden',
             }}>
               <TextInput
                 value={query}
-                onChangeText={setQuery}
-                placeholder="Enter your research question..."
+                onChangeText={(t) => {
+                  setQuery(t);
+                  if (voiceTranscribed) setVoiceTranscribed(false);
+                }}
+                placeholder={
+                  isRecording
+                    ? 'Listening...'
+                    : transcribing
+                    ? 'Transcribing...'
+                    : 'Enter your research question or tap the mic...'
+                }
                 placeholderTextColor={COLORS.textMuted}
                 style={{
                   color: COLORS.textPrimary,
                   fontSize: FONTS.sizes.base,
                   lineHeight: 24,
                   minHeight: 60,
+                  padding: SPACING.md,
+                  paddingBottom: 52,   // make room for mic bar
                 }}
                 multiline
-                autoFocus
+                autoFocus={!isRecording}
+                editable={!isRecording && !transcribing}
               />
+
+              {/* Mic bar — pinned to bottom of input card */}
+              <View style={{
+                position: 'absolute',
+                bottom: 0, left: 0, right: 0,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: SPACING.md,
+                paddingVertical: 8,
+                borderTopWidth: 1,
+                borderTopColor: isRecording
+                  ? `${COLORS.error}30`
+                  : COLORS.border,
+                backgroundColor: isRecording
+                  ? `${COLORS.error}08`
+                  : `${COLORS.backgroundCard}DD`,
+              }}>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                  {isRecording
+                    ? 'Tap ⏹ to finish speaking'
+                    : transcribing
+                    ? 'Processing audio...'
+                    : 'Tap 🎙 to speak your query'}
+                </Text>
+
+                {/* Animated glow ring */}
+                <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                  {isRecording && (
+                    <Animated.View style={[{
+                      position: 'absolute',
+                      width: 52, height: 52,
+                      borderRadius: 26,
+                      backgroundColor: `${COLORS.error}20`,
+                    }, glowAnimStyle]} />
+                  )}
+
+                  <Animated.View style={micAnimStyle}>
+                    <TouchableOpacity
+                      onPress={handleVoicePress}
+                      disabled={transcribing}
+                      activeOpacity={0.8}
+                    >
+                      <LinearGradient
+                        colors={
+                          isRecording
+                            ? [COLORS.error, '#CC0000']
+                            : transcribing
+                            ? [COLORS.textMuted, COLORS.textMuted]
+                            : COLORS.gradientPrimary
+                        }
+                        style={{
+                          width: 38, height: 38,
+                          borderRadius: 19,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Ionicons
+                          name={
+                            isRecording
+                              ? 'stop'
+                              : transcribing
+                              ? 'hourglass-outline'
+                              : 'mic'
+                          }
+                          size={17}
+                          color="#FFF"
+                        />
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </Animated.View>
+                </View>
+              </View>
             </View>
+
+            {/* Hint text — shown only when input is empty */}
+            {!isRecording && !transcribing && !query && (
+              <View style={{
+                backgroundColor: `${COLORS.primary}08`,
+                borderRadius: RADIUS.md,
+                padding: SPACING.sm,
+                marginBottom: SPACING.md,
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 8,
+                borderWidth: 1,
+                borderColor: `${COLORS.primary}15`,
+              }}>
+                <Ionicons
+                  name="bulb-outline"
+                  size={14}
+                  color={COLORS.primary}
+                  style={{ marginTop: 1 }}
+                />
+                <Text style={{
+                  color: COLORS.textMuted,
+                  fontSize: FONTS.sizes.xs,
+                  lineHeight: 18,
+                  flex: 1,
+                }}>
+                  Try: <Text style={{ color: COLORS.primary }}>
+                    "Impact of generative AI on software engineering jobs in 2025"
+                  </Text>
+                </Text>
+              </View>
+            )}
           </Animated.View>
 
-          {/* Depth selection */}
+          {/* ── Research Depth ──────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(400).delay(100)}>
             <Text style={{
               color: COLORS.textSecondary,
@@ -234,6 +599,7 @@ export default function ResearchInputScreen() {
                       color={isSelected ? opt.color : COLORS.textMuted}
                     />
                   </View>
+
                   <View style={{ flex: 1 }}>
                     <Text style={{
                       color: isSelected ? COLORS.textPrimary : COLORS.textSecondary,
@@ -250,6 +616,7 @@ export default function ResearchInputScreen() {
                       {opt.desc}
                     </Text>
                   </View>
+
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={{
                       color: isSelected ? opt.color : COLORS.textMuted,
@@ -258,13 +625,11 @@ export default function ResearchInputScreen() {
                     }}>
                       {opt.time}
                     </Text>
-                    <Text style={{
-                      color: COLORS.textMuted,
-                      fontSize: FONTS.sizes.xs,
-                    }}>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
                       {opt.searches}
                     </Text>
                   </View>
+
                   {isSelected && (
                     <View style={{
                       marginLeft: SPACING.sm,
@@ -280,7 +645,7 @@ export default function ResearchInputScreen() {
             })}
           </Animated.View>
 
-          {/* Focus areas */}
+          {/* ── Focus Areas ─────────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(400).delay(150)}>
             <Text style={{
               color: COLORS.textSecondary,
@@ -334,7 +699,7 @@ export default function ResearchInputScreen() {
           </Animated.View>
         </ScrollView>
 
-        {/* Launch button */}
+        {/* ── Launch button ─────────────────────────────────────────────── */}
         <View style={{
           position: 'absolute',
           bottom: 0, left: 0, right: 0,
@@ -344,10 +709,10 @@ export default function ResearchInputScreen() {
           borderTopColor: COLORS.border,
         }}>
           <GradientButton
-            title="Launch Research Agent 🚀"
+            title={isRecording ? '⏹  Stop Recording First' : 'Launch Research Agent 🚀'}
             onPress={handleStart}
-            loading={starting}
-            disabled={!query.trim()}
+            loading={starting || transcribing}
+            disabled={(!query.trim() && !isRecording) || transcribing}
           />
         </View>
       </SafeAreaView>

@@ -1,31 +1,50 @@
 // app/(app)/_layout.tsx
-// Stack layout for the entire app section.
-// Adds the new research screens (input, progress, report) to the stack.
+// Stack navigator for all authenticated screens.
+// Part 3: added bookmarks + compare-reports screens.
+// Subscription screen REMOVED — delete app/(app)/subscription.tsx if it exists.
 
 import { Stack } from 'expo-router';
+import { COLORS } from '../../src/constants/theme';
 
 export default function AppLayout() {
   return (
     <Stack
       screenOptions={{
         headerShown: false,
+        contentStyle: { backgroundColor: COLORS.background },
         animation: 'slide_from_right',
-        contentStyle: { backgroundColor: '#0A0A1A' },
       }}
     >
-      <Stack.Screen name="(tabs)" />
+      {/* ── Tab root ──────────────────────────────────────────────────── */}
+      <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
+
+      {/* ── Research flow ─────────────────────────────────────────────── */}
       <Stack.Screen
         name="research-input"
         options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
       />
+      <Stack.Screen name="research-progress" />
+      <Stack.Screen name="research-report" />
+
+      {/* ── Bookmarks ─────────────────────────────────────────────────── */}
       <Stack.Screen
-        name="research-progress"
-        options={{ animation: 'fade', gestureEnabled: false }}
-      />
-      <Stack.Screen
-        name="research-report"
+        name="bookmarks"
         options={{ animation: 'slide_from_right' }}
       />
+
+      {/* ── Compare reports ───────────────────────────────────────────── */}
+      <Stack.Screen
+        name="compare-reports"
+        options={{ animation: 'slide_from_right' }}
+      />
+
+      {/* ── Profile / settings ────────────────────────────────────────── */}
+      <Stack.Screen name="edit-profile" />
+
+      {/* NOTE: subscription screen deliberately omitted — subscription
+          feature has been removed from the app. Delete the file:
+            app/(app)/subscription.tsx
+          and remove any import / navigation references to it.       */}
     </Stack>
   );
 }

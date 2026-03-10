@@ -1,6 +1,6 @@
 // app/(app)/(tabs)/profile.tsx
-// Profile screen — shows user info, provides edit and sign out options.
-// This is the main profile view after setup.
+// Part 3 update: SubscriptionCard removed.
+// Keeps: StatsCard, notifications toggle, offline cache clear, avatar, settings.
 
 import React, { useState } from 'react';
 import {
@@ -8,536 +8,392 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
+  Switch,
   Alert,
-  Modal,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
-import * as ImagePicker from 'expo-image-picker';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import { useAuth } from '../../../src/context/AuthContext';
-import { useProfile } from '../../../src/hooks/useProfile';
 import { Avatar } from '../../../src/components/common/Avatar';
-import { AnimatedInput } from '../../../src/components/common/AnimatedInput';
-import { GradientButton } from '../../../src/components/common/GradientButton';
-import { LoadingOverlay } from '../../../src/components/common/LoadingOverlay';
+import { StatsCard } from '../../../src/components/profile/StatsCard';
+import { useStats } from '../../../src/hooks/useStats';
+import {
+  registerForPushNotifications,
+  saveTokenToSupabase,
+  cancelAllNotifications,
+  clearBadge,
+} from '../../../src/lib/notifications';
+import { getCacheSize, clearAllCache } from '../../../src/lib/offlineCache';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
 
+// ─── Settings row ─────────────────────────────────────────────────────────────
+
+function SettingsRow({
+  icon,
+  label,
+  sublabel,
+  onPress,
+  right,
+  iconColor,
+  iconBg,
+}: {
+  icon: string;
+  label: string;
+  sublabel?: string;
+  onPress?: () => void;
+  right?: React.ReactNode;
+  iconColor?: string;
+  iconBg?: string;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={onPress ? 0.7 : 1}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: SPACING.md,
+        backgroundColor: COLORS.backgroundCard,
+        borderRadius: RADIUS.lg,
+        marginBottom: SPACING.sm,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+      }}
+    >
+      <View style={{
+        width: 38, height: 38, borderRadius: 11,
+        backgroundColor: iconBg ?? `${COLORS.primary}15`,
+        alignItems: 'center', justifyContent: 'center',
+        marginRight: SPACING.md,
+      }}>
+        <Ionicons name={icon as any} size={19} color={iconColor ?? COLORS.primary} />
+      </View>
+
+      <View style={{ flex: 1 }}>
+        <Text style={{
+          color: COLORS.textPrimary,
+          fontSize: FONTS.sizes.base,
+          fontWeight: '600',
+        }}>
+          {label}
+        </Text>
+        {sublabel ? (
+          <Text style={{
+            color: COLORS.textMuted,
+            fontSize: FONTS.sizes.xs,
+            marginTop: 2,
+          }}>
+            {sublabel}
+          </Text>
+        ) : null}
+      </View>
+
+      {right ?? (
+        onPress
+          ? <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          : null
+      )}
+    </TouchableOpacity>
+  );
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
 export default function ProfileScreen() {
-  const { user, profile, signOut, refreshProfile } = useAuth();
-  const { updateProfile, uploadAvatar, updating, uploading } = useProfile();
+  const { user, profile, signOut } = useAuth();
+  const { stats, loading: statsLoading } = useStats();
 
-  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [notifLoading, setNotifLoading]                  = useState(false);
+  const [cacheSize, setCacheSize]                        = useState<number | null>(null);
 
-  // Edit form state (pre-filled with current profile data)
-  const [editName, setEditName] = useState(profile?.full_name || '');
-  const [editBio, setEditBio] = useState(profile?.bio || '');
-  const [editOccupation, setEditOccupation] = useState(profile?.occupation || '');
-  const [editAvatarUri, setEditAvatarUri] = useState<string | null>(null);
+  // Load cache size on mount
+  React.useEffect(() => {
+    getCacheSize().then(setCacheSize).catch(() => setCacheSize(0));
+  }, []);
+
+  // ── Notifications toggle ───────────────────────────────────────────────────
+
+  const handleNotifToggle = async (value: boolean) => {
+    setNotifLoading(true);
+    try {
+      if (value) {
+        const token = await registerForPushNotifications();
+        if (token && user?.id) {
+          await saveTokenToSupabase(user.id, token);
+          setNotificationsEnabled(true);
+        } else {
+          Alert.alert(
+            'Permission Required',
+            'Please enable notifications in your device Settings to receive updates.',
+          );
+        }
+      } else {
+        await cancelAllNotifications();
+        await clearBadge();
+        setNotificationsEnabled(false);
+      }
+    } catch {
+      Alert.alert('Error', 'Could not update notification settings.');
+    } finally {
+      setNotifLoading(false);
+    }
+  };
+
+  // ── Cache clear ────────────────────────────────────────────────────────────
+
+  const handleClearCache = () => {
+    const sizeLabel =
+      cacheSize !== null
+        ? `${(cacheSize / 1024).toFixed(1)} KB`
+        : 'unknown size';
+
+    Alert.alert(
+      'Clear Offline Cache',
+      `This will remove all ${sizeLabel} of cached reports from this device.\n\nYour reports will remain in the cloud.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear Cache',
+          style: 'destructive',
+          onPress: async () => {
+            await clearAllCache();
+            setCacheSize(0);
+            Alert.alert('Done', 'Offline cache cleared.');
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Sign out ───────────────────────────────────────────────────────────────
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: signOut },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: () => signOut(),
+      },
     ]);
   };
 
-  const pickImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Permission needed', 'Please allow access to your photos.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (!result.canceled) {
-      setEditAvatarUri(result.assets[0].uri);
-    }
-  };
-
-  const handleSaveProfile = async () => {
-    if (!user) return;
-
-    let avatarUrl = profile?.avatar_url;
-
-    if (editAvatarUri) {
-      const { url, error } = await uploadAvatar(user.id, editAvatarUri);
-      if (error) {
-        Alert.alert('Upload Error', error);
-        return;
-      }
-      avatarUrl = url;
-    }
-
-    const { error } = await updateProfile(user.id, {
-      full_name: editName.trim() || null,
-      bio: editBio.trim() || null,
-      occupation: editOccupation.trim() || null,
-      avatar_url: avatarUrl,
-    });
-
-    if (error) {
-      Alert.alert('Error', error);
-      return;
-    }
-
-    await refreshProfile();
-    setEditModalVisible(false);
-    setEditAvatarUri(null);
-  };
-
-  // Open edit modal and pre-fill form with current data
-  const openEditModal = () => {
-    setEditName(profile?.full_name || '');
-    setEditBio(profile?.bio || '');
-    setEditOccupation(profile?.occupation || '');
-    setEditAvatarUri(null);
-    setEditModalVisible(true);
-  };
-
-  // Reusable info row component
-  const InfoRow = ({
-    icon,
-    label,
-    value,
-  }: {
-    icon: string;
-    label: string;
-    value?: string | null;
-  }) => {
-    if (!value) return null;
-    return (
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          paddingVertical: SPACING.sm,
-          borderBottomWidth: 1,
-          borderBottomColor: COLORS.border,
-        }}
-      >
-        <View
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 10,
-            backgroundColor: `${COLORS.primary}20`,
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginRight: 12,
-          }}
-        >
-          <Ionicons name={icon as any} size={18} color={COLORS.primary} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-            {label}
-          </Text>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base }}>
-            {value}
-          </Text>
-        </View>
-      </View>
-    );
-  };
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <LinearGradient
-      colors={[COLORS.background, COLORS.backgroundCard]}
-      style={{ flex: 1 }}
-    >
+    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
-        <LoadingOverlay visible={updating || uploading} message="Saving..." />
-
         <ScrollView
-          contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 100 }}
+          contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 110 }}
           showsVerticalScrollIndicator={false}
         >
-          {/* Profile header */}
+
+          {/* ── Profile header ───────────────────────────────────────── */}
           <Animated.View
             entering={FadeIn.duration(600)}
-            style={{ alignItems: 'center', marginBottom: SPACING.xl }}
+            style={{
+              alignItems: 'center',
+              paddingTop: SPACING.lg,
+              paddingBottom: SPACING.xl,
+            }}
           >
-            {/* Avatar — uses the fixed Avatar component */}
+            {/* FIX 1: Avatar doesn't accept `style` — wrap in View instead */}
             <View style={{ marginBottom: SPACING.md }}>
               <Avatar
                 url={profile?.avatar_url}
                 name={profile?.full_name}
-                size={90}
+                size={88}
               />
             </View>
 
-            <Text
-              style={{
-                color: COLORS.textPrimary,
-                fontSize: FONTS.sizes.xl,
-                fontWeight: '800',
-                marginBottom: 4,
-              }}
-            >
-              {profile?.full_name || 'User'}
+            <Text style={{
+              color: COLORS.textPrimary,
+              fontSize: FONTS.sizes.xl,
+              fontWeight: '800',
+              textAlign: 'center',
+            }}>
+              {profile?.full_name ?? 'Researcher'}
             </Text>
 
-            {profile?.username && (
-              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.base }}>
-                @{profile.username}
-              </Text>
-            )}
+            <Text style={{
+              color: COLORS.textMuted,
+              fontSize: FONTS.sizes.sm,
+              marginTop: 4,
+            }}>
+              {user?.email}
+            </Text>
 
-            {profile?.bio && (
-              <Text
-                style={{
-                  color: COLORS.textSecondary,
-                  fontSize: FONTS.sizes.sm,
-                  textAlign: 'center',
-                  marginTop: SPACING.sm,
-                  lineHeight: 20,
-                }}
-              >
-                {profile.bio}
-              </Text>
-            )}
-
-            {/* Edit Profile Button */}
+            {/* Edit profile */}
             <TouchableOpacity
-              onPress={openEditModal}
+              onPress={() => router.push('/(app)/edit-profile' as any)}
               style={{
                 marginTop: SPACING.md,
+                backgroundColor: `${COLORS.primary}15`,
+                borderRadius: RADIUS.full,
+                paddingHorizontal: 20,
+                paddingVertical: 8,
                 flexDirection: 'row',
                 alignItems: 'center',
-                backgroundColor: `${COLORS.primary}20`,
-                borderRadius: RADIUS.full,
-                paddingHorizontal: SPACING.lg,
-                paddingVertical: SPACING.sm,
+                gap: 6,
                 borderWidth: 1,
-                borderColor: `${COLORS.primary}40`,
+                borderColor: `${COLORS.primary}30`,
               }}
             >
-              <Ionicons name="pencil" size={16} color={COLORS.primary} />
-              <Text
-                style={{
-                  color: COLORS.primary,
-                  fontSize: FONTS.sizes.sm,
-                  fontWeight: '600',
-                  marginLeft: 6,
-                }}
-              >
+              <Ionicons name="pencil-outline" size={14} color={COLORS.primary} />
+              <Text style={{
+                color: COLORS.primary,
+                fontSize: FONTS.sizes.sm,
+                fontWeight: '600',
+              }}>
                 Edit Profile
               </Text>
             </TouchableOpacity>
           </Animated.View>
 
-          {/* Profile info card */}
-          <View
-            style={{
-              backgroundColor: COLORS.backgroundCard,
-              borderRadius: RADIUS.xl,
-              padding: SPACING.lg,
-              borderWidth: 1,
-              borderColor: COLORS.border,
-              marginBottom: SPACING.lg,
-            }}
-          >
-            <Text
-              style={{
-                color: COLORS.textSecondary,
-                fontSize: FONTS.sizes.sm,
-                fontWeight: '600',
-                letterSpacing: 1,
-                textTransform: 'uppercase',
-                marginBottom: SPACING.md,
-              }}
-            >
-              About
+          {/* ── Stats card ───────────────────────────────────────────── */}
+          <Animated.View entering={FadeInDown.duration(400).delay(50)}>
+            {/* FIX 2: StatsCard expects UserStats (not null) — guard with conditional render */}
+            {stats !== null && (
+              <StatsCard stats={stats} />
+            )}
+          </Animated.View>
+
+          {/* ── Preferences ──────────────────────────────────────────── */}
+          <Animated.View entering={FadeInDown.duration(400).delay(100)}>
+            <Text style={{
+              color: COLORS.textSecondary,
+              fontSize: FONTS.sizes.sm,
+              fontWeight: '600',
+              letterSpacing: 0.8,
+              textTransform: 'uppercase',
+              marginBottom: SPACING.sm,
+              marginTop: SPACING.lg,
+            }}>
+              Preferences
             </Text>
-            <InfoRow icon="mail-outline" label="Email" value={user?.email} />
-            <InfoRow
-              icon="briefcase-outline"
-              label="Occupation"
-              value={profile?.occupation}
+
+            {/* Notifications */}
+            <SettingsRow
+              icon="notifications-outline"
+              label="Push Notifications"
+              sublabel="Research complete & weekly digest"
+              iconColor={COLORS.primary}
+              iconBg={`${COLORS.primary}15`}
+              right={
+                <Switch
+                  value={notificationsEnabled}
+                  onValueChange={handleNotifToggle}
+                  disabled={notifLoading}
+                  trackColor={{ false: COLORS.border, true: `${COLORS.primary}80` }}
+                  thumbColor={notificationsEnabled ? COLORS.primary : COLORS.textMuted}
+                />
+              }
             />
 
-            {/* Interests */}
-            {profile?.interests && profile.interests.length > 0 && (
-              <View style={{ paddingVertical: SPACING.sm }}>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    marginBottom: SPACING.sm,
-                  }}
-                >
-                  <View
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      backgroundColor: `${COLORS.primary}20`,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      marginRight: 12,
-                    }}
-                  >
-                    <Ionicons name="bookmark" size={18} color={COLORS.primary} />
-                  </View>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                    Interests
-                  </Text>
-                </View>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    flexWrap: 'wrap',
-                    marginLeft: 48,
-                  }}
-                >
-                  {profile.interests.map((interest) => (
-                    <View
-                      key={interest}
-                      style={{
-                        backgroundColor: `${COLORS.primary}15`,
-                        borderRadius: RADIUS.full,
-                        paddingHorizontal: 10,
-                        paddingVertical: 4,
-                        margin: 3,
-                      }}
-                    >
-                      <Text
-                        style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs }}
-                      >
-                        {interest}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            )}
-          </View>
+            {/* Offline cache */}
+            <SettingsRow
+              icon="cloud-offline-outline"
+              label="Offline Cache"
+              sublabel={
+                cacheSize !== null
+                  ? `${(cacheSize / 1024).toFixed(1)} KB used`
+                  : 'Calculating...'
+              }
+              iconColor={COLORS.info}
+              iconBg={`${COLORS.info}15`}
+              onPress={handleClearCache}
+              right={
+                <Text style={{
+                  color: COLORS.error,
+                  fontSize: FONTS.sizes.xs,
+                  fontWeight: '600',
+                }}>
+                  Clear
+                </Text>
+              }
+            />
+          </Animated.View>
 
-          {/* Account actions */}
-          <View
-            style={{
-              backgroundColor: COLORS.backgroundCard,
-              borderRadius: RADIUS.xl,
-              padding: SPACING.lg,
-              borderWidth: 1,
-              borderColor: COLORS.border,
-            }}
-          >
-            <Text
-              style={{
-                color: COLORS.textSecondary,
-                fontSize: FONTS.sizes.sm,
-                fontWeight: '600',
-                letterSpacing: 1,
-                textTransform: 'uppercase',
-                marginBottom: SPACING.md,
-              }}
-            >
+          {/* ── Account ──────────────────────────────────────────────── */}
+          <Animated.View entering={FadeInDown.duration(400).delay(150)}>
+            <Text style={{
+              color: COLORS.textSecondary,
+              fontSize: FONTS.sizes.sm,
+              fontWeight: '600',
+              letterSpacing: 0.8,
+              textTransform: 'uppercase',
+              marginBottom: SPACING.sm,
+              marginTop: SPACING.lg,
+            }}>
               Account
             </Text>
 
+            <SettingsRow
+              icon="person-outline"
+              label="Edit Profile"
+              iconColor={COLORS.primary}
+              iconBg={`${COLORS.primary}15`}
+              onPress={() => router.push('/(app)/edit-profile' as any)}
+            />
+
+            <SettingsRow
+              icon="shield-checkmark-outline"
+              label="Privacy & Data"
+              sublabel="Your data is stored securely"
+              iconColor={COLORS.success}
+              iconBg={`${COLORS.success}15`}
+            />
+
+            <SettingsRow
+              icon="help-circle-outline"
+              label="Help & Support"
+              iconColor={COLORS.info}
+              iconBg={`${COLORS.info}15`}
+            />
+          </Animated.View>
+
+          {/* ── Sign out ─────────────────────────────────────────────── */}
+          <Animated.View entering={FadeInDown.duration(400).delay(200)}>
             <TouchableOpacity
               onPress={handleSignOut}
               style={{
+                backgroundColor: `${COLORS.error}10`,
+                borderRadius: RADIUS.lg,
+                padding: SPACING.md,
+                marginTop: SPACING.lg,
                 flexDirection: 'row',
                 alignItems: 'center',
-                paddingVertical: SPACING.sm,
+                justifyContent: 'center',
+                gap: 8,
+                borderWidth: 1,
+                borderColor: `${COLORS.error}25`,
               }}
             >
-              <View
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 10,
-                  backgroundColor: `${COLORS.error}20`,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginRight: 12,
-                }}
-              >
-                <Ionicons name="log-out-outline" size={18} color={COLORS.error} />
-              </View>
-              <Text
-                style={{
-                  color: COLORS.error,
-                  fontSize: FONTS.sizes.base,
-                  fontWeight: '500',
-                  flex: 1,
-                }}
-              >
+              <Ionicons name="log-out-outline" size={20} color={COLORS.error} />
+              <Text style={{
+                color: COLORS.error,
+                fontSize: FONTS.sizes.base,
+                fontWeight: '700',
+              }}>
                 Sign Out
               </Text>
-              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
             </TouchableOpacity>
-          </View>
+          </Animated.View>
+
+          {/* App version */}
+          <Text style={{
+            color: COLORS.textMuted,
+            fontSize: FONTS.sizes.xs,
+            textAlign: 'center',
+            marginTop: SPACING.xl,
+          }}>
+            DeepDive AI · v1.1.0
+          </Text>
         </ScrollView>
-
-        {/* ============================
-            EDIT PROFILE MODAL
-            ============================ */}
-        <Modal
-          visible={editModalVisible}
-          animationType="slide"
-          transparent
-          onRequestClose={() => setEditModalVisible(false)}
-        >
-          <BlurView
-            intensity={20}
-            style={{
-              flex: 1,
-              backgroundColor: 'rgba(10,10,26,0.7)',
-              justifyContent: 'flex-end',
-            }}
-          >
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            >
-              <View
-                style={{
-                  backgroundColor: COLORS.backgroundCard,
-                  borderTopLeftRadius: 30,
-                  borderTopRightRadius: 30,
-                  padding: SPACING.xl,
-                  borderTopWidth: 1,
-                  borderTopColor: COLORS.border,
-                  maxHeight: '90%',
-                }}
-              >
-                {/* Modal header */}
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: SPACING.xl,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: COLORS.textPrimary,
-                      fontSize: FONTS.sizes.xl,
-                      fontWeight: '800',
-                    }}
-                  >
-                    Edit Profile
-                  </Text>
-                  <TouchableOpacity onPress={() => setEditModalVisible(false)}>
-                    <Ionicons name="close" size={24} color={COLORS.textSecondary} />
-                  </TouchableOpacity>
-                </View>
-
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {/* Avatar change */}
-                  <View
-                    style={{ alignItems: 'center', marginBottom: SPACING.xl }}
-                  >
-                    <TouchableOpacity onPress={pickImage}>
-                      {editAvatarUri ? (
-                        // Show the newly picked local image
-                        <View>
-                          <Image
-                            source={{ uri: editAvatarUri }}
-                            style={{
-                              width: 90,
-                              height: 90,
-                              borderRadius: 45,
-                              borderWidth: 2,
-                              borderColor: COLORS.primary,
-                            }}
-                          />
-                          <View
-                            style={{
-                              position: 'absolute',
-                              bottom: 0,
-                              right: 0,
-                              backgroundColor: COLORS.primary,
-                              borderRadius: 16,
-                              padding: 6,
-                            }}
-                          >
-                            <Ionicons name="camera" size={14} color="#FFF" />
-                          </View>
-                        </View>
-                      ) : (
-                        // Show current profile avatar with camera overlay
-                        <View>
-                          <Avatar
-                            url={profile?.avatar_url}
-                            name={profile?.full_name}
-                            size={90}
-                          />
-                          <View
-                            style={{
-                              position: 'absolute',
-                              bottom: 0,
-                              right: 0,
-                              backgroundColor: COLORS.primary,
-                              borderRadius: 16,
-                              padding: 6,
-                            }}
-                          >
-                            <Ionicons name="camera" size={14} color="#FFF" />
-                          </View>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    <Text
-                      style={{
-                        color: COLORS.textMuted,
-                        fontSize: FONTS.sizes.xs,
-                        marginTop: 8,
-                      }}
-                    >
-                      Tap to change photo
-                    </Text>
-                  </View>
-
-                  {/* Edit fields */}
-                  <AnimatedInput
-                    label="Full Name"
-                    value={editName}
-                    onChangeText={setEditName}
-                    leftIcon="person-outline"
-                  />
-                  <AnimatedInput
-                    label="Occupation"
-                    value={editOccupation}
-                    onChangeText={setEditOccupation}
-                    leftIcon="briefcase-outline"
-                  />
-                  <AnimatedInput
-                    label="Bio"
-                    value={editBio}
-                    onChangeText={setEditBio}
-                    leftIcon="document-text-outline"
-                    multiline
-                    numberOfLines={3}
-                  />
-
-                  <GradientButton
-                    title="Save Changes"
-                    onPress={handleSaveProfile}
-                    loading={updating || uploading}
-                    style={{ marginTop: SPACING.md }}
-                  />
-                </ScrollView>
-              </View>
-            </KeyboardAvoidingView>
-          </BlurView>
-        </Modal>
       </SafeAreaView>
     </LinearGradient>
   );
