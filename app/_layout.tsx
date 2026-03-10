@@ -1,121 +1,117 @@
 // app/_layout.tsx
-// Root layout — wraps the entire app.
-// FIXED: Added deep link handler so email verification and password
-// reset links open the app correctly instead of redirecting to localhost.
+// Root layout — handles deep links for public report sharing.
 //
-// How it works:
-//   1. User taps link in email → phone opens the app via deepdiveai:// scheme
-//   2. Linking.useURL() catches the incoming URL
-//   3. We extract access_token + refresh_token from the URL
-//   4. We call supabase.auth.setSession() to log the user in automatically
-//   5. AuthContext detects the new session and redirects to the right screen
+// Supported URL patterns:
+//   deepdiveai://report/{token}          ← custom scheme (always works)
+//   https://deepdive.app/report/{token}  ← universal / app link
+//
+// Both routes navigate to /(app)/public-report?token={token}
 
 import { useEffect } from 'react';
-import { Stack } from 'expo-router';
-import { router } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
+import { Linking } from 'react-native';
+import { Stack, router } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import * as Linking from 'expo-linking';
-import * as SplashScreen from 'expo-splash-screen';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from '../src/context/AuthContext';
-import { supabase } from '../src/lib/supabase';
+import { COLORS } from '../src/constants/theme';
 
-SplashScreen.preventAutoHideAsync();
+// ─── Deep-link URL parser ─────────────────────────────────────────────────────
 
-// Parses key=value pairs out of a URL fragment or query string
-// e.g. "access_token=abc&type=recovery" → { access_token: 'abc', type: 'recovery' }
-function parseUrlParams(paramString: string): Record<string, string> {
-  const params: Record<string, string> = {};
-  if (!paramString) return params;
-  paramString.split('&').forEach((pair) => {
-    const [key, value] = pair.split('=');
-    if (key) params[decodeURIComponent(key)] = decodeURIComponent(value || '');
-  });
-  return params;
-}
-
-// Takes the full deep link URL and sets a Supabase session from it
-// Supabase puts tokens after # (fragment) for implicit flow
-// e.g. deepdiveai://auth/callback#access_token=xxx&refresh_token=yyy&type=signup
-async function handleDeepLink(url: string) {
-  if (!url) return;
+/**
+ * Returns the public-report token if the URL matches either:
+ *   deepdiveai://report/<token>
+ *   https://deepdive.app/report/<token>
+ * Returns null for any other URL.
+ */
+function extractPublicReportToken(url: string | null): string | null {
+  if (!url) return null;
 
   try {
-    // Extract the fragment (everything after #)
-    const fragment = url.split('#')[1] || '';
-    // Also check query string (everything after ?) as fallback
-    const queryString = url.split('?')[1]?.split('#')[0] || '';
+    const parsed = new URL(url);
 
-    const fragmentParams = parseUrlParams(fragment);
-    const queryParams = parseUrlParams(queryString);
-
-    // Merge both — fragment takes priority
-    const params = { ...queryParams, ...fragmentParams };
-
-    const { access_token, refresh_token, type } = params;
-
-    if (access_token && refresh_token) {
-      // Set the session using the tokens from the email link
-      const { error } = await supabase.auth.setSession({
-        access_token,
-        refresh_token,
-      });
-
-      if (error) {
-        console.error('Deep link session error:', error.message);
-        return;
-      }
-
-      // Route user based on the link type:
-      // 'signup'   → email verification complete → go to profile setup or home
-      // 'recovery' → password reset → go to a reset password screen
-      if (type === 'recovery') {
-        // For password reset, navigate to the forgot-password screen
-        // The user is now authenticated so they can set a new password
-        router.replace('/(auth)/forgot-password');
-      }
-      // For 'signup' and other types, AuthContext + index.tsx handle the redirect
+    // Custom scheme:  deepdiveai://report/<token>
+    if (parsed.protocol === 'deepdiveai:') {
+      // pathname looks like "//report/<token>" or "/report/<token>"
+      const parts = parsed.pathname.replace(/^\/+/, '').split('/');
+      // parts: ['report', '<token>']  OR  host = 'report', pathname = '/<token>'
+      const host  = parsed.host ?? '';
+      const token = host === 'report'
+        ? parts[0]
+        : parts[1]; // pathname after 'report'
+      return token?.length > 0 ? token : null;
     }
-  } catch (err) {
-    console.error('Deep link handling error:', err);
+
+    // Universal link:  https://deepdive.app/report/<token>
+    if (
+      (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+      parsed.host === 'deepdive.app'
+    ) {
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      // segments: ['report', '<token>']
+      if (segments[0] === 'report' && segments[1]?.length > 0) {
+        return segments[1];
+      }
+    }
+  } catch {
+    // URL() constructor can throw for custom schemes on some RN versions;
+    // fall back to manual parsing below.
+    const match = url.match(/deepdiveai:\/\/report\/([^/?#]+)/);
+    if (match?.[1]) return match[1];
+
+    const webMatch = url.match(/deepdive\.app\/report\/([^/?#]+)/);
+    if (webMatch?.[1]) return webMatch[1];
   }
+
+  return null;
 }
 
+function handleIncomingURL(url: string | null) {
+  const token = extractPublicReportToken(url);
+  if (!token) return;
+
+  // Use a small timeout so navigation is ready before we push
+  setTimeout(() => {
+    router.push({
+      pathname: '/(app)/public-report' as any,
+      params: { token },
+    });
+  }, 200);
+}
+
+// ─── Root layout ─────────────────────────────────────────────────────────────
+
 export default function RootLayout() {
-  // Listen for incoming deep links while the app is already open
-  const url = Linking.useURL();
-
   useEffect(() => {
-    if (url) {
-      handleDeepLink(url);
-    }
-  }, [url]);
-
-  useEffect(() => {
-    // Also handle the case where the app was opened cold from a deep link
-    Linking.getInitialURL().then((initialUrl) => {
-      if (initialUrl) {
-        handleDeepLink(initialUrl);
-      }
+    // 1. App was launched from a cold start via a deep link
+    Linking.getInitialURL().then(url => {
+      if (url) handleIncomingURL(url);
     });
 
-    // Hide splash screen after a short delay
-    const timer = setTimeout(() => {
-      SplashScreen.hideAsync();
-    }, 500);
-    return () => clearTimeout(timer);
+    // 2. App was already running and a deep link arrives
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      handleIncomingURL(url);
+    });
+
+    return () => subscription.remove();
   }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AuthProvider>
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="(auth)" />
-          <Stack.Screen name="(app)" />
-        </Stack>
-        <StatusBar style="light" />
-      </AuthProvider>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: COLORS.background },
+              animation: 'fade',
+            }}
+          >
+            <Stack.Screen name="index" />
+            <Stack.Screen name="(auth)" options={{ animation: 'none' }} />
+            <Stack.Screen name="(app)"  options={{ animation: 'none' }} />
+          </Stack>
+        </AuthProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

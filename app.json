@@ -18,7 +18,10 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries.",
         "NSSpeechRecognitionUsageDescription": "DeepDive AI uses speech recognition to convert your spoken research queries to text."
-      }
+      },
+      "associatedDomains": [
+        "applinks:deepdive.app"
+      ]
     },
     "android": {
       "adaptiveIcon": {
@@ -34,6 +37,36 @@
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
         "POST_NOTIFICATIONS"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "deepdive.app",
+              "pathPrefix": "/report"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        },
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "deepdiveai",
+              "host": "report"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
       ]
     },
     "web": {
@@ -67,10 +100,22 @@
           "androidMode": "default",
           "androidCollapsedTitle": "DeepDive AI"
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": false
+          }
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "publicReportBaseUrl": "https://deepdive.app/report",
+      "appDeepLinkScheme": "deepdiveai://report"
     }
   }
 }

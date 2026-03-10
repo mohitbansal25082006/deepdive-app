@@ -1,5 +1,5 @@
 // src/types/index.ts
-// Full type definitions for Part 1 + Part 2 + Part 3
+// Full type definitions — Parts 1 + 2 + 3 + 4
 
 // ─── Auth & Profile ──────────────────────────────────────────────────────────
 
@@ -48,7 +48,8 @@ export type AgentName =
   | 'searcher'
   | 'analyst'
   | 'factchecker'
-  | 'reporter';
+  | 'reporter'
+  | 'visualizer';
 
 export type AgentStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -82,6 +83,8 @@ export interface SearchResult {
   date?: string;
   source?: string;
   position: number;
+  thumbnail?: string;
+  imageUrl?: string;
 }
 
 export interface SearchBatch {
@@ -151,6 +154,106 @@ export interface ReportSection {
   icon?: string;
 }
 
+// ─── Part 4: Knowledge Graph ──────────────────────────────────────────────────
+
+export type KnowledgeNodeType =
+  | 'root'
+  | 'primary'
+  | 'secondary'
+  | 'concept'
+  | 'company'
+  | 'trend';
+
+export interface KnowledgeGraphNode {
+  id: string;
+  label: string;
+  type: KnowledgeNodeType;
+  weight: number;
+  description?: string;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
+
+export interface KnowledgeGraphEdge {
+  id: string;
+  source: string | KnowledgeGraphNode;
+  target: string | KnowledgeGraphNode;
+  label?: string;
+  strength: number;
+}
+
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  generatedAt: string;
+}
+
+// ─── Part 4: Infographics ─────────────────────────────────────────────────────
+
+export type ChartType = 'bar' | 'line' | 'pie' | 'stat' | 'timeline';
+
+export interface ChartDataset {
+  label: string;
+  data: number[];
+  color?: string;
+}
+
+export interface InfographicChart {
+  id: string;
+  type: ChartType;
+  title: string;
+  subtitle?: string;
+  labels?: string[];
+  datasets?: ChartDataset[];
+  unit?: string;
+  insight?: string;
+}
+
+export interface InfographicStat {
+  id: string;
+  label: string;
+  value: string;
+  change?: string;
+  changeType?: 'positive' | 'negative' | 'neutral';
+  icon?: string;
+  color?: string;
+}
+
+export interface InfographicData {
+  charts: InfographicChart[];
+  stats: InfographicStat[];
+  generatedAt: string;
+}
+
+// ─── Part 4: Source Images ────────────────────────────────────────────────────
+
+export interface SourceImage {
+  url: string;
+  thumbnailUrl?: string;
+  title?: string;
+  sourceUrl?: string;
+  width?: number;
+  height?: number;
+}
+
+// ─── Part 4: Public Share ─────────────────────────────────────────────────────
+
+export interface PublicShareInfo {
+  token: string;
+  /** Deep-link URL: deepdiveai://report/{token} — opens the app directly */
+  publicUrl: string;
+  /** Web URL: https://deepdive.app/report/{token} — shown in the UI */
+  webUrl?: string;
+  createdAt: string;
+  viewCount: number;
+}
+
+// ─── Research Report ──────────────────────────────────────────────────────────
+
 export interface ResearchReport {
   id: string;
   userId: string;
@@ -174,11 +277,19 @@ export interface ResearchReport {
   errorMessage?: string;
   agentLogs: AgentStep[];
 
-  // Part 3 additions
+  // Part 3
   isPinned?: boolean;
   tags?: string[];
   exportCount?: number;
   viewCount?: number;
+
+  // Part 4
+  knowledgeGraph?: KnowledgeGraph;
+  infographicData?: InfographicData;
+  sourceImages?: SourceImage[];
+  isPublic?: boolean;
+  publicToken?: string;
+  publicViewCount?: number;
 
   createdAt: string;
   completedAt?: string;
@@ -191,6 +302,7 @@ export type ResearchStatus =
   | 'analyzing'
   | 'fact_checking'
   | 'generating'
+  | 'visualizing'
   | 'completed'
   | 'failed';
 
@@ -205,7 +317,7 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
-// ─── Orchestrator callback ────────────────────────────────────────────────────
+// ─── Orchestrator callbacks ───────────────────────────────────────────────────
 
 export interface OrchestratorCallbacks {
   onStepUpdate: (steps: AgentStep[]) => void;
@@ -224,9 +336,8 @@ export interface UserStats {
   favoriteTopic: string | null;
   reportsThisMonth: number;
   hoursResearched: number;
+  publicReports?: number;
 }
-
-// ─── Part 3: Subscription ─────────────────────────────────────────────────────
 
 export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
 
@@ -239,8 +350,6 @@ export interface UserSubscription {
   resetDate: string;
 }
 
-// ─── Part 3: Saved Topic ──────────────────────────────────────────────────────
-
 export interface SavedTopic {
   id: string;
   userId: string;
@@ -249,8 +358,6 @@ export interface SavedTopic {
   notifyOnUpdate: boolean;
   createdAt: string;
 }
-
-// ─── Part 3: Citation Formats ─────────────────────────────────────────────────
 
 export type CitationFormat = 'apa' | 'mla' | 'chicago';
 
