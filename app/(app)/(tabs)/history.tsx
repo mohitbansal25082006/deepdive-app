@@ -1,6 +1,6 @@
 // app/(app)/(tabs)/history.tsx
 // - Optimistic bookmark toggle: isPinned flips instantly in local state → icon fills immediately
-// - Bookmarked cards glow gold (warm bg + gold border + shadow)
+// - Bookmarked reports look identical to normal cards — ONLY the bookmark icon fills (no gold glow, no special bg)
 // - Bookmarked filter tab removed; header bookmark button navigates to /bookmarks
 // - Compare mode, search, depth filter tabs all preserved
 
@@ -71,42 +71,20 @@ function ReportCard({
         onLongPress={() => { if (!compareMode) onToggleSelect(); }}
         activeOpacity={0.75}
         style={{
+          // Card appearance is identical whether bookmarked or not.
+          // Only the bookmark icon inside changes.
           backgroundColor: compareMode && isSelected
             ? `${COLORS.primary}15`
-            : isBookmarked
-            ? '#1C1A0F'
             : COLORS.backgroundCard,
           borderRadius: RADIUS.xl,
           padding: SPACING.md,
           marginBottom: SPACING.sm,
-          borderWidth: isBookmarked || (compareMode && isSelected) ? 1.5 : 1,
+          borderWidth: compareMode && isSelected ? 1.5 : 1,
           borderColor: compareMode && isSelected
             ? COLORS.primary
-            : isBookmarked
-            ? '#C9963A'
             : COLORS.border,
-          // gold shadow glow when bookmarked
-          ...(isBookmarked ? {
-            shadowColor: '#C9963A',
-            shadowOffset: { width: 0, height: 0 },
-            shadowOpacity: 0.35,
-            shadowRadius: 10,
-            elevation: 6,
-          } : {}),
         }}
       >
-        {/* Gold top-edge accent line for bookmarked cards */}
-        {isBookmarked && (
-          <View style={{
-            position: 'absolute',
-            top: 0, left: 16, right: 16,
-            height: 2,
-            backgroundColor: '#C9963A',
-            borderRadius: 1,
-            opacity: 0.7,
-          }} />
-        )}
-
         {/* ── Top row ── */}
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
 
@@ -125,16 +103,16 @@ function ReportCard({
           ) : (
             <View style={{
               width: 44, height: 44, borderRadius: 12,
-              backgroundColor: isBookmarked ? `${COLORS.warning}20` : `${depthColor}15`,
+              backgroundColor: `${depthColor}15`,
               alignItems: 'center', justifyContent: 'center',
               marginRight: SPACING.sm,
               borderWidth: 1,
-              borderColor: isBookmarked ? `${COLORS.warning}40` : `${depthColor}30`,
+              borderColor: `${depthColor}30`,
             }}>
               <Ionicons
-                name={isBookmarked ? 'bookmark' : 'document-text'}
+                name="document-text"
                 size={20}
-                color={isBookmarked ? COLORS.warning : depthColor}
+                color={depthColor}
               />
             </View>
           )}
@@ -164,28 +142,19 @@ function ReportCard({
             <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', marginLeft: SPACING.sm }}>
               {/*
                 Bookmark button:
-                  FILLED  ('bookmark')         + gold pill bg  when isPinned === true
-                  OUTLINE ('bookmark-outline') + no bg         when isPinned === false
+                  FILLED  ('bookmark')         when isPinned === true  — only visual change
+                  OUTLINE ('bookmark-outline') when isPinned === false
+                  No background pill, no gold colour, no shadow — just icon state.
               */}
               <TouchableOpacity
                 onPress={onToggleBookmark}
                 hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-                style={
-                  isBookmarked
-                    ? {
-                        backgroundColor: `${COLORS.warning}25`,
-                        borderRadius: 8,
-                        padding: 5,
-                        borderWidth: 1,
-                        borderColor: `${COLORS.warning}50`,
-                      }
-                    : { padding: 5 }
-                }
+                style={{ padding: 5 }}
               >
                 <Ionicons
                   name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
                   size={21}
-                  color={isBookmarked ? COLORS.warning : COLORS.textMuted}
+                  color={isBookmarked ? COLORS.primary : COLORS.textMuted}
                 />
               </TouchableOpacity>
 
@@ -204,7 +173,7 @@ function ReportCard({
         {report.executiveSummary ? (
           <Text
             style={{
-              color: isBookmarked ? '#C8B98A' : COLORS.textSecondary,
+              color: COLORS.textSecondary,
               fontSize: FONTS.sizes.xs,
               lineHeight: 18,
               marginBottom: SPACING.sm,
@@ -215,7 +184,7 @@ function ReportCard({
           </Text>
         ) : null}
 
-        {/* Chips */}
+        {/* Chips — no "Saved" chip shown in history */}
         <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
           <View style={{
             backgroundColor: `${depthColor}15`,
@@ -262,25 +231,6 @@ function ReportCard({
               </Text>
             </View>
           )}
-
-          {/* Saved chip — only visible when bookmarked */}
-          {isBookmarked && (
-            <View style={{
-              backgroundColor: `${COLORS.warning}20`,
-              borderRadius: RADIUS.full,
-              paddingHorizontal: 10, paddingVertical: 4,
-              borderWidth: 1,
-              borderColor: `${COLORS.warning}40`,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-            }}>
-              <Ionicons name="bookmark" size={10} color={COLORS.warning} />
-              <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                Saved
-              </Text>
-            </View>
-          )}
         </View>
       </TouchableOpacity>
     </Animated.View>
@@ -291,16 +241,11 @@ function ReportCard({
 
 export default function HistoryScreen() {
   const { profile } = useAuth();
-  // useHistory returns reports array — we manage isPinned locally for instant UI updates
   const { reports: rawReports, loading, refreshing, refresh, deleteReport } = useHistory();
 
   // ── Local override map for optimistic bookmark state ──────────────────────
-  // Key: report.id, Value: true/false
-  // When a user taps the bookmark icon we flip the local state immediately
-  // (the icon fills at once) and fire the Supabase update in the background.
   const [pinnedOverrides, setPinnedOverrides] = useState<Record<string, boolean>>({});
 
-  // Merge overrides into the reports array so the UI always reflects local state
   const reports: ResearchReport[] = rawReports.map((r) => ({
     ...r,
     isPinned: r.id in pinnedOverrides ? pinnedOverrides[r.id] : (r.isPinned ?? false),
@@ -319,10 +264,10 @@ export default function HistoryScreen() {
       : (report.isPinned ?? false);
     const newVal = !currentPinned;
 
-    // 1. Flip local state immediately → icon fills / unfills at once
+    // Flip locally immediately
     setPinnedOverrides((prev) => ({ ...prev, [report.id]: newVal }));
 
-    // 2. Persist to Supabase in the background
+    // Persist in background
     try {
       await supabase
         .from('research_reports')
@@ -378,7 +323,7 @@ export default function HistoryScreen() {
     exitCompareMode();
   };
 
-  // ── Filter + sort ──────────────────────────────────────────────────────────
+  // ── Filter ─────────────────────────────────────────────────────────────────
 
   const filtered = reports.filter((r) => {
     const q = searchQuery.toLowerCase();
@@ -391,11 +336,10 @@ export default function HistoryScreen() {
     return true;
   });
 
-  // Pinned reports float to top
-  const sorted = [...filtered].sort((a, b) => {
-    if ((a.isPinned ?? false) === (b.isPinned ?? false)) return 0;
-    return (a.isPinned ?? false) ? -1 : 1;
-  });
+  // Sort by date descending — no pinned-float in history view
+  const sorted = [...filtered].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
 
   const bookmarkedCount = reports.filter((r) => r.isPinned === true).length;
 
@@ -429,7 +373,7 @@ export default function HistoryScreen() {
             </Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
               {reports.length} report{reports.length !== 1 ? 's' : ''}
-              {bookmarkedCount > 0 ? `  ·  ${bookmarkedCount} bookmarked` : ''}
+              {bookmarkedCount > 0 ? `  ·  ${bookmarkedCount} saved` : ''}
             </Text>
           </View>
 
@@ -440,23 +384,16 @@ export default function HistoryScreen() {
               onPress={() => router.push('/(app)/bookmarks' as any)}
               style={{
                 width: 40, height: 40, borderRadius: 12,
-                backgroundColor: bookmarkedCount > 0 ? `${COLORS.warning}18` : COLORS.backgroundElevated,
+                backgroundColor: COLORS.backgroundElevated,
                 alignItems: 'center', justifyContent: 'center',
                 borderWidth: 1,
-                borderColor: bookmarkedCount > 0 ? `${COLORS.warning}40` : COLORS.border,
-                ...(bookmarkedCount > 0 ? {
-                  shadowColor: COLORS.warning,
-                  shadowOffset: { width: 0, height: 0 },
-                  shadowOpacity: 0.4,
-                  shadowRadius: 8,
-                  elevation: 4,
-                } : {}),
+                borderColor: COLORS.border,
               }}
             >
               <Ionicons
                 name={bookmarkedCount > 0 ? 'bookmark' : 'bookmark-outline'}
                 size={18}
-                color={bookmarkedCount > 0 ? COLORS.warning : COLORS.textMuted}
+                color={bookmarkedCount > 0 ? COLORS.primary : COLORS.textMuted}
               />
             </TouchableOpacity>
 
@@ -685,52 +622,19 @@ export default function HistoryScreen() {
           )}
 
           {/* Populated list */}
-          {sorted.length > 0 && (
-            <>
-              {/* Bookmarked section header */}
-              {filter === 'all' && sorted.some((r) => r.isPinned) && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
-                  <Ionicons name="bookmark" size={13} color={COLORS.warning} />
-                  <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' }}>
-                    Bookmarked
-                  </Text>
-                </View>
-              )}
-
-              {sorted.map((report, i) => {
-                const showDivider =
-                  filter === 'all' &&
-                  i > 0 &&
-                  (sorted[i - 1].isPinned === true) &&
-                  (report.isPinned !== true);
-
-                return (
-                  <React.Fragment key={report.id}>
-                    {showDivider && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.xs }}>
-                        <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
-                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                          Recent
-                        </Text>
-                        <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
-                      </View>
-                    )}
-
-                    <ReportCard
-                      report={report}
-                      index={i}
-                      compareMode={compareMode}
-                      isSelected={selectedIds.includes(report.id)}
-                      onToggleSelect={() => toggleSelect(report.id)}
-                      onOpen={() => router.push({ pathname: '/(app)/research-report' as any, params: { reportId: report.id } })}
-                      onDelete={() => handleDelete(report)}
-                      onToggleBookmark={() => handleToggleBookmark(report)}
-                    />
-                  </React.Fragment>
-                );
-              })}
-            </>
-          )}
+          {sorted.length > 0 && sorted.map((report, i) => (
+            <ReportCard
+              key={report.id}
+              report={report}
+              index={i}
+              compareMode={compareMode}
+              isSelected={selectedIds.includes(report.id)}
+              onToggleSelect={() => toggleSelect(report.id)}
+              onOpen={() => router.push({ pathname: '/(app)/research-report' as any, params: { reportId: report.id } })}
+              onDelete={() => handleDelete(report)}
+              onToggleBookmark={() => handleToggleBookmark(report)}
+            />
+          ))}
         </ScrollView>
       </SafeAreaView>
     </LinearGradient>
