@@ -1,6 +1,7 @@
 // src/services/researchOrchestrator.ts
 // FIXED: Added auth pre-check, surfaces real Supabase errors,
 // validates API keys before starting the pipeline.
+// PART 3: Fires push notification when report is successfully generated.
 
 import { supabase } from '../lib/supabase';
 import {
@@ -15,6 +16,7 @@ import { runAnalysisAgent } from './agents/analysisAgent';
 import { runFactCheckerAgent } from './agents/factCheckAgent';
 import { runReportAgent } from './agents/reportAgent';
 import { serpSearchBatch } from './serpApiClient';
+import { notifyReportComplete } from '../lib/notifications';
 
 const AGENT_STEPS: AgentStep[] = [
   {
@@ -120,7 +122,6 @@ export async function runResearchPipeline(
     .single();
 
   if (insertError) {
-    // Surface the real Supabase error so the user (and developer) can see it
     const msg = insertError.message ?? JSON.stringify(insertError);
     console.error('[Orchestrator] Supabase insert error:', insertError);
 
@@ -242,7 +243,7 @@ export async function runResearchPipeline(
       throw new Error(`Failed to save report: ${saveError.message}`);
     }
 
-    // ── RETURN COMPLETE REPORT ──────────────────────────────────────────────
+    // ── BUILD FINAL REPORT OBJECT ───────────────────────────────────────────
     const finalReport: ResearchReport = {
       id: reportId,
       userId,
@@ -265,6 +266,13 @@ export async function runResearchPipeline(
       completedAt: new Date().toISOString(),
     };
 
+    // ── NOTIFY USER ─────────────────────────────────────────────────────────
+    // Fire push notification now that report is fully saved.
+    // notifyReportComplete() checks internally whether notifications are
+    // enabled and permission is granted — so it's always safe to call.
+    await notifyReportComplete(reportId, reportOutput.title);
+
+    // ── SURFACE TO UI ───────────────────────────────────────────────────────
     callbacks.onComplete(finalReport);
 
   } catch (error) {

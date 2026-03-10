@@ -2,11 +2,27 @@
 // Stack navigator for all authenticated screens.
 // Part 3: added bookmarks + compare-reports screens.
 // Subscription screen REMOVED — delete app/(app)/subscription.tsx if it exists.
+// Part 3 notifications: registers tap handler so "Research Complete" push
+// notifications deep-link directly to the finished report.
 
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
+import { router } from 'expo-router';
 import { COLORS } from '../../src/constants/theme';
+import { registerNotificationTapHandler } from '../../src/lib/notifications';
 
 export default function AppLayout() {
+  // Register notification tap handler once when the authenticated layout mounts.
+  // Tapping a "Research Complete" notification will call router.push with
+  // the deep-link href  →  /(app)/research-report?reportId=<id>
+  // The cleanup function removes the listener when the layout unmounts.
+  useEffect(() => {
+    const unsubscribe = registerNotificationTapHandler((href) => {
+      router.push(href as any);
+    });
+    return unsubscribe;
+  }, []);
+
   return (
     <Stack
       screenOptions={{

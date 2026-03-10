@@ -22,7 +22,6 @@ import { ResearchReport } from '../../src/types';
 import { useConversation } from '../../src/hooks/useConversation';
 import { exportReportAsPDF } from '../../src/services/pdfExport';
 import { cacheReport, getCachedReport } from '../../src/lib/offlineCache';
-import { scheduleResearchCompleteNotification } from '../../src/lib/notifications';
 
 const DEPTH_LABELS: Record<string, string> = {
   quick: 'Quick Scan', deep: 'Deep Dive', expert: 'Expert Mode',
