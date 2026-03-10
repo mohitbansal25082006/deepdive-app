@@ -1,6 +1,8 @@
 // app/(app)/(tabs)/history.tsx
-// Part 3 update: bookmarks, filter tabs, compare mode (select 2 → compare).
-// Subscription references removed.
+// - Optimistic bookmark toggle: isPinned flips instantly in local state → icon fills immediately
+// - Bookmarked cards glow gold (warm bg + gold border + shadow)
+// - Bookmarked filter tab removed; header bookmark button navigates to /bookmarks
+// - Compare mode, search, depth filter tabs all preserved
 
 import React, { useState, useCallback } from 'react';
 import {
@@ -31,14 +33,13 @@ const DEPTH_COLOR: Record<string, string> = {
   deep: COLORS.primary,
   expert: COLORS.warning,
 };
-
 const DEPTH_LABEL: Record<string, string> = {
   quick: 'Quick',
   deep: 'Deep',
   expert: 'Expert',
 };
 
-type FilterKey = 'all' | 'bookmarked' | 'quick' | 'deep' | 'expert';
+type FilterKey = 'all' | 'quick' | 'deep' | 'expert';
 
 // ─── Report Card ──────────────────────────────────────────────────────────────
 
@@ -57,8 +58,8 @@ function ReportCard({
   report, index, compareMode, isSelected,
   onOpen, onDelete, onToggleBookmark, onToggleSelect,
 }: ReportCardProps) {
-  const depthColor  = DEPTH_COLOR[report.depth] ?? COLORS.primary;
-  const isBookmarked = report.isPinned ?? false;
+  const depthColor   = DEPTH_COLOR[report.depth] ?? COLORS.primary;
+  const isBookmarked = report.isPinned === true;
 
   return (
     <Animated.View
@@ -72,14 +73,40 @@ function ReportCard({
         style={{
           backgroundColor: compareMode && isSelected
             ? `${COLORS.primary}15`
+            : isBookmarked
+            ? '#1C1A0F'
             : COLORS.backgroundCard,
           borderRadius: RADIUS.xl,
           padding: SPACING.md,
           marginBottom: SPACING.sm,
-          borderWidth: compareMode && isSelected ? 1.5 : 1,
-          borderColor: compareMode && isSelected ? COLORS.primary : COLORS.border,
+          borderWidth: isBookmarked || (compareMode && isSelected) ? 1.5 : 1,
+          borderColor: compareMode && isSelected
+            ? COLORS.primary
+            : isBookmarked
+            ? '#C9963A'
+            : COLORS.border,
+          // gold shadow glow when bookmarked
+          ...(isBookmarked ? {
+            shadowColor: '#C9963A',
+            shadowOffset: { width: 0, height: 0 },
+            shadowOpacity: 0.35,
+            shadowRadius: 10,
+            elevation: 6,
+          } : {}),
         }}
       >
+        {/* Gold top-edge accent line for bookmarked cards */}
+        {isBookmarked && (
+          <View style={{
+            position: 'absolute',
+            top: 0, left: 16, right: 16,
+            height: 2,
+            backgroundColor: '#C9963A',
+            borderRadius: 1,
+            opacity: 0.7,
+          }} />
+        )}
+
         {/* ── Top row ── */}
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
 
@@ -98,34 +125,33 @@ function ReportCard({
           ) : (
             <View style={{
               width: 44, height: 44, borderRadius: 12,
-              backgroundColor: `${depthColor}15`,
+              backgroundColor: isBookmarked ? `${COLORS.warning}20` : `${depthColor}15`,
               alignItems: 'center', justifyContent: 'center',
               marginRight: SPACING.sm,
-              borderWidth: 1, borderColor: `${depthColor}30`,
+              borderWidth: 1,
+              borderColor: isBookmarked ? `${COLORS.warning}40` : `${depthColor}30`,
             }}>
-              <Ionicons name="document-text" size={20} color={depthColor} />
+              <Ionicons
+                name={isBookmarked ? 'bookmark' : 'document-text'}
+                size={20}
+                color={isBookmarked ? COLORS.warning : depthColor}
+              />
             </View>
           )}
 
           {/* Title + date */}
           <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-              {isBookmarked && (
-                <Ionicons name="bookmark" size={13} color={COLORS.warning} />
-              )}
-              <Text
-                style={{
-                  color: COLORS.textPrimary,
-                  fontSize: FONTS.sizes.base,
-                  fontWeight: '700',
-                  lineHeight: 20,
-                  flex: 1,
-                }}
-                numberOfLines={2}
-              >
-                {report.title}
-              </Text>
-            </View>
+            <Text
+              style={{
+                color: COLORS.textPrimary,
+                fontSize: FONTS.sizes.base,
+                fontWeight: '700',
+                lineHeight: 20,
+              }}
+              numberOfLines={2}
+            >
+              {report.title}
+            </Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>
               {new Date(report.createdAt).toLocaleDateString('en-US', {
                 month: 'short', day: 'numeric', year: 'numeric',
@@ -133,12 +159,28 @@ function ReportCard({
             </Text>
           </View>
 
-          {/* Action buttons (not shown in compare mode) */}
+          {/* Action buttons — hidden in compare mode */}
           {!compareMode && (
             <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', marginLeft: SPACING.sm }}>
+              {/*
+                Bookmark button:
+                  FILLED  ('bookmark')         + gold pill bg  when isPinned === true
+                  OUTLINE ('bookmark-outline') + no bg         when isPinned === false
+              */}
               <TouchableOpacity
                 onPress={onToggleBookmark}
-                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                style={
+                  isBookmarked
+                    ? {
+                        backgroundColor: `${COLORS.warning}25`,
+                        borderRadius: 8,
+                        padding: 5,
+                        borderWidth: 1,
+                        borderColor: `${COLORS.warning}50`,
+                      }
+                    : { padding: 5 }
+                }
               >
                 <Ionicons
                   name={isBookmarked ? 'bookmark' : 'bookmark-outline'}
@@ -146,9 +188,11 @@ function ReportCard({
                   color={isBookmarked ? COLORS.warning : COLORS.textMuted}
                 />
               </TouchableOpacity>
+
               <TouchableOpacity
                 onPress={onDelete}
-                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                style={{ padding: 5 }}
               >
                 <Ionicons name="trash-outline" size={19} color={COLORS.textMuted} />
               </TouchableOpacity>
@@ -156,11 +200,11 @@ function ReportCard({
           )}
         </View>
 
-        {/* Executive summary preview */}
+        {/* Executive summary */}
         {report.executiveSummary ? (
           <Text
             style={{
-              color: COLORS.textSecondary,
+              color: isBookmarked ? '#C8B98A' : COLORS.textSecondary,
               fontSize: FONTS.sizes.xs,
               lineHeight: 18,
               marginBottom: SPACING.sm,
@@ -218,6 +262,25 @@ function ReportCard({
               </Text>
             </View>
           )}
+
+          {/* Saved chip — only visible when bookmarked */}
+          {isBookmarked && (
+            <View style={{
+              backgroundColor: `${COLORS.warning}20`,
+              borderRadius: RADIUS.full,
+              paddingHorizontal: 10, paddingVertical: 4,
+              borderWidth: 1,
+              borderColor: `${COLORS.warning}40`,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+            }}>
+              <Ionicons name="bookmark" size={10} color={COLORS.warning} />
+              <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                Saved
+              </Text>
+            </View>
+          )}
         </View>
       </TouchableOpacity>
     </Animated.View>
@@ -228,23 +291,49 @@ function ReportCard({
 
 export default function HistoryScreen() {
   const { profile } = useAuth();
-  const { reports, loading, refreshing, refresh, deleteReport } = useHistory();
+  // useHistory returns reports array — we manage isPinned locally for instant UI updates
+  const { reports: rawReports, loading, refreshing, refresh, deleteReport } = useHistory();
 
-  const [searchQuery, setSearchQuery]   = useState('');
-  const [filter, setFilter]             = useState<FilterKey>('all');
-  const [compareMode, setCompareMode]   = useState(false);
-  const [selectedIds, setSelectedIds]   = useState<string[]>([]);
+  // ── Local override map for optimistic bookmark state ──────────────────────
+  // Key: report.id, Value: true/false
+  // When a user taps the bookmark icon we flip the local state immediately
+  // (the icon fills at once) and fire the Supabase update in the background.
+  const [pinnedOverrides, setPinnedOverrides] = useState<Record<string, boolean>>({});
 
-  // ── Bookmark toggle ────────────────────────────────────────────────────────
+  // Merge overrides into the reports array so the UI always reflects local state
+  const reports: ResearchReport[] = rawReports.map((r) => ({
+    ...r,
+    isPinned: r.id in pinnedOverrides ? pinnedOverrides[r.id] : (r.isPinned ?? false),
+  }));
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter]           = useState<FilterKey>('all');
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // ── Optimistic bookmark toggle ─────────────────────────────────────────────
 
   const handleToggleBookmark = useCallback(async (report: ResearchReport) => {
-    const newVal = !(report.isPinned ?? false);
-    await supabase
-      .from('research_reports')
-      .update({ is_pinned: newVal })
-      .eq('id', report.id);
-    refresh();
-  }, [refresh]);
+    const currentPinned = report.id in pinnedOverrides
+      ? pinnedOverrides[report.id]
+      : (report.isPinned ?? false);
+    const newVal = !currentPinned;
+
+    // 1. Flip local state immediately → icon fills / unfills at once
+    setPinnedOverrides((prev) => ({ ...prev, [report.id]: newVal }));
+
+    // 2. Persist to Supabase in the background
+    try {
+      await supabase
+        .from('research_reports')
+        .update({ is_pinned: newVal })
+        .eq('id', report.id);
+    } catch {
+      // Rollback on failure
+      setPinnedOverrides((prev) => ({ ...prev, [report.id]: currentPinned }));
+      Alert.alert('Error', 'Could not update bookmark. Please try again.');
+    }
+  }, [pinnedOverrides]);
 
   // ── Delete ─────────────────────────────────────────────────────────────────
 
@@ -254,11 +343,7 @@ export default function HistoryScreen() {
       `Delete "${report.title}"?\nThis cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => deleteReport(report.id),
-        },
+        { text: 'Delete', style: 'destructive', onPress: () => deleteReport(report.id) },
       ],
     );
   }, [deleteReport]);
@@ -301,28 +386,24 @@ export default function HistoryScreen() {
       r.title?.toLowerCase().includes(q) ||
       r.query?.toLowerCase().includes(q);
     if (!matchSearch) return false;
-    if (filter === 'bookmarked') return r.isPinned === true;
     if (filter === 'quick' || filter === 'deep' || filter === 'expert')
       return r.depth === filter;
     return true;
   });
 
-  // Pinned reports bubble to top
+  // Pinned reports float to top
   const sorted = [...filtered].sort((a, b) => {
     if ((a.isPinned ?? false) === (b.isPinned ?? false)) return 0;
     return (a.isPinned ?? false) ? -1 : 1;
   });
 
-  const bookmarkedCount = reports.filter((r) => r.isPinned).length;
+  const bookmarkedCount = reports.filter((r) => r.isPinned === true).length;
 
-  // ── Filter tab definitions ─────────────────────────────────────────────────
-
-  const FILTER_TABS: { key: FilterKey; label: string; count?: number }[] = [
-    { key: 'all',        label: 'All' },
-    { key: 'bookmarked', label: 'Bookmarked', count: bookmarkedCount },
-    { key: 'quick',      label: 'Quick' },
-    { key: 'deep',       label: 'Deep' },
-    { key: 'expert',     label: 'Expert' },
+  const FILTER_TABS: { key: FilterKey; label: string }[] = [
+    { key: 'all',    label: 'All'    },
+    { key: 'quick',  label: 'Quick'  },
+    { key: 'deep',   label: 'Deep'   },
+    { key: 'expert', label: 'Expert' },
   ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -343,11 +424,7 @@ export default function HistoryScreen() {
           }}
         >
           <View>
-            <Text style={{
-              color: COLORS.textPrimary,
-              fontSize: FONTS.sizes.xl,
-              fontWeight: '800',
-            }}>
+            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>
               Research History
             </Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
@@ -357,23 +434,27 @@ export default function HistoryScreen() {
           </View>
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
-            {/* Bookmarks shortcut */}
+
+            {/* Bookmarks page shortcut */}
             <TouchableOpacity
               onPress={() => router.push('/(app)/bookmarks' as any)}
               style={{
                 width: 40, height: 40, borderRadius: 12,
-                backgroundColor: bookmarkedCount > 0
-                  ? `${COLORS.warning}15`
-                  : COLORS.backgroundElevated,
+                backgroundColor: bookmarkedCount > 0 ? `${COLORS.warning}18` : COLORS.backgroundElevated,
                 alignItems: 'center', justifyContent: 'center',
                 borderWidth: 1,
-                borderColor: bookmarkedCount > 0
-                  ? `${COLORS.warning}35`
-                  : COLORS.border,
+                borderColor: bookmarkedCount > 0 ? `${COLORS.warning}40` : COLORS.border,
+                ...(bookmarkedCount > 0 ? {
+                  shadowColor: COLORS.warning,
+                  shadowOffset: { width: 0, height: 0 },
+                  shadowOpacity: 0.4,
+                  shadowRadius: 8,
+                  elevation: 4,
+                } : {}),
               }}
             >
               <Ionicons
-                name="bookmark"
+                name={bookmarkedCount > 0 ? 'bookmark' : 'bookmark-outline'}
                 size={18}
                 color={bookmarkedCount > 0 ? COLORS.warning : COLORS.textMuted}
               />
@@ -384,9 +465,7 @@ export default function HistoryScreen() {
               onPress={() => compareMode ? exitCompareMode() : setCompareMode(true)}
               style={{
                 width: 40, height: 40, borderRadius: 12,
-                backgroundColor: compareMode
-                  ? `${COLORS.primary}20`
-                  : COLORS.backgroundElevated,
+                backgroundColor: compareMode ? `${COLORS.primary}20` : COLORS.backgroundElevated,
                 alignItems: 'center', justifyContent: 'center',
                 borderWidth: 1,
                 borderColor: compareMode ? COLORS.primary : COLORS.border,
@@ -399,15 +478,11 @@ export default function HistoryScreen() {
               />
             </TouchableOpacity>
 
-            <Avatar
-              url={profile?.avatar_url}
-              name={profile?.full_name}
-              size={44}
-            />
+            <Avatar url={profile?.avatar_url} name={profile?.full_name} size={44} />
           </View>
         </Animated.View>
 
-        {/* ── Compare mode banner ───────────────────────────────────────── */}
+        {/* ── Compare banner ────────────────────────────────────────────── */}
         {compareMode && (
           <Animated.View
             entering={FadeIn.duration(300)}
@@ -426,18 +501,10 @@ export default function HistoryScreen() {
               }}
             >
               <View style={{ flex: 1 }}>
-                <Text style={{
-                  color: COLORS.primary,
-                  fontSize: FONTS.sizes.sm,
-                  fontWeight: '700',
-                }}>
+                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
                   Compare Mode
                 </Text>
-                <Text style={{
-                  color: COLORS.textMuted,
-                  fontSize: FONTS.sizes.xs,
-                  marginTop: 2,
-                }}>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
                   {selectedIds.length === 0 && 'Tap two reports to compare'}
                   {selectedIds.length === 1 && 'Select one more report'}
                   {selectedIds.length === 2 && '✓ Ready to compare!'}
@@ -445,16 +512,13 @@ export default function HistoryScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', gap: SPACING.sm, alignItems: 'center' }}>
-                {/* Progress dots */}
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                   {[0, 1].map((i) => (
                     <View
                       key={i}
                       style={{
                         width: 10, height: 10, borderRadius: 5,
-                        backgroundColor: selectedIds.length > i
-                          ? COLORS.primary
-                          : COLORS.border,
+                        backgroundColor: selectedIds.length > i ? COLORS.primary : COLORS.border,
                       }}
                     />
                   ))}
@@ -469,11 +533,7 @@ export default function HistoryScreen() {
                       paddingHorizontal: 14, paddingVertical: 7,
                     }}
                   >
-                    <Text style={{
-                      color: '#FFF',
-                      fontSize: FONTS.sizes.sm,
-                      fontWeight: '700',
-                    }}>
+                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
                       Compare →
                     </Text>
                   </TouchableOpacity>
@@ -508,12 +568,7 @@ export default function HistoryScreen() {
               onChangeText={setSearchQuery}
               placeholder="Search reports..."
               placeholderTextColor={COLORS.textMuted}
-              style={{
-                flex: 1,
-                color: COLORS.textPrimary,
-                fontSize: FONTS.sizes.sm,
-                marginLeft: 10,
-              }}
+              style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginLeft: 10 }}
             />
             {searchQuery.length > 0 && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
@@ -528,69 +583,29 @@ export default function HistoryScreen() {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{
-              paddingHorizontal: SPACING.xl,
-              gap: 8,
-              paddingBottom: SPACING.sm,
-            }}
+            contentContainerStyle={{ paddingHorizontal: SPACING.xl, gap: 8, paddingBottom: SPACING.sm }}
           >
             {FILTER_TABS.map((tab) => {
-              const isActive      = filter === tab.key;
-              const isBookmarkTab = tab.key === 'bookmarked';
-              const activeColor   = isBookmarkTab ? COLORS.warning : COLORS.primary;
-
+              const isActive = filter === tab.key;
               return (
                 <TouchableOpacity
                   key={tab.key}
                   onPress={() => setFilter(tab.key)}
                   style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 5,
-                    backgroundColor: isActive ? activeColor : COLORS.backgroundCard,
+                    backgroundColor: isActive ? COLORS.primary : COLORS.backgroundCard,
                     borderRadius: RADIUS.full,
                     paddingHorizontal: 14, paddingVertical: 7,
                     borderWidth: 1,
-                    borderColor: isActive ? activeColor : COLORS.border,
+                    borderColor: isActive ? COLORS.primary : COLORS.border,
                   }}
                 >
-                  {isBookmarkTab && (
-                    <Ionicons
-                      name="bookmark"
-                      size={12}
-                      color={isActive ? '#000' : COLORS.warning}
-                    />
-                  )}
                   <Text style={{
-                    color: isActive
-                      ? isBookmarkTab ? '#000' : '#FFF'
-                      : COLORS.textMuted,
+                    color: isActive ? '#FFF' : COLORS.textMuted,
                     fontSize: FONTS.sizes.sm,
                     fontWeight: '600',
                   }}>
                     {tab.label}
                   </Text>
-                  {tab.count !== undefined && tab.count > 0 && (
-                    <View style={{
-                      backgroundColor: isActive
-                        ? 'rgba(0,0,0,0.25)'
-                        : `${COLORS.warning}25`,
-                      borderRadius: RADIUS.full,
-                      paddingHorizontal: 6, paddingVertical: 1,
-                      minWidth: 18,
-                      alignItems: 'center',
-                    }}>
-                      <Text style={{
-                        color: isActive
-                          ? isBookmarkTab ? '#000' : '#FFF'
-                          : COLORS.warning,
-                        fontSize: 10,
-                        fontWeight: '700',
-                      }}>
-                        {tab.count}
-                      </Text>
-                    </View>
-                  )}
                 </TouchableOpacity>
               );
             })}
@@ -599,21 +614,13 @@ export default function HistoryScreen() {
 
         {/* ── Report list ───────────────────────────────────────────────── */}
         <ScrollView
-          contentContainerStyle={{
-            padding: SPACING.xl,
-            paddingTop: SPACING.sm,
-            paddingBottom: 110,
-          }}
+          contentContainerStyle={{ padding: SPACING.xl, paddingTop: SPACING.sm, paddingBottom: 110 }}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={refresh}
-              tintColor={COLORS.primary}
-            />
+            <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={COLORS.primary} />
           }
         >
-          {/* Loading skeleton */}
+          {/* Loading skeletons */}
           {loading && reports.length === 0 && (
             Array.from({ length: 3 }).map((_, i) => (
               <View
@@ -633,97 +640,42 @@ export default function HistoryScreen() {
 
           {/* Empty state */}
           {!loading && sorted.length === 0 && (
-            <Animated.View
-              entering={FadeIn.duration(600)}
-              style={{ alignItems: 'center', paddingTop: 80 }}
-            >
+            <Animated.View entering={FadeIn.duration(600)} style={{ alignItems: 'center', paddingTop: 80 }}>
               <View style={{
                 width: 80, height: 80, borderRadius: 24,
                 backgroundColor: COLORS.backgroundElevated,
                 alignItems: 'center', justifyContent: 'center',
                 marginBottom: SPACING.lg,
               }}>
-                <Ionicons
-                  name={filter === 'bookmarked' ? 'bookmark-outline' : 'time-outline'}
-                  size={36}
-                  color={COLORS.border}
-                />
+                <Ionicons name="time-outline" size={36} color={COLORS.border} />
               </View>
 
-              <Text style={{
-                color: COLORS.textPrimary,
-                fontSize: FONTS.sizes.lg,
-                fontWeight: '700',
-                textAlign: 'center',
-              }}>
-                {filter === 'bookmarked'
-                  ? 'No bookmarks yet'
-                  : searchQuery
-                  ? 'No results found'
-                  : 'No research yet'}
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700', textAlign: 'center' }}>
+                {searchQuery ? 'No results found' : 'No research yet'}
+              </Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', marginTop: SPACING.sm, lineHeight: 20, paddingHorizontal: SPACING.xl }}>
+                {searchQuery ? 'Try a different search term' : 'Start your first research on the Home tab'}
               </Text>
 
-              <Text style={{
-                color: COLORS.textMuted,
-                fontSize: FONTS.sizes.sm,
-                textAlign: 'center',
-                marginTop: SPACING.sm,
-                lineHeight: 20,
-                paddingHorizontal: SPACING.xl,
-              }}>
-                {filter === 'bookmarked'
-                  ? 'Tap the bookmark icon on any report to save it here'
-                  : searchQuery
-                  ? 'Try a different search term'
-                  : 'Start your first research on the Home tab'}
-              </Text>
-
-              {/* Show All / Start Research buttons */}
               {filter !== 'all' && (
                 <TouchableOpacity
                   onPress={() => setFilter('all')}
-                  style={{
-                    marginTop: SPACING.lg,
-                    backgroundColor: `${COLORS.primary}20`,
-                    borderRadius: RADIUS.full,
-                    paddingHorizontal: SPACING.xl,
-                    paddingVertical: 12,
-                    borderWidth: 1,
-                    borderColor: `${COLORS.primary}40`,
-                  }}
+                  style={{ marginTop: SPACING.lg, backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full, paddingHorizontal: SPACING.xl, paddingVertical: 12, borderWidth: 1, borderColor: `${COLORS.primary}40` }}
                 >
-                  <Text style={{
-                    color: COLORS.primary,
-                    fontWeight: '700',
-                    fontSize: FONTS.sizes.base,
-                  }}>
+                  <Text style={{ color: COLORS.primary, fontWeight: '700', fontSize: FONTS.sizes.base }}>
                     Show All Reports
                   </Text>
                 </TouchableOpacity>
               )}
 
               {filter === 'all' && !searchQuery && (
-                <TouchableOpacity
-                  onPress={() => router.push('/(app)/(tabs)/home')}
-                  style={{ marginTop: SPACING.lg }}
-                >
+                <TouchableOpacity onPress={() => router.push('/(app)/(tabs)/home')} style={{ marginTop: SPACING.lg }}>
                   <LinearGradient
                     colors={COLORS.gradientPrimary}
-                    style={{
-                      borderRadius: RADIUS.full,
-                      paddingHorizontal: SPACING.xl,
-                      paddingVertical: 12,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
+                    style={{ borderRadius: RADIUS.full, paddingHorizontal: SPACING.xl, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }}
                   >
                     <Ionicons name="telescope-outline" size={18} color="#FFF" />
-                    <Text style={{
-                      color: '#FFF',
-                      fontWeight: '700',
-                      fontSize: FONTS.sizes.base,
-                    }}>
+                    <Text style={{ color: '#FFF', fontWeight: '700', fontSize: FONTS.sizes.base }}>
                       Start Research
                     </Text>
                   </LinearGradient>
@@ -737,51 +689,27 @@ export default function HistoryScreen() {
             <>
               {/* Bookmarked section header */}
               {filter === 'all' && sorted.some((r) => r.isPinned) && (
-                <View style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginBottom: SPACING.sm,
-                }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
                   <Ionicons name="bookmark" size={13} color={COLORS.warning} />
-                  <Text style={{
-                    color: COLORS.warning,
-                    fontSize: FONTS.sizes.xs,
-                    fontWeight: '700',
-                    letterSpacing: 0.8,
-                    textTransform: 'uppercase',
-                  }}>
+                  <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' }}>
                     Bookmarked
                   </Text>
                 </View>
               )}
 
               {sorted.map((report, i) => {
-                // Divider between pinned and regular sections
                 const showDivider =
                   filter === 'all' &&
                   i > 0 &&
-                  (sorted[i - 1].isPinned ?? false) &&
-                  !(report.isPinned ?? false);
+                  (sorted[i - 1].isPinned === true) &&
+                  (report.isPinned !== true);
 
                 return (
                   <React.Fragment key={report.id}>
                     {showDivider && (
-                      <View style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                        marginBottom: SPACING.sm,
-                        marginTop: SPACING.xs,
-                      }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.xs }}>
                         <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
-                        <Text style={{
-                          color: COLORS.textMuted,
-                          fontSize: FONTS.sizes.xs,
-                          fontWeight: '600',
-                          textTransform: 'uppercase',
-                          letterSpacing: 0.8,
-                        }}>
+                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 }}>
                           Recent
                         </Text>
                         <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
@@ -794,12 +722,7 @@ export default function HistoryScreen() {
                       compareMode={compareMode}
                       isSelected={selectedIds.includes(report.id)}
                       onToggleSelect={() => toggleSelect(report.id)}
-                      onOpen={() =>
-                        router.push({
-                          pathname: '/(app)/research-report' as any,
-                          params: { reportId: report.id },
-                        })
-                      }
+                      onOpen={() => router.push({ pathname: '/(app)/research-report' as any, params: { reportId: report.id } })}
                       onDelete={() => handleDelete(report)}
                       onToggleBookmark={() => handleToggleBookmark(report)}
                     />
