@@ -207,7 +207,6 @@ function buildReportHTML(report: ResearchReport, includeVisuals: boolean): strin
     <div>
       <span class="badge">${DEPTH_LABEL[report.depth] ?? 'Research'}</span>
       <span class="badge">DeepDive AI</span>
-      ${report.isPublic ? '<span class="badge">Public Report</span>' : ''}
     </div>
     <div class="meta">
       ${formatDate(report.createdAt)} · ${report.sourcesCount} sources · Reliability: ${report.reliabilityScore}/10
