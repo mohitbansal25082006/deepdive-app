@@ -1,9 +1,5 @@
 // app/(app)/research-report.tsx
-// Part 4 — fixes:
-//   1. Visual toggle no longer causes content overlap (InfographicsPanel
-//      receives correct availableWidth; no absolute positioning anywhere).
-//   2. Knowledge-graph button only shows after report loads.
-//   3. ShareSheet replaces bare Share.share call.
+// Part 4 — public share link removed; ShareSheet now summary-only.
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -32,7 +28,6 @@ import { exportReportAsPDF }       from '../../src/services/pdfExport';
 import { cacheReport, getCachedReport } from '../../src/lib/offlineCache';
 
 const SCREEN_W = Dimensions.get('window').width;
-// Width the InfographicsPanel can use (screen − outer padding × 2)
 const PANEL_W  = SCREEN_W - SPACING.lg * 2;
 
 const DEPTH_LABELS: Record<string, string> = {
@@ -43,32 +38,23 @@ export default function ResearchReportScreen() {
   const { reportId } = useLocalSearchParams<{ reportId: string }>();
   const insets = useSafeAreaInsets();
 
-  const [report,          setReport]          = useState<ResearchReport | null>(null);
-  const [loading,         setLoading]         = useState(true);
-  const [activeTab,       setActiveTab]       = useState<'report' | 'findings' | 'sources'>('report');
-  const [showChat,        setShowChat]        = useState(false);
-  const [showCitations,   setShowCitations]   = useState(false);
-  const [showShareSheet,  setShowShareSheet]  = useState(false);
-  const [exporting,       setExporting]       = useState(false);
-  const [isFromCache,     setIsFromCache]     = useState(false);
-  const [visualMode,      setVisualMode]      = useState(true);
+  const [report,         setReport]         = useState<ResearchReport | null>(null);
+  const [loading,        setLoading]        = useState(true);
+  const [activeTab,      setActiveTab]      = useState<'report' | 'findings' | 'sources'>('report');
+  const [showChat,       setShowChat]       = useState(false);
+  const [showCitations,  setShowCitations]  = useState(false);
+  const [showShareSheet, setShowShareSheet] = useState(false);
+  const [exporting,      setExporting]      = useState(false);
+  const [isFromCache,    setIsFromCache]    = useState(false);
+  const [visualMode,     setVisualMode]     = useState(true);
 
-  // ── Load report ──────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!reportId) return;
-    loadReport();
-  }, [reportId]);
+  useEffect(() => { if (reportId) loadReport(); }, [reportId]);
 
   const loadReport = async () => {
     setLoading(true);
     try {
       const cached = await getCachedReport(reportId);
-      if (cached) {
-        setReport(cached);
-        setIsFromCache(true);
-        setLoading(false);
-      }
+      if (cached) { setReport(cached); setIsFromCache(true); setLoading(false); }
 
       const { data, error } = await supabase
         .from('research_reports')
@@ -82,34 +68,32 @@ export default function ResearchReportScreen() {
       }
 
       const mapped: ResearchReport = {
-        id:               data.id,
-        userId:           data.user_id,
-        query:            data.query,
-        depth:            data.depth,
-        focusAreas:       data.focus_areas        ?? [],
-        title:            data.title              ?? data.query,
-        executiveSummary: data.executive_summary  ?? '',
-        sections:         data.sections           ?? [],
-        keyFindings:      data.key_findings       ?? [],
-        futurePredictions:data.future_predictions ?? [],
-        citations:        data.citations          ?? [],
-        statistics:       data.statistics         ?? [],
-        searchQueries:    data.search_queries     ?? [],
-        sourcesCount:     data.sources_count      ?? 0,
-        reliabilityScore: data.reliability_score  ?? 0,
-        status:           data.status,
-        agentLogs:        data.agent_logs         ?? [],
-        isPinned:         data.is_pinned          ?? false,
-        exportCount:      data.export_count       ?? 0,
-        viewCount:        data.view_count         ?? 0,
-        knowledgeGraph:   data.knowledge_graph    ?? undefined,
-        infographicData:  data.infographic_data   ?? undefined,
-        sourceImages:     data.source_images      ?? [],
-        isPublic:         data.is_public          ?? false,
-        publicToken:      data.public_token       ?? undefined,
-        publicViewCount:  data.public_view_count  ?? 0,
-        createdAt:        data.created_at,
-        completedAt:      data.completed_at,
+        id:                data.id,
+        userId:            data.user_id,
+        query:             data.query,
+        depth:             data.depth,
+        focusAreas:        data.focus_areas        ?? [],
+        title:             data.title              ?? data.query,
+        executiveSummary:  data.executive_summary  ?? '',
+        sections:          data.sections           ?? [],
+        keyFindings:       data.key_findings       ?? [],
+        futurePredictions: data.future_predictions ?? [],
+        citations:         data.citations          ?? [],
+        statistics:        data.statistics         ?? [],
+        searchQueries:     data.search_queries     ?? [],
+        sourcesCount:      data.sources_count      ?? 0,
+        reliabilityScore:  data.reliability_score  ?? 0,
+        status:            data.status,
+        errorMessage:      data.error_message,
+        agentLogs:         data.agent_logs         ?? [],
+        isPinned:          data.is_pinned          ?? false,
+        exportCount:       data.export_count       ?? 0,
+        viewCount:         data.view_count         ?? 0,
+        knowledgeGraph:    data.knowledge_graph    ?? undefined,
+        infographicData:   data.infographic_data   ?? undefined,
+        sourceImages:      data.source_images      ?? [],
+        createdAt:         data.created_at,
+        completedAt:       data.completed_at,
       };
 
       setReport(mapped);
@@ -119,7 +103,6 @@ export default function ResearchReportScreen() {
         .from('research_reports')
         .update({ view_count: (data.view_count ?? 0) + 1 })
         .eq('id', reportId);
-
     } catch (err) {
       console.error('[ResearchReport] load error:', err);
     } finally {
@@ -128,8 +111,6 @@ export default function ResearchReportScreen() {
   };
 
   const conversation = useConversation(report!);
-
-  // ── Actions ──────────────────────────────────────────────────────────────
 
   const handleExportPDF = async () => {
     if (!report || exporting) return;
@@ -155,11 +136,7 @@ export default function ResearchReportScreen() {
   };
 
   const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString('en-US', {
-      month: 'short', day: 'numeric', year: 'numeric',
-    });
-
-  // ── Derived ──────────────────────────────────────────────────────────────
+    new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   const reliabilityColor =
     (report?.reliabilityScore ?? 0) >= 8 ? COLORS.success
@@ -172,12 +149,8 @@ export default function ResearchReportScreen() {
     (report?.sourceImages?.length           ?? 0) > 0 ||
     !!report?.knowledgeGraph;
 
-  // ── Loading / empty guards ────────────────────────────────────────────────
-
   if (loading && !report) return <LoadingOverlay visible message="Loading report…" />;
   if (!report) return null;
-
-  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -193,8 +166,7 @@ export default function ResearchReportScreen() {
             style={{
               flexDirection: 'row', alignItems: 'center',
               paddingHorizontal: SPACING.lg,
-              paddingTop: SPACING.sm,
-              paddingBottom: SPACING.sm,
+              paddingTop: SPACING.sm, paddingBottom: SPACING.sm,
               borderBottomWidth: 1, borderBottomColor: COLORS.border,
             }}
           >
@@ -219,19 +191,8 @@ export default function ResearchReportScreen() {
                     <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '700' }}>OFFLINE</Text>
                   </View>
                 )}
-                {report.isPublic && (
-                  <View style={{
-                    backgroundColor: `${COLORS.success}20`, borderRadius: RADIUS.sm,
-                    paddingHorizontal: 6, paddingVertical: 2, flexShrink: 0,
-                  }}>
-                    <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>PUBLIC</Text>
-                  </View>
-                )}
                 <Text
-                  style={{
-                    color: COLORS.textPrimary, fontSize: FONTS.sizes.base,
-                    fontWeight: '700', flex: 1,
-                  }}
+                  style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1 }}
                   numberOfLines={1}
                 >
                   {report.title}
@@ -242,18 +203,14 @@ export default function ResearchReportScreen() {
               </Text>
             </View>
 
-            {/* Knowledge Graph shortcut — only when graph exists */}
+            {/* Knowledge Graph shortcut */}
             {report.knowledgeGraph && (
               <TouchableOpacity
-                onPress={() => router.push({
-                  pathname: '/(app)/knowledge-graph' as any,
-                  params: { reportId: report.id },
-                })}
+                onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
                 style={{
                   width: 38, height: 38, borderRadius: 12,
                   backgroundColor: `${COLORS.primary}15`,
-                  alignItems: 'center', justifyContent: 'center',
-                  marginRight: 6,
+                  alignItems: 'center', justifyContent: 'center', marginRight: 6,
                   borderWidth: 1, borderColor: `${COLORS.primary}30`,
                 }}
               >
@@ -277,7 +234,7 @@ export default function ResearchReportScreen() {
               }
             </TouchableOpacity>
 
-            {/* Share sheet */}
+            {/* Share */}
             <TouchableOpacity
               onPress={() => setShowShareSheet(true)}
               style={{
@@ -290,19 +247,15 @@ export default function ResearchReportScreen() {
             </TouchableOpacity>
           </Animated.View>
 
-          {/* ── Visual Toggle Bar ── */}
+          {/* ── Visual Toggle ── */}
           {hasVisuals && (
-            <View
-              style={{
-                flexDirection: 'row', alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingHorizontal: SPACING.lg,
-                paddingVertical: SPACING.sm,
-                backgroundColor: visualMode ? `${COLORS.primary}08` : COLORS.background,
-                borderBottomWidth: 1,
-                borderBottomColor: visualMode ? `${COLORS.primary}15` : COLORS.border,
-              }}
-            >
+            <View style={{
+              flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+              paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+              backgroundColor: visualMode ? `${COLORS.primary}08` : COLORS.background,
+              borderBottomWidth: 1,
+              borderBottomColor: visualMode ? `${COLORS.primary}15` : COLORS.border,
+            }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <LinearGradient
                   colors={visualMode ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']}
@@ -314,9 +267,7 @@ export default function ResearchReportScreen() {
                   <Ionicons name="bar-chart-outline" size={14} color="#FFF" />
                 </LinearGradient>
                 <View>
-                  <Text style={{
-                    color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600',
-                  }}>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
                     Visual Mode
                   </Text>
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
@@ -326,26 +277,17 @@ export default function ResearchReportScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                {/* Knowledge graph button */}
                 <TouchableOpacity
-                  onPress={() => router.push({
-                    pathname: '/(app)/knowledge-graph' as any,
-                    params: { reportId: report.id },
-                  })}
+                  onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
                   style={{
                     flexDirection: 'row', alignItems: 'center', gap: 4,
                     backgroundColor: COLORS.backgroundElevated,
-                    borderRadius: RADIUS.full,
-                    paddingHorizontal: 10, paddingVertical: 5,
+                    borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5,
                     borderWidth: 1, borderColor: COLORS.border,
                   }}
                 >
                   <Ionicons name="git-network-outline" size={12} color={COLORS.textMuted} />
-                  <Text style={{
-                    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                  }}>
-                    Graph
-                  </Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Graph</Text>
                 </TouchableOpacity>
 
                 <Switch
@@ -361,10 +303,8 @@ export default function ResearchReportScreen() {
 
           {/* ── Tabs ── */}
           <View style={{
-            flexDirection: 'row',
-            paddingHorizontal: SPACING.lg,
-            paddingVertical: SPACING.sm,
-            gap: SPACING.sm,
+            flexDirection: 'row', paddingHorizontal: SPACING.lg,
+            paddingVertical: SPACING.sm, gap: SPACING.sm,
           }}>
             {(['report', 'findings', 'sources'] as const).map(tab => (
               <TouchableOpacity
@@ -386,7 +326,7 @@ export default function ResearchReportScreen() {
             ))}
           </View>
 
-          {/* ── Scrollable content ── */}
+          {/* ── Content ── */}
           <ScrollView
             contentContainerStyle={{
               paddingHorizontal: SPACING.lg,
@@ -396,7 +336,6 @@ export default function ResearchReportScreen() {
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-
             {/* Stats row */}
             <Animated.View
               entering={FadeInDown.duration(400)}
@@ -407,15 +346,11 @@ export default function ResearchReportScreen() {
                 { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary },
                 { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
               ].map(stat => (
-                <View
-                  key={stat.label}
-                  style={{
-                    flex: 1, backgroundColor: COLORS.backgroundCard,
-                    borderRadius: RADIUS.lg, padding: SPACING.sm,
-                    alignItems: 'center',
-                    borderWidth: 1, borderColor: COLORS.border,
-                  }}
-                >
+                <View key={stat.label} style={{
+                  flex: 1, backgroundColor: COLORS.backgroundCard,
+                  borderRadius: RADIUS.lg, padding: SPACING.sm,
+                  alignItems: 'center', borderWidth: 1, borderColor: COLORS.border,
+                }}>
                   <Ionicons name={stat.icon as any} size={16} color={stat.color} />
                   <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '800', marginTop: 4 }}>
                     {stat.value}
@@ -427,31 +362,20 @@ export default function ResearchReportScreen() {
               ))}
             </Animated.View>
 
-            {/* ══════════════════════════════════════
-                REPORT TAB
-            ══════════════════════════════════════ */}
+            {/* ── REPORT TAB ── */}
             {activeTab === 'report' && (
               <>
-                {/* Infographics — rendered BEFORE executive summary, full width */}
                 {visualMode && report.infographicData && (
-                  <Animated.View
-                    entering={FadeInDown.duration(400)}
-                    style={{ marginBottom: SPACING.lg }}
-                  >
-                    <InfographicsPanel
-                      data={report.infographicData}
-                      availableWidth={PANEL_W}
-                    />
+                  <Animated.View entering={FadeInDown.duration(400)} style={{ marginBottom: SPACING.lg }}>
+                    <InfographicsPanel data={report.infographicData} availableWidth={PANEL_W} />
                   </Animated.View>
                 )}
 
-                {/* Executive Summary */}
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                   <LinearGradient
                     colors={['#1A1A35', '#12122A']}
                     style={{
-                      borderRadius: RADIUS.xl,
-                      padding: SPACING.lg,
+                      borderRadius: RADIUS.xl, padding: SPACING.lg,
                       marginBottom: SPACING.lg,
                       borderWidth: 1, borderColor: `${COLORS.primary}25`,
                     }}
@@ -461,27 +385,21 @@ export default function ResearchReportScreen() {
                         colors={COLORS.gradientPrimary}
                         style={{
                           width: 32, height: 32, borderRadius: 10,
-                          alignItems: 'center', justifyContent: 'center',
-                          marginRight: SPACING.sm,
+                          alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm,
                         }}
                       >
                         <Ionicons name="newspaper-outline" size={16} color="#FFF" />
                       </LinearGradient>
-                      <Text style={{
-                        color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700',
-                      }}>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
                         Executive Summary
                       </Text>
                     </View>
-                    <Text style={{
-                      color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22,
-                    }}>
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>
                       {report.executiveSummary}
                     </Text>
                   </LinearGradient>
                 </Animated.View>
 
-                {/* Report sections */}
                 {report.sections.map((section, i) => (
                   <ReportSectionCard
                     key={section.id ?? i}
@@ -491,22 +409,17 @@ export default function ResearchReportScreen() {
                   />
                 ))}
 
-                {/* Knowledge Graph promo card */}
                 {visualMode && (
                   <Animated.View entering={FadeInDown.duration(400)}>
                     <TouchableOpacity
-                      onPress={() => router.push({
-                        pathname: '/(app)/knowledge-graph' as any,
-                        params: { reportId: report.id },
-                      })}
+                      onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
                       activeOpacity={0.85}
                       style={{ marginBottom: SPACING.lg }}
                     >
                       <LinearGradient
                         colors={['#1A1A35', '#12122A']}
                         style={{
-                          borderRadius: RADIUS.xl,
-                          padding: SPACING.lg,
+                          borderRadius: RADIUS.xl, padding: SPACING.lg,
                           borderWidth: 1, borderColor: `${COLORS.primary}25`,
                           flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
                         }}
@@ -521,9 +434,7 @@ export default function ResearchReportScreen() {
                           <Ionicons name="git-network" size={22} color="#FFF" />
                         </LinearGradient>
                         <View style={{ flex: 1 }}>
-                          <Text style={{
-                            color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700',
-                          }}>
+                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
                             Knowledge Graph
                           </Text>
                           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 }}>
@@ -541,9 +452,7 @@ export default function ResearchReportScreen() {
               </>
             )}
 
-            {/* ══════════════════════════════════════
-                FINDINGS TAB
-            ══════════════════════════════════════ */}
+            {/* ── FINDINGS TAB ── */}
             {activeTab === 'findings' && (
               <>
                 <Text style={{
@@ -553,17 +462,13 @@ export default function ResearchReportScreen() {
                   Key Findings
                 </Text>
                 {report.keyFindings.map((finding, i) => (
-                  <View
-                    key={i}
-                    style={{
-                      backgroundColor: COLORS.backgroundCard,
-                      borderRadius: RADIUS.lg, padding: SPACING.md,
-                      marginBottom: SPACING.sm,
-                      flexDirection: 'row', alignItems: 'flex-start',
-                      borderWidth: 1, borderColor: COLORS.border,
-                      borderLeftWidth: 3, borderLeftColor: COLORS.primary,
-                    }}
-                  >
+                  <View key={i} style={{
+                    backgroundColor: COLORS.backgroundCard,
+                    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+                    flexDirection: 'row', alignItems: 'flex-start',
+                    borderWidth: 1, borderColor: COLORS.border,
+                    borderLeftWidth: 3, borderLeftColor: COLORS.primary,
+                  }}>
                     <View style={{
                       width: 24, height: 24, borderRadius: 12,
                       backgroundColor: `${COLORS.primary}20`,
@@ -574,9 +479,7 @@ export default function ResearchReportScreen() {
                         {i + 1}
                       </Text>
                     </View>
-                    <Text style={{
-                      color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1,
-                    }}>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
                       {finding}
                     </Text>
                   </View>
@@ -592,23 +495,14 @@ export default function ResearchReportScreen() {
                       Future Predictions
                     </Text>
                     {report.futurePredictions.map((pred, i) => (
-                      <View
-                        key={i}
-                        style={{
-                          backgroundColor: `${COLORS.warning}10`,
-                          borderRadius: RADIUS.lg, padding: SPACING.md,
-                          marginBottom: SPACING.sm,
-                          flexDirection: 'row', alignItems: 'flex-start',
-                          borderWidth: 1, borderColor: `${COLORS.warning}25`,
-                        }}
-                      >
-                        <Ionicons
-                          name="telescope-outline" size={16} color={COLORS.warning}
-                          style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }}
-                        />
-                        <Text style={{
-                          color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1,
-                        }}>
+                      <View key={i} style={{
+                        backgroundColor: `${COLORS.warning}10`,
+                        borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+                        flexDirection: 'row', alignItems: 'flex-start',
+                        borderWidth: 1, borderColor: `${COLORS.warning}25`,
+                      }}>
+                        <Ionicons name="telescope-outline" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
+                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
                           {pred}
                         </Text>
                       </View>
@@ -626,15 +520,11 @@ export default function ResearchReportScreen() {
                       Key Statistics
                     </Text>
                     {report.statistics.slice(0, 10).map((stat, i) => (
-                      <View
-                        key={i}
-                        style={{
-                          backgroundColor: COLORS.backgroundCard,
-                          borderRadius: RADIUS.lg, padding: SPACING.md,
-                          marginBottom: SPACING.sm,
-                          borderWidth: 1, borderColor: COLORS.border,
-                        }}
-                      >
+                      <View key={i} style={{
+                        backgroundColor: COLORS.backgroundCard,
+                        borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+                        borderWidth: 1, borderColor: COLORS.border,
+                      }}>
                         <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>
                           {stat.value}
                         </Text>
@@ -651,23 +541,14 @@ export default function ResearchReportScreen() {
               </>
             )}
 
-            {/* ══════════════════════════════════════
-                SOURCES TAB
-            ══════════════════════════════════════ */}
+            {/* ── SOURCES TAB ── */}
             {activeTab === 'sources' && (
               <>
-                {/* Source image gallery when visual mode on */}
                 {visualMode && (report.sourceImages?.length ?? 0) > 0 && (
-                  <SourceImageGallery
-                    images={report.sourceImages!}
-                    title="Source Images"
-                  />
+                  <SourceImageGallery images={report.sourceImages!} title="Source Images" />
                 )}
 
-                <View style={{
-                  flexDirection: 'row', justifyContent: 'space-between',
-                  alignItems: 'center', marginBottom: SPACING.md,
-                }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
                   <Text style={{
                     color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
                     letterSpacing: 1, textTransform: 'uppercase',
@@ -677,17 +558,14 @@ export default function ResearchReportScreen() {
                   <TouchableOpacity
                     onPress={() => setShowCitations(true)}
                     style={{
-                      backgroundColor: `${COLORS.primary}15`,
-                      borderRadius: RADIUS.full,
+                      backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
                       paddingHorizontal: 12, paddingVertical: 6,
                       flexDirection: 'row', alignItems: 'center', gap: 6,
                       borderWidth: 1, borderColor: `${COLORS.primary}30`,
                     }}
                   >
                     <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
-                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                      Cite
-                    </Text>
+                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -698,8 +576,7 @@ export default function ResearchReportScreen() {
                     activeOpacity={0.7}
                     style={{
                       backgroundColor: COLORS.backgroundCard,
-                      borderRadius: RADIUS.lg, padding: SPACING.md,
-                      marginBottom: SPACING.sm,
+                      borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
                       borderWidth: 1, borderColor: COLORS.border,
                     }}
                   >
@@ -707,23 +584,14 @@ export default function ResearchReportScreen() {
                       <View style={{
                         width: 22, height: 22, borderRadius: 6,
                         backgroundColor: `${COLORS.primary}20`,
-                        alignItems: 'center', justifyContent: 'center',
-                        marginRight: 8, flexShrink: 0,
+                        alignItems: 'center', justifyContent: 'center', marginRight: 8, flexShrink: 0,
                       }}>
-                        <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>
-                          {i + 1}
-                        </Text>
+                        <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{i + 1}</Text>
                       </View>
-                      <Text style={{
-                        color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
-                        fontWeight: '600', flex: 1, lineHeight: 20,
-                      }}>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 }}>
                         {c.title}
                       </Text>
-                      <Ionicons
-                        name="open-outline" size={16} color={COLORS.primary}
-                        style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }}
-                      />
+                      <Ionicons name="open-outline" size={16} color={COLORS.primary} style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
                     </View>
                     <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>
                       {c.source}{c.date ? ` · ${c.date}` : ''}
@@ -731,16 +599,6 @@ export default function ResearchReportScreen() {
                     <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
                       {c.snippet}
                     </Text>
-                    <View style={{
-                      flexDirection: 'row', alignItems: 'center', marginTop: 8,
-                      backgroundColor: `${COLORS.primary}10`,
-                      borderRadius: RADIUS.sm, paddingHorizontal: 8, paddingVertical: 4,
-                    }}>
-                      <Ionicons name="link-outline" size={12} color={COLORS.primary} style={{ marginRight: 4 }} />
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, flex: 1 }} numberOfLines={1}>
-                        {c.url}
-                      </Text>
-                    </View>
                   </TouchableOpacity>
                 ))}
 
@@ -753,20 +611,13 @@ export default function ResearchReportScreen() {
                       Search Queries Executed
                     </Text>
                     {report.searchQueries.map((q, i) => (
-                      <View
-                        key={i}
-                        style={{
-                          backgroundColor: COLORS.backgroundElevated,
-                          borderRadius: RADIUS.md,
-                          paddingHorizontal: SPACING.md, paddingVertical: 8,
-                          marginBottom: 6,
-                          flexDirection: 'row', alignItems: 'center',
-                        }}
-                      >
+                      <View key={i} style={{
+                        backgroundColor: COLORS.backgroundElevated,
+                        borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 8,
+                        marginBottom: 6, flexDirection: 'row', alignItems: 'center',
+                      }}>
                         <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 8 }} />
-                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs }}>
-                          {q}
-                        </Text>
+                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs }}>{q}</Text>
                       </View>
                     ))}
                   </View>
@@ -790,8 +641,7 @@ export default function ResearchReportScreen() {
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                   style={{
                     borderRadius: RADIUS.full, paddingVertical: 14,
-                    alignItems: 'center',
-                    flexDirection: 'row', justifyContent: 'center', gap: 8,
+                    alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8,
                   }}
                 >
                   <Ionicons name="chatbubble-ellipses-outline" size={18} color="#FFF" />
@@ -803,7 +653,7 @@ export default function ResearchReportScreen() {
             </View>
           )}
 
-          {/* ── Follow-up chat panel ── */}
+          {/* ── Follow-up chat ── */}
           {showChat && (
             <View style={{
               backgroundColor: COLORS.backgroundCard,
@@ -842,7 +692,6 @@ export default function ResearchReportScreen() {
         </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* ── Modals ── */}
       <CitationModal
         visible={showCitations}
         citations={report.citations}

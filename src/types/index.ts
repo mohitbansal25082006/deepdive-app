@@ -1,7 +1,8 @@
 // src/types/index.ts
-// Full type definitions — Parts 1 + 2 + 3 + 4
+// Parts 1 + 2 + 3 + 4 — PublicShareInfo removed; ResearchReport no longer
+// has isPublic / publicToken / publicViewCount fields.
 
-// ─── Auth & Profile ──────────────────────────────────────────────────────────
+// ─── Auth & Profile ───────────────────────────────────────────────────────────
 
 export interface Profile {
   id: string;
@@ -92,7 +93,7 @@ export interface SearchBatch {
   results: SearchResult[];
 }
 
-// ─── Analysis Agent output ────────────────────────────────────────────────────
+// ─── Analysis Output ──────────────────────────────────────────────────────────
 
 export interface ExtractedFact {
   claim: string;
@@ -123,7 +124,7 @@ export interface AnalysisOutput {
   contradictions: string[];
 }
 
-// ─── Fact Check output ────────────────────────────────────────────────────────
+// ─── Fact-check Output ────────────────────────────────────────────────────────
 
 export interface FactCheckOutput {
   verifiedFacts: ExtractedFact[];
@@ -240,18 +241,6 @@ export interface SourceImage {
   height?: number;
 }
 
-// ─── Part 4: Public Share ─────────────────────────────────────────────────────
-
-export interface PublicShareInfo {
-  token: string;
-  /** Deep-link URL: deepdiveai://report/{token} — opens the app directly */
-  publicUrl: string;
-  /** Web URL: https://deepdive.app/report/{token} — shown in the UI */
-  webUrl?: string;
-  createdAt: string;
-  viewCount: number;
-}
-
 // ─── Research Report ──────────────────────────────────────────────────────────
 
 export interface ResearchReport {
@@ -283,13 +272,10 @@ export interface ResearchReport {
   exportCount?: number;
   viewCount?: number;
 
-  // Part 4
+  // Part 4 visuals
   knowledgeGraph?: KnowledgeGraph;
   infographicData?: InfographicData;
   sourceImages?: SourceImage[];
-  isPublic?: boolean;
-  publicToken?: string;
-  publicViewCount?: number;
 
   createdAt: string;
   completedAt?: string;
@@ -317,7 +303,7 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
-// ─── Orchestrator callbacks ───────────────────────────────────────────────────
+// ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 export interface OrchestratorCallbacks {
   onStepUpdate: (steps: AgentStep[]) => void;
@@ -326,7 +312,7 @@ export interface OrchestratorCallbacks {
   onError: (message: string) => void;
 }
 
-// ─── Part 3: Stats ────────────────────────────────────────────────────────────
+// ─── Part 3: Stats & Subscription ────────────────────────────────────────────
 
 export interface UserStats {
   totalReports: number;
@@ -336,7 +322,6 @@ export interface UserStats {
   favoriteTopic: string | null;
   reportsThisMonth: number;
   hoursResearched: number;
-  publicReports?: number;
 }
 
 export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
