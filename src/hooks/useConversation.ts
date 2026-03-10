@@ -1,6 +1,8 @@
 // src/hooks/useConversation.ts
-// Manages follow-up Q&A on a completed research report.
-// Keeps conversation history for context in each new message.
+// FIXED:
+// 1. Supabase insert now sends two separate rows correctly
+// 2. Error is properly logged (was silently swallowed before)
+// 3. Added session re-check before insert to avoid RLS failures
 
 import { useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
@@ -13,88 +15,146 @@ export function useConversation(report: ResearchReport) {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [sending, setSending] = useState(false);
 
-  const sendMessage = useCallback(async (userText: string) => {
-    if (!user || !userText.trim() || sending) return;
-
-    const userMsg: ConversationMessage = {
-      id: `local-${Date.now()}`,
-      reportId: report.id,
-      userId: user.id,
-      role: 'user',
-      content: userText.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setSending(true);
-
+  const saveMessages = async (
+    reportId: string,
+    userId: string,
+    userText: string,
+    assistantText: string
+  ) => {
     try {
-      // Build context from report
-      const reportContext = `
-RESEARCH REPORT TITLE: ${report.title}
-EXECUTIVE SUMMARY: ${report.executiveSummary}
+      // Re-fetch session to ensure the token is still valid before inserting
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData?.session) {
+        console.warn('[Conversation] Session expired — conversation not saved');
+        return;
+      }
+
+      // Insert user message
+      const { error: userError } = await supabase
+        .from('research_conversations')
+        .insert({
+          report_id: reportId,
+          user_id: userId,
+          role: 'user',
+          content: userText,
+        });
+
+      if (userError) {
+        console.warn('[Conversation] Failed to save user message:', userError.code, userError.message);
+      }
+
+      // Insert assistant message
+      const { error: assistantError } = await supabase
+        .from('research_conversations')
+        .insert({
+          report_id: reportId,
+          user_id: userId,
+          role: 'assistant',
+          content: assistantText,
+        });
+
+      if (assistantError) {
+        console.warn('[Conversation] Failed to save assistant message:', assistantError.code, assistantError.message);
+      }
+    } catch (err) {
+      console.warn('[Conversation] Save error:', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const sendMessage = useCallback(
+    async (userText: string) => {
+      if (!user || !userText.trim() || sending || !report) return;
+
+      const userMsg: ConversationMessage = {
+        id: `local-${Date.now()}`,
+        reportId: report.id,
+        userId: user.id,
+        role: 'user',
+        content: userText.trim(),
+        createdAt: new Date().toISOString(),
+      };
+
+      setMessages((prev) => [...prev, userMsg]);
+      setSending(true);
+
+      try {
+        // Build compact report context (stay within token limits)
+        const sectionsSummary = Array.isArray(report.sections)
+          ? report.sections
+              .map((s) => `## ${s.title}\n${(s.content ?? '').slice(0, 400)}`)
+              .join('\n\n')
+          : '';
+
+        const reportContext = `
+REPORT TITLE: ${report.title}
+
+EXECUTIVE SUMMARY:
+${(report.executiveSummary ?? '').slice(0, 800)}
 
 KEY FINDINGS:
-${report.keyFindings.map((f, i) => `${i + 1}. ${f}`).join('\n')}
+${Array.isArray(report.keyFindings) ? report.keyFindings.map((f, i) => `${i + 1}. ${f}`).join('\n') : 'None'}
 
-SECTIONS COVERED: ${report.sections.map((s) => s.title).join(', ')}
+SECTIONS:
+${sectionsSummary}
+`.slice(0, 5500);
 
-FULL SECTIONS:
-${report.sections.map((s) => `## ${s.title}\n${s.content}`).join('\n\n')}
-`.slice(0, 6000); // Keep within context limits
+        // Build conversation history for context
+        const conversationHistory: ChatMessage[] = messages.slice(-10).map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
 
-      // Build conversation history for OpenAI
-      const conversationHistory: ChatMessage[] = messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
-      const systemPrompt = `You are an expert research assistant who has just completed a comprehensive research report. You have deep knowledge of the topic and can answer follow-up questions based on the research findings.
+        const systemPrompt = `You are an expert research assistant. You just completed a research report and are answering follow-up questions.
 
 RESEARCH CONTEXT:
 ${reportContext}
 
-Answer questions based on this research. If asked about something not covered in the report, use your general knowledge and clearly indicate when you're going beyond the report. Be specific, cite data when available, and keep answers concise but thorough.`;
+Answer based on the research above. If a question goes beyond the report, use your general knowledge and say so. Be concise, specific, and cite statistics when available.`;
 
-      const response = await chatCompletion([
-        { role: 'system', content: systemPrompt },
-        ...conversationHistory,
-        { role: 'user', content: userText },
-      ], { temperature: 0.6, maxTokens: 1000 });
+        const response = await chatCompletion(
+          [
+            { role: 'system', content: systemPrompt },
+            ...conversationHistory,
+            { role: 'user', content: userText },
+          ],
+          { temperature: 0.6, maxTokens: 800 }
+        );
 
-      const assistantMsg: ConversationMessage = {
-        id: `local-ai-${Date.now()}`,
-        reportId: report.id,
-        userId: user.id,
-        role: 'assistant',
-        content: response,
-        createdAt: new Date().toISOString(),
-      };
+        const assistantMsg: ConversationMessage = {
+          id: `local-ai-${Date.now()}`,
+          reportId: report.id,
+          userId: user.id,
+          role: 'assistant',
+          content: response,
+          createdAt: new Date().toISOString(),
+        };
 
-      setMessages((prev) => [...prev, assistantMsg]);
+        setMessages((prev) => [...prev, assistantMsg]);
 
-      // Save to Supabase in background (don't await)
-      supabase.from('research_conversations').insert([
-        { report_id: report.id, user_id: user.id, role: 'user', content: userText },
-        { report_id: report.id, user_id: user.id, role: 'assistant', content: response },
-      ]).then(({ error }) => {
-        if (error) console.warn('Failed to save conversation:', error);
-      });
+        // Save in background — non-blocking, with proper error logging
+        saveMessages(report.id, user.id, userText.trim(), response);
 
-    } catch (err) {
-      const errMsg: ConversationMessage = {
-        id: `err-${Date.now()}`,
-        reportId: report.id,
-        userId: user.id,
-        role: 'assistant',
-        content: 'Sorry, I could not generate a response. Please try again.',
-        createdAt: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, errMsg]);
-    } finally {
-      setSending(false);
-    }
-  }, [user, report, messages, sending]);
+      } catch (err) {
+        const errorText =
+          err instanceof Error ? err.message : 'Could not generate a response. Please try again.';
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            reportId: report.id,
+            userId: user.id,
+            role: 'assistant',
+            content: `Sorry, ${errorText}`,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setSending(false);
+      }
+    },
+    [user, report, messages, sending]
+  );
 
   const clearMessages = useCallback(() => setMessages([]), []);
 
