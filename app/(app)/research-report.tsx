@@ -1,19 +1,47 @@
 // app/(app)/research-report.tsx
-// Part 4 — public share link removed; ShareSheet now summary-only.
+// Part 5 — Added "Generate Slides" entry point in header + report tab card.
+//
+// ─── FREEZE FIX ───────────────────────────────────────────────────────────────
+//
+//  THE FREEZE: tapping the slides button / any header button froze navigation.
+//
+//  Cause 1 — Header wrapped in `Animated.View entering={FadeIn.duration(400)}`
+//    Every button in the header (back, slides, knowledge-graph, PDF, share) was
+//    inside this animated wrapper. After FadeIn completes, Reanimated leaves a
+//    ghost layout layer that permanently absorbs ALL touch events in that region.
+//    Pressing any header button appeared to fire but the JS responder was locked
+//    by the ghost layer → navigation called but JS thread waited for a responder
+//    release that never came → screen froze.
+//    Ref: github.com/software-mansion/react-native-reanimated/issues/3388
+//         github.com/software-mansion/react-native-reanimated/issues/5850
+//
+//  Cause 2 — AI Slides promo card inside Animated.View entering= with a
+//    TouchableOpacity inside. Same ghost-layer freeze trigger.
+//
+//  Cause 3 — TouchableOpacity uses the JS responder system which Reanimated
+//    intercepts. All TouchableOpacity → Pressable (native touch path).
+//
+//  FIXES:
+//    1. Header → plain View (no Animated wrapper)
+//    2. Slides promo + knowledge graph promo → plain View (no Animated wrapper)
+//    3. All TouchableOpacity → Pressable throughout
+//    4. Animated.View entering= retained ONLY on pure display content
+//       (stats row, executive summary, infographic) — no interactive children
+// ──────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
+  View, Text, ScrollView, Pressable,
   Alert, Linking, KeyboardAvoidingView, Platform,
   ActivityIndicator, Switch, Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 
-import { supabase }               from '../../src/lib/supabase';
+import { supabase }                from '../../src/lib/supabase';
 import { ReportSectionCard }       from '../../src/components/research/ReportSection';
 import { FollowUpChat }            from '../../src/components/research/FollowUpChat';
 import { CitationModal }           from '../../src/components/research/CitationModal';
@@ -21,7 +49,7 @@ import { InfographicsPanel }       from '../../src/components/research/Infograph
 import { SourceImageGallery }      from '../../src/components/research/SourceImageGallery';
 import { ShareSheet }              from '../../src/components/research/ShareSheet';
 import { LoadingOverlay }          from '../../src/components/common/LoadingOverlay';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import { ResearchReport }          from '../../src/types';
 import { useConversation }         from '../../src/hooks/useConversation';
 import { exportReportAsPDF }       from '../../src/services/pdfExport';
@@ -92,6 +120,8 @@ export default function ResearchReportScreen() {
         knowledgeGraph:    data.knowledge_graph    ?? undefined,
         infographicData:   data.infographic_data   ?? undefined,
         sourceImages:      data.source_images      ?? [],
+        presentationId:    data.presentation_id    ?? undefined,
+        slideCount:        data.slide_count        ?? 0,
         createdAt:         data.created_at,
         completedAt:       data.completed_at,
       };
@@ -110,7 +140,7 @@ export default function ResearchReportScreen() {
     }
   };
 
-  const conversation = useConversation(report!);
+  const conversation = useConversation(report as ResearchReport);
 
   const handleExportPDF = async () => {
     if (!report || exporting) return;
@@ -126,6 +156,15 @@ export default function ResearchReportScreen() {
     } finally {
       setExporting(false);
     }
+  };
+
+  // ── Part 5: Navigate to slide generator ──────────────────────────────────
+
+  const handleGenerateSlides = () => {
+    if (!report) return;
+    const params: Record<string, string> = { reportId: report.id };
+    if (report.presentationId) params.presentationId = report.presentationId;
+    router.push({ pathname: '/(app)/slide-preview' as any, params });
   };
 
   const openURL = async (url: string) => {
@@ -149,6 +188,8 @@ export default function ResearchReportScreen() {
     (report?.sourceImages?.length           ?? 0) > 0 ||
     !!report?.knowledgeGraph;
 
+  const hasPresentation = !!report?.presentationId;
+
   if (loading && !report) return <LoadingOverlay visible message="Loading report…" />;
   if (!report) return null;
 
@@ -160,9 +201,13 @@ export default function ResearchReportScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
 
-          {/* ── Header ── */}
-          <Animated.View
-            entering={FadeIn.duration(400)}
+          {/*
+            ── Header ──
+            FIX 1: Plain View — removed Animated.View entering={FadeIn.duration(400)}.
+            The ghost layer was blocking ALL header buttons after the fade animation.
+            FIX 3: All Pressable (not TouchableOpacity).
+          */}
+          <View
             style={{
               flexDirection: 'row', alignItems: 'center',
               paddingHorizontal: SPACING.lg,
@@ -170,8 +215,9 @@ export default function ResearchReportScreen() {
               borderBottomWidth: 1, borderBottomColor: COLORS.border,
             }}
           >
-            <TouchableOpacity
+            <Pressable
               onPress={() => router.push('/(app)/(tabs)/home' as any)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               style={{
                 width: 38, height: 38, borderRadius: 12,
                 backgroundColor: COLORS.backgroundElevated,
@@ -179,7 +225,7 @@ export default function ResearchReportScreen() {
               }}
             >
               <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
-            </TouchableOpacity>
+            </Pressable>
 
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
@@ -205,8 +251,9 @@ export default function ResearchReportScreen() {
 
             {/* Knowledge Graph shortcut */}
             {report.knowledgeGraph && (
-              <TouchableOpacity
+              <Pressable
                 onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={{
                   width: 38, height: 38, borderRadius: 12,
                   backgroundColor: `${COLORS.primary}15`,
@@ -215,28 +262,50 @@ export default function ResearchReportScreen() {
                 }}
               >
                 <Ionicons name="git-network-outline" size={18} color={COLORS.primary} />
-              </TouchableOpacity>
+              </Pressable>
             )}
 
+            {/* ── Part 5: Slides button ── */}
+            <Pressable
+              onPress={handleGenerateSlides}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{
+                width: 38, height: 38, borderRadius: 12,
+                backgroundColor: hasPresentation ? `${COLORS.primary}22` : COLORS.backgroundElevated,
+                alignItems: 'center', justifyContent: 'center', marginRight: 6,
+                borderWidth: 1,
+                borderColor: hasPresentation ? `${COLORS.primary}55` : COLORS.border,
+              }}
+            >
+              <Ionicons
+                name={hasPresentation ? 'easel' : 'easel-outline'}
+                size={18}
+                color={hasPresentation ? COLORS.primary : COLORS.textSecondary}
+              />
+            </Pressable>
+
             {/* PDF Export */}
-            <TouchableOpacity
+            <Pressable
               onPress={handleExportPDF}
               disabled={exporting}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={{
                 width: 38, height: 38, borderRadius: 12,
                 backgroundColor: COLORS.backgroundElevated,
                 alignItems: 'center', justifyContent: 'center', marginRight: 6,
+                opacity: exporting ? 0.6 : 1,
               }}
             >
               {exporting
                 ? <ActivityIndicator size="small" color={COLORS.primary} />
                 : <Ionicons name="download-outline" size={20} color={COLORS.textSecondary} />
               }
-            </TouchableOpacity>
+            </Pressable>
 
             {/* Share */}
-            <TouchableOpacity
+            <Pressable
               onPress={() => setShowShareSheet(true)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={{
                 width: 38, height: 38, borderRadius: 12,
                 backgroundColor: COLORS.backgroundElevated,
@@ -244,8 +313,8 @@ export default function ResearchReportScreen() {
               }}
             >
               <Ionicons name="share-outline" size={20} color={COLORS.textSecondary} />
-            </TouchableOpacity>
-          </Animated.View>
+            </Pressable>
+          </View>
 
           {/* ── Visual Toggle ── */}
           {hasVisuals && (
@@ -277,7 +346,7 @@ export default function ResearchReportScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <TouchableOpacity
+                <Pressable
                   onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
                   style={{
                     flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -288,7 +357,7 @@ export default function ResearchReportScreen() {
                 >
                   <Ionicons name="git-network-outline" size={12} color={COLORS.textMuted} />
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Graph</Text>
-                </TouchableOpacity>
+                </Pressable>
 
                 <Switch
                   value={visualMode}
@@ -307,7 +376,7 @@ export default function ResearchReportScreen() {
             paddingVertical: SPACING.sm, gap: SPACING.sm,
           }}>
             {(['report', 'findings', 'sources'] as const).map(tab => (
-              <TouchableOpacity
+              <Pressable
                 key={tab}
                 onPress={() => setActiveTab(tab)}
                 style={{
@@ -322,12 +391,13 @@ export default function ResearchReportScreen() {
                 }}>
                   {tab.charAt(0).toUpperCase() + tab.slice(1)}
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
             ))}
           </View>
 
           {/* ── Content ── */}
           <ScrollView
+            style={{ flex: 1 }}
             contentContainerStyle={{
               paddingHorizontal: SPACING.lg,
               paddingTop: SPACING.sm,
@@ -336,7 +406,7 @@ export default function ResearchReportScreen() {
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            {/* Stats row */}
+            {/* Stats row — pure display, Animated.View entering= is safe */}
             <Animated.View
               entering={FadeInDown.duration(400)}
               style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}
@@ -366,11 +436,13 @@ export default function ResearchReportScreen() {
             {activeTab === 'report' && (
               <>
                 {visualMode && report.infographicData && (
+                  // Pure display — safe
                   <Animated.View entering={FadeInDown.duration(400)} style={{ marginBottom: SPACING.lg }}>
                     <InfographicsPanel data={report.infographicData} availableWidth={PANEL_W} />
                   </Animated.View>
                 )}
 
+                {/* Executive Summary — pure display, safe */}
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                   <LinearGradient
                     colors={['#1A1A35', '#12122A']}
@@ -400,6 +472,7 @@ export default function ResearchReportScreen() {
                   </LinearGradient>
                 </Animated.View>
 
+                {/* Report sections */}
                 {report.sections.map((section, i) => (
                   <ReportSectionCard
                     key={section.id ?? i}
@@ -409,12 +482,102 @@ export default function ResearchReportScreen() {
                   />
                 ))}
 
+                {/*
+                  ── Part 5: AI Slides promo card ──
+                  FIX 2+3: Plain View wrapper, Pressable button.
+                  Was Animated.View entering= wrapping a TouchableOpacity —
+                  the ghost layer + JS responder = freeze on press.
+                */}
+                <View style={{ marginBottom: SPACING.lg }}>
+                  <Pressable onPress={handleGenerateSlides}>
+                    <LinearGradient
+                      colors={['#1A1A35', '#12122A']}
+                      style={{
+                        borderRadius: RADIUS.xl, padding: SPACING.lg,
+                        borderWidth: 1,
+                        borderColor: hasPresentation ? `${COLORS.primary}50` : `${COLORS.primary}25`,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+                        <LinearGradient
+                          colors={['#6C63FF', '#8B5CF6']}
+                          style={{
+                            width: 48, height: 48, borderRadius: 14,
+                            alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                            ...SHADOWS.medium,
+                          }}
+                        >
+                          <Ionicons name="easel" size={22} color="#FFF" />
+                        </LinearGradient>
+
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+                              {hasPresentation ? 'View Presentation' : 'Generate Slides'}
+                            </Text>
+                            {hasPresentation && (
+                              <View style={{
+                                backgroundColor: `${COLORS.accent}20`,
+                                borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2,
+                                borderWidth: 1, borderColor: `${COLORS.accent}40`,
+                              }}>
+                                <Text style={{ color: COLORS.accent, fontSize: 9, fontWeight: '700' }}>
+                                  {report.slideCount} SLIDES
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                            {hasPresentation
+                              ? 'Your AI presentation is ready · Export as PPTX, PDF or HTML'
+                              : 'Convert this report into a beautiful slide deck with AI'
+                            }
+                          </Text>
+                        </View>
+
+                        <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
+                      </View>
+
+                      <View style={{ flexDirection: 'row', gap: 6, marginTop: SPACING.md, flexWrap: 'wrap' }}>
+                        {[
+                          { label: 'PPTX', icon: 'desktop-outline' },
+                          { label: 'PDF',  icon: 'document-outline' },
+                          { label: 'HTML', icon: 'globe-outline' },
+                        ].map(f => (
+                          <View key={f.label} style={{
+                            flexDirection: 'row', alignItems: 'center', gap: 4,
+                            backgroundColor: `${COLORS.primary}12`,
+                            borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4,
+                            borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                          }}>
+                            <Ionicons name={f.icon as any} size={10} color={COLORS.primary} />
+                            <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{f.label}</Text>
+                          </View>
+                        ))}
+                        {!hasPresentation && (
+                          <View style={{
+                            flexDirection: 'row', alignItems: 'center', gap: 4,
+                            backgroundColor: `${COLORS.accent}12`,
+                            borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4,
+                            borderWidth: 1, borderColor: `${COLORS.accent}25`,
+                          }}>
+                            <Ionicons name="sparkles" size={10} color={COLORS.accent} />
+                            <Text style={{ color: COLORS.accent, fontSize: 10, fontWeight: '700' }}>AI-Generated</Text>
+                          </View>
+                        )}
+                      </View>
+                    </LinearGradient>
+                  </Pressable>
+                </View>
+
+                {/*
+                  Knowledge Graph promo
+                  FIX 2+3: Plain View, Pressable.
+                */}
                 {visualMode && (
-                  <Animated.View entering={FadeInDown.duration(400)}>
-                    <TouchableOpacity
+                  <View style={{ marginBottom: SPACING.lg }}>
+                    <Pressable
                       onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
-                      activeOpacity={0.85}
-                      style={{ marginBottom: SPACING.lg }}
                     >
                       <LinearGradient
                         colors={['#1A1A35', '#12122A']}
@@ -446,8 +609,8 @@ export default function ResearchReportScreen() {
                         </View>
                         <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
                       </LinearGradient>
-                    </TouchableOpacity>
-                  </Animated.View>
+                    </Pressable>
+                  </View>
                 )}
               </>
             )}
@@ -555,7 +718,7 @@ export default function ResearchReportScreen() {
                   }}>
                     {report.citations.length} Sources Used
                   </Text>
-                  <TouchableOpacity
+                  <Pressable
                     onPress={() => setShowCitations(true)}
                     style={{
                       backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
@@ -566,14 +729,13 @@ export default function ResearchReportScreen() {
                   >
                     <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
                     <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
-                  </TouchableOpacity>
+                  </Pressable>
                 </View>
 
                 {report.citations.map((c, i) => (
-                  <TouchableOpacity
+                  <Pressable
                     key={c.id ?? i}
                     onPress={() => openURL(c.url)}
-                    activeOpacity={0.7}
                     style={{
                       backgroundColor: COLORS.backgroundCard,
                       borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
@@ -599,7 +761,7 @@ export default function ResearchReportScreen() {
                     <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
                       {c.snippet}
                     </Text>
-                  </TouchableOpacity>
+                  </Pressable>
                 ))}
 
                 {report.searchQueries.length > 0 && (
@@ -635,7 +797,7 @@ export default function ResearchReportScreen() {
               backgroundColor: 'rgba(10,10,26,0.96)',
               borderTopWidth: 1, borderTopColor: COLORS.border,
             }}>
-              <TouchableOpacity onPress={() => setShowChat(true)} activeOpacity={0.85}>
+              <Pressable onPress={() => setShowChat(true)}>
                 <LinearGradient
                   colors={COLORS.gradientPrimary}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
@@ -649,7 +811,7 @@ export default function ResearchReportScreen() {
                     Ask Follow-Up Questions
                   </Text>
                 </LinearGradient>
-              </TouchableOpacity>
+              </Pressable>
             </View>
           )}
 
@@ -660,7 +822,7 @@ export default function ResearchReportScreen() {
               borderTopWidth: 1, borderTopColor: COLORS.border,
               paddingBottom: insets.bottom,
             }}>
-              <TouchableOpacity
+              <Pressable
                 onPress={() => setShowChat(false)}
                 style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -680,12 +842,14 @@ export default function ResearchReportScreen() {
                   </Text>
                 </View>
                 <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
-              </TouchableOpacity>
-              <FollowUpChat
-                messages={conversation.messages}
-                sending={conversation.sending}
-                onSend={conversation.sendMessage}
-              />
+              </Pressable>
+              {report && (
+                <FollowUpChat
+                  messages={conversation.messages}
+                  sending={conversation.sending}
+                  onSend={conversation.sendMessage}
+                />
+              )}
             </View>
           )}
 

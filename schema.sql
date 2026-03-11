@@ -1,6 +1,6 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1, 2, 3 & 4 combined
+-- Parts 1, 2, 3, 4 & 5 combined
 -- Run this entire script in Supabase SQL Editor
 -- Safe to re-run: uses IF NOT EXISTS + DROP IF EXISTS
 -- ============================================================
@@ -9,6 +9,18 @@
 -- EXTENSIONS
 -- ============================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- ============================================
+-- FUNCTION: auto-update "updated_at" timestamp
+-- (defined early — referenced by multiple triggers)
+-- ============================================
+CREATE OR REPLACE FUNCTION public.handle_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = TIMEZONE('utc', NOW());
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ============================================
 -- PROFILES TABLE
@@ -45,17 +57,11 @@ CREATE POLICY "Users can update own profile"
   ON public.profiles FOR UPDATE
   USING (auth.uid() = id);
 
--- ============================================
--- FUNCTION: auto-update "updated_at" timestamp
--- (defined early — referenced by multiple triggers)
--- ============================================
-CREATE OR REPLACE FUNCTION public.handle_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = TIMEZONE('utc', NOW());
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- Profiles updated_at trigger
+DROP TRIGGER IF EXISTS on_profiles_updated ON public.profiles;
+CREATE TRIGGER on_profiles_updated
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- ============================================
 -- FUNCTION: auto-create profile on signup
@@ -78,12 +84,6 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
--- Profiles updated_at trigger
-DROP TRIGGER IF EXISTS on_profiles_updated ON public.profiles;
-CREATE TRIGGER on_profiles_updated
-  BEFORE UPDATE ON public.profiles
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- ============================================
 -- STORAGE — avatars bucket
@@ -168,6 +168,10 @@ CREATE TABLE IF NOT EXISTS public.research_reports (
   public_token        TEXT     UNIQUE,
   public_view_count   INTEGER  DEFAULT 0,
 
+  -- Part 5 additions
+  presentation_id     UUID     REFERENCES public.presentations(id) ON DELETE SET NULL,
+  slide_count         INTEGER  NOT NULL DEFAULT 0,
+
   -- Timestamps
   created_at          TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
   completed_at        TIMESTAMP WITH TIME ZONE,
@@ -230,6 +234,11 @@ CREATE INDEX IF NOT EXISTS idx_research_reports_public_token
 CREATE INDEX IF NOT EXISTS idx_research_reports_is_public
   ON public.research_reports(is_public)
   WHERE is_public = TRUE;
+
+-- Part 5 index
+CREATE INDEX IF NOT EXISTS idx_research_reports_presentation_id
+  ON public.research_reports(presentation_id)
+  WHERE presentation_id IS NOT NULL;
 
 -- ============================================
 -- RESEARCH CONVERSATIONS TABLE
@@ -401,23 +410,96 @@ CREATE TRIGGER on_auth_user_created_subscription
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user_subscription();
 
--- ============================================
--- FUNCTIONS AND RPCs
--- ============================================
+-- ============================================================
+-- PART 5: PRESENTATIONS TABLE
+-- Stores AI-generated slide decks linked to research reports
+-- ============================================================
 
--- Drop existing function to allow return type change
-DROP FUNCTION IF EXISTS public.get_user_research_stats(UUID);
+CREATE TABLE IF NOT EXISTS public.presentations (
+  id            UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
+  report_id     UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
+  user_id       UUID    REFERENCES auth.users(id)              ON DELETE CASCADE NOT NULL,
 
--- FUNCTION: get user research stats (Parts 3 & 4 combined)
-CREATE FUNCTION public.get_user_research_stats(p_user_id UUID)
+  -- Content
+  title         TEXT    NOT NULL,
+  subtitle      TEXT,
+
+  -- Visual theme: 'dark' | 'light' | 'corporate' | 'vibrant'
+  theme         TEXT    NOT NULL DEFAULT 'dark',
+
+  -- Full slide array (JSONB array of PresentationSlide objects)
+  slides        JSONB   NOT NULL DEFAULT '[]',
+  total_slides  INTEGER NOT NULL DEFAULT 0,
+
+  -- Usage tracking
+  export_count  INTEGER NOT NULL DEFAULT 0,
+
+  -- Timestamps
+  generated_at  TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+  created_at    TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+  updated_at    TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- ── RLS ──────────────────────────────────────────────────────
+
+ALTER TABLE public.presentations ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own presentations"   ON public.presentations;
+DROP POLICY IF EXISTS "Users can insert own presentations" ON public.presentations;
+DROP POLICY IF EXISTS "Users can update own presentations" ON public.presentations;
+DROP POLICY IF EXISTS "Users can delete own presentations" ON public.presentations;
+
+CREATE POLICY "Users can view own presentations"
+  ON public.presentations FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own presentations"
+  ON public.presentations FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own presentations"
+  ON public.presentations FOR UPDATE
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own presentations"
+  ON public.presentations FOR DELETE
+  USING (auth.uid() = user_id);
+
+-- ── Indexes ───────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_presentations_report_id
+  ON public.presentations(report_id);
+
+CREATE INDEX IF NOT EXISTS idx_presentations_user_id
+  ON public.presentations(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_presentations_created_at
+  ON public.presentations(created_at DESC);
+
+-- ── updated_at trigger ────────────────────────────────────────
+
+DROP TRIGGER IF EXISTS on_presentations_updated ON public.presentations;
+CREATE TRIGGER on_presentations_updated
+  BEFORE UPDATE ON public.presentations
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ============================================================
+-- PART 5 RPC: get_presentations_for_report
+-- Fetches all presentations for a report (descending by date)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_presentations_for_report(
+  p_report_id UUID,
+  p_user_id   UUID
+)
 RETURNS TABLE (
-  total_reports       BIGINT,
-  completed_reports   BIGINT,
-  total_sources       BIGINT,
-  avg_reliability     NUMERIC,
-  favorite_topic      TEXT,
-  reports_this_month  BIGINT,
-  public_reports      BIGINT
+  id            UUID,
+  title         TEXT,
+  subtitle      TEXT,
+  theme         TEXT,
+  total_slides  INTEGER,
+  export_count  INTEGER,
+  generated_at  TIMESTAMP WITH TIME ZONE
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -425,43 +507,128 @@ AS $$
 BEGIN
   RETURN QUERY
   SELECT
-    COUNT(*)::BIGINT
+    p.id,
+    p.title,
+    p.subtitle,
+    p.theme,
+    p.total_slides,
+    p.export_count,
+    p.generated_at
+  FROM public.presentations p
+  WHERE p.report_id = p_report_id
+    AND p.user_id   = p_user_id
+  ORDER BY p.generated_at DESC;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_presentations_for_report(UUID, UUID)
+  TO authenticated;
+
+-- ============================================================
+-- PART 5 RPC: increment_presentation_export
+-- Increments the export counter for a presentation
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.increment_presentation_export(
+  p_presentation_id UUID,
+  p_user_id         UUID
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.presentations
+  SET export_count = COALESCE(export_count, 0) + 1
+  WHERE id      = p_presentation_id
+    AND user_id = p_user_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_presentation_export(UUID, UUID)
+  TO authenticated;
+
+-- ============================================
+-- FUNCTIONS AND RPCs
+-- ============================================
+
+-- FUNCTION: get user research stats (Parts 1-5 combined)
+DROP FUNCTION IF EXISTS public.get_user_research_stats(UUID);
+
+CREATE FUNCTION public.get_user_research_stats(p_user_id UUID)
+RETURNS TABLE (
+  total_reports        BIGINT,
+  completed_reports    BIGINT,
+  total_sources        BIGINT,
+  avg_reliability      NUMERIC,
+  favorite_topic       TEXT,
+  reports_this_month   BIGINT,
+  public_reports       BIGINT,
+  total_presentations  BIGINT,
+  total_slides         BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    COUNT(rr.id)::BIGINT
       AS total_reports,
 
-    COUNT(*) FILTER (WHERE status = 'completed')::BIGINT
+    COUNT(rr.id) FILTER (WHERE rr.status = 'completed')::BIGINT
       AS completed_reports,
 
-    COALESCE(SUM(sources_count), 0)::BIGINT
+    COALESCE(SUM(rr.sources_count), 0)::BIGINT
       AS total_sources,
 
     COALESCE(
-      AVG(reliability_score) FILTER (WHERE status = 'completed'), 0
+      AVG(rr.reliability_score) FILTER (WHERE rr.status = 'completed'), 0
     )::NUMERIC
       AS avg_reliability,
 
     (
-      SELECT query
-      FROM   public.research_reports
-      WHERE  user_id = p_user_id
-        AND  status  = 'completed'
-      GROUP  BY query
+      SELECT rr2.query
+      FROM   public.research_reports rr2
+      WHERE  rr2.user_id = p_user_id
+        AND  rr2.status  = 'completed'
+      GROUP  BY rr2.query
       ORDER  BY COUNT(*) DESC
       LIMIT  1
     )
       AS favorite_topic,
 
-    COUNT(*) FILTER (
-      WHERE created_at >= date_trunc('month', NOW())
+    COUNT(rr.id) FILTER (
+      WHERE rr.created_at >= date_trunc('month', NOW())
     )::BIGINT
       AS reports_this_month,
 
-    COUNT(*) FILTER (WHERE is_public = TRUE)::BIGINT
-      AS public_reports
+    COUNT(rr.id) FILTER (WHERE rr.is_public = TRUE)::BIGINT
+      AS public_reports,
 
-  FROM public.research_reports
-  WHERE user_id = p_user_id;
+    -- Part 5: presentations count
+    (
+      SELECT COUNT(p.id)
+      FROM   public.presentations p
+      WHERE  p.user_id = p_user_id
+    )::BIGINT
+      AS total_presentations,
+
+    -- Part 5: slide count — fully qualified to avoid ambiguity
+    (
+      SELECT COALESCE(SUM(p.total_slides), 0)
+      FROM   public.presentations p
+      WHERE  p.user_id = p_user_id
+    )::BIGINT
+      AS total_slides
+
+  FROM public.research_reports rr
+  WHERE rr.user_id = p_user_id;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID)
+  TO authenticated;
 
 -- FUNCTION: fetch public report by token (Part 4)
 CREATE OR REPLACE FUNCTION public.get_public_report(p_token TEXT)
@@ -490,6 +657,9 @@ BEGIN
   RETURN v_report;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.get_public_report(TEXT)
+  TO anon, authenticated;
 
 -- FUNCTION: generate / rotate public token (Part 4)
 CREATE OR REPLACE FUNCTION public.set_report_public(
@@ -529,15 +699,11 @@ BEGIN
 END;
 $$;
 
--- ============================================
--- GRANT PERMISSIONS
--- ============================================
-
-GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID)
-  TO authenticated;
-
-GRANT EXECUTE ON FUNCTION public.get_public_report(TEXT)
-  TO anon, authenticated;
-
 GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN)
   TO authenticated;
+
+-- ============================================================
+-- Done ✓
+-- Run `npx expo install --fix -- --legacy-peer-deps` after
+-- installing pptxgenjs.
+-- ============================================================

@@ -1,6 +1,5 @@
 // src/types/index.ts
-// Parts 1 + 2 + 3 + 4 — PublicShareInfo removed; ResearchReport no longer
-// has isPublic / publicToken / publicViewCount fields.
+// Parts 1 + 2 + 3 + 4 + 5 — Added slide / presentation types for AI Slide Generator
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -277,6 +276,10 @@ export interface ResearchReport {
   infographicData?: InfographicData;
   sourceImages?: SourceImage[];
 
+  // Part 5 — Slide Generator
+  presentationId?: string;
+  slideCount?: number;
+
   createdAt: string;
   completedAt?: string;
 }
@@ -351,4 +354,133 @@ export interface FormattedCitation {
   format: CitationFormat;
   formatted: string;
   raw: Citation;
+}
+
+// ─── Part 5: AI Slide Generator ───────────────────────────────────────────────
+
+/**
+ * Visual layout of a slide.
+ * - title      : Full-screen cover with large title + subtitle
+ * - agenda     : Numbered list of topics/sections (table of contents)
+ * - section    : Divider slide for a new section (big label, minimal text)
+ * - content    : Title + paragraph body text
+ * - bullets    : Title + bulleted list (up to 6 bullets)
+ * - stats      : Title + 3–4 stat cards (value + label)
+ * - quote      : Pull-quote / highlighted key finding
+ * - chart_ref  : Title + reference to infographic data + insight text
+ * - predictions: Title + numbered future outlook items
+ * - references : Title + numbered citation list
+ * - closing    : Thank-you / branding slide
+ */
+export type SlideLayout =
+  | 'title'
+  | 'agenda'
+  | 'section'
+  | 'content'
+  | 'bullets'
+  | 'stats'
+  | 'quote'
+  | 'chart_ref'
+  | 'predictions'
+  | 'references'
+  | 'closing';
+
+/** A single stat displayed on a stats-layout slide */
+export interface SlideStatItem {
+  value: string;
+  label: string;
+  color?: string;   // hex WITH # — used by the app; stripped before pptxgenjs
+}
+
+/** One slide in a generated presentation */
+export interface PresentationSlide {
+  id: string;
+  slideNumber: number;
+  layout: SlideLayout;
+
+  // Primary content — all layouts use at least title
+  title: string;
+
+  // Layout-specific content
+  subtitle?: string;           // title, section, closing
+  body?: string;               // content, chart_ref
+  bullets?: string[];          // bullets, predictions, agenda, references
+  stats?: SlideStatItem[];     // stats
+  quote?: string;              // quote
+  quoteAttribution?: string;   // quote — "— Source, Year"
+  sectionTag?: string;         // section — small label above the big title
+  badgeText?: string;          // title — small top badge e.g. "DeepDive AI · 2024"
+
+  /** Optional presenter notes (not visible on slides) */
+  speakerNotes?: string;
+
+  /** Accent color override (app hex, e.g. '#6C63FF') — defaults to theme primary */
+  accentColor?: string;
+
+  /** Icon name from @expo/vector-icons (Ionicons) — used in app preview only */
+  icon?: string;
+}
+
+/** Available visual themes for a presentation */
+export type PresentationTheme = 'dark' | 'light' | 'corporate' | 'vibrant';
+
+/** Theme colour tokens used by the slide renderer and PPTX builder */
+export interface PresentationThemeTokens {
+  background: string;       // slide background hex (app format WITH #)
+  surface: string;          // card / elevated surface hex
+  primary: string;          // accent / highlight colour hex
+  textPrimary: string;      // heading text hex
+  textSecondary: string;    // body text hex
+  textMuted: string;        // caption / footnote text hex
+  border: string;           // divider / border hex
+  // PPTX versions — same colours WITHOUT the # prefix
+  pptx: {
+    background: string;
+    surface: string;
+    primary: string;
+    textPrimary: string;
+    textSecondary: string;
+    textMuted: string;
+    border: string;
+  };
+}
+
+/** A complete generated presentation */
+export interface GeneratedPresentation {
+  /** Supabase row id (set after persisting, empty string while in-memory) */
+  id: string;
+  reportId: string;
+  userId: string;
+
+  title: string;
+  subtitle: string;
+
+  theme: PresentationTheme;
+  themeTokens: PresentationThemeTokens;
+
+  slides: PresentationSlide[];
+  totalSlides: number;
+
+  generatedAt: string;
+  exportCount: number;
+}
+
+/** State managed by useSlideGenerator */
+export interface SlideGeneratorState {
+  presentation: GeneratedPresentation | null;
+  isGenerating: boolean;
+  isExporting: boolean;
+  exportFormat: SlideExportFormat | null;
+  progress: string;
+  error: string | null;
+}
+
+/** Supported export formats */
+export type SlideExportFormat = 'pptx' | 'pdf' | 'html';
+
+/** Raw output from the slideAgent (before wrapping in GeneratedPresentation) */
+export interface SlideAgentOutput {
+  presentationTitle: string;
+  presentationSubtitle: string;
+  slides: Omit<PresentationSlide, 'slideNumber'>[];
 }
