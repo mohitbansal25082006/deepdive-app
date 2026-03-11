@@ -1,4 +1,8 @@
 // app/(app)/(tabs)/profile.tsx
+// Part 6 — Fixed: DEFAULT_STATS now includes totalAssistantMessages &
+//          reportsWithEmbeddings (Part 6 fields). Previously missing fields
+//          caused a type mismatch that could crash StatsCard on profile mount.
+//
 // Part 3 — Advanced notification toggle:
 //   • Reads persisted enabled state from AsyncStorage on mount (survives app kills).
 //   • Turning ON:  requests OS permission → if already granted, enables immediately
@@ -26,14 +30,14 @@ import { BlurView } from 'expo-blur';
 import * as ImagePicker from 'expo-image-picker';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAuth } from '../../../src/context/AuthContext';
-import { Avatar } from '../../../src/components/common/Avatar';
-import { AnimatedInput } from '../../../src/components/common/AnimatedInput';
-import { GradientButton } from '../../../src/components/common/GradientButton';
-import { LoadingOverlay } from '../../../src/components/common/LoadingOverlay';
-import { StatsCard } from '../../../src/components/profile/StatsCard';
-import { useStats } from '../../../src/hooks/useStats';
-import { useProfile } from '../../../src/hooks/useProfile';
+import { useAuth }          from '../../../src/context/AuthContext';
+import { Avatar }           from '../../../src/components/common/Avatar';
+import { AnimatedInput }    from '../../../src/components/common/AnimatedInput';
+import { GradientButton }   from '../../../src/components/common/GradientButton';
+import { LoadingOverlay }   from '../../../src/components/common/LoadingOverlay';
+import { StatsCard }        from '../../../src/components/profile/StatsCard';
+import { useStats }         from '../../../src/hooks/useStats';
+import { useProfile }       from '../../../src/hooks/useProfile';
 import {
   getNotificationsEnabled,
   enableNotifications,
@@ -44,16 +48,21 @@ import { getCacheSize, clearAllCache } from '../../../src/lib/offlineCache';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
 import { UserStats } from '../../../src/types';
 
-// ─── Default stats (prevents null being passed to StatsCard) ─────────────────
+// ─── Default stats ─────────────────────────────────────────────────────────────
+// Must include ALL fields from UserStats (including Part 6 additions) to prevent
+// a type mismatch from crashing StatsCard when useStats hasn't resolved yet.
 
 const DEFAULT_STATS: UserStats = {
-  totalReports: 0,
-  completedReports: 0,
-  totalSources: 0,
-  avgReliability: 0,
-  favoriteTopic: null,
-  reportsThisMonth: 0,
-  hoursResearched: 0,
+  totalReports:           0,
+  completedReports:       0,
+  totalSources:           0,
+  avgReliability:         0,
+  favoriteTopic:          null,
+  reportsThisMonth:       0,
+  hoursResearched:        0,
+  // Part 6 fields — safe zero defaults
+  totalAssistantMessages: 0,
+  reportsWithEmbeddings:  0,
 };
 
 // ─── Open device app-settings (only called when OS has denied permission) ─────
@@ -144,10 +153,13 @@ function SettingsRow({
 
 export default function ProfileScreen() {
   const { user, profile, signOut, refreshProfile } = useAuth();
-  const { stats } = useStats();
+
+  // useStats now has full error handling — never throws, always returns safe defaults
+  const { stats, loading: statsLoading } = useStats();
+
   const { updateProfile, uploadAvatar, updating, uploading } = useProfile();
 
-  // Notification toggle — initialised from AsyncStorage (persisted across restarts)
+  // Notification toggle
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notifLoading, setNotifLoading]                  = useState(false);
 
@@ -163,16 +175,16 @@ export default function ProfileScreen() {
   // ── On mount: read persisted notification state ────────────────────────────
   useEffect(() => {
     (async () => {
-      // Reconcile stored preference with actual OS permission.
-      // If permission was revoked externally (e.g. user went to Settings and
-      // turned it off), we honour that by marking our state as disabled too.
-      const [storedEnabled, osStatus] = await Promise.all([
-        getNotificationsEnabled(),
-        getPermissionStatus(),
-      ]);
-
-      const realEnabled = storedEnabled && osStatus === 'granted';
-      setNotificationsEnabled(realEnabled);
+      try {
+        const [storedEnabled, osStatus] = await Promise.all([
+          getNotificationsEnabled(),
+          getPermissionStatus(),
+        ]);
+        const realEnabled = storedEnabled && osStatus === 'granted';
+        setNotificationsEnabled(realEnabled);
+      } catch {
+        // Non-fatal — leave switch OFF
+      }
     })();
   }, []);
 
@@ -223,8 +235,8 @@ export default function ProfileScreen() {
     }
 
     const { error } = await updateProfile(user.id, {
-      full_name: editName.trim() || null,
-      bio: editBio.trim() || null,
+      full_name:  editName.trim() || null,
+      bio:        editBio.trim() || null,
       occupation: editOccupation.trim() || null,
       avatar_url: avatarUrl,
     });
@@ -239,16 +251,7 @@ export default function ProfileScreen() {
     setEditAvatarUri(null);
   };
 
-  // ── Notification toggle logic ──────────────────────────────────────────────
-  //
-  // Design rules:
-  //   1. Toggling ON when OS permission is already granted → enable immediately,
-  //      no Settings prompt ever shown.
-  //   2. Toggling ON when OS permission is denied → show one-time alert explaining
-  //      why Settings must be opened, then open Settings once.
-  //   3. Toggling OFF → disable immediately (cancel scheduled, clear badge).
-  //   4. State is persisted in AsyncStorage in all paths.
-  //   5. The switch is disabled while async work is in progress (notifLoading).
+  // ── Notification toggle ────────────────────────────────────────────────────
 
   const handleNotifSwitch = async (value: boolean) => {
     if (notifLoading || !user) return;
@@ -256,41 +259,27 @@ export default function ProfileScreen() {
 
     try {
       if (value) {
-        // ── TURN ON ──────────────────────────────────────────────────────────
         const result = await enableNotifications(user.id);
 
         if (result === 'enabled') {
-          // Permission was already granted (or just granted via OS dialog)
           setNotificationsEnabled(true);
         } else {
-          // result === 'needs_settings' — OS denied, must go to Settings ONCE
           Alert.alert(
             'Enable Notifications',
             'Notifications are blocked for DeepDive AI. Tap "Open Settings" to allow them — you only need to do this once.',
             [
-              {
-                text: 'Not Now',
-                style: 'cancel',
-                // Leave switch OFF — user explicitly declined
-              },
+              { text: 'Not Now', style: 'cancel' },
               {
                 text: 'Open Settings',
                 onPress: async () => {
                   await openAppSettings();
-                  // After returning from Settings, re-check the OS status.
-                  // We use AppState in a real app but a simple re-check on next
-                  // mount (via the useEffect above) handles it cleanly.
-                  // Optimistically mark as enabled — useEffect will correct it
-                  // on next focus if the user didn't actually grant it.
                   setNotificationsEnabled(true);
                 },
               },
             ],
           );
-          // Don't flip the switch yet — wait for user's choice in the Alert
         }
       } else {
-        // ── TURN OFF ─────────────────────────────────────────────────────────
         await disableNotifications();
         setNotificationsEnabled(false);
       }
@@ -301,18 +290,13 @@ export default function ProfileScreen() {
     }
   };
 
-  // Tapping the row has the same effect as tapping the switch
-  const handleNotifRowPress = () => {
-    handleNotifSwitch(!notificationsEnabled);
-  };
+  const handleNotifRowPress = () => handleNotifSwitch(!notificationsEnabled);
 
   // ── Cache clear ────────────────────────────────────────────────────────────
 
   const handleClearCache = () => {
     const sizeLabel =
-      cacheSize !== null
-        ? `${(cacheSize / 1024).toFixed(1)} KB`
-        : 'unknown size';
+      cacheSize !== null ? `${(cacheSize / 1024).toFixed(1)} KB` : 'unknown size';
 
     Alert.alert(
       'Clear Offline Cache',
@@ -340,6 +324,10 @@ export default function ProfileScreen() {
       { text: 'Sign Out', style: 'destructive', onPress: () => signOut() },
     ]);
   };
+
+  // Merge live stats with DEFAULT_STATS so StatsCard always gets complete data
+  // even while the RPC is still loading or if it returned a partial shape.
+  const safeStats: UserStats = { ...DEFAULT_STATS, ...stats };
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -404,7 +392,8 @@ export default function ProfileScreen() {
 
           {/* ── Stats card ───────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(400).delay(50)}>
-            <StatsCard stats={stats ?? DEFAULT_STATS} />
+            {/* safeStats is always a fully-populated UserStats — never null/partial */}
+            <StatsCard stats={safeStats} />
           </Animated.View>
 
           {/* ── Preferences ──────────────────────────────────────────── */}
@@ -421,12 +410,6 @@ export default function ProfileScreen() {
               Preferences
             </Text>
 
-            {/*
-              Push Notifications row.
-              • Sublabel changes based on current state so user always knows what will happen.
-              • Switch is disabled while the async toggle is running (prevents double-tap race).
-              • Settings is only opened when the OS has actually denied the permission.
-            */}
             <SettingsRow
               icon="notifications-outline"
               label="Push Notifications"
@@ -449,7 +432,6 @@ export default function ProfileScreen() {
               }
             />
 
-            {/* Offline cache */}
             <SettingsRow
               icon="cloud-offline-outline"
               label="Offline Cache"
@@ -494,7 +476,6 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           </Animated.View>
 
-          {/* App version */}
           <Text style={{
             color: COLORS.textMuted,
             fontSize: FONTS.sizes.xs,
@@ -506,9 +487,7 @@ export default function ProfileScreen() {
 
         </ScrollView>
 
-        {/* ============================
-            EDIT PROFILE MODAL
-            ============================ */}
+        {/* ── Edit Profile Modal ──────────────────────────────────────── */}
         <Modal
           visible={editModalVisible}
           animationType="slide"
@@ -523,36 +502,28 @@ export default function ProfileScreen() {
               justifyContent: 'flex-end',
             }}
           >
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            >
-              <View
-                style={{
-                  backgroundColor: COLORS.backgroundCard,
-                  borderTopLeftRadius: 30,
-                  borderTopRightRadius: 30,
-                  padding: SPACING.xl,
-                  borderTopWidth: 1,
-                  borderTopColor: COLORS.border,
-                  maxHeight: '90%',
-                }}
-              >
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+              <View style={{
+                backgroundColor: COLORS.backgroundCard,
+                borderTopLeftRadius: 30,
+                borderTopRightRadius: 30,
+                padding: SPACING.xl,
+                borderTopWidth: 1,
+                borderTopColor: COLORS.border,
+                maxHeight: '90%',
+              }}>
                 {/* Modal header */}
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: SPACING.xl,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: COLORS.textPrimary,
-                      fontSize: FONTS.sizes.xl,
-                      fontWeight: '800',
-                    }}
-                  >
+                <View style={{
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: SPACING.xl,
+                }}>
+                  <Text style={{
+                    color: COLORS.textPrimary,
+                    fontSize: FONTS.sizes.xl,
+                    fontWeight: '800',
+                  }}>
                     Edit Profile
                   </Text>
                   <TouchableOpacity onPress={() => setEditModalVisible(false)}>
@@ -572,60 +543,34 @@ export default function ProfileScreen() {
                           <Image
                             source={{ uri: editAvatarUri }}
                             style={{
-                              width: 90,
-                              height: 90,
-                              borderRadius: 45,
-                              borderWidth: 2,
-                              borderColor: COLORS.primary,
+                              width: 90, height: 90, borderRadius: 45,
+                              borderWidth: 2, borderColor: COLORS.primary,
                             }}
                           />
-                          <View
-                            style={{
-                              position: 'absolute',
-                              bottom: 0,
-                              right: 0,
-                              backgroundColor: COLORS.primary,
-                              borderRadius: 16,
-                              padding: 6,
-                            }}
-                          >
+                          <View style={{
+                            position: 'absolute', bottom: 0, right: 0,
+                            backgroundColor: COLORS.primary, borderRadius: 16, padding: 6,
+                          }}>
                             <Ionicons name="camera" size={14} color="#FFF" />
                           </View>
                         </View>
                       ) : (
                         <View>
-                          <Avatar
-                            url={profile?.avatar_url}
-                            name={profile?.full_name}
-                            size={90}
-                          />
-                          <View
-                            style={{
-                              position: 'absolute',
-                              bottom: 0,
-                              right: 0,
-                              backgroundColor: COLORS.primary,
-                              borderRadius: 16,
-                              padding: 6,
-                            }}
-                          >
+                          <Avatar url={profile?.avatar_url} name={profile?.full_name} size={90} />
+                          <View style={{
+                            position: 'absolute', bottom: 0, right: 0,
+                            backgroundColor: COLORS.primary, borderRadius: 16, padding: 6,
+                          }}>
                             <Ionicons name="camera" size={14} color="#FFF" />
                           </View>
                         </View>
                       )}
                     </TouchableOpacity>
-                    <Text
-                      style={{
-                        color: COLORS.textMuted,
-                        fontSize: FONTS.sizes.xs,
-                        marginTop: 8,
-                      }}
-                    >
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 8 }}>
                       Tap to change photo
                     </Text>
                   </View>
 
-                  {/* Edit fields */}
                   <AnimatedInput
                     label="Full Name"
                     value={editName}

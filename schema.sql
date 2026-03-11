@@ -1,14 +1,21 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1, 2, 3, 4 & 5 combined
+-- Parts 1, 2, 3, 4, 5 & 6 combined
+-- AI Research Assistant Chat with RAG Pipeline
+--
+-- Prerequisites:
+--   pgvector must be available in your Supabase project
+--   (it is pre-installed on all Supabase projects).
+--
 -- Run this entire script in Supabase SQL Editor
--- Safe to re-run: uses IF NOT EXISTS + DROP IF EXISTS
+-- Safe to re-run: uses IF NOT EXISTS / OR REPLACE / DROP IF EXISTS
 -- ============================================================
 
 -- ============================================
 -- EXTENSIONS
 -- ============================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- ============================================
 -- FUNCTION: auto-update "updated_at" timestamp
@@ -484,6 +491,139 @@ CREATE TRIGGER on_presentations_updated
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- ============================================================
+-- PART 6: REPORT EMBEDDINGS TABLE
+-- Stores chunked report text + OpenAI embeddings
+-- for semantic (RAG) retrieval
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.report_embeddings (
+  id          UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
+  report_id   UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
+  user_id     UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+
+  -- Unique chunk identifier within the report
+  -- e.g. 'summary', 'section:s1', 'findings', 'predictions', 'statistics'
+  chunk_id    TEXT    NOT NULL,
+
+  -- Type tag for UI display and filtering
+  -- 'summary' | 'section' | 'finding' | 'prediction' | 'statistic' | 'citation'
+  chunk_type  TEXT    NOT NULL,
+
+  -- The actual text that was embedded
+  content     TEXT    NOT NULL,
+
+  -- OpenAI text-embedding-3-small — 1536 dimensions
+  embedding   vector(1536),
+
+  -- Extra metadata (sectionTitle, sectionId, count, etc.)
+  metadata    JSONB   DEFAULT '{}',
+
+  created_at  TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- ── RLS ──────────────────────────────────────────────────────
+
+ALTER TABLE public.report_embeddings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own embeddings"   ON public.report_embeddings;
+DROP POLICY IF EXISTS "Users can insert own embeddings" ON public.report_embeddings;
+DROP POLICY IF EXISTS "Users can delete own embeddings" ON public.report_embeddings;
+
+CREATE POLICY "Users can view own embeddings"
+  ON public.report_embeddings FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own embeddings"
+  ON public.report_embeddings FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own embeddings"
+  ON public.report_embeddings FOR DELETE
+  USING (auth.uid() = user_id);
+
+-- ── Indexes ───────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_id
+  ON public.report_embeddings(report_id);
+
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_user_id
+  ON public.report_embeddings(user_id);
+
+-- HNSW vector index — cosine distance, works on any dataset size
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_vector
+  ON public.report_embeddings
+  USING hnsw (embedding vector_cosine_ops);
+
+-- Composite: look up all chunks for a specific report quickly
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_chunk
+  ON public.report_embeddings(report_id, chunk_id);
+
+-- ============================================
+-- PART 6: ASSISTANT CONVERSATIONS TABLE
+-- Enhanced follow-up chat with mode + RAG metadata
+-- ============================================
+CREATE TABLE IF NOT EXISTS public.assistant_conversations (
+  id               UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
+  report_id        UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
+  user_id          UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+
+  role             TEXT    NOT NULL,   -- 'user' | 'assistant'
+  content          TEXT    NOT NULL,
+
+  -- Which assistant mode was active when this message was sent
+  -- 'general' | 'beginner' | 'compare' | 'contradictions' | 'questions' | 'summarize' | 'factcheck'
+  mode             TEXT    NOT NULL DEFAULT 'general',
+
+  -- The RAG chunks that were retrieved to answer this message (for transparency / debug)
+  retrieved_chunks JSONB   DEFAULT '[]',
+
+  -- Suggested follow-up prompts returned by the agent
+  suggested_follow_ups JSONB DEFAULT '[]',
+
+  -- Whether the answer was powered by vector search or fallback context
+  is_rag_powered   BOOLEAN DEFAULT FALSE,
+
+  -- Agent confidence level: 'high' | 'medium' | 'low'
+  confidence       TEXT    DEFAULT 'medium',
+
+  created_at       TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- ── RLS ──────────────────────────────────────────────────────
+
+ALTER TABLE public.assistant_conversations ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own assistant conversations"   ON public.assistant_conversations;
+DROP POLICY IF EXISTS "Users can insert own assistant conversations" ON public.assistant_conversations;
+DROP POLICY IF EXISTS "Users can delete own assistant conversations" ON public.assistant_conversations;
+
+CREATE POLICY "Users can view own assistant conversations"
+  ON public.assistant_conversations FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own assistant conversations"
+  ON public.assistant_conversations FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own assistant conversations"
+  ON public.assistant_conversations FOR DELETE
+  USING (auth.uid() = user_id);
+
+-- ── Indexes ───────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_report_id
+  ON public.assistant_conversations(report_id);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_user_report
+  ON public.assistant_conversations(user_id, report_id);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_created_at
+  ON public.assistant_conversations(created_at DESC);
+
+-- ============================================================
+-- FUNCTIONS AND RPCs
+-- ============================================================
+
+-- ============================================================
 -- PART 5 RPC: get_presentations_for_report
 -- Fetches all presentations for a report (descending by date)
 -- ============================================================
@@ -549,23 +689,198 @@ GRANT EXECUTE ON FUNCTION public.increment_presentation_export(UUID, UUID)
   TO authenticated;
 
 -- ============================================
--- FUNCTIONS AND RPCs
+-- PART 6 RPC — match_report_chunks
+-- Cosine similarity search over a single report's embeddings.
 -- ============================================
+CREATE OR REPLACE FUNCTION public.match_report_chunks(
+  query_embedding   vector(1536),
+  p_report_id       UUID,
+  p_user_id         UUID,
+  match_count       INT     DEFAULT 5,
+  match_threshold   FLOAT   DEFAULT 0.30
+)
+RETURNS TABLE (
+  id          UUID,
+  chunk_id    TEXT,
+  chunk_type  TEXT,
+  content     TEXT,
+  metadata    JSONB,
+  similarity  FLOAT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    re.id,
+    re.chunk_id,
+    re.chunk_type,
+    re.content,
+    re.metadata,
+    (1 - (re.embedding <=> query_embedding))::FLOAT AS similarity
+  FROM public.report_embeddings re
+  WHERE re.report_id = p_report_id
+    AND re.user_id   = p_user_id
+    AND (1 - (re.embedding <=> query_embedding)) > match_threshold
+  ORDER BY re.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;
 
--- FUNCTION: get user research stats (Parts 1-5 combined)
+GRANT EXECUTE ON FUNCTION public.match_report_chunks(vector, UUID, UUID, INT, FLOAT)
+  TO authenticated;
+
+-- ============================================
+-- PART 6 RPC — is_report_embedded
+-- Returns TRUE if the report already has stored embeddings.
+-- ============================================
+CREATE OR REPLACE FUNCTION public.is_report_embedded(
+  p_report_id UUID,
+  p_user_id   UUID
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM   public.report_embeddings
+    WHERE  report_id = p_report_id
+      AND  user_id   = p_user_id
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_report_embedded(UUID, UUID)
+  TO authenticated;
+
+-- ============================================
+-- PART 6 RPC — get_assistant_conversation
+-- Returns the full conversation for a report, ordered oldest-first.
+-- ============================================
+CREATE OR REPLACE FUNCTION public.get_assistant_conversation(
+  p_report_id UUID,
+  p_user_id   UUID,
+  p_limit     INT DEFAULT 100
+)
+RETURNS TABLE (
+  id                   UUID,
+  role                 TEXT,
+  content              TEXT,
+  mode                 TEXT,
+  retrieved_chunks     JSONB,
+  suggested_follow_ups JSONB,
+  is_rag_powered       BOOLEAN,
+  confidence           TEXT,
+  created_at           TIMESTAMP WITH TIME ZONE
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    ac.id,
+    ac.role,
+    ac.content,
+    ac.mode,
+    ac.retrieved_chunks,
+    ac.suggested_follow_ups,
+    ac.is_rag_powered,
+    ac.confidence,
+    ac.created_at
+  FROM public.assistant_conversations ac
+  WHERE ac.report_id = p_report_id
+    AND ac.user_id   = p_user_id
+  ORDER BY ac.created_at ASC
+  LIMIT p_limit;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_assistant_conversation(UUID, UUID, INT)
+  TO authenticated;
+
+-- ============================================
+-- PART 6 RPC — delete_report_embeddings
+-- Removes all embeddings for a report so they can be re-generated.
+-- ============================================
+CREATE OR REPLACE FUNCTION public.delete_report_embeddings(
+  p_report_id UUID,
+  p_user_id   UUID
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  DELETE FROM public.report_embeddings
+  WHERE report_id = p_report_id
+    AND user_id   = p_user_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.delete_report_embeddings(UUID, UUID)
+  TO authenticated;
+
+-- ============================================
+-- PART 6 RPC — get_report_embedding_stats
+-- Returns metadata about a report's embeddings (count, types).
+-- ============================================
+CREATE OR REPLACE FUNCTION public.get_report_embedding_stats(
+  p_report_id UUID,
+  p_user_id   UUID
+)
+RETURNS TABLE (
+  total_chunks   BIGINT,
+  chunk_types    JSONB,
+  embedded_at    TIMESTAMP WITH TIME ZONE
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    COUNT(*)::BIGINT AS total_chunks,
+    jsonb_object_agg(chunk_type, cnt) AS chunk_types,
+    MIN(created_at) AS embedded_at
+  FROM (
+    SELECT
+      chunk_type,
+      COUNT(*) AS cnt,
+      MIN(created_at) AS created_at
+    FROM public.report_embeddings
+    WHERE report_id = p_report_id
+      AND user_id   = p_user_id
+    GROUP BY chunk_type
+  ) sub;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_report_embedding_stats(UUID, UUID)
+  TO authenticated;
+
+-- ============================================
+-- FUNCTION: get user research stats (Parts 1-6 combined)
+-- ============================================
 DROP FUNCTION IF EXISTS public.get_user_research_stats(UUID);
 
 CREATE FUNCTION public.get_user_research_stats(p_user_id UUID)
 RETURNS TABLE (
-  total_reports        BIGINT,
-  completed_reports    BIGINT,
-  total_sources        BIGINT,
-  avg_reliability      NUMERIC,
-  favorite_topic       TEXT,
-  reports_this_month   BIGINT,
-  public_reports       BIGINT,
-  total_presentations  BIGINT,
-  total_slides         BIGINT
+  total_reports           BIGINT,
+  completed_reports       BIGINT,
+  total_sources           BIGINT,
+  avg_reliability         NUMERIC,
+  favorite_topic          TEXT,
+  reports_this_month      BIGINT,
+  public_reports          BIGINT,
+  total_presentations     BIGINT,
+  total_slides            BIGINT,
+  -- Part 6 additions
+  total_assistant_messages BIGINT,
+  reports_with_embeddings  BIGINT
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -595,32 +910,41 @@ BEGIN
       GROUP  BY rr2.query
       ORDER  BY COUNT(*) DESC
       LIMIT  1
-    )
-      AS favorite_topic,
+    ) AS favorite_topic,
 
     COUNT(rr.id) FILTER (
       WHERE rr.created_at >= date_trunc('month', NOW())
-    )::BIGINT
-      AS reports_this_month,
+    )::BIGINT AS reports_this_month,
 
     COUNT(rr.id) FILTER (WHERE rr.is_public = TRUE)::BIGINT
       AS public_reports,
 
-    -- Part 5: presentations count
     (
       SELECT COUNT(p.id)
       FROM   public.presentations p
       WHERE  p.user_id = p_user_id
-    )::BIGINT
-      AS total_presentations,
+    )::BIGINT AS total_presentations,
 
-    -- Part 5: slide count — fully qualified to avoid ambiguity
     (
       SELECT COALESCE(SUM(p.total_slides), 0)
       FROM   public.presentations p
       WHERE  p.user_id = p_user_id
-    )::BIGINT
-      AS total_slides
+    )::BIGINT AS total_slides,
+
+    -- Part 6: count of all assistant chat messages
+    (
+      SELECT COUNT(ac.id)
+      FROM   public.assistant_conversations ac
+      WHERE  ac.user_id = p_user_id
+        AND  ac.role    = 'assistant'
+    )::BIGINT AS total_assistant_messages,
+
+    -- Part 6: reports that have been embedded for RAG
+    (
+      SELECT COUNT(DISTINCT re.report_id)
+      FROM   public.report_embeddings re
+      WHERE  re.user_id = p_user_id
+    )::BIGINT AS reports_with_embeddings
 
   FROM public.research_reports rr
   WHERE rr.user_id = p_user_id;
@@ -630,7 +954,9 @@ $$;
 GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID)
   TO authenticated;
 
+-- ============================================
 -- FUNCTION: fetch public report by token (Part 4)
+-- ============================================
 CREATE OR REPLACE FUNCTION public.get_public_report(p_token TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -661,7 +987,9 @@ $$;
 GRANT EXECUTE ON FUNCTION public.get_public_report(TEXT)
   TO anon, authenticated;
 
+-- ============================================
 -- FUNCTION: generate / rotate public token (Part 4)
+-- ============================================
 CREATE OR REPLACE FUNCTION public.set_report_public(
   p_report_id UUID,
   p_user_id   UUID,
@@ -704,6 +1032,10 @@ GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN)
 
 -- ============================================================
 -- Done ✓
--- Run `npx expo install --fix -- --legacy-peer-deps` after
--- installing pptxgenjs.
+-- Complete schema with all parts 1-6 installed.
+-- After running this migration:
+--   1. Verify pgvector is enabled:
+--      SELECT * FROM pg_extension WHERE extname = 'vector';
+--   2. No new npm packages needed — all RAG logic uses the
+--      OpenAI API key already in your .env file.
 -- ============================================================

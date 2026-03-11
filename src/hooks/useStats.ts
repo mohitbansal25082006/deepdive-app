@@ -22,37 +22,52 @@ export function useStats() {
     setLoading(true);
 
     try {
-      // Use the RPC function from the Part 3 migration
       const { data, error } = await supabase
         .rpc('get_user_research_stats', { p_user_id: user.id });
 
-      if (error) throw error;
+      // Warn instead of throw — prevents the profile screen crashing when the
+      // RPC returns an unexpected shape or a transient network error occurs.
+      if (error) {
+        console.warn('[useStats] RPC error:', error.code, error.message);
+        return;
+      }
 
       const row = data?.[0];
       if (!row) return;
 
-      // Estimate hours saved based on report count * avg depth time
-      const { data: depthData } = await supabase
-        .from('research_reports')
-        .select('depth')
-        .eq('user_id', user.id)
-        .eq('status', 'completed');
+      // Estimate hours saved based on report depth — kept in a separate
+      // try/catch so a failure here doesn't wipe out the main stats.
+      let hoursResearched = 0;
+      try {
+        const { data: depthData } = await supabase
+          .from('research_reports')
+          .select('depth')
+          .eq('user_id', user.id)
+          .eq('status', 'completed');
 
-      const hoursResearched = (depthData ?? []).reduce((sum, r) => {
-        return sum + (MINUTES_PER_DEPTH[r.depth] ?? 5) / 60;
-      }, 0);
+        hoursResearched = (depthData ?? []).reduce((sum, r) => {
+          return sum + (MINUTES_PER_DEPTH[r.depth] ?? 5) / 60;
+        }, 0);
+      } catch {
+        // Non-fatal — hours will show as 0
+      }
 
       setStats({
-        totalReports: Number(row.total_reports ?? 0),
+        totalReports:     Number(row.total_reports    ?? 0),
         completedReports: Number(row.completed_reports ?? 0),
-        totalSources: Number(row.total_sources ?? 0),
-        avgReliability: parseFloat((row.avg_reliability ?? 0).toFixed(1)),
-        favoriteTopic: row.favorite_topic ?? null,
+        totalSources:     Number(row.total_sources     ?? 0),
+        avgReliability:   parseFloat((row.avg_reliability ?? 0).toFixed(1)),
+        favoriteTopic:    row.favorite_topic ?? null,
         reportsThisMonth: Number(row.reports_this_month ?? 0),
-        hoursResearched: parseFloat(hoursResearched.toFixed(1)),
+        hoursResearched:  parseFloat(hoursResearched.toFixed(1)),
+
+        // Part 6 columns — fallback to 0 if schema_part6.sql not yet applied
+        totalAssistantMessages: Number(row.total_assistant_messages ?? 0),
+        reportsWithEmbeddings:  Number(row.reports_with_embeddings  ?? 0),
       });
     } catch (err) {
-      console.error('[useStats] Error:', err);
+      // Catches network errors or any other unexpected throw
+      console.warn('[useStats] Error:', err);
     } finally {
       setLoading(false);
     }
