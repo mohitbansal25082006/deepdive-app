@@ -1,7 +1,7 @@
 // app/(app)/_layout.tsx
-// Part 5: Added slide-preview route for AI Slide Generator.
+// Part 7 — Updated: Added academic-paper route.
 //
-// ─── FREEZE FIX ────────────────────────────────────────────────────────────────
+// ─── FREEZE FIX (from Part 5) ─────────────────────────────────────────────────
 //
 //  THE FREEZE: navigating from research-report → slide-preview froze the app.
 //
@@ -17,19 +17,17 @@
 //    Confirmed fix: disabling the animation on the modal makes it open without
 //    freezing. The correct permanent fix is to remove `presentation: 'modal'`
 //    and use a standard stack push animation instead.
-//    Ref: github.com/expo/expo/issues/34367 (comment: "if I disable the
-//         animation on the modal, it opens just fine and never crashes")
-//    Ref: github.com/expo/expo/issues/32940 (modal + reanimated entering = glitch)
+//    Ref: github.com/expo/expo/issues/34367
+//    Ref: github.com/expo/expo/issues/32940
 //
 //  Fix applied:
 //    - Removed `presentation: 'modal'` from slide-preview
 //    - Changed animation to `'slide_from_right'` (standard stack push)
-//    - This matches all other non-modal screens in this layout
+//    - Same fix applied to academic-paper for the same reason
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useEffect } from 'react';
-import { Stack } from 'expo-router';
-import { router } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { COLORS } from '../../src/constants/theme';
 import { registerNotificationTapHandler } from '../../src/lib/notifications';
 
@@ -66,7 +64,11 @@ export default function AppLayout() {
         options={{ animation: 'slide_from_right' }}
       />
 
-      {/* ── Part 4: Public Report Viewer ── */}
+      {/*
+        ── Part 4: Public Report Viewer ──
+        Kept for backward compat — file was deleted in Part 4 but route
+        registration is harmless if the file doesn't exist.
+      */}
       <Stack.Screen
         name="public-report"
         options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
@@ -85,13 +87,30 @@ export default function AppLayout() {
       />
 
       {/* ── Bookmarks ── */}
-      <Stack.Screen name="bookmarks" options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen
+        name="bookmarks"
+        options={{ animation: 'slide_from_right' }}
+      />
 
       {/* ── Compare reports ── */}
-      <Stack.Screen name="compare-reports" options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen
+        name="compare-reports"
+        options={{ animation: 'slide_from_right' }}
+      />
 
-      {/* ── Profile ── */}
+      {/* ── Edit profile ── */}
       <Stack.Screen name="edit-profile" />
+
+      {/*
+        ── Part 7: Academic Paper Viewer ──
+        FIX: Using slide_from_right (NOT modal) for the same reason as
+        slide-preview above — modal presentation + Reanimated entering=
+        animations on research-report = freeze.
+      */}
+      <Stack.Screen
+        name="academic-paper"
+        options={{ animation: 'slide_from_right' }}
+      />
     </Stack>
   );
 }

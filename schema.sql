@@ -1,14 +1,14 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1, 2, 3, 4, 5 & 6 combined
--- AI Research Assistant Chat with RAG Pipeline
+-- Parts 1, 2, 3, 4, 5, 6 & 7 combined
+-- AI Research Assistant Chat with RAG Pipeline + Academic Papers
 --
 -- Prerequisites:
 --   pgvector must be available in your Supabase project
 --   (it is pre-installed on all Supabase projects).
 --
 -- Run this entire script in Supabase SQL Editor
--- Safe to re-run: uses IF NOT EXISTS / OR REPLACE / DROP IF EXISTS
+-- Safe to re-run: uses IF NOT EXISTS / OR REPLACE
 -- ============================================================
 
 -- ============================================
@@ -48,21 +48,17 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can view own profile" ON public.profiles;
-DROP POLICY IF EXISTS "Users can insert own profile" ON public.profiles;
-DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
-
-CREATE POLICY "Users can view own profile"
-  ON public.profiles FOR SELECT
-  USING (auth.uid() = id);
-
-CREATE POLICY "Users can insert own profile"
-  ON public.profiles FOR INSERT
-  WITH CHECK (auth.uid() = id);
-
-CREATE POLICY "Users can update own profile"
-  ON public.profiles FOR UPDATE
-  USING (auth.uid() = id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'Users can view own profile') THEN
+    CREATE POLICY "Users can view own profile" ON public.profiles FOR SELECT USING (auth.uid() = id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'Users can insert own profile') THEN
+    CREATE POLICY "Users can insert own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'Users can update own profile') THEN
+    CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = id);
+  END IF;
+END $$;
 
 -- Profiles updated_at trigger
 DROP TRIGGER IF EXISTS on_profiles_updated ON public.profiles;
@@ -99,35 +95,20 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
 ON CONFLICT (id) DO NOTHING;
 
-DROP POLICY IF EXISTS "Avatar images are publicly accessible" ON storage.objects;
-DROP POLICY IF EXISTS "Users can upload their own avatar" ON storage.objects;
-DROP POLICY IF EXISTS "Users can update their own avatar" ON storage.objects;
-DROP POLICY IF EXISTS "Users can delete their own avatar" ON storage.objects;
-
-CREATE POLICY "Avatar images are publicly accessible"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'avatars');
-
-CREATE POLICY "Users can upload their own avatar"
-  ON storage.objects FOR INSERT
-  WITH CHECK (
-    bucket_id = 'avatars' AND
-    auth.uid()::text = (storage.foldername(name))[1]
-  );
-
-CREATE POLICY "Users can update their own avatar"
-  ON storage.objects FOR UPDATE
-  USING (
-    bucket_id = 'avatars' AND
-    auth.uid()::text = (storage.foldername(name))[1]
-  );
-
-CREATE POLICY "Users can delete their own avatar"
-  ON storage.objects FOR DELETE
-  USING (
-    bucket_id = 'avatars' AND
-    auth.uid()::text = (storage.foldername(name))[1]
-  );
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Avatar images are publicly accessible') THEN
+    CREATE POLICY "Avatar images are publicly accessible" ON storage.objects FOR SELECT USING (bucket_id = 'avatars');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Users can upload their own avatar') THEN
+    CREATE POLICY "Users can upload their own avatar" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Users can update their own avatar') THEN
+    CREATE POLICY "Users can update their own avatar" ON storage.objects FOR UPDATE USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Users can delete their own avatar') THEN
+    CREATE POLICY "Users can delete their own avatar" ON storage.objects FOR DELETE USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
+  END IF;
+END $$;
 
 -- ============================================
 -- RESEARCH REPORTS TABLE
@@ -179,41 +160,39 @@ CREATE TABLE IF NOT EXISTS public.research_reports (
   presentation_id     UUID     REFERENCES public.presentations(id) ON DELETE SET NULL,
   slide_count         INTEGER  NOT NULL DEFAULT 0,
 
+  -- Part 7 additions
+  academic_paper_id   UUID     REFERENCES public.academic_papers(id) ON DELETE SET NULL,
+  research_mode       TEXT     NOT NULL DEFAULT 'standard',
+
   -- Timestamps
   created_at          TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
   completed_at        TIMESTAMP WITH TIME ZONE,
-  updated_at          TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+  updated_at          TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+  
+  -- Constraints
+  CONSTRAINT research_reports_research_mode_check CHECK (research_mode IN ('standard', 'academic'))
 );
 
 ALTER TABLE public.research_reports ENABLE ROW LEVEL SECURITY;
 
 -- User access policies
-DROP POLICY IF EXISTS "Users can view own reports" ON public.research_reports;
-DROP POLICY IF EXISTS "Users can insert own reports" ON public.research_reports;
-DROP POLICY IF EXISTS "Users can update own reports" ON public.research_reports;
-DROP POLICY IF EXISTS "Users can delete own reports" ON public.research_reports;
-
-CREATE POLICY "Users can view own reports"
-  ON public.research_reports FOR SELECT
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can insert own reports"
-  ON public.research_reports FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update own reports"
-  ON public.research_reports FOR UPDATE
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can delete own reports"
-  ON public.research_reports FOR DELETE
-  USING (auth.uid() = user_id);
-
--- Public access policy (Part 4)
-DROP POLICY IF EXISTS "Anyone can view public reports" ON public.research_reports;
-CREATE POLICY "Anyone can view public reports"
-  ON public.research_reports FOR SELECT
-  USING (is_public = TRUE);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_reports' AND policyname = 'Users can view own reports') THEN
+    CREATE POLICY "Users can view own reports" ON public.research_reports FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_reports' AND policyname = 'Users can insert own reports') THEN
+    CREATE POLICY "Users can insert own reports" ON public.research_reports FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_reports' AND policyname = 'Users can update own reports') THEN
+    CREATE POLICY "Users can update own reports" ON public.research_reports FOR UPDATE USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_reports' AND policyname = 'Users can delete own reports') THEN
+    CREATE POLICY "Users can delete own reports" ON public.research_reports FOR DELETE USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_reports' AND policyname = 'Anyone can view public reports') THEN
+    CREATE POLICY "Anyone can view public reports" ON public.research_reports FOR SELECT USING (is_public = TRUE);
+  END IF;
+END $$;
 
 -- Triggers and indexes
 DROP TRIGGER IF EXISTS on_research_reports_updated ON public.research_reports;
@@ -221,31 +200,14 @@ CREATE TRIGGER on_research_reports_updated
   BEFORE UPDATE ON public.research_reports
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
-CREATE INDEX IF NOT EXISTS idx_research_reports_user_id
-  ON public.research_reports(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_research_reports_created_at
-  ON public.research_reports(created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_research_reports_status
-  ON public.research_reports(status);
-
-CREATE INDEX IF NOT EXISTS idx_research_reports_pinned
-  ON public.research_reports(user_id, is_pinned) WHERE is_pinned = TRUE;
-
--- Part 4 indexes
-CREATE INDEX IF NOT EXISTS idx_research_reports_public_token
-  ON public.research_reports(public_token)
-  WHERE public_token IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_research_reports_is_public
-  ON public.research_reports(is_public)
-  WHERE is_public = TRUE;
-
--- Part 5 index
-CREATE INDEX IF NOT EXISTS idx_research_reports_presentation_id
-  ON public.research_reports(presentation_id)
-  WHERE presentation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_research_reports_user_id ON public.research_reports(user_id);
+CREATE INDEX IF NOT EXISTS idx_research_reports_created_at ON public.research_reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_reports_status ON public.research_reports(status);
+CREATE INDEX IF NOT EXISTS idx_research_reports_pinned ON public.research_reports(user_id, is_pinned) WHERE is_pinned = TRUE;
+CREATE INDEX IF NOT EXISTS idx_research_reports_public_token ON public.research_reports(public_token) WHERE public_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_research_reports_is_public ON public.research_reports(is_public) WHERE is_public = TRUE;
+CREATE INDEX IF NOT EXISTS idx_research_reports_presentation_id ON public.research_reports(presentation_id) WHERE presentation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_research_reports_academic_paper_id ON public.research_reports(academic_paper_id) WHERE academic_paper_id IS NOT NULL;
 
 -- ============================================
 -- RESEARCH CONVERSATIONS TABLE
@@ -262,19 +224,16 @@ CREATE TABLE IF NOT EXISTS public.research_conversations (
 
 ALTER TABLE public.research_conversations ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can view own conversations" ON public.research_conversations;
-DROP POLICY IF EXISTS "Users can insert own conversations" ON public.research_conversations;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_conversations' AND policyname = 'Users can view own conversations') THEN
+    CREATE POLICY "Users can view own conversations" ON public.research_conversations FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'research_conversations' AND policyname = 'Users can insert own conversations') THEN
+    CREATE POLICY "Users can insert own conversations" ON public.research_conversations FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+END $$;
 
-CREATE POLICY "Users can view own conversations"
-  ON public.research_conversations FOR SELECT
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can insert own conversations"
-  ON public.research_conversations FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE INDEX IF NOT EXISTS idx_research_conversations_report_id
-  ON public.research_conversations(report_id);
+CREATE INDEX IF NOT EXISTS idx_research_conversations_report_id ON public.research_conversations(report_id);
 
 -- ============================================
 -- PUBLIC REPORT VIEWS TRACKING TABLE (Part 4)
@@ -289,18 +248,15 @@ CREATE TABLE IF NOT EXISTS public.public_report_views (
 
 ALTER TABLE public.public_report_views ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Anyone can log a public report view" ON public.public_report_views;
-CREATE POLICY "Anyone can log a public report view"
-  ON public.public_report_views FOR INSERT
-  WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM public.research_reports
-      WHERE id = report_id AND is_public = TRUE
-    )
-  );
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'public_report_views' AND policyname = 'Anyone can log a public report view') THEN
+    CREATE POLICY "Anyone can log a public report view" ON public.public_report_views FOR INSERT WITH CHECK (
+      EXISTS (SELECT 1 FROM public.research_reports WHERE id = report_id AND is_public = TRUE)
+    );
+  END IF;
+END $$;
 
-CREATE INDEX IF NOT EXISTS idx_public_report_views_report_id
-  ON public.public_report_views(report_id);
+CREATE INDEX IF NOT EXISTS idx_public_report_views_report_id ON public.public_report_views(report_id);
 
 -- ============================================
 -- SAVED TOPICS TABLE
@@ -317,17 +273,14 @@ CREATE TABLE IF NOT EXISTS public.saved_topics (
 
 ALTER TABLE public.saved_topics ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can manage own saved topics" ON public.saved_topics;
-CREATE POLICY "Users can manage own saved topics"
-  ON public.saved_topics FOR ALL
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'saved_topics' AND policyname = 'Users can manage own saved topics') THEN
+    CREATE POLICY "Users can manage own saved topics" ON public.saved_topics FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+  END IF;
+END $$;
 
-CREATE INDEX IF NOT EXISTS idx_saved_topics_user_id
-  ON public.saved_topics(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_saved_topics_notify
-  ON public.saved_topics(user_id, notify_on_update) WHERE notify_on_update = TRUE;
+CREATE INDEX IF NOT EXISTS idx_saved_topics_user_id ON public.saved_topics(user_id);
+CREATE INDEX IF NOT EXISTS idx_saved_topics_notify ON public.saved_topics(user_id, notify_on_update) WHERE notify_on_update = TRUE;
 
 -- ============================================
 -- PUSH TOKENS TABLE
@@ -344,14 +297,13 @@ CREATE TABLE IF NOT EXISTS public.push_tokens (
 
 ALTER TABLE public.push_tokens ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can manage own push tokens" ON public.push_tokens;
-CREATE POLICY "Users can manage own push tokens"
-  ON public.push_tokens FOR ALL
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'push_tokens' AND policyname = 'Users can manage own push tokens') THEN
+    CREATE POLICY "Users can manage own push tokens" ON public.push_tokens FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+  END IF;
+END $$;
 
-CREATE INDEX IF NOT EXISTS idx_push_tokens_user_id
-  ON public.push_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_push_tokens_user_id ON public.push_tokens(user_id);
 
 DROP TRIGGER IF EXISTS on_push_tokens_updated ON public.push_tokens;
 CREATE TRIGGER on_push_tokens_updated
@@ -368,8 +320,7 @@ CREATE TABLE IF NOT EXISTS public.user_subscriptions (
   tier                    TEXT  NOT NULL DEFAULT 'free',  -- 'free' | 'pro' | 'enterprise'
   reports_used_this_month INTEGER DEFAULT 0,
   reports_limit           INTEGER DEFAULT 5,
-  reset_date              TIMESTAMP WITH TIME ZONE
-                            DEFAULT (date_trunc('month', NOW()) + INTERVAL '1 month'),
+  reset_date              TIMESTAMP WITH TIME ZONE DEFAULT (date_trunc('month', NOW()) + INTERVAL '1 month'),
   stripe_customer_id      TEXT,
   stripe_subscription_id  TEXT,
   created_at              TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
@@ -378,21 +329,17 @@ CREATE TABLE IF NOT EXISTS public.user_subscriptions (
 
 ALTER TABLE public.user_subscriptions ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can view own subscription" ON public.user_subscriptions;
-DROP POLICY IF EXISTS "Users can insert own subscription" ON public.user_subscriptions;
-DROP POLICY IF EXISTS "Users can update own subscription" ON public.user_subscriptions;
-
-CREATE POLICY "Users can view own subscription"
-  ON public.user_subscriptions FOR SELECT
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can insert own subscription"
-  ON public.user_subscriptions FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update own subscription"
-  ON public.user_subscriptions FOR UPDATE
-  USING (auth.uid() = user_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'user_subscriptions' AND policyname = 'Users can view own subscription') THEN
+    CREATE POLICY "Users can view own subscription" ON public.user_subscriptions FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'user_subscriptions' AND policyname = 'Users can insert own subscription') THEN
+    CREATE POLICY "Users can insert own subscription" ON public.user_subscriptions FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'user_subscriptions' AND policyname = 'Users can update own subscription') THEN
+    CREATE POLICY "Users can update own subscription" ON public.user_subscriptions FOR UPDATE USING (auth.uid() = user_id);
+  END IF;
+END $$;
 
 DROP TRIGGER IF EXISTS on_user_subscriptions_updated ON public.user_subscriptions;
 CREATE TRIGGER on_user_subscriptions_updated
@@ -421,69 +368,41 @@ CREATE TRIGGER on_auth_user_created_subscription
 -- PART 5: PRESENTATIONS TABLE
 -- Stores AI-generated slide decks linked to research reports
 -- ============================================================
-
 CREATE TABLE IF NOT EXISTS public.presentations (
   id            UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   report_id     UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
-  user_id       UUID    REFERENCES auth.users(id)              ON DELETE CASCADE NOT NULL,
-
-  -- Content
+  user_id       UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   title         TEXT    NOT NULL,
   subtitle      TEXT,
-
-  -- Visual theme: 'dark' | 'light' | 'corporate' | 'vibrant'
-  theme         TEXT    NOT NULL DEFAULT 'dark',
-
-  -- Full slide array (JSONB array of PresentationSlide objects)
+  theme         TEXT    NOT NULL DEFAULT 'dark', -- 'dark' | 'light' | 'corporate' | 'vibrant'
   slides        JSONB   NOT NULL DEFAULT '[]',
   total_slides  INTEGER NOT NULL DEFAULT 0,
-
-  -- Usage tracking
   export_count  INTEGER NOT NULL DEFAULT 0,
-
-  -- Timestamps
   generated_at  TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
   created_at    TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
   updated_at    TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
--- ── RLS ──────────────────────────────────────────────────────
-
 ALTER TABLE public.presentations ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can view own presentations"   ON public.presentations;
-DROP POLICY IF EXISTS "Users can insert own presentations" ON public.presentations;
-DROP POLICY IF EXISTS "Users can update own presentations" ON public.presentations;
-DROP POLICY IF EXISTS "Users can delete own presentations" ON public.presentations;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'presentations' AND policyname = 'Users can view own presentations') THEN
+    CREATE POLICY "Users can view own presentations" ON public.presentations FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'presentations' AND policyname = 'Users can insert own presentations') THEN
+    CREATE POLICY "Users can insert own presentations" ON public.presentations FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'presentations' AND policyname = 'Users can update own presentations') THEN
+    CREATE POLICY "Users can update own presentations" ON public.presentations FOR UPDATE USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'presentations' AND policyname = 'Users can delete own presentations') THEN
+    CREATE POLICY "Users can delete own presentations" ON public.presentations FOR DELETE USING (auth.uid() = user_id);
+  END IF;
+END $$;
 
-CREATE POLICY "Users can view own presentations"
-  ON public.presentations FOR SELECT
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can insert own presentations"
-  ON public.presentations FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update own presentations"
-  ON public.presentations FOR UPDATE
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can delete own presentations"
-  ON public.presentations FOR DELETE
-  USING (auth.uid() = user_id);
-
--- ── Indexes ───────────────────────────────────────────────────
-
-CREATE INDEX IF NOT EXISTS idx_presentations_report_id
-  ON public.presentations(report_id);
-
-CREATE INDEX IF NOT EXISTS idx_presentations_user_id
-  ON public.presentations(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_presentations_created_at
-  ON public.presentations(created_at DESC);
-
--- ── updated_at trigger ────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_presentations_report_id ON public.presentations(report_id);
+CREATE INDEX IF NOT EXISTS idx_presentations_user_id ON public.presentations(user_id);
+CREATE INDEX IF NOT EXISTS idx_presentations_created_at ON public.presentations(created_at DESC);
 
 DROP TRIGGER IF EXISTS on_presentations_updated ON public.presentations;
 CREATE TRIGGER on_presentations_updated
@@ -491,143 +410,8 @@ CREATE TRIGGER on_presentations_updated
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- ============================================================
--- PART 6: REPORT EMBEDDINGS TABLE
--- Stores chunked report text + OpenAI embeddings
--- for semantic (RAG) retrieval
--- ============================================================
-CREATE TABLE IF NOT EXISTS public.report_embeddings (
-  id          UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
-  report_id   UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
-  user_id     UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
-
-  -- Unique chunk identifier within the report
-  -- e.g. 'summary', 'section:s1', 'findings', 'predictions', 'statistics'
-  chunk_id    TEXT    NOT NULL,
-
-  -- Type tag for UI display and filtering
-  -- 'summary' | 'section' | 'finding' | 'prediction' | 'statistic' | 'citation'
-  chunk_type  TEXT    NOT NULL,
-
-  -- The actual text that was embedded
-  content     TEXT    NOT NULL,
-
-  -- OpenAI text-embedding-3-small — 1536 dimensions
-  embedding   vector(1536),
-
-  -- Extra metadata (sectionTitle, sectionId, count, etc.)
-  metadata    JSONB   DEFAULT '{}',
-
-  created_at  TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
-);
-
--- ── RLS ──────────────────────────────────────────────────────
-
-ALTER TABLE public.report_embeddings ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Users can view own embeddings"   ON public.report_embeddings;
-DROP POLICY IF EXISTS "Users can insert own embeddings" ON public.report_embeddings;
-DROP POLICY IF EXISTS "Users can delete own embeddings" ON public.report_embeddings;
-
-CREATE POLICY "Users can view own embeddings"
-  ON public.report_embeddings FOR SELECT
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can insert own embeddings"
-  ON public.report_embeddings FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can delete own embeddings"
-  ON public.report_embeddings FOR DELETE
-  USING (auth.uid() = user_id);
-
--- ── Indexes ───────────────────────────────────────────────────
-
-CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_id
-  ON public.report_embeddings(report_id);
-
-CREATE INDEX IF NOT EXISTS idx_report_embeddings_user_id
-  ON public.report_embeddings(user_id);
-
--- HNSW vector index — cosine distance, works on any dataset size
-CREATE INDEX IF NOT EXISTS idx_report_embeddings_vector
-  ON public.report_embeddings
-  USING hnsw (embedding vector_cosine_ops);
-
--- Composite: look up all chunks for a specific report quickly
-CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_chunk
-  ON public.report_embeddings(report_id, chunk_id);
-
--- ============================================
--- PART 6: ASSISTANT CONVERSATIONS TABLE
--- Enhanced follow-up chat with mode + RAG metadata
--- ============================================
-CREATE TABLE IF NOT EXISTS public.assistant_conversations (
-  id               UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
-  report_id        UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
-  user_id          UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
-
-  role             TEXT    NOT NULL,   -- 'user' | 'assistant'
-  content          TEXT    NOT NULL,
-
-  -- Which assistant mode was active when this message was sent
-  -- 'general' | 'beginner' | 'compare' | 'contradictions' | 'questions' | 'summarize' | 'factcheck'
-  mode             TEXT    NOT NULL DEFAULT 'general',
-
-  -- The RAG chunks that were retrieved to answer this message (for transparency / debug)
-  retrieved_chunks JSONB   DEFAULT '[]',
-
-  -- Suggested follow-up prompts returned by the agent
-  suggested_follow_ups JSONB DEFAULT '[]',
-
-  -- Whether the answer was powered by vector search or fallback context
-  is_rag_powered   BOOLEAN DEFAULT FALSE,
-
-  -- Agent confidence level: 'high' | 'medium' | 'low'
-  confidence       TEXT    DEFAULT 'medium',
-
-  created_at       TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
-);
-
--- ── RLS ──────────────────────────────────────────────────────
-
-ALTER TABLE public.assistant_conversations ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Users can view own assistant conversations"   ON public.assistant_conversations;
-DROP POLICY IF EXISTS "Users can insert own assistant conversations" ON public.assistant_conversations;
-DROP POLICY IF EXISTS "Users can delete own assistant conversations" ON public.assistant_conversations;
-
-CREATE POLICY "Users can view own assistant conversations"
-  ON public.assistant_conversations FOR SELECT
-  USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can insert own assistant conversations"
-  ON public.assistant_conversations FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can delete own assistant conversations"
-  ON public.assistant_conversations FOR DELETE
-  USING (auth.uid() = user_id);
-
--- ── Indexes ───────────────────────────────────────────────────
-
-CREATE INDEX IF NOT EXISTS idx_assistant_conversations_report_id
-  ON public.assistant_conversations(report_id);
-
-CREATE INDEX IF NOT EXISTS idx_assistant_conversations_user_report
-  ON public.assistant_conversations(user_id, report_id);
-
-CREATE INDEX IF NOT EXISTS idx_assistant_conversations_created_at
-  ON public.assistant_conversations(created_at DESC);
-
--- ============================================================
--- FUNCTIONS AND RPCs
--- ============================================================
-
--- ============================================================
 -- PART 5 RPC: get_presentations_for_report
--- Fetches all presentations for a report (descending by date)
 -- ============================================================
-
 CREATE OR REPLACE FUNCTION public.get_presentations_for_report(
   p_report_id UUID,
   p_user_id   UUID
@@ -661,14 +445,11 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_presentations_for_report(UUID, UUID)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_presentations_for_report(UUID, UUID) TO authenticated;
 
 -- ============================================================
 -- PART 5 RPC: increment_presentation_export
--- Increments the export counter for a presentation
 -- ============================================================
-
 CREATE OR REPLACE FUNCTION public.increment_presentation_export(
   p_presentation_id UUID,
   p_user_id         UUID
@@ -680,18 +461,88 @@ AS $$
 BEGIN
   UPDATE public.presentations
   SET export_count = COALESCE(export_count, 0) + 1
-  WHERE id      = p_presentation_id
-    AND user_id = p_user_id;
+  WHERE id = p_presentation_id AND user_id = p_user_id;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.increment_presentation_export(UUID, UUID)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.increment_presentation_export(UUID, UUID) TO authenticated;
+
+-- ============================================================
+-- PART 6: REPORT EMBEDDINGS TABLE
+-- Stores chunked report text + OpenAI embeddings
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.report_embeddings (
+  id          UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
+  report_id   UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
+  user_id     UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  chunk_id    TEXT    NOT NULL,
+  chunk_type  TEXT    NOT NULL, -- 'summary' | 'section' | 'finding' | 'prediction' | 'statistic' | 'citation'
+  content     TEXT    NOT NULL,
+  embedding   vector(1536),
+  metadata    JSONB   DEFAULT '{}',
+  created_at  TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+ALTER TABLE public.report_embeddings ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'report_embeddings' AND policyname = 'Users can view own embeddings') THEN
+    CREATE POLICY "Users can view own embeddings" ON public.report_embeddings FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'report_embeddings' AND policyname = 'Users can insert own embeddings') THEN
+    CREATE POLICY "Users can insert own embeddings" ON public.report_embeddings FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'report_embeddings' AND policyname = 'Users can delete own embeddings') THEN
+    CREATE POLICY "Users can delete own embeddings" ON public.report_embeddings FOR DELETE USING (auth.uid() = user_id);
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_id ON public.report_embeddings(report_id);
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_user_id ON public.report_embeddings(user_id);
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_vector ON public.report_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_chunk ON public.report_embeddings(report_id, chunk_id);
 
 -- ============================================
--- PART 6 RPC — match_report_chunks
--- Cosine similarity search over a single report's embeddings.
+-- PART 6: ASSISTANT CONVERSATIONS TABLE
+-- Enhanced follow-up chat with mode + RAG metadata
 -- ============================================
+CREATE TABLE IF NOT EXISTS public.assistant_conversations (
+  id               UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
+  report_id        UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
+  user_id          UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  role             TEXT    NOT NULL,   -- 'user' | 'assistant'
+  content          TEXT    NOT NULL,
+  mode             TEXT    NOT NULL DEFAULT 'general', -- 'general' | 'beginner' | 'compare' | 'contradictions' | 'questions' | 'summarize' | 'factcheck'
+  retrieved_chunks JSONB   DEFAULT '[]',
+  suggested_follow_ups JSONB DEFAULT '[]',
+  is_rag_powered   BOOLEAN DEFAULT FALSE,
+  confidence       TEXT    DEFAULT 'medium', -- 'high' | 'medium' | 'low'
+  created_at       TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+ALTER TABLE public.assistant_conversations ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'assistant_conversations' AND policyname = 'Users can view own assistant conversations') THEN
+    CREATE POLICY "Users can view own assistant conversations" ON public.assistant_conversations FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'assistant_conversations' AND policyname = 'Users can insert own assistant conversations') THEN
+    CREATE POLICY "Users can insert own assistant conversations" ON public.assistant_conversations FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'assistant_conversations' AND policyname = 'Users can delete own assistant conversations') THEN
+    CREATE POLICY "Users can delete own assistant conversations" ON public.assistant_conversations FOR DELETE USING (auth.uid() = user_id);
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_report_id ON public.assistant_conversations(report_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_user_report ON public.assistant_conversations(user_id, report_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_created_at ON public.assistant_conversations(created_at DESC);
+
+-- ============================================
+-- PART 6 RPCs
+-- ============================================
+
+-- match_report_chunks
 CREATE OR REPLACE FUNCTION public.match_report_chunks(
   query_embedding   vector(1536),
   p_report_id       UUID,
@@ -728,13 +579,9 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.match_report_chunks(vector, UUID, UUID, INT, FLOAT)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.match_report_chunks(vector, UUID, UUID, INT, FLOAT) TO authenticated;
 
--- ============================================
--- PART 6 RPC — is_report_embedded
--- Returns TRUE if the report already has stored embeddings.
--- ============================================
+-- is_report_embedded
 CREATE OR REPLACE FUNCTION public.is_report_embedded(
   p_report_id UUID,
   p_user_id   UUID
@@ -745,21 +592,15 @@ SECURITY DEFINER
 AS $$
 BEGIN
   RETURN EXISTS (
-    SELECT 1
-    FROM   public.report_embeddings
-    WHERE  report_id = p_report_id
-      AND  user_id   = p_user_id
+    SELECT 1 FROM public.report_embeddings
+    WHERE report_id = p_report_id AND user_id = p_user_id
   );
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.is_report_embedded(UUID, UUID)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.is_report_embedded(UUID, UUID) TO authenticated;
 
--- ============================================
--- PART 6 RPC — get_assistant_conversation
--- Returns the full conversation for a report, ordered oldest-first.
--- ============================================
+-- get_assistant_conversation
 CREATE OR REPLACE FUNCTION public.get_assistant_conversation(
   p_report_id UUID,
   p_user_id   UUID,
@@ -792,20 +633,15 @@ BEGIN
     ac.confidence,
     ac.created_at
   FROM public.assistant_conversations ac
-  WHERE ac.report_id = p_report_id
-    AND ac.user_id   = p_user_id
+  WHERE ac.report_id = p_report_id AND ac.user_id = p_user_id
   ORDER BY ac.created_at ASC
   LIMIT p_limit;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_assistant_conversation(UUID, UUID, INT)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_assistant_conversation(UUID, UUID, INT) TO authenticated;
 
--- ============================================
--- PART 6 RPC — delete_report_embeddings
--- Removes all embeddings for a report so they can be re-generated.
--- ============================================
+-- delete_report_embeddings
 CREATE OR REPLACE FUNCTION public.delete_report_embeddings(
   p_report_id UUID,
   p_user_id   UUID
@@ -816,18 +652,13 @@ SECURITY DEFINER
 AS $$
 BEGIN
   DELETE FROM public.report_embeddings
-  WHERE report_id = p_report_id
-    AND user_id   = p_user_id;
+  WHERE report_id = p_report_id AND user_id = p_user_id;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.delete_report_embeddings(UUID, UUID)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_report_embeddings(UUID, UUID) TO authenticated;
 
--- ============================================
--- PART 6 RPC — get_report_embedding_stats
--- Returns metadata about a report's embeddings (count, types).
--- ============================================
+-- get_report_embedding_stats
 CREATE OR REPLACE FUNCTION public.get_report_embedding_stats(
   p_report_id UUID,
   p_user_id   UUID
@@ -847,27 +678,238 @@ BEGIN
     jsonb_object_agg(chunk_type, cnt) AS chunk_types,
     MIN(created_at) AS embedded_at
   FROM (
-    SELECT
-      chunk_type,
-      COUNT(*) AS cnt,
-      MIN(created_at) AS created_at
+    SELECT chunk_type, COUNT(*) AS cnt, MIN(created_at) AS created_at
     FROM public.report_embeddings
-    WHERE report_id = p_report_id
-      AND user_id   = p_user_id
+    WHERE report_id = p_report_id AND user_id = p_user_id
     GROUP BY chunk_type
   ) sub;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_report_embedding_stats(UUID, UUID)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_report_embedding_stats(UUID, UUID) TO authenticated;
 
 -- ============================================
--- FUNCTION: get user research stats (Parts 1-6 combined)
+-- PART 7: ACADEMIC PAPERS TABLE
 -- ============================================
-DROP FUNCTION IF EXISTS public.get_user_research_stats(UUID);
+CREATE TABLE IF NOT EXISTS public.academic_papers (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id           UUID NOT NULL REFERENCES public.research_reports(id) ON DELETE CASCADE,
+  user_id             UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title               TEXT NOT NULL DEFAULT '',
+  running_head        TEXT NOT NULL DEFAULT '',
+  abstract            TEXT NOT NULL DEFAULT '',
+  keywords            TEXT[] NOT NULL DEFAULT '{}',
+  institution         TEXT,
+  sections            JSONB NOT NULL DEFAULT '[]',
+  citations           JSONB NOT NULL DEFAULT '[]',
+  citation_style      TEXT NOT NULL DEFAULT 'apa',
+  word_count          INTEGER NOT NULL DEFAULT 0,
+  page_estimate       INTEGER NOT NULL DEFAULT 0,
+  export_count        INTEGER NOT NULL DEFAULT 0,
+  generated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  
+  CONSTRAINT academic_papers_citation_style_check CHECK (citation_style IN ('apa', 'mla', 'chicago', 'ieee'))
+);
 
-CREATE FUNCTION public.get_user_research_stats(p_user_id UUID)
+-- Indexes for academic_papers
+CREATE INDEX IF NOT EXISTS academic_papers_report_id_idx ON public.academic_papers(report_id);
+CREATE INDEX IF NOT EXISTS academic_papers_user_id_idx ON public.academic_papers(user_id);
+CREATE INDEX IF NOT EXISTS academic_papers_generated_at_idx ON public.academic_papers(generated_at DESC);
+
+-- RLS for academic_papers
+ALTER TABLE public.academic_papers ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'academic_papers' AND policyname = 'Users can view own academic papers') THEN
+    CREATE POLICY "Users can view own academic papers" ON public.academic_papers FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'academic_papers' AND policyname = 'Users can insert own academic papers') THEN
+    CREATE POLICY "Users can insert own academic papers" ON public.academic_papers FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'academic_papers' AND policyname = 'Users can update own academic papers') THEN
+    CREATE POLICY "Users can update own academic papers" ON public.academic_papers FOR UPDATE USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'academic_papers' AND policyname = 'Users can delete own academic papers') THEN
+    CREATE POLICY "Users can delete own academic papers" ON public.academic_papers FOR DELETE USING (auth.uid() = user_id);
+  END IF;
+END $$;
+
+-- Trigger for academic_papers
+DROP TRIGGER IF EXISTS on_academic_papers_updated ON public.academic_papers;
+CREATE TRIGGER on_academic_papers_updated
+  BEFORE UPDATE ON public.academic_papers
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_updated_at();
+
+-- ============================================
+-- PART 7 RPCs
+-- ============================================
+
+-- get_academic_paper_by_report
+CREATE OR REPLACE FUNCTION public.get_academic_paper_by_report(p_report_id UUID)
+RETURNS SETOF public.academic_papers
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT *
+  FROM public.academic_papers
+  WHERE report_id = p_report_id
+    AND user_id = auth.uid()
+  LIMIT 1;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_academic_paper_by_report(UUID) TO authenticated;
+
+-- increment_academic_export_count
+CREATE OR REPLACE FUNCTION public.increment_academic_export_count(p_paper_id UUID)
+RETURNS VOID
+LANGUAGE sql
+SECURITY DEFINER
+AS $$
+  UPDATE public.academic_papers
+  SET export_count = export_count + 1, updated_at = NOW()
+  WHERE id = p_paper_id AND user_id = auth.uid();
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_academic_export_count(UUID) TO authenticated;
+
+-- get_user_academic_stats
+CREATE OR REPLACE FUNCTION public.get_user_academic_stats(p_user_id UUID)
+RETURNS TABLE (
+  total_papers        BIGINT,
+  total_word_count    BIGINT,
+  avg_page_estimate   NUMERIC,
+  most_used_style     TEXT,
+  papers_this_month   BIGINT
+)
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT
+    COUNT(*)::BIGINT AS total_papers,
+    COALESCE(SUM(word_count), 0)::BIGINT AS total_word_count,
+    COALESCE(ROUND(AVG(page_estimate)::NUMERIC, 1), 0)::NUMERIC AS avg_page_estimate,
+    (
+      SELECT citation_style
+      FROM public.academic_papers
+      WHERE user_id = p_user_id
+      GROUP BY citation_style
+      ORDER BY COUNT(*) DESC
+      LIMIT 1
+    )::TEXT AS most_used_style,
+    COUNT(*) FILTER (WHERE DATE_TRUNC('month', generated_at) = DATE_TRUNC('month', NOW()))::BIGINT AS papers_this_month
+  FROM public.academic_papers
+  WHERE user_id = p_user_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_academic_stats(UUID) TO authenticated;
+
+-- ============================================
+-- COMPREHENSIVE STATS FUNCTION (Part 7)
+-- Includes all stats from previous parts + academic data
+-- ============================================
+CREATE OR REPLACE FUNCTION public.get_user_complete_stats(p_user_id UUID)
+RETURNS TABLE (
+  -- Original stats
+  total_reports               BIGINT,
+  completed_reports           BIGINT,
+  total_sources               BIGINT,
+  avg_reliability             NUMERIC,
+  favorite_topic              TEXT,
+  reports_this_month          BIGINT,
+  total_assistant_messages    BIGINT,
+  reports_with_embeddings     BIGINT,
+  total_presentations         BIGINT,
+  total_slides                BIGINT,
+  -- Academic stats (new)
+  academic_papers_generated   BIGINT,
+  academic_word_count         BIGINT,
+  academic_pages_estimate     NUMERIC,
+  most_used_citation_style    TEXT
+)
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  WITH 
+  report_stats AS (
+    SELECT
+      COUNT(rr.id)::BIGINT AS total_reports,
+      COUNT(rr.id) FILTER (WHERE rr.status = 'completed')::BIGINT AS completed_reports,
+      COALESCE(SUM(rr.sources_count), 0)::BIGINT AS total_sources,
+      COALESCE(ROUND(AVG(rr.reliability_score) FILTER (WHERE rr.reliability_score IS NOT NULL)::NUMERIC, 1), 0)::NUMERIC AS avg_reliability,
+      COUNT(rr.id) FILTER (WHERE DATE_TRUNC('month', rr.created_at) = DATE_TRUNC('month', NOW()))::BIGINT AS reports_this_month
+    FROM public.research_reports rr
+    WHERE rr.user_id = p_user_id
+  ),
+  favorite_topic_result AS (
+    SELECT rr.query AS fav_topic
+    FROM public.research_reports rr
+    WHERE rr.user_id = p_user_id AND rr.status = 'completed'
+    GROUP BY rr.query
+    ORDER BY COUNT(*) DESC
+    LIMIT 1
+  ),
+  assistant_stats AS (
+    SELECT COUNT(*)::BIGINT AS total_msgs
+    FROM public.assistant_conversations ac
+    WHERE ac.user_id = p_user_id AND ac.role = 'assistant'
+  ),
+  embedding_stats AS (
+    SELECT COUNT(DISTINCT re.report_id)::BIGINT AS reports_with_embeds
+    FROM public.report_embeddings re
+    WHERE re.user_id = p_user_id
+  ),
+  presentation_stats AS (
+    SELECT
+      COUNT(p.id)::BIGINT AS total_presentations,
+      COALESCE(SUM(p.total_slides), 0)::BIGINT AS total_slides
+    FROM public.presentations p
+    WHERE p.user_id = p_user_id
+  ),
+  academic_stats AS (
+    SELECT
+      COUNT(*)::BIGINT AS total_papers,
+      COALESCE(SUM(word_count), 0)::BIGINT AS total_words,
+      COALESCE(ROUND(AVG(page_estimate)::NUMERIC, 1), 0)::NUMERIC AS avg_pages,
+      (
+        SELECT citation_style
+        FROM public.academic_papers
+        WHERE user_id = p_user_id
+        GROUP BY citation_style
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+      )::TEXT AS most_used_style
+    FROM public.academic_papers ap
+    WHERE ap.user_id = p_user_id
+  )
+  SELECT
+    rs.total_reports,
+    rs.completed_reports,
+    rs.total_sources,
+    rs.avg_reliability,
+    COALESCE((SELECT fav_topic FROM favorite_topic_result), NULL)::TEXT AS favorite_topic,
+    rs.reports_this_month,
+    COALESCE((SELECT total_msgs FROM assistant_stats), 0)::BIGINT AS total_assistant_messages,
+    COALESCE((SELECT reports_with_embeds FROM embedding_stats), 0)::BIGINT AS reports_with_embeddings,
+    COALESCE((SELECT total_presentations FROM presentation_stats), 0)::BIGINT AS total_presentations,
+    COALESCE((SELECT total_slides FROM presentation_stats), 0)::BIGINT AS total_slides,
+    COALESCE((SELECT total_papers FROM academic_stats), 0)::BIGINT AS academic_papers_generated,
+    COALESCE((SELECT total_words FROM academic_stats), 0)::BIGINT AS academic_word_count,
+    COALESCE((SELECT avg_pages FROM academic_stats), 0)::NUMERIC AS academic_pages_estimate,
+    (SELECT most_used_style FROM academic_stats)::TEXT AS most_used_citation_style
+  FROM report_stats rs;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_complete_stats(UUID) TO authenticated;
+
+-- ============================================
+-- ORIGINAL STATS FUNCTION (Part 1-6, preserved)
+-- ============================================
+CREATE OR REPLACE FUNCTION public.get_user_research_stats(p_user_id UUID)
 RETURNS TABLE (
   total_reports           BIGINT,
   completed_reports       BIGINT,
@@ -878,7 +920,6 @@ RETURNS TABLE (
   public_reports          BIGINT,
   total_presentations     BIGINT,
   total_slides            BIGINT,
-  -- Part 6 additions
   total_assistant_messages BIGINT,
   reports_with_embeddings  BIGINT
 )
@@ -888,74 +929,42 @@ AS $$
 BEGIN
   RETURN QUERY
   SELECT
-    COUNT(rr.id)::BIGINT
-      AS total_reports,
-
-    COUNT(rr.id) FILTER (WHERE rr.status = 'completed')::BIGINT
-      AS completed_reports,
-
-    COALESCE(SUM(rr.sources_count), 0)::BIGINT
-      AS total_sources,
-
-    COALESCE(
-      AVG(rr.reliability_score) FILTER (WHERE rr.status = 'completed'), 0
-    )::NUMERIC
-      AS avg_reliability,
-
+    COUNT(rr.id)::BIGINT AS total_reports,
+    COUNT(rr.id) FILTER (WHERE rr.status = 'completed')::BIGINT AS completed_reports,
+    COALESCE(SUM(rr.sources_count), 0)::BIGINT AS total_sources,
+    COALESCE(AVG(rr.reliability_score) FILTER (WHERE rr.status = 'completed'), 0)::NUMERIC AS avg_reliability,
     (
       SELECT rr2.query
-      FROM   public.research_reports rr2
-      WHERE  rr2.user_id = p_user_id
-        AND  rr2.status  = 'completed'
-      GROUP  BY rr2.query
-      ORDER  BY COUNT(*) DESC
-      LIMIT  1
+      FROM public.research_reports rr2
+      WHERE rr2.user_id = p_user_id AND rr2.status = 'completed'
+      GROUP BY rr2.query
+      ORDER BY COUNT(*) DESC
+      LIMIT 1
     ) AS favorite_topic,
-
-    COUNT(rr.id) FILTER (
-      WHERE rr.created_at >= date_trunc('month', NOW())
-    )::BIGINT AS reports_this_month,
-
-    COUNT(rr.id) FILTER (WHERE rr.is_public = TRUE)::BIGINT
-      AS public_reports,
-
+    COUNT(rr.id) FILTER (WHERE rr.created_at >= DATE_TRUNC('month', NOW()))::BIGINT AS reports_this_month,
+    COUNT(rr.id) FILTER (WHERE rr.is_public = TRUE)::BIGINT AS public_reports,
     (
-      SELECT COUNT(p.id)
-      FROM   public.presentations p
-      WHERE  p.user_id = p_user_id
+      SELECT COUNT(p.id) FROM public.presentations p WHERE p.user_id = p_user_id
     )::BIGINT AS total_presentations,
-
     (
-      SELECT COALESCE(SUM(p.total_slides), 0)
-      FROM   public.presentations p
-      WHERE  p.user_id = p_user_id
+      SELECT COALESCE(SUM(p.total_slides), 0) FROM public.presentations p WHERE p.user_id = p_user_id
     )::BIGINT AS total_slides,
-
-    -- Part 6: count of all assistant chat messages
     (
-      SELECT COUNT(ac.id)
-      FROM   public.assistant_conversations ac
-      WHERE  ac.user_id = p_user_id
-        AND  ac.role    = 'assistant'
+      SELECT COUNT(ac.id) FROM public.assistant_conversations ac WHERE ac.user_id = p_user_id AND ac.role = 'assistant'
     )::BIGINT AS total_assistant_messages,
-
-    -- Part 6: reports that have been embedded for RAG
     (
-      SELECT COUNT(DISTINCT re.report_id)
-      FROM   public.report_embeddings re
-      WHERE  re.user_id = p_user_id
+      SELECT COUNT(DISTINCT re.report_id) FROM public.report_embeddings re WHERE re.user_id = p_user_id
     )::BIGINT AS reports_with_embeddings
-
   FROM public.research_reports rr
-  WHERE rr.user_id = p_user_id;
+  WHERE rr.user_id = p_user_id
+  GROUP BY rr.user_id;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID) TO authenticated;
 
 -- ============================================
--- FUNCTION: fetch public report by token (Part 4)
+-- PUBLIC REPORT FUNCTIONS (Part 4)
 -- ============================================
 CREATE OR REPLACE FUNCTION public.get_public_report(p_token TEXT)
 RETURNS JSONB
@@ -967,15 +976,12 @@ DECLARE
 BEGIN
   SELECT to_jsonb(r) INTO v_report
   FROM public.research_reports r
-  WHERE r.public_token = p_token
-    AND r.is_public    = TRUE
-    AND r.status       = 'completed';
+  WHERE r.public_token = p_token AND r.is_public = TRUE AND r.status = 'completed';
 
   IF v_report IS NULL THEN
     RETURN jsonb_build_object('error', 'Report not found or not public');
   END IF;
 
-  -- Increment view counter
   UPDATE public.research_reports
   SET public_view_count = COALESCE(public_view_count, 0) + 1
   WHERE public_token = p_token;
@@ -984,11 +990,10 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_public_report(TEXT)
-  TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_public_report(TEXT) TO anon, authenticated;
 
 -- ============================================
--- FUNCTION: generate / rotate public token (Part 4)
+-- SET REPORT PUBLIC FUNCTION (Part 4)
 -- ============================================
 CREATE OR REPLACE FUNCTION public.set_report_public(
   p_report_id UUID,
@@ -1002,19 +1007,13 @@ AS $$
 DECLARE
   v_token TEXT;
 BEGIN
-  -- Verify ownership
-  IF NOT EXISTS (
-    SELECT 1 FROM public.research_reports
-    WHERE id = p_report_id AND user_id = p_user_id
-  ) THEN
+  IF NOT EXISTS (SELECT 1 FROM public.research_reports WHERE id = p_report_id AND user_id = p_user_id) THEN
     RAISE EXCEPTION 'Report not found or access denied';
   END IF;
 
   IF p_is_public THEN
     UPDATE public.research_reports
-    SET
-      is_public    = TRUE,
-      public_token = COALESCE(public_token, encode(gen_random_bytes(16), 'hex'))
+    SET is_public = TRUE, public_token = COALESCE(public_token, encode(gen_random_bytes(16), 'hex'))
     WHERE id = p_report_id
     RETURNING public_token INTO v_token;
     RETURN v_token;
@@ -1027,15 +1026,21 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN)
-  TO authenticated;
+GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN) TO authenticated;
+
+-- ============================================
+-- Add comments for documentation
+-- ============================================
+COMMENT ON TABLE public.academic_papers IS 'Stores AI-generated academic papers derived from research reports (Part 7)';
+COMMENT ON COLUMN public.research_reports.research_mode IS 'Indicates whether the report was generated in standard or academic mode (Part 7)';
+COMMENT ON COLUMN public.research_reports.academic_paper_id IS 'References the academic paper generated from this report (if any) (Part 7)';
+COMMENT ON FUNCTION public.get_user_complete_stats IS 'Complete user stats including academic papers (Part 7) - does not modify original get_user_research_stats';
 
 -- ============================================================
 -- Done ✓
--- Complete schema with all parts 1-6 installed.
+-- Complete schema with all parts 1-7 installed.
 -- After running this migration:
---   1. Verify pgvector is enabled:
---      SELECT * FROM pg_extension WHERE extname = 'vector';
---   2. No new npm packages needed — all RAG logic uses the
---      OpenAI API key already in your .env file.
+--   1. Verify pgvector is enabled: SELECT * FROM pg_extension WHERE extname = 'vector';
+--   2. All tables, indexes, RLS policies, and functions are created
+--   3. Original functions preserved, new comprehensive stats function added
 -- ============================================================

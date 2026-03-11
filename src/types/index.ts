@@ -1,6 +1,6 @@
 // src/types/index.ts
-// Parts 1 + 2 + 3 + 4 + 5 + 6
-// Part 6: Added AI Research Assistant Chat types (RAG pipeline, AssistantMode, etc.)
+// Parts 1 + 2 + 3 + 4 + 5 + 6 + 7
+// Part 7: Added AI Academic Paper Mode types (AcademicPaper, AcademicSection, etc.)
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -36,10 +36,20 @@ export interface OnboardingSlide {
 
 export type ResearchDepth = 'quick' | 'deep' | 'expert';
 
+/**
+ * Part 7: Research output mode.
+ * - 'standard' → the existing multi-section report (default)
+ * - 'academic' → generates an additional structured academic paper after the
+ *                standard pipeline completes
+ */
+export type ResearchMode = 'standard' | 'academic';
+
 export interface ResearchInput {
   query: string;
   depth: ResearchDepth;
   focusAreas: string[];
+  /** Part 7 — defaults to 'standard' when omitted */
+  mode?: ResearchMode;
 }
 
 // ─── Agent Progress ───────────────────────────────────────────────────────────
@@ -50,7 +60,8 @@ export type AgentName =
   | 'analyst'
   | 'factchecker'
   | 'reporter'
-  | 'visualizer';
+  | 'visualizer'
+  | 'academic'; // Part 7
 
 export type AgentStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -281,6 +292,10 @@ export interface ResearchReport {
   presentationId?: string;
   slideCount?: number;
 
+  // Part 7 — Academic Paper Mode
+  academicPaperId?: string;
+  researchMode?: ResearchMode;
+
   createdAt: string;
   completedAt?: string;
 }
@@ -293,6 +308,7 @@ export type ResearchStatus =
   | 'fact_checking'
   | 'generating'
   | 'visualizing'
+  | 'writing_paper'    // Part 7
   | 'completed'
   | 'failed';
 
@@ -329,6 +345,8 @@ export interface UserStats {
   // Part 6 additions
   totalAssistantMessages?: number;
   reportsWithEmbeddings?: number;
+  // Part 7 additions
+  academicPapersGenerated?: number;
 }
 
 export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
@@ -453,61 +471,35 @@ export interface SlideAgentOutput {
 
 // ─── Part 6: AI Research Assistant Chat (RAG Pipeline) ───────────────────────
 
-/**
- * The 7 modes of the Research Assistant.
- * Each mode changes the system prompt, temperature, and output structure.
- */
 export type AssistantMode =
-  | 'general'         // Expert RAG-powered Q&A
-  | 'beginner'        // ELI5 — explain for a complete beginner
-  | 'compare'         // Structured comparison with another topic
-  | 'contradictions'  // Critical analysis: find gaps, flaws, inconsistencies
-  | 'questions'       // Generate tiered follow-up research questions
-  | 'summarize'       // Concise structured summary on demand
-  | 'factcheck';      // Verify claims with confidence ratings
+  | 'general'
+  | 'beginner'
+  | 'compare'
+  | 'contradictions'
+  | 'questions'
+  | 'summarize'
+  | 'factcheck';
 
-/**
- * Metadata about a single retrieved chunk from vector search.
- * Stored on AssistantMessage for transparency / debugging.
- */
 export interface RetrievedChunkInfo {
   chunkId:    string;
   chunkType:  string;
   similarity: number;
 }
 
-/**
- * A single message in the Research Assistant conversation.
- * Extends the legacy ConversationMessage with RAG and mode metadata.
- */
 export interface AssistantMessage {
   id:                 string;
   reportId:           string;
   userId:             string;
   role:               'user' | 'assistant';
   content:            string;
-
-  /** Which mode was active when this message was generated */
   mode:               AssistantMode;
-
-  /** Chunks retrieved by vector search to answer this message */
   retrievedChunks?:   RetrievedChunkInfo[];
-
-  /** Follow-up prompts suggested by the agent */
   suggestedFollowUps?: string[];
-
-  /** True if vector search was used (false = fallback context) */
   isRAGPowered?:      boolean;
-
-  /** Agent's confidence in the answer based on context quality */
   confidence?:        'high' | 'medium' | 'low';
-
   createdAt:          string;
 }
 
-/**
- * The structured output from runResearchAssistantAgent().
- */
 export interface AssistantAgentResponse {
   content:             string;
   mode:                AssistantMode;
@@ -519,9 +511,6 @@ export interface AssistantAgentResponse {
   confidence:          'high' | 'medium' | 'low';
 }
 
-/**
- * State shape managed by useResearchAssistant hook.
- */
 export interface AssistantState {
   messages:      AssistantMessage[];
   isEmbedding:   boolean;
@@ -532,11 +521,125 @@ export interface AssistantState {
   error:         string | null;
 }
 
-/**
- * Embedding stats returned by getEmbeddingStats() for the UI badge.
- */
 export interface ReportEmbeddingStats {
   totalChunks: number;
   chunkTypes:  Record<string, number>;
   embeddedAt:  string | null;
+}
+
+// ─── Part 7: AI Academic Paper Mode ──────────────────────────────────────────
+
+/**
+ * Supported academic citation styles for the paper output.
+ */
+export type AcademicCitationStyle = 'apa' | 'mla' | 'chicago' | 'ieee';
+
+/**
+ * The seven canonical sections of an academic research paper.
+ */
+export type AcademicSectionType =
+  | 'abstract'
+  | 'introduction'
+  | 'literature_review'
+  | 'methodology'
+  | 'findings'
+  | 'conclusion'
+  | 'references';
+
+/**
+ * A subsection within a major academic section (e.g. "2.1 Background").
+ */
+export interface AcademicSubsection {
+  id: string;
+  title: string;
+  content: string;
+}
+
+/**
+ * A single section in the academic paper (e.g. Introduction, Methodology).
+ * Each section may contain multiple subsections.
+ */
+export interface AcademicSection {
+  id: string;
+  type: AcademicSectionType;
+  /** Display heading — e.g. "1. Introduction" */
+  title: string;
+  /** Full prose content for this section (may be multi-paragraph) */
+  content: string;
+  subsections?: AcademicSubsection[];
+  /** IDs from Citation[] used in this section */
+  citationIds?: string[];
+}
+
+/**
+ * The complete AI-generated academic paper linked to a ResearchReport.
+ * Stored in the `academic_papers` Supabase table.
+ */
+export interface AcademicPaper {
+  id: string;
+  reportId: string;
+  userId: string;
+  /** Full title of the academic paper */
+  title: string;
+  /** Short running head (≤50 chars) for header/footer */
+  runningHead: string;
+  /** Structured abstract (background, objective, method, findings, conclusion) */
+  abstract: string;
+  /** 5–8 keyword phrases for indexing */
+  keywords: string[];
+  /**
+   * Ordered sections: abstract → introduction → literature review →
+   * methodology → findings → conclusion → references
+   */
+  sections: AcademicSection[];
+  /** Full citation objects (shared from the parent report) */
+  citations: Citation[];
+  /** Citation style used throughout the paper */
+  citationStyle: AcademicCitationStyle;
+  /** Approximate total word count */
+  wordCount: number;
+  /** Estimated page count at standard academic formatting (250 words/page) */
+  pageEstimate: number;
+  /** Optional institution line on the title page */
+  institution?: string;
+  /** ISO timestamp when the paper was generated */
+  generatedAt: string;
+  /** How many times the paper has been exported */
+  exportCount: number;
+}
+
+/**
+ * The raw JSON output from runAcademicPaperAgent().
+ * The orchestrator wraps this into a full AcademicPaper before saving.
+ */
+export interface AcademicAgentOutput {
+  title: string;
+  runningHead: string;
+  abstract: string;
+  keywords: string[];
+  sections: Omit<AcademicSection, 'id'>[];
+}
+
+/**
+ * State shape managed by useAcademicPaper hook.
+ */
+export interface AcademicPaperState {
+  paper: AcademicPaper | null;
+  isGenerating: boolean;
+  isExporting: boolean;
+  error: string | null;
+  progress: string;
+  activeSectionId: string | null;
+  citationStyle: AcademicCitationStyle;
+}
+
+/**
+ * Meta info shown in the paper header / stats bar.
+ */
+export interface AcademicPaperMeta {
+  wordCount: number;
+  pageEstimate: number;
+  sectionCount: number;
+  citationCount: number;
+  generatedAt: string;
 }
