@@ -3,10 +3,16 @@
 // CTA, and navigation to academic-paper.tsx screen.
 //
 // ─── FREEZE FIX (carried over from Part 5) ───────────────────────────────────
-//  All header & promo buttons use Pressable (not TouchableOpacity).
-//  No interactive children inside Animated.View entering= wrappers.
+// All header & promo buttons use Pressable (not TouchableOpacity).
+// No interactive children inside Animated.View entering= wrappers.
+//
+// ─── HEADER OPTIMIZATION (Mar 2026) ──────────────────────────────────────────
+// • Right actions wrapped in a compact View with gap: 4
+// • All action buttons reduced to 34×34 (was 38) for better breathing room
+// • Title Pressable now has explicit marginRight + inner gap reduced to 4
+// • Title Text gets ellipsizeMode="tail" + flexShrink support
+// • Result: title never gets crushed even with all 6 right icons on small screens
 // ──────────────────────────────────────────────────────────────────────────────
-
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, Pressable,
@@ -14,31 +20,29 @@ import {
   ActivityIndicator, Switch, Dimensions, Modal,
   Animated as RNAnimated,
 } from 'react-native';
-import { LinearGradient }           from 'expo-linear-gradient';
-import { Ionicons }                  from '@expo/vector-icons';
-import Animated, { FadeInDown }      from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams }    from 'expo-router';
-
-import { supabase }                  from '../../src/lib/supabase';
-import { ReportSectionCard }         from '../../src/components/research/ReportSection';
-import { CitationModal }             from '../../src/components/research/CitationModal';
-import { InfographicsPanel }         from '../../src/components/research/InfographicCard';
-import { SourceImageGallery }        from '../../src/components/research/SourceImageGallery';
-import { ShareSheet }                from '../../src/components/research/ShareSheet';
-import { LoadingOverlay }            from '../../src/components/common/LoadingOverlay';
-import { ResearchAssistantChat }     from '../../src/components/research/ResearchAssistantChat';
-import { useResearchAssistant }      from '../../src/hooks/useResearchAssistant';
-
+import { router, useLocalSearchParams } from 'expo-router';
+import { supabase } from '../../src/lib/supabase';
+import { ReportSectionCard } from '../../src/components/research/ReportSection';
+import { CitationModal } from '../../src/components/research/CitationModal';
+import { InfographicsPanel } from '../../src/components/research/InfographicCard';
+import { SourceImageGallery } from '../../src/components/research/SourceImageGallery';
+import { ShareSheet } from '../../src/components/research/ShareSheet';
+import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
+import { ResearchAssistantChat } from '../../src/components/research/ResearchAssistantChat';
+import { useResearchAssistant } from '../../src/hooks/useResearchAssistant';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import { ResearchReport }            from '../../src/types';
-import { exportReportAsPDF }         from '../../src/services/pdfExport';
+import { ResearchReport } from '../../src/types';
+import { exportReportAsPDF } from '../../src/services/pdfExport';
 import { cacheReport, getCachedReport } from '../../src/lib/offlineCache';
 
-const SCREEN_W  = Dimensions.get('window').width;
-const SCREEN_H  = Dimensions.get('window').height;
-const PANEL_W   = SCREEN_W - SPACING.lg * 2;
-const SHEET_MAX_H  = SCREEN_H * 0.72;
+const SCREEN_W = Dimensions.get('window').width;
+const SCREEN_H = Dimensions.get('window').height;
+const PANEL_W = SCREEN_W - SPACING.lg * 2;
+const SHEET_MAX_H = SCREEN_H * 0.72;
 const SCROLL_MAX_H = SHEET_MAX_H - 90;
 
 const DEPTH_LABELS: Record<string, string> = {
@@ -46,24 +50,21 @@ const DEPTH_LABELS: Record<string, string> = {
 };
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
-
 export default function ResearchReportScreen() {
   const { reportId } = useLocalSearchParams<{ reportId: string }>();
   const insets = useSafeAreaInsets();
-
-  const [report,         setReport]         = useState<ResearchReport | null>(null);
-  const [loading,        setLoading]        = useState(true);
-  const [activeTab,      setActiveTab]      = useState<'report' | 'findings' | 'sources'>('report');
-  const [showChat,       setShowChat]       = useState(false);
-  const [showCitations,  setShowCitations]  = useState(false);
+  const [report, setReport] = useState<ResearchReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'report' | 'findings' | 'sources'>('report');
+  const [showChat, setShowChat] = useState(false);
+  const [showCitations, setShowCitations] = useState(false);
   const [showShareSheet, setShowShareSheet] = useState(false);
-  const [exporting,      setExporting]      = useState(false);
-  const [isFromCache,    setIsFromCache]    = useState(false);
-  const [visualMode,        setVisualMode]        = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [isFromCache, setIsFromCache] = useState(false);
+  const [visualMode, setVisualMode] = useState(true);
   const [showReportDetails, setShowReportDetails] = useState(false);
-
-  const scrollY            = useRef(new RNAnimated.Value(0)).current;
-  const [contentH,  setContentH]  = useState(0);
+  const scrollY = useRef(new RNAnimated.Value(0)).current;
+  const [contentH, setContentH] = useState(0);
   const [scrollerH, setScrollerH] = useState(0);
 
   const assistant = useResearchAssistant(report);
@@ -88,37 +89,37 @@ export default function ResearchReportScreen() {
       }
 
       const mapped: ResearchReport = {
-        id:                data.id,
-        userId:            data.user_id,
-        query:             data.query,
-        depth:             data.depth,
-        focusAreas:        data.focus_areas        ?? [],
-        title:             data.title              ?? data.query,
-        executiveSummary:  data.executive_summary  ?? '',
-        sections:          data.sections           ?? [],
-        keyFindings:       data.key_findings       ?? [],
+        id: data.id,
+        userId: data.user_id,
+        query: data.query,
+        depth: data.depth,
+        focusAreas: data.focus_areas ?? [],
+        title: data.title ?? data.query,
+        executiveSummary: data.executive_summary ?? '',
+        sections: data.sections ?? [],
+        keyFindings: data.key_findings ?? [],
         futurePredictions: data.future_predictions ?? [],
-        citations:         data.citations          ?? [],
-        statistics:        data.statistics         ?? [],
-        searchQueries:     data.search_queries     ?? [],
-        sourcesCount:      data.sources_count      ?? 0,
-        reliabilityScore:  data.reliability_score  ?? 0,
-        status:            data.status,
-        errorMessage:      data.error_message,
-        agentLogs:         data.agent_logs         ?? [],
-        isPinned:          data.is_pinned          ?? false,
-        exportCount:       data.export_count       ?? 0,
-        viewCount:         data.view_count         ?? 0,
-        knowledgeGraph:    data.knowledge_graph    ?? undefined,
-        infographicData:   data.infographic_data   ?? undefined,
-        sourceImages:      data.source_images      ?? [],
-        presentationId:    data.presentation_id    ?? undefined,
-        slideCount:        data.slide_count        ?? 0,
+        citations: data.citations ?? [],
+        statistics: data.statistics ?? [],
+        searchQueries: data.search_queries ?? [],
+        sourcesCount: data.sources_count ?? 0,
+        reliabilityScore: data.reliability_score ?? 0,
+        status: data.status,
+        errorMessage: data.error_message,
+        agentLogs: data.agent_logs ?? [],
+        isPinned: data.is_pinned ?? false,
+        exportCount: data.export_count ?? 0,
+        viewCount: data.view_count ?? 0,
+        knowledgeGraph: data.knowledge_graph ?? undefined,
+        infographicData: data.infographic_data ?? undefined,
+        sourceImages: data.source_images ?? [],
+        presentationId: data.presentation_id ?? undefined,
+        slideCount: data.slide_count ?? 0,
         // Part 7
-        academicPaperId:   data.academic_paper_id  ?? undefined,
-        researchMode:      data.research_mode      ?? 'standard',
-        createdAt:         data.created_at,
-        completedAt:       data.completed_at,
+        academicPaperId: data.academic_paper_id ?? undefined,
+        researchMode: data.research_mode ?? 'standard',
+        createdAt: data.created_at,
+        completedAt: data.completed_at,
       };
 
       setReport(mapped);
@@ -187,14 +188,13 @@ export default function ResearchReportScreen() {
 
   const hasVisuals =
     (report?.infographicData?.charts.length ?? 0) > 0 ||
-    (report?.infographicData?.stats.length  ?? 0) > 0 ||
-    (report?.sourceImages?.length           ?? 0) > 0 ||
+    (report?.infographicData?.stats.length ?? 0) > 0 ||
+    (report?.sourceImages?.length ?? 0) > 0 ||
     !!report?.knowledgeGraph;
 
-  const hasPresentation  = !!report?.presentationId;
-  // Part 7
+  const hasPresentation = !!report?.presentationId;
   const hasAcademicPaper = !!report?.academicPaperId;
-  const isAcademicMode   = report?.researchMode === 'academic';
+  const isAcademicMode = report?.researchMode === 'academic';
 
   if (loading && !report) return <LoadingOverlay visible message="Loading report…" />;
   if (!report) return null;
@@ -206,14 +206,14 @@ export default function ResearchReportScreen() {
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
-
-          {/* ── Header ───────────────────────────────────────────────────── */}
+          {/* ── OPTIMIZED HEADER ───────────────────────────────────────────── */}
           <View style={{
             flexDirection: 'row', alignItems: 'center',
             paddingHorizontal: SPACING.lg,
             paddingTop: SPACING.sm, paddingBottom: SPACING.sm,
             borderBottomWidth: 1, borderBottomColor: COLORS.border,
           }}>
+            {/* Back button */}
             <Pressable
               onPress={() => router.push('/(app)/(tabs)/home' as any)}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -226,12 +226,13 @@ export default function ResearchReportScreen() {
               <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
             </Pressable>
 
+            {/* Title area — now protected from compression */}
             <Pressable
               onPress={() => setShowReportDetails(true)}
               hitSlop={{ top: 6, bottom: 6, left: 0, right: 0 }}
-              style={{ flex: 1 }}
+              style={{ flex: 1, marginRight: SPACING.sm }}
             >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'nowrap' }}>
                 {isFromCache && (
                   <View style={{
                     backgroundColor: `${COLORS.info}20`, borderRadius: RADIUS.sm,
@@ -252,8 +253,15 @@ export default function ResearchReportScreen() {
                   </View>
                 )}
                 <Text
-                  style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1 }}
+                  style={{
+                    color: COLORS.textPrimary,
+                    fontSize: FONTS.sizes.base,
+                    fontWeight: '700',
+                    flex: 1,
+                    flexShrink: 1,
+                  }}
                   numberOfLines={1}
+                  ellipsizeMode="tail"
                 >
                   {report.title}
                 </Text>
@@ -264,117 +272,120 @@ export default function ResearchReportScreen() {
               </Text>
             </Pressable>
 
-            {/* Knowledge Graph shortcut */}
-            {report.knowledgeGraph && (
+            {/* RIGHT ACTIONS — compact wrapped container */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              {/* Knowledge Graph shortcut */}
+              {report.knowledgeGraph && (
+                <Pressable
+                  onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={{
+                    width: 34, height: 34, borderRadius: 12,
+                    backgroundColor: `${COLORS.primary}15`,
+                    alignItems: 'center', justifyContent: 'center',
+                    borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                  }}
+                >
+                  <Ionicons name="git-network-outline" size={18} color={COLORS.primary} />
+                </Pressable>
+              )}
+
+              {/* Part 7: Academic paper button */}
               <Pressable
-                onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
+                onPress={handleOpenAcademicPaper}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={{
-                  width: 38, height: 38, borderRadius: 12,
-                  backgroundColor: `${COLORS.primary}15`,
-                  alignItems: 'center', justifyContent: 'center', marginRight: 6,
-                  borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                  width: 34, height: 34, borderRadius: 12,
+                  backgroundColor: hasAcademicPaper ? `${COLORS.primary}22` : COLORS.backgroundElevated,
+                  alignItems: 'center', justifyContent: 'center',
+                  borderWidth: 1,
+                  borderColor: hasAcademicPaper ? `${COLORS.primary}55` : COLORS.border,
                 }}
               >
-                <Ionicons name="git-network-outline" size={18} color={COLORS.primary} />
+                <Ionicons
+                  name={hasAcademicPaper ? 'school' : 'school-outline'}
+                  size={18}
+                  color={hasAcademicPaper ? COLORS.primary : COLORS.textSecondary}
+                />
               </Pressable>
-            )}
 
-            {/* Part 7: Academic paper button */}
-            <Pressable
-              onPress={handleOpenAcademicPaper}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: hasAcademicPaper ? `${COLORS.primary}22` : COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center', marginRight: 6,
-                borderWidth: 1,
-                borderColor: hasAcademicPaper ? `${COLORS.primary}55` : COLORS.border,
-              }}
-            >
-              <Ionicons
-                name={hasAcademicPaper ? 'school' : 'school-outline'}
-                size={18}
-                color={hasAcademicPaper ? COLORS.primary : COLORS.textSecondary}
-              />
-            </Pressable>
+              {/* Slides button */}
+              <Pressable
+                onPress={handleGenerateSlides}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{
+                  width: 34, height: 34, borderRadius: 12,
+                  backgroundColor: hasPresentation ? `${COLORS.primary}22` : COLORS.backgroundElevated,
+                  alignItems: 'center', justifyContent: 'center',
+                  borderWidth: 1,
+                  borderColor: hasPresentation ? `${COLORS.primary}55` : COLORS.border,
+                }}
+              >
+                <Ionicons
+                  name={hasPresentation ? 'easel' : 'easel-outline'}
+                  size={18}
+                  color={hasPresentation ? COLORS.primary : COLORS.textSecondary}
+                />
+              </Pressable>
 
-            {/* Slides button */}
-            <Pressable
-              onPress={handleGenerateSlides}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: hasPresentation ? `${COLORS.primary}22` : COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center', marginRight: 6,
-                borderWidth: 1,
-                borderColor: hasPresentation ? `${COLORS.primary}55` : COLORS.border,
-              }}
-            >
-              <Ionicons
-                name={hasPresentation ? 'easel' : 'easel-outline'}
-                size={18}
-                color={hasPresentation ? COLORS.primary : COLORS.textSecondary}
-              />
-            </Pressable>
+              {/* AI Chat button */}
+              <Pressable
+                onPress={() => setShowChat(v => !v)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{
+                  width: 34, height: 34, borderRadius: 12,
+                  backgroundColor: showChat
+                    ? `${COLORS.primary}22`
+                    : assistant.isEmbedded
+                      ? `${COLORS.success}18`
+                      : COLORS.backgroundElevated,
+                  alignItems: 'center', justifyContent: 'center',
+                  borderWidth: 1,
+                  borderColor: showChat
+                    ? `${COLORS.primary}55`
+                    : assistant.isEmbedded
+                      ? `${COLORS.success}40`
+                      : COLORS.border,
+                }}
+              >
+                <Ionicons
+                  name={showChat ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
+                  size={18}
+                  color={showChat ? COLORS.primary : assistant.isEmbedded ? COLORS.success : COLORS.textSecondary}
+                />
+              </Pressable>
 
-            {/* AI Chat button */}
-            <Pressable
-              onPress={() => setShowChat(v => !v)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: showChat
-                  ? `${COLORS.primary}22`
-                  : assistant.isEmbedded
-                    ? `${COLORS.success}18`
-                    : COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center', marginRight: 6,
-                borderWidth: 1,
-                borderColor: showChat
-                  ? `${COLORS.primary}55`
-                  : assistant.isEmbedded
-                    ? `${COLORS.success}40`
-                    : COLORS.border,
-              }}
-            >
-              <Ionicons
-                name={showChat ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
-                size={18}
-                color={showChat ? COLORS.primary : assistant.isEmbedded ? COLORS.success : COLORS.textSecondary}
-              />
-            </Pressable>
+              {/* PDF Export */}
+              <Pressable
+                onPress={handleExportPDF}
+                disabled={exporting}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{
+                  width: 34, height: 34, borderRadius: 12,
+                  backgroundColor: COLORS.backgroundElevated,
+                  alignItems: 'center', justifyContent: 'center',
+                  opacity: exporting ? 0.6 : 1,
+                }}
+              >
+                {exporting
+                  ? <ActivityIndicator size="small" color={COLORS.primary} />
+                  : <Ionicons name="download-outline" size={20} color={COLORS.textSecondary} />
+                }
+              </Pressable>
 
-            {/* PDF Export */}
-            <Pressable
-              onPress={handleExportPDF}
-              disabled={exporting}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center', marginRight: 6,
-                opacity: exporting ? 0.6 : 1,
-              }}
-            >
-              {exporting
-                ? <ActivityIndicator size="small" color={COLORS.primary} />
-                : <Ionicons name="download-outline" size={20} color={COLORS.textSecondary} />
-              }
-            </Pressable>
-
-            {/* Share */}
-            <Pressable
-              onPress={() => setShowShareSheet(true)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center',
-              }}
-            >
-              <Ionicons name="share-outline" size={20} color={COLORS.textSecondary} />
-            </Pressable>
+              {/* Share */}
+              <Pressable
+                onPress={() => setShowShareSheet(true)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{
+                  width: 34, height: 34, borderRadius: 12,
+                  backgroundColor: COLORS.backgroundElevated,
+                  alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                <Ionicons name="share-outline" size={20} color={COLORS.textSecondary} />
+              </Pressable>
+            </View>
           </View>
 
           {/* ── Visual Toggle ─────────────────────────────────────────────── */}
@@ -405,7 +416,6 @@ export default function ResearchReportScreen() {
                   </Text>
                 </View>
               </View>
-
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <Pressable
                   onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
@@ -419,7 +429,6 @@ export default function ResearchReportScreen() {
                   <Ionicons name="git-network-outline" size={12} color={COLORS.textMuted} />
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Graph</Text>
                 </Pressable>
-
                 <Switch
                   value={visualMode}
                   onValueChange={setVisualMode}
@@ -474,8 +483,8 @@ export default function ResearchReportScreen() {
                 style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}
               >
                 {[
-                  { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline',            color: COLORS.info },
-                  { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary },
+                  { label: 'Sources', value: String(report.sourcesCount), icon: 'globe-outline', color: COLORS.info },
+                  { label: 'Citations', value: String(report.citations.length), icon: 'link-outline', color: COLORS.primary },
                   { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
                 ].map(stat => (
                   <View key={stat.label} style={{
@@ -593,7 +602,6 @@ export default function ResearchReportScreen() {
                           </View>
                           <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
                         </View>
-
                         {/* Section chips */}
                         <View style={{ flexDirection: 'row', gap: 6, marginTop: SPACING.md, flexWrap: 'wrap' }}>
                           {[
@@ -668,7 +676,7 @@ export default function ResearchReportScreen() {
                         <View style={{ flexDirection: 'row', gap: 6, marginTop: SPACING.md, flexWrap: 'wrap' }}>
                           {[
                             { label: 'PPTX', icon: 'desktop-outline' },
-                            { label: 'PDF',  icon: 'document-outline' },
+                            { label: 'PDF', icon: 'document-outline' },
                             { label: 'HTML', icon: 'globe-outline' },
                           ].map(f => (
                             <View key={f.label} style={{
@@ -817,7 +825,6 @@ export default function ResearchReportScreen() {
                       </Text>
                     </View>
                   ))}
-
                   {report.futurePredictions.length > 0 && (
                     <>
                       <Text style={{
@@ -838,7 +845,6 @@ export default function ResearchReportScreen() {
                       ))}
                     </>
                   )}
-
                   {report.statistics.length > 0 && (
                     <>
                       <Text style={{
@@ -868,7 +874,6 @@ export default function ResearchReportScreen() {
                   {visualMode && (report.sourceImages?.length ?? 0) > 0 && (
                     <SourceImageGallery images={report.sourceImages!} title="Source Images" />
                   )}
-
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
                     <Text style={{
                       color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
@@ -887,7 +892,6 @@ export default function ResearchReportScreen() {
                       <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
                     </Pressable>
                   </View>
-
                   {report.citations.map((c, i) => (
                     <Pressable
                       key={c.id ?? i}
@@ -919,7 +923,6 @@ export default function ResearchReportScreen() {
                       </Text>
                     </Pressable>
                   ))}
-
                   {report.searchQueries.length > 0 && (
                     <View style={{ marginTop: SPACING.lg }}>
                       <Text style={{
@@ -1021,7 +1024,6 @@ export default function ResearchReportScreen() {
                 </View>
                 <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
               </Pressable>
-
               <ResearchAssistantChat
                 assistant={assistant}
                 reportTitle={report.title}
@@ -1029,7 +1031,6 @@ export default function ResearchReportScreen() {
               <View style={{ height: insets.bottom }} />
             </View>
           )}
-
         </KeyboardAvoidingView>
       </SafeAreaView>
 
@@ -1038,7 +1039,6 @@ export default function ResearchReportScreen() {
         citations={report.citations}
         onClose={() => setShowCitations(false)}
       />
-
       <ShareSheet
         visible={showShareSheet}
         report={report}
@@ -1156,9 +1156,9 @@ export default function ResearchReportScreen() {
                   {/* Meta grid */}
                   <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
                     {[
-                      { icon: 'layers-outline',           colors: COLORS.gradientPrimary,                                    label: 'Depth',       value: DEPTH_LABELS[report.depth],         color: COLORS.textPrimary },
-                      { icon: 'shield-checkmark-outline', colors: [reliabilityColor, reliabilityColor + 'AA'] as [string,string], label: 'Reliability', value: `${report.reliabilityScore}/10`,   color: reliabilityColor },
-                      { icon: 'globe-outline',            colors: [COLORS.info, COLORS.info + 'AA'] as [string,string],       label: 'Sources',     value: String(report.sourcesCount),        color: COLORS.info },
+                      { icon: 'layers-outline', colors: COLORS.gradientPrimary, label: 'Depth', value: DEPTH_LABELS[report.depth], color: COLORS.textPrimary },
+                      { icon: 'shield-checkmark-outline', colors: [reliabilityColor, reliabilityColor + 'AA'] as [string,string], label: 'Reliability', value: `${report.reliabilityScore}/10`, color: reliabilityColor },
+                      { icon: 'globe-outline', colors: [COLORS.info, COLORS.info + 'AA'] as [string,string], label: 'Sources', value: String(report.sourcesCount), color: COLORS.info },
                     ].map(item => (
                       <View key={item.label} style={{
                         flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
@@ -1217,10 +1217,10 @@ export default function ResearchReportScreen() {
                     padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border, gap: 8,
                   }}>
                     {[
-                      { icon: 'time-outline',             iconColor: COLORS.textMuted,  label: 'Created',   value: formatDate(report.createdAt) },
+                      { icon: 'time-outline', iconColor: COLORS.textMuted, label: 'Created', value: formatDate(report.createdAt) },
                       ...(report.completedAt ? [{ icon: 'checkmark-circle-outline', iconColor: COLORS.success, label: 'Completed', value: formatDate(report.completedAt) }] : []),
-                      { icon: 'eye-outline',              iconColor: COLORS.textMuted,  label: 'Views',     value: String(report.viewCount ?? 0) },
-                      { icon: 'download-outline',         iconColor: COLORS.textMuted,  label: 'Exports',   value: String(report.exportCount ?? 0) },
+                      { icon: 'eye-outline', iconColor: COLORS.textMuted, label: 'Views', value: String(report.viewCount ?? 0) },
+                      { icon: 'download-outline', iconColor: COLORS.textMuted, label: 'Exports', value: String(report.exportCount ?? 0) },
                     ].map(row => (
                       <View key={row.label} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -1264,13 +1264,13 @@ export default function ResearchReportScreen() {
                   <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
                     {[
                       {
-                        icon:  report.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline',
+                        icon: report.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline',
                         color: report.status === 'completed' ? COLORS.success : COLORS.textMuted,
                         border: report.status === 'completed' ? `${COLORS.success}30` : COLORS.border,
                         label: 'Status', value: report.status,
                       },
                       {
-                        icon:  assistant.isEmbedded ? 'sparkles' : assistant.isEmbedding ? 'sync-outline' : 'cloud-outline',
+                        icon: assistant.isEmbedded ? 'sparkles' : assistant.isEmbedding ? 'sync-outline' : 'cloud-outline',
                         color: assistant.isEmbedded ? COLORS.success : assistant.isEmbedding ? COLORS.primary : COLORS.textMuted,
                         border: assistant.isEmbedded ? `${COLORS.success}30` : COLORS.border,
                         label: 'RAG', value: assistant.isEmbedded ? 'Ready' : assistant.isEmbedding ? 'Indexing' : 'Pending',
