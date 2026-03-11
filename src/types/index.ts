@@ -1,5 +1,6 @@
 // src/types/index.ts
-// Parts 1 + 2 + 3 + 4 + 5 — Added slide / presentation types for AI Slide Generator
+// Parts 1 + 2 + 3 + 4 + 5 + 6
+// Part 6: Added AI Research Assistant Chat types (RAG pipeline, AssistantMode, etc.)
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -295,7 +296,7 @@ export type ResearchStatus =
   | 'completed'
   | 'failed';
 
-// ─── Conversation ─────────────────────────────────────────────────────────────
+// ─── Part 2: Conversation (legacy — kept for backward compat) ─────────────────
 
 export interface ConversationMessage {
   id: string;
@@ -325,6 +326,9 @@ export interface UserStats {
   favoriteTopic: string | null;
   reportsThisMonth: number;
   hoursResearched: number;
+  // Part 6 additions
+  totalAssistantMessages?: number;
+  reportsWithEmbeddings?: number;
 }
 
 export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
@@ -358,20 +362,6 @@ export interface FormattedCitation {
 
 // ─── Part 5: AI Slide Generator ───────────────────────────────────────────────
 
-/**
- * Visual layout of a slide.
- * - title      : Full-screen cover with large title + subtitle
- * - agenda     : Numbered list of topics/sections (table of contents)
- * - section    : Divider slide for a new section (big label, minimal text)
- * - content    : Title + paragraph body text
- * - bullets    : Title + bulleted list (up to 6 bullets)
- * - stats      : Title + 3–4 stat cards (value + label)
- * - quote      : Pull-quote / highlighted key finding
- * - chart_ref  : Title + reference to infographic data + insight text
- * - predictions: Title + numbered future outlook items
- * - references : Title + numbered citation list
- * - closing    : Thank-you / branding slide
- */
 export type SlideLayout =
   | 'title'
   | 'agenda'
@@ -385,55 +375,40 @@ export type SlideLayout =
   | 'references'
   | 'closing';
 
-/** A single stat displayed on a stats-layout slide */
 export interface SlideStatItem {
   value: string;
   label: string;
-  color?: string;   // hex WITH # — used by the app; stripped before pptxgenjs
+  color?: string;
 }
 
-/** One slide in a generated presentation */
 export interface PresentationSlide {
   id: string;
   slideNumber: number;
   layout: SlideLayout;
-
-  // Primary content — all layouts use at least title
   title: string;
-
-  // Layout-specific content
-  subtitle?: string;           // title, section, closing
-  body?: string;               // content, chart_ref
-  bullets?: string[];          // bullets, predictions, agenda, references
-  stats?: SlideStatItem[];     // stats
-  quote?: string;              // quote
-  quoteAttribution?: string;   // quote — "— Source, Year"
-  sectionTag?: string;         // section — small label above the big title
-  badgeText?: string;          // title — small top badge e.g. "DeepDive AI · 2024"
-
-  /** Optional presenter notes (not visible on slides) */
+  subtitle?: string;
+  body?: string;
+  bullets?: string[];
+  stats?: SlideStatItem[];
+  quote?: string;
+  quoteAttribution?: string;
+  sectionTag?: string;
+  badgeText?: string;
   speakerNotes?: string;
-
-  /** Accent color override (app hex, e.g. '#6C63FF') — defaults to theme primary */
   accentColor?: string;
-
-  /** Icon name from @expo/vector-icons (Ionicons) — used in app preview only */
   icon?: string;
 }
 
-/** Available visual themes for a presentation */
 export type PresentationTheme = 'dark' | 'light' | 'corporate' | 'vibrant';
 
-/** Theme colour tokens used by the slide renderer and PPTX builder */
 export interface PresentationThemeTokens {
-  background: string;       // slide background hex (app format WITH #)
-  surface: string;          // card / elevated surface hex
-  primary: string;          // accent / highlight colour hex
-  textPrimary: string;      // heading text hex
-  textSecondary: string;    // body text hex
-  textMuted: string;        // caption / footnote text hex
-  border: string;           // divider / border hex
-  // PPTX versions — same colours WITHOUT the # prefix
+  background: string;
+  surface: string;
+  primary: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  border: string;
   pptx: {
     background: string;
     surface: string;
@@ -445,27 +420,20 @@ export interface PresentationThemeTokens {
   };
 }
 
-/** A complete generated presentation */
 export interface GeneratedPresentation {
-  /** Supabase row id (set after persisting, empty string while in-memory) */
   id: string;
   reportId: string;
   userId: string;
-
   title: string;
   subtitle: string;
-
   theme: PresentationTheme;
   themeTokens: PresentationThemeTokens;
-
   slides: PresentationSlide[];
   totalSlides: number;
-
   generatedAt: string;
   exportCount: number;
 }
 
-/** State managed by useSlideGenerator */
 export interface SlideGeneratorState {
   presentation: GeneratedPresentation | null;
   isGenerating: boolean;
@@ -475,12 +443,100 @@ export interface SlideGeneratorState {
   error: string | null;
 }
 
-/** Supported export formats */
 export type SlideExportFormat = 'pptx' | 'pdf' | 'html';
 
-/** Raw output from the slideAgent (before wrapping in GeneratedPresentation) */
 export interface SlideAgentOutput {
   presentationTitle: string;
   presentationSubtitle: string;
   slides: Omit<PresentationSlide, 'slideNumber'>[];
+}
+
+// ─── Part 6: AI Research Assistant Chat (RAG Pipeline) ───────────────────────
+
+/**
+ * The 7 modes of the Research Assistant.
+ * Each mode changes the system prompt, temperature, and output structure.
+ */
+export type AssistantMode =
+  | 'general'         // Expert RAG-powered Q&A
+  | 'beginner'        // ELI5 — explain for a complete beginner
+  | 'compare'         // Structured comparison with another topic
+  | 'contradictions'  // Critical analysis: find gaps, flaws, inconsistencies
+  | 'questions'       // Generate tiered follow-up research questions
+  | 'summarize'       // Concise structured summary on demand
+  | 'factcheck';      // Verify claims with confidence ratings
+
+/**
+ * Metadata about a single retrieved chunk from vector search.
+ * Stored on AssistantMessage for transparency / debugging.
+ */
+export interface RetrievedChunkInfo {
+  chunkId:    string;
+  chunkType:  string;
+  similarity: number;
+}
+
+/**
+ * A single message in the Research Assistant conversation.
+ * Extends the legacy ConversationMessage with RAG and mode metadata.
+ */
+export interface AssistantMessage {
+  id:                 string;
+  reportId:           string;
+  userId:             string;
+  role:               'user' | 'assistant';
+  content:            string;
+
+  /** Which mode was active when this message was generated */
+  mode:               AssistantMode;
+
+  /** Chunks retrieved by vector search to answer this message */
+  retrievedChunks?:   RetrievedChunkInfo[];
+
+  /** Follow-up prompts suggested by the agent */
+  suggestedFollowUps?: string[];
+
+  /** True if vector search was used (false = fallback context) */
+  isRAGPowered?:      boolean;
+
+  /** Agent's confidence in the answer based on context quality */
+  confidence?:        'high' | 'medium' | 'low';
+
+  createdAt:          string;
+}
+
+/**
+ * The structured output from runResearchAssistantAgent().
+ */
+export interface AssistantAgentResponse {
+  content:             string;
+  mode:                AssistantMode;
+  detectedMode:        AssistantMode;
+  appliedMode:         AssistantMode;
+  suggestedFollowUps:  string[];
+  usedRAG:             boolean;
+  retrievedChunkCount: number;
+  confidence:          'high' | 'medium' | 'low';
+}
+
+/**
+ * State shape managed by useResearchAssistant hook.
+ */
+export interface AssistantState {
+  messages:      AssistantMessage[];
+  isEmbedding:   boolean;
+  isSending:     boolean;
+  isEmbedded:    boolean;
+  embedProgress: { done: number; total: number } | null;
+  activeMode:    AssistantMode;
+  error:         string | null;
+}
+
+/**
+ * Embedding stats returned by getEmbeddingStats() for the UI badge.
+ */
+export interface ReportEmbeddingStats {
+  totalChunks: number;
+  chunkTypes:  Record<string, number>;
+  embeddedAt:  string | null;
 }

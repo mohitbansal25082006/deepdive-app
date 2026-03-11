@@ -1,32 +1,10 @@
 // app/(app)/research-report.tsx
-// Part 5 — Added "Generate Slides" entry point in header + report tab card.
+// Part 6 — Upgraded: FollowUpChat replaced by ResearchAssistantChat
+//           with full RAG pipeline + 7 assistant modes
 //
-// ─── FREEZE FIX ───────────────────────────────────────────────────────────────
-//
-//  THE FREEZE: tapping the slides button / any header button froze navigation.
-//
-//  Cause 1 — Header wrapped in `Animated.View entering={FadeIn.duration(400)}`
-//    Every button in the header (back, slides, knowledge-graph, PDF, share) was
-//    inside this animated wrapper. After FadeIn completes, Reanimated leaves a
-//    ghost layout layer that permanently absorbs ALL touch events in that region.
-//    Pressing any header button appeared to fire but the JS responder was locked
-//    by the ghost layer → navigation called but JS thread waited for a responder
-//    release that never came → screen froze.
-//    Ref: github.com/software-mansion/react-native-reanimated/issues/3388
-//         github.com/software-mansion/react-native-reanimated/issues/5850
-//
-//  Cause 2 — AI Slides promo card inside Animated.View entering= with a
-//    TouchableOpacity inside. Same ghost-layer freeze trigger.
-//
-//  Cause 3 — TouchableOpacity uses the JS responder system which Reanimated
-//    intercepts. All TouchableOpacity → Pressable (native touch path).
-//
-//  FIXES:
-//    1. Header → plain View (no Animated wrapper)
-//    2. Slides promo + knowledge graph promo → plain View (no Animated wrapper)
-//    3. All TouchableOpacity → Pressable throughout
-//    4. Animated.View entering= retained ONLY on pure display content
-//       (stats row, executive summary, infographic) — no interactive children
+// ─── FREEZE FIX (carried over from Part 5) ───────────────────────────────────
+//  All header & promo buttons use Pressable (not TouchableOpacity).
+//  No interactive children inside Animated.View entering= wrappers.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect } from 'react';
@@ -35,24 +13,27 @@ import {
   Alert, Linking, KeyboardAvoidingView, Platform,
   ActivityIndicator, Switch, Dimensions,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import { LinearGradient }           from 'expo-linear-gradient';
+import { Ionicons }                  from '@expo/vector-icons';
+import Animated, { FadeInDown }      from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams }    from 'expo-router';
 
-import { supabase }                from '../../src/lib/supabase';
-import { ReportSectionCard }       from '../../src/components/research/ReportSection';
-import { FollowUpChat }            from '../../src/components/research/FollowUpChat';
-import { CitationModal }           from '../../src/components/research/CitationModal';
-import { InfographicsPanel }       from '../../src/components/research/InfographicCard';
-import { SourceImageGallery }      from '../../src/components/research/SourceImageGallery';
-import { ShareSheet }              from '../../src/components/research/ShareSheet';
-import { LoadingOverlay }          from '../../src/components/common/LoadingOverlay';
+import { supabase }                  from '../../src/lib/supabase';
+import { ReportSectionCard }         from '../../src/components/research/ReportSection';
+import { CitationModal }             from '../../src/components/research/CitationModal';
+import { InfographicsPanel }         from '../../src/components/research/InfographicCard';
+import { SourceImageGallery }        from '../../src/components/research/SourceImageGallery';
+import { ShareSheet }                from '../../src/components/research/ShareSheet';
+import { LoadingOverlay }            from '../../src/components/common/LoadingOverlay';
+
+// Part 6: New assistant components
+import { ResearchAssistantChat }     from '../../src/components/research/ResearchAssistantChat';
+import { useResearchAssistant }      from '../../src/hooks/useResearchAssistant';
+
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import { ResearchReport }          from '../../src/types';
-import { useConversation }         from '../../src/hooks/useConversation';
-import { exportReportAsPDF }       from '../../src/services/pdfExport';
+import { ResearchReport }            from '../../src/types';
+import { exportReportAsPDF }         from '../../src/services/pdfExport';
 import { cacheReport, getCachedReport } from '../../src/lib/offlineCache';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -61,6 +42,8 @@ const PANEL_W  = SCREEN_W - SPACING.lg * 2;
 const DEPTH_LABELS: Record<string, string> = {
   quick: 'Quick Scan', deep: 'Deep Dive', expert: 'Expert Mode',
 };
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function ResearchReportScreen() {
   const { reportId } = useLocalSearchParams<{ reportId: string }>();
@@ -75,6 +58,9 @@ export default function ResearchReportScreen() {
   const [exporting,      setExporting]      = useState(false);
   const [isFromCache,    setIsFromCache]    = useState(false);
   const [visualMode,     setVisualMode]     = useState(true);
+
+  // Part 6: Research Assistant (replaces useConversation)
+  const assistant = useResearchAssistant(report);
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
 
@@ -140,8 +126,6 @@ export default function ResearchReportScreen() {
     }
   };
 
-  const conversation = useConversation(report as ResearchReport);
-
   const handleExportPDF = async () => {
     if (!report || exporting) return;
     setExporting(true);
@@ -157,8 +141,6 @@ export default function ResearchReportScreen() {
       setExporting(false);
     }
   };
-
-  // ── Part 5: Navigate to slide generator ──────────────────────────────────
 
   const handleGenerateSlides = () => {
     if (!report) return;
@@ -201,20 +183,13 @@ export default function ResearchReportScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
 
-          {/*
-            ── Header ──
-            FIX 1: Plain View — removed Animated.View entering={FadeIn.duration(400)}.
-            The ghost layer was blocking ALL header buttons after the fade animation.
-            FIX 3: All Pressable (not TouchableOpacity).
-          */}
-          <View
-            style={{
-              flexDirection: 'row', alignItems: 'center',
-              paddingHorizontal: SPACING.lg,
-              paddingTop: SPACING.sm, paddingBottom: SPACING.sm,
-              borderBottomWidth: 1, borderBottomColor: COLORS.border,
-            }}
-          >
+          {/* ── Header (plain View — no Animated wrapper, avoids touch freeze) ── */}
+          <View style={{
+            flexDirection: 'row', alignItems: 'center',
+            paddingHorizontal: SPACING.lg,
+            paddingTop: SPACING.sm, paddingBottom: SPACING.sm,
+            borderBottomWidth: 1, borderBottomColor: COLORS.border,
+          }}>
             <Pressable
               onPress={() => router.push('/(app)/(tabs)/home' as any)}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -265,7 +240,7 @@ export default function ResearchReportScreen() {
               </Pressable>
             )}
 
-            {/* ── Part 5: Slides button ── */}
+            {/* Slides button */}
             <Pressable
               onPress={handleGenerateSlides}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -281,6 +256,33 @@ export default function ResearchReportScreen() {
                 name={hasPresentation ? 'easel' : 'easel-outline'}
                 size={18}
                 color={hasPresentation ? COLORS.primary : COLORS.textSecondary}
+              />
+            </Pressable>
+
+            {/* Part 6: AI Chat button — shows RAG status badge */}
+            <Pressable
+              onPress={() => setShowChat(v => !v)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{
+                width: 38, height: 38, borderRadius: 12,
+                backgroundColor: showChat
+                  ? `${COLORS.primary}22`
+                  : assistant.isEmbedded
+                    ? `${COLORS.success}18`
+                    : COLORS.backgroundElevated,
+                alignItems: 'center', justifyContent: 'center', marginRight: 6,
+                borderWidth: 1,
+                borderColor: showChat
+                  ? `${COLORS.primary}55`
+                  : assistant.isEmbedded
+                    ? `${COLORS.success}40`
+                    : COLORS.border,
+              }}
+            >
+              <Ionicons
+                name={showChat ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
+                size={18}
+                color={showChat ? COLORS.primary : assistant.isEmbedded ? COLORS.success : COLORS.textSecondary}
               />
             </Pressable>
 
@@ -316,7 +318,7 @@ export default function ResearchReportScreen() {
             </Pressable>
           </View>
 
-          {/* ── Visual Toggle ── */}
+          {/* ── Visual Toggle ────────────────────────────────────────────────── */}
           {hasVisuals && (
             <View style={{
               flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -370,7 +372,7 @@ export default function ResearchReportScreen() {
             </View>
           )}
 
-          {/* ── Tabs ── */}
+          {/* ── Tabs ─────────────────────────────────────────────────────────── */}
           <View style={{
             flexDirection: 'row', paddingHorizontal: SPACING.lg,
             paddingVertical: SPACING.sm, gap: SPACING.sm,
@@ -395,400 +397,434 @@ export default function ResearchReportScreen() {
             ))}
           </View>
 
-          {/* ── Content ── */}
-          <ScrollView
-            style={{ flex: 1 }}
-            contentContainerStyle={{
-              paddingHorizontal: SPACING.lg,
-              paddingTop: SPACING.sm,
-              paddingBottom: showChat ? SPACING.md : insets.bottom + 80,
-            }}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* Stats row — pure display, Animated.View entering= is safe */}
-            <Animated.View
-              entering={FadeInDown.duration(400)}
-              style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}
+          {/* ── Main content — only shown when chat is closed ─────────────── */}
+          {!showChat && (
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{
+                paddingHorizontal: SPACING.lg,
+                paddingTop: SPACING.sm,
+                paddingBottom: insets.bottom + 80,
+              }}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
             >
-              {[
-                { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline',            color: COLORS.info },
-                { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary },
-                { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
-              ].map(stat => (
-                <View key={stat.label} style={{
-                  flex: 1, backgroundColor: COLORS.backgroundCard,
-                  borderRadius: RADIUS.lg, padding: SPACING.sm,
-                  alignItems: 'center', borderWidth: 1, borderColor: COLORS.border,
-                }}>
-                  <Ionicons name={stat.icon as any} size={16} color={stat.color} />
-                  <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '800', marginTop: 4 }}>
-                    {stat.value}
-                  </Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-                    {stat.label}
-                  </Text>
-                </View>
-              ))}
-            </Animated.View>
-
-            {/* ── REPORT TAB ── */}
-            {activeTab === 'report' && (
-              <>
-                {visualMode && report.infographicData && (
-                  // Pure display — safe
-                  <Animated.View entering={FadeInDown.duration(400)} style={{ marginBottom: SPACING.lg }}>
-                    <InfographicsPanel data={report.infographicData} availableWidth={PANEL_W} />
-                  </Animated.View>
-                )}
-
-                {/* Executive Summary — pure display, safe */}
-                <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-                  <LinearGradient
-                    colors={['#1A1A35', '#12122A']}
-                    style={{
-                      borderRadius: RADIUS.xl, padding: SPACING.lg,
-                      marginBottom: SPACING.lg,
-                      borderWidth: 1, borderColor: `${COLORS.primary}25`,
-                    }}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
-                      <LinearGradient
-                        colors={COLORS.gradientPrimary}
-                        style={{
-                          width: 32, height: 32, borderRadius: 10,
-                          alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm,
-                        }}
-                      >
-                        <Ionicons name="newspaper-outline" size={16} color="#FFF" />
-                      </LinearGradient>
-                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                        Executive Summary
-                      </Text>
-                    </View>
-                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>
-                      {report.executiveSummary}
+              {/* Stats row */}
+              <Animated.View
+                entering={FadeInDown.duration(400)}
+                style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}
+              >
+                {[
+                  { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline',            color: COLORS.info },
+                  { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary },
+                  { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
+                ].map(stat => (
+                  <View key={stat.label} style={{
+                    flex: 1, backgroundColor: COLORS.backgroundCard,
+                    borderRadius: RADIUS.lg, padding: SPACING.sm,
+                    alignItems: 'center', borderWidth: 1, borderColor: COLORS.border,
+                  }}>
+                    <Ionicons name={stat.icon as any} size={16} color={stat.color} />
+                    <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '800', marginTop: 4 }}>
+                      {stat.value}
                     </Text>
-                  </LinearGradient>
-                </Animated.View>
-
-                {/* Report sections */}
-                {report.sections.map((section, i) => (
-                  <ReportSectionCard
-                    key={section.id ?? i}
-                    section={section}
-                    citations={report.citations}
-                    index={i}
-                  />
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
+                      {stat.label}
+                    </Text>
+                  </View>
                 ))}
+              </Animated.View>
 
-                {/*
-                  ── Part 5: AI Slides promo card ──
-                  FIX 2+3: Plain View wrapper, Pressable button.
-                  Was Animated.View entering= wrapping a TouchableOpacity —
-                  the ghost layer + JS responder = freeze on press.
-                */}
-                <View style={{ marginBottom: SPACING.lg }}>
-                  <Pressable onPress={handleGenerateSlides}>
+              {/* ── REPORT TAB ── */}
+              {activeTab === 'report' && (
+                <>
+                  {visualMode && report.infographicData && (
+                    <Animated.View entering={FadeInDown.duration(400)} style={{ marginBottom: SPACING.lg }}>
+                      <InfographicsPanel data={report.infographicData} availableWidth={PANEL_W} />
+                    </Animated.View>
+                  )}
+
+                  {/* Executive Summary */}
+                  <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                     <LinearGradient
                       colors={['#1A1A35', '#12122A']}
                       style={{
                         borderRadius: RADIUS.xl, padding: SPACING.lg,
-                        borderWidth: 1,
-                        borderColor: hasPresentation ? `${COLORS.primary}50` : `${COLORS.primary}25`,
+                        marginBottom: SPACING.lg,
+                        borderWidth: 1, borderColor: `${COLORS.primary}25`,
                       }}
                     >
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
                         <LinearGradient
-                          colors={['#6C63FF', '#8B5CF6']}
+                          colors={COLORS.gradientPrimary}
                           style={{
-                            width: 48, height: 48, borderRadius: 14,
-                            alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                            ...SHADOWS.medium,
+                            width: 32, height: 32, borderRadius: 10,
+                            alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm,
                           }}
                         >
-                          <Ionicons name="easel" size={22} color="#FFF" />
+                          <Ionicons name="newspaper-outline" size={16} color="#FFF" />
                         </LinearGradient>
-
-                        <View style={{ flex: 1 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
-                              {hasPresentation ? 'View Presentation' : 'Generate Slides'}
-                            </Text>
-                            {hasPresentation && (
-                              <View style={{
-                                backgroundColor: `${COLORS.accent}20`,
-                                borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2,
-                                borderWidth: 1, borderColor: `${COLORS.accent}40`,
-                              }}>
-                                <Text style={{ color: COLORS.accent, fontSize: 9, fontWeight: '700' }}>
-                                  {report.slideCount} SLIDES
-                                </Text>
-                              </View>
-                            )}
-                          </View>
-                          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                            {hasPresentation
-                              ? 'Your AI presentation is ready · Export as PPTX, PDF or HTML'
-                              : 'Convert this report into a beautiful slide deck with AI'
-                            }
-                          </Text>
-                        </View>
-
-                        <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
+                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                          Executive Summary
+                        </Text>
                       </View>
-
-                      <View style={{ flexDirection: 'row', gap: 6, marginTop: SPACING.md, flexWrap: 'wrap' }}>
-                        {[
-                          { label: 'PPTX', icon: 'desktop-outline' },
-                          { label: 'PDF',  icon: 'document-outline' },
-                          { label: 'HTML', icon: 'globe-outline' },
-                        ].map(f => (
-                          <View key={f.label} style={{
-                            flexDirection: 'row', alignItems: 'center', gap: 4,
-                            backgroundColor: `${COLORS.primary}12`,
-                            borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4,
-                            borderWidth: 1, borderColor: `${COLORS.primary}25`,
-                          }}>
-                            <Ionicons name={f.icon as any} size={10} color={COLORS.primary} />
-                            <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{f.label}</Text>
-                          </View>
-                        ))}
-                        {!hasPresentation && (
-                          <View style={{
-                            flexDirection: 'row', alignItems: 'center', gap: 4,
-                            backgroundColor: `${COLORS.accent}12`,
-                            borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4,
-                            borderWidth: 1, borderColor: `${COLORS.accent}25`,
-                          }}>
-                            <Ionicons name="sparkles" size={10} color={COLORS.accent} />
-                            <Text style={{ color: COLORS.accent, fontSize: 10, fontWeight: '700' }}>AI-Generated</Text>
-                          </View>
-                        )}
-                      </View>
+                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>
+                        {report.executiveSummary}
+                      </Text>
                     </LinearGradient>
-                  </Pressable>
-                </View>
+                  </Animated.View>
 
-                {/*
-                  Knowledge Graph promo
-                  FIX 2+3: Plain View, Pressable.
-                */}
-                {visualMode && (
+                  {/* Report sections */}
+                  {report.sections.map((section, i) => (
+                    <ReportSectionCard
+                      key={section.id ?? i}
+                      section={section}
+                      citations={report.citations}
+                      index={i}
+                    />
+                  ))}
+
+                  {/* AI Slides promo — plain View + Pressable (freeze fix) */}
                   <View style={{ marginBottom: SPACING.lg }}>
-                    <Pressable
-                      onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
-                    >
+                    <Pressable onPress={handleGenerateSlides}>
                       <LinearGradient
                         colors={['#1A1A35', '#12122A']}
                         style={{
                           borderRadius: RADIUS.xl, padding: SPACING.lg,
-                          borderWidth: 1, borderColor: `${COLORS.primary}25`,
-                          flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
+                          borderWidth: 1,
+                          borderColor: hasPresentation ? `${COLORS.primary}50` : `${COLORS.primary}25`,
                         }}
                       >
-                        <LinearGradient
-                          colors={COLORS.gradientPrimary}
-                          style={{
-                            width: 48, height: 48, borderRadius: 14,
-                            alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                          }}
-                        >
-                          <Ionicons name="git-network" size={22} color="#FFF" />
-                        </LinearGradient>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                            Knowledge Graph
-                          </Text>
-                          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 }}>
-                            {report.knowledgeGraph
-                              ? `${report.knowledgeGraph.nodes.length} nodes · ${report.knowledgeGraph.edges.length} relationships`
-                              : 'Tap to generate interactive concept map'
-                            }
-                          </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+                          <LinearGradient
+                            colors={['#6C63FF', '#8B5CF6']}
+                            style={{
+                              width: 48, height: 48, borderRadius: 14,
+                              alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                              ...SHADOWS.medium,
+                            }}
+                          >
+                            <Ionicons name="easel" size={22} color="#FFF" />
+                          </LinearGradient>
+                          <View style={{ flex: 1 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+                                {hasPresentation ? 'View Presentation' : 'Generate Slides'}
+                              </Text>
+                              {hasPresentation && (
+                                <View style={{
+                                  backgroundColor: `${COLORS.accent}20`,
+                                  borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2,
+                                  borderWidth: 1, borderColor: `${COLORS.accent}40`,
+                                }}>
+                                  <Text style={{ color: COLORS.accent, fontSize: 9, fontWeight: '700' }}>
+                                    {report.slideCount} SLIDES
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                              {hasPresentation
+                                ? 'Your AI presentation is ready · Export as PPTX, PDF or HTML'
+                                : 'Convert this report into a beautiful slide deck with AI'
+                              }
+                            </Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
                         </View>
-                        <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
+
+                        <View style={{ flexDirection: 'row', gap: 6, marginTop: SPACING.md, flexWrap: 'wrap' }}>
+                          {[
+                            { label: 'PPTX', icon: 'desktop-outline' },
+                            { label: 'PDF',  icon: 'document-outline' },
+                            { label: 'HTML', icon: 'globe-outline' },
+                          ].map(f => (
+                            <View key={f.label} style={{
+                              flexDirection: 'row', alignItems: 'center', gap: 4,
+                              backgroundColor: `${COLORS.primary}12`,
+                              borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4,
+                              borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                            }}>
+                              <Ionicons name={f.icon as any} size={10} color={COLORS.primary} />
+                              <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{f.label}</Text>
+                            </View>
+                          ))}
+                        </View>
                       </LinearGradient>
                     </Pressable>
                   </View>
-                )}
-              </>
-            )}
 
-            {/* ── FINDINGS TAB ── */}
-            {activeTab === 'findings' && (
-              <>
-                <Text style={{
-                  color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                  letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
-                }}>
-                  Key Findings
-                </Text>
-                {report.keyFindings.map((finding, i) => (
-                  <View key={i} style={{
-                    backgroundColor: COLORS.backgroundCard,
-                    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
-                    flexDirection: 'row', alignItems: 'flex-start',
-                    borderWidth: 1, borderColor: COLORS.border,
-                    borderLeftWidth: 3, borderLeftColor: COLORS.primary,
-                  }}>
-                    <View style={{
-                      width: 24, height: 24, borderRadius: 12,
-                      backgroundColor: `${COLORS.primary}20`,
-                      alignItems: 'center', justifyContent: 'center',
-                      marginRight: SPACING.sm, flexShrink: 0,
+                  {/* Part 6: AI Assistant promo card — plain View + Pressable */}
+                  <View style={{ marginBottom: SPACING.lg }}>
+                    <Pressable onPress={() => setShowChat(true)}>
+                      <LinearGradient
+                        colors={['#1A1A35', '#12122A']}
+                        style={{
+                          borderRadius: RADIUS.xl, padding: SPACING.lg,
+                          borderWidth: 1,
+                          borderColor: assistant.isEmbedded ? `${COLORS.success}40` : `${COLORS.primary}25`,
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+                          <LinearGradient
+                            colors={assistant.isEmbedded
+                              ? [COLORS.success, COLORS.success + 'AA']
+                              : COLORS.gradientPrimary}
+                            style={{
+                              width: 48, height: 48, borderRadius: 14,
+                              alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                            }}
+                          >
+                            <Ionicons name="chatbubble-ellipses" size={22} color="#FFF" />
+                          </LinearGradient>
+                          <View style={{ flex: 1 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+                                AI Research Assistant
+                              </Text>
+                              {assistant.isEmbedded && (
+                                <View style={{
+                                  backgroundColor: `${COLORS.success}20`,
+                                  borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2,
+                                  borderWidth: 1, borderColor: `${COLORS.success}40`,
+                                  flexDirection: 'row', alignItems: 'center', gap: 4,
+                                }}>
+                                  <Ionicons name="sparkles" size={9} color={COLORS.success} />
+                                  <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>RAG READY</Text>
+                                </View>
+                              )}
+                              {assistant.isEmbedding && (
+                                <View style={{
+                                  backgroundColor: `${COLORS.primary}20`,
+                                  borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2,
+                                  borderWidth: 1, borderColor: `${COLORS.primary}40`,
+                                  flexDirection: 'row', alignItems: 'center', gap: 4,
+                                }}>
+                                  <ActivityIndicator size="small" color={COLORS.primary} style={{ transform: [{ scale: 0.6 }] }} />
+                                  <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>INDEXING</Text>
+                                </View>
+                              )}
+                            </View>
+                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                              7 modes · RAG search · Follow-up questions
+                            </Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
+                        </View>
+
+                        {/* Mode chips preview */}
+                        <View style={{ flexDirection: 'row', gap: 6, marginTop: SPACING.md, flexWrap: 'wrap' }}>
+                          {['Explain Simply', 'Find Flaws', 'Go Deeper', 'Fact Check', 'Compare'].map(label => (
+                            <View key={label} style={{
+                              backgroundColor: `${COLORS.primary}12`,
+                              borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4,
+                              borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                            }}>
+                              <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{label}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </LinearGradient>
+                    </Pressable>
+                  </View>
+
+                  {/* Knowledge Graph promo — plain View + Pressable */}
+                  {visualMode && (
+                    <View style={{ marginBottom: SPACING.lg }}>
+                      <Pressable
+                        onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
+                      >
+                        <LinearGradient
+                          colors={['#1A1A35', '#12122A']}
+                          style={{
+                            borderRadius: RADIUS.xl, padding: SPACING.lg,
+                            borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                            flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
+                          }}
+                        >
+                          <LinearGradient
+                            colors={COLORS.gradientPrimary}
+                            style={{
+                              width: 48, height: 48, borderRadius: 14,
+                              alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                            }}
+                          >
+                            <Ionicons name="git-network" size={22} color="#FFF" />
+                          </LinearGradient>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                              Knowledge Graph
+                            </Text>
+                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 }}>
+                              {report.knowledgeGraph
+                                ? `${report.knowledgeGraph.nodes.length} nodes · ${report.knowledgeGraph.edges.length} relationships`
+                                : 'Tap to generate interactive concept map'
+                              }
+                            </Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
+                        </LinearGradient>
+                      </Pressable>
+                    </View>
+                  )}
+                </>
+              )}
+
+              {/* ── FINDINGS TAB ── */}
+              {activeTab === 'findings' && (
+                <>
+                  <Text style={{
+                    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
+                    letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
+                  }}>Key Findings</Text>
+                  {report.keyFindings.map((finding, i) => (
+                    <View key={i} style={{
+                      backgroundColor: COLORS.backgroundCard,
+                      borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+                      flexDirection: 'row', alignItems: 'flex-start',
+                      borderWidth: 1, borderColor: COLORS.border,
+                      borderLeftWidth: 3, borderLeftColor: COLORS.primary,
                     }}>
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
-                        {i + 1}
+                      <View style={{
+                        width: 24, height: 24, borderRadius: 12,
+                        backgroundColor: `${COLORS.primary}20`,
+                        alignItems: 'center', justifyContent: 'center',
+                        marginRight: SPACING.sm, flexShrink: 0,
+                      }}>
+                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{i + 1}</Text>
+                      </View>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
+                        {finding}
                       </Text>
                     </View>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
-                      {finding}
-                    </Text>
+                  ))}
+
+                  {report.futurePredictions.length > 0 && (
+                    <>
+                      <Text style={{
+                        color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
+                        letterSpacing: 1, textTransform: 'uppercase',
+                        marginBottom: SPACING.md, marginTop: SPACING.lg,
+                      }}>Future Predictions</Text>
+                      {report.futurePredictions.map((pred, i) => (
+                        <View key={i} style={{
+                          backgroundColor: `${COLORS.warning}10`,
+                          borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+                          flexDirection: 'row', alignItems: 'flex-start',
+                          borderWidth: 1, borderColor: `${COLORS.warning}25`,
+                        }}>
+                          <Ionicons name="telescope-outline" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
+                          <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{pred}</Text>
+                        </View>
+                      ))}
+                    </>
+                  )}
+
+                  {report.statistics.length > 0 && (
+                    <>
+                      <Text style={{
+                        color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
+                        letterSpacing: 1, textTransform: 'uppercase',
+                        marginBottom: SPACING.md, marginTop: SPACING.lg,
+                      }}>Key Statistics</Text>
+                      {report.statistics.slice(0, 10).map((stat, i) => (
+                        <View key={i} style={{
+                          backgroundColor: COLORS.backgroundCard,
+                          borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+                          borderWidth: 1, borderColor: COLORS.border,
+                        }}>
+                          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>{stat.value}</Text>
+                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginTop: 4 }}>{stat.context}</Text>
+                          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Source: {stat.source}</Text>
+                        </View>
+                      ))}
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* ── SOURCES TAB ── */}
+              {activeTab === 'sources' && (
+                <>
+                  {visualMode && (report.sourceImages?.length ?? 0) > 0 && (
+                    <SourceImageGallery images={report.sourceImages!} title="Source Images" />
+                  )}
+
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
+                    <Text style={{
+                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
+                      letterSpacing: 1, textTransform: 'uppercase',
+                    }}>{report.citations.length} Sources Used</Text>
+                    <Pressable
+                      onPress={() => setShowCitations(true)}
+                      style={{
+                        backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
+                        paddingHorizontal: 12, paddingVertical: 6,
+                        flexDirection: 'row', alignItems: 'center', gap: 6,
+                        borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                      }}
+                    >
+                      <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
+                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
+                    </Pressable>
                   </View>
-                ))}
 
-                {report.futurePredictions.length > 0 && (
-                  <>
-                    <Text style={{
-                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                      letterSpacing: 1, textTransform: 'uppercase',
-                      marginBottom: SPACING.md, marginTop: SPACING.lg,
-                    }}>
-                      Future Predictions
-                    </Text>
-                    {report.futurePredictions.map((pred, i) => (
-                      <View key={i} style={{
-                        backgroundColor: `${COLORS.warning}10`,
-                        borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
-                        flexDirection: 'row', alignItems: 'flex-start',
-                        borderWidth: 1, borderColor: `${COLORS.warning}25`,
-                      }}>
-                        <Ionicons name="telescope-outline" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
-                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>
-                          {pred}
-                        </Text>
-                      </View>
-                    ))}
-                  </>
-                )}
-
-                {report.statistics.length > 0 && (
-                  <>
-                    <Text style={{
-                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                      letterSpacing: 1, textTransform: 'uppercase',
-                      marginBottom: SPACING.md, marginTop: SPACING.lg,
-                    }}>
-                      Key Statistics
-                    </Text>
-                    {report.statistics.slice(0, 10).map((stat, i) => (
-                      <View key={i} style={{
+                  {report.citations.map((c, i) => (
+                    <Pressable
+                      key={c.id ?? i}
+                      onPress={() => openURL(c.url)}
+                      style={{
                         backgroundColor: COLORS.backgroundCard,
                         borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
                         borderWidth: 1, borderColor: COLORS.border,
-                      }}>
-                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>
-                          {stat.value}
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
+                        <View style={{
+                          width: 22, height: 22, borderRadius: 6,
+                          backgroundColor: `${COLORS.primary}20`,
+                          alignItems: 'center', justifyContent: 'center', marginRight: 8, flexShrink: 0,
+                        }}>
+                          <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{i + 1}</Text>
+                        </View>
+                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 }}>
+                          {c.title}
                         </Text>
-                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginTop: 4 }}>
-                          {stat.context}
-                        </Text>
-                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>
-                          Source: {stat.source}
-                        </Text>
+                        <Ionicons name="open-outline" size={16} color={COLORS.primary} style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
                       </View>
-                    ))}
-                  </>
-                )}
-              </>
-            )}
-
-            {/* ── SOURCES TAB ── */}
-            {activeTab === 'sources' && (
-              <>
-                {visualMode && (report.sourceImages?.length ?? 0) > 0 && (
-                  <SourceImageGallery images={report.sourceImages!} title="Source Images" />
-                )}
-
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
-                  <Text style={{
-                    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                    letterSpacing: 1, textTransform: 'uppercase',
-                  }}>
-                    {report.citations.length} Sources Used
-                  </Text>
-                  <Pressable
-                    onPress={() => setShowCitations(true)}
-                    style={{
-                      backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
-                      paddingHorizontal: 12, paddingVertical: 6,
-                      flexDirection: 'row', alignItems: 'center', gap: 6,
-                      borderWidth: 1, borderColor: `${COLORS.primary}30`,
-                    }}
-                  >
-                    <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
-                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
-                  </Pressable>
-                </View>
-
-                {report.citations.map((c, i) => (
-                  <Pressable
-                    key={c.id ?? i}
-                    onPress={() => openURL(c.url)}
-                    style={{
-                      backgroundColor: COLORS.backgroundCard,
-                      borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
-                      borderWidth: 1, borderColor: COLORS.border,
-                    }}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
-                      <View style={{
-                        width: 22, height: 22, borderRadius: 6,
-                        backgroundColor: `${COLORS.primary}20`,
-                        alignItems: 'center', justifyContent: 'center', marginRight: 8, flexShrink: 0,
-                      }}>
-                        <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{i + 1}</Text>
-                      </View>
-                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 }}>
-                        {c.title}
+                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>
+                        {c.source}{c.date ? ` · ${c.date}` : ''}
                       </Text>
-                      <Ionicons name="open-outline" size={16} color={COLORS.primary} style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
+                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
+                        {c.snippet}
+                      </Text>
+                    </Pressable>
+                  ))}
+
+                  {report.searchQueries.length > 0 && (
+                    <View style={{ marginTop: SPACING.lg }}>
+                      <Text style={{
+                        color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
+                        letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
+                      }}>Search Queries Executed</Text>
+                      {report.searchQueries.map((q, i) => (
+                        <View key={i} style={{
+                          backgroundColor: COLORS.backgroundElevated,
+                          borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 8,
+                          marginBottom: 6, flexDirection: 'row', alignItems: 'center',
+                        }}>
+                          <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 8 }} />
+                          <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs }}>{q}</Text>
+                        </View>
+                      ))}
                     </View>
-                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>
-                      {c.source}{c.date ? ` · ${c.date}` : ''}
-                    </Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
-                      {c.snippet}
-                    </Text>
-                  </Pressable>
-                ))}
+                  )}
+                </>
+              )}
+            </ScrollView>
+          )}
 
-                {report.searchQueries.length > 0 && (
-                  <View style={{ marginTop: SPACING.lg }}>
-                    <Text style={{
-                      color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                      letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
-                    }}>
-                      Search Queries Executed
-                    </Text>
-                    {report.searchQueries.map((q, i) => (
-                      <View key={i} style={{
-                        backgroundColor: COLORS.backgroundElevated,
-                        borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 8,
-                        marginBottom: 6, flexDirection: 'row', alignItems: 'center',
-                      }}>
-                        <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 8 }} />
-                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs }}>{q}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-              </>
-            )}
-          </ScrollView>
-
-          {/* ── Follow-up CTA ── */}
+          {/* ── CTA button — only shown when chat is closed ───────────────── */}
           {!showChat && (
             <View style={{
               paddingHorizontal: SPACING.lg,
@@ -799,29 +835,41 @@ export default function ResearchReportScreen() {
             }}>
               <Pressable onPress={() => setShowChat(true)}>
                 <LinearGradient
-                  colors={COLORS.gradientPrimary}
+                  colors={assistant.isEmbedded
+                    ? [COLORS.success, COLORS.success + 'CC']
+                    : COLORS.gradientPrimary}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                   style={{
                     borderRadius: RADIUS.full, paddingVertical: 14,
                     alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8,
                   }}
                 >
-                  <Ionicons name="chatbubble-ellipses-outline" size={18} color="#FFF" />
+                  <Ionicons
+                    name={assistant.isEmbedded ? 'sparkles' : 'chatbubble-ellipses-outline'}
+                    size={18}
+                    color="#FFF"
+                  />
                   <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                    Ask Follow-Up Questions
+                    {assistant.isEmbedded
+                      ? 'AI Research Assistant (RAG Ready)'
+                      : assistant.isEmbedding
+                        ? 'AI Research Assistant (Indexing…)'
+                        : 'Open AI Research Assistant'
+                    }
                   </Text>
                 </LinearGradient>
               </Pressable>
             </View>
           )}
 
-          {/* ── Follow-up chat ── */}
+          {/* ── Part 6: Full-panel Research Assistant Chat ───────────────────── */}
           {showChat && (
             <View style={{
+              flex: 1,
               backgroundColor: COLORS.backgroundCard,
               borderTopWidth: 1, borderTopColor: COLORS.border,
-              paddingBottom: insets.bottom,
             }}>
+              {/* Chat header */}
               <Pressable
                 onPress={() => setShowChat(false)}
                 style={{
@@ -832,24 +880,38 @@ export default function ResearchReportScreen() {
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <LinearGradient
-                    colors={COLORS.gradientPrimary}
-                    style={{ width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}
+                    colors={assistant.isEmbedded
+                      ? [COLORS.success, COLORS.success + 'AA']
+                      : COLORS.gradientPrimary}
+                    style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}
                   >
-                    <Ionicons name="chatbubble-ellipses" size={14} color="#FFF" />
+                    <Ionicons name="chatbubble-ellipses" size={15} color="#FFF" />
                   </LinearGradient>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
-                    Follow-Up Questions
-                  </Text>
+                  <View>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+                      AI Research Assistant
+                    </Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                      {assistant.isEmbedded
+                        ? '✦ RAG-powered · semantic search active'
+                        : assistant.isEmbedding
+                          ? '⟳ Indexing report…'
+                          : '· Keyword fallback mode'
+                      }
+                    </Text>
+                  </View>
                 </View>
                 <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
               </Pressable>
-              {report && (
-                <FollowUpChat
-                  messages={conversation.messages}
-                  sending={conversation.sending}
-                  onSend={conversation.sendMessage}
-                />
-              )}
+
+              {/* The upgraded assistant chat */}
+              <ResearchAssistantChat
+                assistant={assistant}
+                reportTitle={report.title}
+              />
+
+              {/* Bottom inset padding */}
+              <View style={{ height: insets.bottom }} />
             </View>
           )}
 
