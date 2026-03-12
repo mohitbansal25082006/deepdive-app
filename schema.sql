@@ -1,7 +1,7 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1, 2, 3, 4, 5, 6 & 7 combined
--- AI Research Assistant Chat with RAG Pipeline + Academic Papers
+-- Parts 1, 2, 3, 4, 5, 6, 7 & 8 combined
+-- AI Research Assistant Chat with RAG Pipeline + Academic Papers + AI Podcast Generator
 --
 -- Prerequisites:
 --   pgvector must be available in your Supabase project
@@ -807,9 +807,175 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_user_academic_stats(UUID) TO authenticated;
 
+-- ============================================================
+-- PART 8: PODCASTS TABLE
+-- Stores AI-generated podcast episodes linked to research reports
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.podcasts (
+  id                    UUID          DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id               UUID          REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  report_id             UUID          REFERENCES public.research_reports(id) ON DELETE SET NULL,
+
+  -- Identity
+  title                 TEXT          NOT NULL,
+  description           TEXT          NOT NULL DEFAULT '',
+  topic                 TEXT          NOT NULL,
+
+  -- Script (full structured dialogue — stored as JSONB)
+  script                JSONB         NOT NULL
+                          DEFAULT '{"turns":[],"totalWords":0,"estimatedDurationMinutes":0}'::jsonb,
+
+  -- Audio (local device file paths for each segment)
+  audio_segment_paths   JSONB         NOT NULL DEFAULT '[]'::jsonb,
+
+  -- Voice configuration
+  host_voice            TEXT          NOT NULL DEFAULT 'alloy',
+  guest_voice           TEXT          NOT NULL DEFAULT 'nova',
+  host_name             TEXT          NOT NULL DEFAULT 'Alex',
+  guest_name            TEXT          NOT NULL DEFAULT 'Sam',
+
+  -- Progress tracking
+  status                TEXT          NOT NULL DEFAULT 'pending',
+  segment_count         INTEGER       NOT NULL DEFAULT 0,
+  completed_segments    INTEGER       NOT NULL DEFAULT 0,
+
+  -- Stats
+  duration_seconds      INTEGER       NOT NULL DEFAULT 0,
+  word_count            INTEGER       NOT NULL DEFAULT 0,
+  export_count          INTEGER       NOT NULL DEFAULT 0,
+
+  -- Error info
+  error_message         TEXT,
+
+  -- Timestamps
+  created_at            TIMESTAMPTZ   DEFAULT NOW() NOT NULL,
+  completed_at          TIMESTAMPTZ,
+  updated_at            TIMESTAMPTZ   DEFAULT NOW() NOT NULL,
+
+  CONSTRAINT podcasts_status_check CHECK (
+    status IN (
+      'pending',
+      'generating_script',
+      'generating_audio',
+      'completed',
+      'failed'
+    )
+  ),
+  CONSTRAINT podcasts_host_voice_check CHECK (
+    host_voice IN ('alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer')
+  ),
+  CONSTRAINT podcasts_guest_voice_check CHECK (
+    guest_voice IN ('alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer')
+  )
+);
+
+-- Indexes for podcasts
+CREATE INDEX IF NOT EXISTS podcasts_user_id_idx ON public.podcasts(user_id);
+CREATE INDEX IF NOT EXISTS podcasts_report_id_idx ON public.podcasts(report_id);
+CREATE INDEX IF NOT EXISTS podcasts_status_idx ON public.podcasts(status);
+CREATE INDEX IF NOT EXISTS podcasts_created_at_idx ON public.podcasts(created_at DESC);
+
+-- RLS for podcasts
+ALTER TABLE public.podcasts ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'podcasts' AND policyname = 'Users can select own podcasts') THEN
+    CREATE POLICY "Users can select own podcasts" ON public.podcasts FOR SELECT USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'podcasts' AND policyname = 'Users can insert own podcasts') THEN
+    CREATE POLICY "Users can insert own podcasts" ON public.podcasts FOR INSERT WITH CHECK (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'podcasts' AND policyname = 'Users can update own podcasts') THEN
+    CREATE POLICY "Users can update own podcasts" ON public.podcasts FOR UPDATE USING (auth.uid() = user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'podcasts' AND policyname = 'Users can delete own podcasts') THEN
+    CREATE POLICY "Users can delete own podcasts" ON public.podcasts FOR DELETE USING (auth.uid() = user_id);
+  END IF;
+END $$;
+
+-- Trigger for podcasts
+DROP TRIGGER IF EXISTS on_podcasts_updated ON public.podcasts;
+CREATE TRIGGER on_podcasts_updated
+  BEFORE UPDATE ON public.podcasts
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ============================================================
+-- PART 8 RPCs
+-- ============================================================
+
+-- get_podcast_by_report
+CREATE OR REPLACE FUNCTION public.get_podcast_by_report(
+  p_report_id  UUID,
+  p_user_id    UUID
+)
+RETURNS SETOF public.podcasts
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT *
+  FROM   public.podcasts
+  WHERE  report_id = p_report_id
+    AND  user_id   = p_user_id
+    AND  status    = 'completed'
+  ORDER  BY created_at DESC
+  LIMIT  1;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_podcast_by_report(UUID, UUID) TO authenticated;
+
+-- get_user_podcast_stats
+CREATE OR REPLACE FUNCTION public.get_user_podcast_stats(p_user_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  result JSON;
+BEGIN
+  SELECT json_build_object(
+    'totalPodcasts',
+        COUNT(*),
+    'completedPodcasts',
+        COUNT(*) FILTER (WHERE status = 'completed'),
+    'totalDurationMinutes',
+        ROUND(
+          COALESCE(SUM(duration_seconds) FILTER (WHERE status = 'completed'), 0)::NUMERIC
+          / 60,
+          1
+        ),
+    'totalWords',
+        COALESCE(SUM(word_count) FILTER (WHERE status = 'completed'), 0),
+    'reportsWithPodcasts',
+        COUNT(DISTINCT report_id) FILTER (WHERE report_id IS NOT NULL)
+  )
+  INTO result
+  FROM public.podcasts
+  WHERE user_id = p_user_id;
+
+  RETURN result;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_podcast_stats(UUID) TO authenticated;
+
+-- increment_podcast_export_count
+CREATE OR REPLACE FUNCTION public.increment_podcast_export_count(p_podcast_id UUID)
+RETURNS VOID
+LANGUAGE sql
+SECURITY DEFINER
+AS $$
+  UPDATE public.podcasts
+  SET    export_count = export_count + 1
+  WHERE  id = p_podcast_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_podcast_export_count(UUID) TO authenticated;
+
 -- ============================================
--- COMPREHENSIVE STATS FUNCTION (Part 7)
--- Includes all stats from previous parts + academic data
+-- COMPREHENSIVE STATS FUNCTION (Updated for Part 8)
+-- Includes all stats from previous parts + academic data + podcast data
 -- ============================================
 CREATE OR REPLACE FUNCTION public.get_user_complete_stats(p_user_id UUID)
 RETURNS TABLE (
@@ -824,11 +990,17 @@ RETURNS TABLE (
   reports_with_embeddings     BIGINT,
   total_presentations         BIGINT,
   total_slides                BIGINT,
-  -- Academic stats (new)
+  -- Academic stats
   academic_papers_generated   BIGINT,
   academic_word_count         BIGINT,
   academic_pages_estimate     NUMERIC,
-  most_used_citation_style    TEXT
+  most_used_citation_style    TEXT,
+  -- Podcast stats (new)
+  total_podcasts              BIGINT,
+  completed_podcasts          BIGINT,
+  total_podcast_duration_min  NUMERIC,
+  total_podcast_words         BIGINT,
+  reports_with_podcasts       BIGINT
 )
 LANGUAGE sql
 SECURITY DEFINER
@@ -885,6 +1057,16 @@ AS $$
       )::TEXT AS most_used_style
     FROM public.academic_papers ap
     WHERE ap.user_id = p_user_id
+  ),
+  podcast_stats AS (
+    SELECT
+      COUNT(*)::BIGINT AS total_podcasts,
+      COUNT(*) FILTER (WHERE status = 'completed')::BIGINT AS completed_podcasts,
+      COALESCE(ROUND(SUM(duration_seconds) FILTER (WHERE status = 'completed')::NUMERIC / 60, 1), 0)::NUMERIC AS total_duration_min,
+      COALESCE(SUM(word_count) FILTER (WHERE status = 'completed'), 0)::BIGINT AS total_words,
+      COUNT(DISTINCT report_id) FILTER (WHERE report_id IS NOT NULL)::BIGINT AS reports_with_podcasts
+    FROM public.podcasts p
+    WHERE p.user_id = p_user_id
   )
   SELECT
     rs.total_reports,
@@ -900,7 +1082,12 @@ AS $$
     COALESCE((SELECT total_papers FROM academic_stats), 0)::BIGINT AS academic_papers_generated,
     COALESCE((SELECT total_words FROM academic_stats), 0)::BIGINT AS academic_word_count,
     COALESCE((SELECT avg_pages FROM academic_stats), 0)::NUMERIC AS academic_pages_estimate,
-    (SELECT most_used_style FROM academic_stats)::TEXT AS most_used_citation_style
+    (SELECT most_used_style FROM academic_stats)::TEXT AS most_used_citation_style,
+    COALESCE((SELECT total_podcasts FROM podcast_stats), 0)::BIGINT AS total_podcasts,
+    COALESCE((SELECT completed_podcasts FROM podcast_stats), 0)::BIGINT AS completed_podcasts,
+    COALESCE((SELECT total_duration_min FROM podcast_stats), 0)::NUMERIC AS total_podcast_duration_min,
+    COALESCE((SELECT total_words FROM podcast_stats), 0)::BIGINT AS total_podcast_words,
+    COALESCE((SELECT reports_with_podcasts FROM podcast_stats), 0)::BIGINT AS reports_with_podcasts
   FROM report_stats rs;
 $$;
 
@@ -1034,13 +1221,17 @@ GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN) TO authe
 COMMENT ON TABLE public.academic_papers IS 'Stores AI-generated academic papers derived from research reports (Part 7)';
 COMMENT ON COLUMN public.research_reports.research_mode IS 'Indicates whether the report was generated in standard or academic mode (Part 7)';
 COMMENT ON COLUMN public.research_reports.academic_paper_id IS 'References the academic paper generated from this report (if any) (Part 7)';
-COMMENT ON FUNCTION public.get_user_complete_stats IS 'Complete user stats including academic papers (Part 7) - does not modify original get_user_research_stats';
+COMMENT ON TABLE public.podcasts IS 'Stores AI-generated podcast episodes derived from research reports (Part 8)';
+COMMENT ON COLUMN public.podcasts.script IS 'JSON structure containing dialogue turns, total words, and estimated duration';
+COMMENT ON COLUMN public.podcasts.audio_segment_paths IS 'Array of file paths for each audio segment';
+COMMENT ON COLUMN public.podcasts.status IS 'pending, generating_script, generating_audio, completed, failed';
+COMMENT ON FUNCTION public.get_user_complete_stats IS 'Complete user stats including academic papers (Part 7) and podcasts (Part 8) - does not modify original get_user_research_stats';
 
 -- ============================================================
 -- Done ✓
--- Complete schema with all parts 1-7 installed.
+-- Complete schema with all parts 1-8 installed.
 -- After running this migration:
 --   1. Verify pgvector is enabled: SELECT * FROM pg_extension WHERE extname = 'vector';
 --   2. All tables, indexes, RLS policies, and functions are created
---   3. Original functions preserved, new comprehensive stats function added
+--   3. Original functions preserved, comprehensive stats function includes podcast data
 -- ============================================================
