@@ -851,3 +851,159 @@ export interface DebateOrchestratorCallbacks {
   onComplete:            (session: DebateSession) => void;
   onError:               (message: string) => void;
 }
+
+// ─── Part 10: Collaborative Workspace ────────────────────────────────────────
+
+export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
+
+export type WorkspaceActivityAction =
+  | 'workspace_created'
+  | 'workspace_updated'
+  | 'report_added'
+  | 'report_removed'
+  | 'member_joined'
+  | 'member_left'
+  | 'member_removed'
+  | 'member_role_changed'
+  | 'comment_added'
+  | 'comment_resolved'
+  | 'ownership_transferred';
+
+export interface WorkspaceSettings {
+  notifyOnNewReport?: boolean;
+  notifyOnComment?: boolean;
+  notifyOnMention?: boolean;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  description: string | null;
+  avatarUrl: string | null;
+  inviteCode: string;
+  ownerId: string;
+  isPersonal: boolean;
+  settings: WorkspaceSettings;
+  createdAt: string;
+  updatedAt: string;
+  // enriched
+  memberCount?: number;
+  reportCount?: number;
+  userRole?: WorkspaceRole;
+}
+
+export interface MiniProfile {
+  id: string;
+  username: string | null;
+  fullName: string | null;
+  avatarUrl: string | null;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  role: WorkspaceRole;
+  invitedBy: string | null;
+  joinedAt: string;
+  profile?: MiniProfile;
+}
+
+export interface WorkspaceReport {
+  id: string;
+  workspaceId: string;
+  reportId: string;
+  addedBy: string | null;
+  addedAt: string;
+  report?: Partial<ResearchReport>;
+  addedByProfile?: MiniProfile;
+  commentCount?: number;
+}
+
+export interface ReportComment {
+  id: string;
+  workspaceId: string;
+  reportId: string;
+  sectionId: string | null;
+  userId: string;
+  content: string;
+  isResolved: boolean;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  mentions: string[];
+  createdAt: string;
+  updatedAt: string;
+  author?: MiniProfile;
+  replies?: CommentReply[];
+}
+
+export interface CommentReply {
+  id: string;
+  commentId: string;
+  userId: string;
+  content: string;
+  mentions: string[];
+  createdAt: string;
+  updatedAt: string;
+  author?: MiniProfile;
+}
+
+export interface WorkspaceActivity {
+  id: string;
+  workspaceId: string;
+  userId: string | null;
+  action: WorkspaceActivityAction;
+  resourceType: string | null;
+  resourceId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  actorProfile?: MiniProfile;
+}
+
+export interface PresenceUser {
+  userId: string;
+  username: string | null;
+  fullName: string | null;
+  avatarUrl: string | null;
+  onlineAt: string;
+  reportId?: string;
+}
+
+// ── State shapes ──────────────────────────────────────────────────────────────
+
+export interface WorkspaceListState {
+  workspaces: Workspace[];
+  isLoading: boolean;
+  error: string | null;
+}
+
+export interface WorkspaceDetailState {
+  workspace: Workspace | null;
+  members: WorkspaceMember[];
+  reports: WorkspaceReport[];
+  userRole: WorkspaceRole | null;
+  isLoading: boolean;
+  isRefreshing: boolean;
+  error: string | null;
+}
+
+export interface CommentState {
+  comments: ReportComment[];
+  sectionCounts: Record<string, number>;
+  isLoading: boolean;
+  isSending: boolean;
+  isReplying: boolean;
+  error: string | null;
+}
+
+export interface PresenceState {
+  onlineUsers: PresenceUser[];
+  isTracking: boolean;
+}
+
+export interface ActivityFeedState {
+  items: WorkspaceActivity[];
+  isLoading: boolean;
+  hasMore: boolean;
+  error: string | null;
+}

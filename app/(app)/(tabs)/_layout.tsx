@@ -1,13 +1,13 @@
 // app/(app)/(tabs)/_layout.tsx
-// Part 9: Added Debate tab between Podcast and Profile.
-// 5 tabs total: Research | History | Podcast | Debate | Profile
+// Part 10: Added Workspace tab between History and Podcast.
+// 6 tabs total: Research | History | Workspace | Podcast | Debate | Profile
 
-import { Tabs }                  from 'expo-router';
-import { View, Text, Platform }  from 'react-native';
-import { Ionicons }              from '@expo/vector-icons';
-import { BlurView }              from 'expo-blur';
-import { useSafeAreaInsets }     from 'react-native-safe-area-context';
-import { COLORS, FONTS }         from '../../../src/constants/theme';
+import { Tabs }                 from 'expo-router';
+import { View, Text, Platform } from 'react-native';
+import { Ionicons }             from '@expo/vector-icons';
+import { BlurView }             from 'expo-blur';
+import { useSafeAreaInsets }    from 'react-native-safe-area-context';
+import { COLORS, FONTS }        from '../../../src/constants/theme';
 
 function TabIcon({
   name,
@@ -22,8 +22,8 @@ function TabIcon({
     <View style={{
       alignItems:     'center',
       justifyContent: 'center',
-      paddingTop:     10,
-      width:          58, // slightly narrower to fit 5 tabs
+      paddingTop:     9,
+      width:          52,
     }}>
       {/* Active indicator dot */}
       {focused ? (
@@ -32,15 +32,15 @@ function TabIcon({
           height:          4,
           borderRadius:    2,
           backgroundColor: COLORS.primary,
-          marginBottom:    5,
+          marginBottom:    4,
         }} />
       ) : (
-        <View style={{ height: 9 }} />
+        <View style={{ height: 8 }} />
       )}
 
       <Ionicons
         name={focused ? name : (`${name}-outline` as any)}
-        size={21}
+        size={20}
         color={focused ? COLORS.primary : COLORS.textMuted}
       />
 
@@ -48,7 +48,7 @@ function TabIcon({
         numberOfLines={1}
         style={{
           color:         focused ? COLORS.primary : COLORS.textMuted,
-          fontSize:      9.5,
+          fontSize:      9,
           marginTop:     3,
           fontWeight:    focused ? '700' : '400',
           letterSpacing: 0.2,
@@ -61,9 +61,8 @@ function TabIcon({
 }
 
 export default function TabsLayout() {
-  const insets = useSafeAreaInsets();
-
-  const tabBarHeight = 64 + insets.bottom;
+  const insets        = useSafeAreaInsets();
+  const tabBarHeight  = 64 + insets.bottom;
 
   return (
     <Tabs
@@ -122,6 +121,16 @@ export default function TabsLayout() {
         }}
       />
 
+      {/* ── Workspace (NEW — Part 10) ── */}
+      <Tabs.Screen
+        name="workspace"
+        options={{
+          tabBarIcon: ({ focused }) => (
+            <TabIcon name="people" focused={focused} label="Teams" />
+          ),
+        }}
+      />
+
       {/* ── Podcast (Part 8) ── */}
       <Tabs.Screen
         name="podcast"
@@ -132,12 +141,12 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── Debate (NEW — Part 9) ── */}
+      {/* ── Debate (Part 9) ── */}
       <Tabs.Screen
         name="debate"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon name="people" focused={focused} label="Debate" />
+            <TabIcon name="chatbox-ellipses" focused={focused} label="Debate" />
           ),
         }}
       />
