@@ -1,5 +1,6 @@
 // app/(app)/(tabs)/_layout.tsx
-// Part 8: Added Podcast tab between History and Profile.
+// Part 9: Added Debate tab between Podcast and Profile.
+// 5 tabs total: Research | History | Podcast | Debate | Profile
 
 import { Tabs }                  from 'expo-router';
 import { View, Text, Platform }  from 'react-native';
@@ -19,10 +20,10 @@ function TabIcon({
 }) {
   return (
     <View style={{
-      alignItems:      'center',
-      justifyContent:  'center',
-      paddingTop:      10,
-      width:           65, // reduced from 70 to fit 4 tabs comfortably
+      alignItems:     'center',
+      justifyContent: 'center',
+      paddingTop:     10,
+      width:          58, // slightly narrower to fit 5 tabs
     }}>
       {/* Active indicator dot */}
       {focused ? (
@@ -39,17 +40,17 @@ function TabIcon({
 
       <Ionicons
         name={focused ? name : (`${name}-outline` as any)}
-        size={22}
+        size={21}
         color={focused ? COLORS.primary : COLORS.textMuted}
       />
 
       <Text
         numberOfLines={1}
         style={{
-          color:       focused ? COLORS.primary : COLORS.textMuted,
-          fontSize:    10,   // slightly smaller to fit 4 labels
-          marginTop:   3,
-          fontWeight:  focused ? '700' : '400',
+          color:         focused ? COLORS.primary : COLORS.textMuted,
+          fontSize:      9.5,
+          marginTop:     3,
+          fontWeight:    focused ? '700' : '400',
           letterSpacing: 0.2,
         }}
       >
@@ -62,7 +63,6 @@ function TabIcon({
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
 
-  // Tab bar height: icon(22) + dot(9) + label(13) + padding = ~64 + bottom inset
   const tabBarHeight = 64 + insets.bottom;
 
   return (
@@ -122,12 +122,22 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── Podcast (NEW — Part 8) ── */}
+      {/* ── Podcast (Part 8) ── */}
       <Tabs.Screen
         name="podcast"
         options={{
           tabBarIcon: ({ focused }) => (
             <TabIcon name="radio" focused={focused} label="Podcast" />
+          ),
+        }}
+      />
+
+      {/* ── Debate (NEW — Part 9) ── */}
+      <Tabs.Screen
+        name="debate"
+        options={{
+          tabBarIcon: ({ focused }) => (
+            <TabIcon name="people" focused={focused} label="Debate" />
           ),
         }}
       />

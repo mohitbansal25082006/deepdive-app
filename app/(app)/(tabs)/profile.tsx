@@ -53,16 +53,18 @@ import { UserStats } from '../../../src/types';
 // a type mismatch from crashing StatsCard when useStats hasn't resolved yet.
 
 const DEFAULT_STATS: UserStats = {
-  totalReports:           0,
-  completedReports:       0,
-  totalSources:           0,
-  avgReliability:         0,
-  favoriteTopic:          null,
-  reportsThisMonth:       0,
-  hoursResearched:        0,
-  // Part 6 fields — safe zero defaults
-  totalAssistantMessages: 0,
-  reportsWithEmbeddings:  0,
+  totalReports:            0,
+  completedReports:        0,
+  totalSources:            0,
+  avgReliability:          0,
+  favoriteTopic:           null,
+  reportsThisMonth:        0,
+  hoursResearched:         0,
+  totalAssistantMessages:  0,
+  reportsWithEmbeddings:   0,
+  academicPapersGenerated: 0,
+  totalPodcasts:           0,
+  totalDebates:            0,   // ← Part 9 addition
 };
 
 // ─── Open device app-settings (only called when OS has denied permission) ─────

@@ -1,12 +1,10 @@
 // app/(app)/_layout.tsx
-// Part 8: Added podcast-player screen route.
-// Uses slide_from_right (not modal) to avoid the Reanimated freeze
-// documented in previous parts.
+// Part 9: Added debate-detail screen route.
 
-import { useEffect }                         from 'react';
-import { Stack, router }                     from 'expo-router';
-import { COLORS }                            from '../../src/constants/theme';
-import { registerNotificationTapHandler }   from '../../src/lib/notifications';
+import { useEffect }                       from 'react';
+import { Stack, router }                   from 'expo-router';
+import { COLORS }                          from '../../src/constants/theme';
+import { registerNotificationTapHandler } from '../../src/lib/notifications';
 
 export default function AppLayout() {
   useEffect(() => {
@@ -47,11 +45,7 @@ export default function AppLayout() {
         options={{ animation: 'slide_from_bottom', presentation: 'modal' }}
       />
 
-      {/*
-        ── Part 5: AI Slide Generator ──
-        slide_from_right (NOT modal) to avoid Reanimated freeze.
-        See Part 5 comment block for full explanation.
-      */}
+      {/* ── Part 5: AI Slide Generator ── */}
       <Stack.Screen
         name="slide-preview"
         options={{ animation: 'slide_from_right' }}
@@ -72,23 +66,26 @@ export default function AppLayout() {
       {/* ── Edit profile ── */}
       <Stack.Screen name="edit-profile" />
 
-      {/*
-        ── Part 7: Academic Paper Viewer ──
-        slide_from_right (NOT modal) — same freeze-prevention reason.
-      */}
+      {/* ── Part 7: Academic Paper Viewer ── */}
       <Stack.Screen
         name="academic-paper"
         options={{ animation: 'slide_from_right' }}
       />
 
-      {/*
-        ── Part 8: AI Podcast Player ──
-        slide_from_right keeps it consistent with the rest of the stack.
-        Using slide_from_bottom here would be fine too (no Reanimated
-        entering= animations on the source screen for this route).
-      */}
+      {/* ── Part 8: AI Podcast Player ── */}
       <Stack.Screen
         name="podcast-player"
+        options={{ animation: 'slide_from_right' }}
+      />
+
+      {/*
+        ── Part 9: AI Debate Detail ──
+        slide_from_right keeps the navigation consistent with the rest
+        of the stack. No Reanimated entering= animations on the source
+        tab screen so there is no freeze risk here.
+      */}
+      <Stack.Screen
+        name="debate-detail"
         options={{ animation: 'slide_from_right' }}
       />
     </Stack>

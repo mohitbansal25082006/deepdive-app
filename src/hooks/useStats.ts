@@ -1,5 +1,11 @@
 // src/hooks/useStats.ts
-// Loads user research statistics from Supabase.
+// Parts 1-9
+// Loads user research statistics from Supabase via get_user_research_stats RPC.
+//
+// Changes in Part 9:
+//   • Maps new total_debates column → totalDebates
+//   • Adds academicPapersGenerated, totalPodcasts mappings (were missing)
+//   • totalDebates added to UserStats shape
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
@@ -7,14 +13,14 @@ import { UserStats } from '../types';
 import { useAuth } from '../context/AuthContext';
 
 const MINUTES_PER_DEPTH: Record<string, number> = {
-  quick: 2.5,
-  deep: 6,
+  quick:  2.5,
+  deep:   6,
   expert: 11,
 };
 
 export function useStats() {
   const { user } = useAuth();
-  const [stats, setStats] = useState<UserStats | null>(null);
+  const [stats,   setStats]   = useState<UserStats | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchStats = useCallback(async () => {
@@ -53,7 +59,8 @@ export function useStats() {
       }
 
       setStats({
-        totalReports:     Number(row.total_reports    ?? 0),
+        // ── Core research stats (Parts 1-3) ──────────────────────────────
+        totalReports:     Number(row.total_reports     ?? 0),
         completedReports: Number(row.completed_reports ?? 0),
         totalSources:     Number(row.total_sources     ?? 0),
         avgReliability:   parseFloat((row.avg_reliability ?? 0).toFixed(1)),
@@ -61,9 +68,21 @@ export function useStats() {
         reportsThisMonth: Number(row.reports_this_month ?? 0),
         hoursResearched:  parseFloat(hoursResearched.toFixed(1)),
 
-        // Part 6 columns — fallback to 0 if schema_part6.sql not yet applied
+        // ── Part 6 — RAG assistant ────────────────────────────────────────
+        // Fallback to 0 if schema_part6.sql not yet applied
         totalAssistantMessages: Number(row.total_assistant_messages ?? 0),
         reportsWithEmbeddings:  Number(row.reports_with_embeddings  ?? 0),
+
+        // ── Part 7 — Academic papers ──────────────────────────────────────
+        // Column not in the original TABLE shape — safe zero fallback
+        academicPapersGenerated: Number(row.academic_papers_generated ?? 0),
+
+        // ── Part 8 — Podcasts ─────────────────────────────────────────────
+        totalPodcasts: Number(row.total_podcasts ?? 0),
+
+        // ── Part 9 — Debates ──────────────────────────────────────────────
+        // Populated once schema_part9.sql has been run; zero-safe until then
+        totalDebates: Number(row.total_debates ?? 0),
       });
     } catch (err) {
       // Catches network errors or any other unexpected throw
