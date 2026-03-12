@@ -1,44 +1,41 @@
 // app/(app)/(tabs)/_layout.tsx
-// UPDATED: Tab bar is properly sized for phones.
-// - Taller hit area, no text compression
-// - Uses useSafeAreaInsets to handle notches/home indicators
-// - Icon + label never overlap or clip on small screens
+// Part 8: Added Podcast tab between History and Profile.
 
-import { Tabs } from 'expo-router';
-import { View, Text, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS } from '../../../src/constants/theme';
+import { Tabs }                  from 'expo-router';
+import { View, Text, Platform }  from 'react-native';
+import { Ionicons }              from '@expo/vector-icons';
+import { BlurView }              from 'expo-blur';
+import { useSafeAreaInsets }     from 'react-native-safe-area-context';
+import { COLORS, FONTS }         from '../../../src/constants/theme';
 
 function TabIcon({
   name,
   focused,
   label,
 }: {
-  name: keyof typeof Ionicons.glyphMap;
+  name:    keyof typeof Ionicons.glyphMap;
   focused: boolean;
-  label: string;
+  label:   string;
 }) {
   return (
     <View style={{
-      alignItems: 'center',
-      justifyContent: 'center',
-      paddingTop: 10,
-      width: 70, // fixed width prevents label compression
+      alignItems:      'center',
+      justifyContent:  'center',
+      paddingTop:      10,
+      width:           65, // reduced from 70 to fit 4 tabs comfortably
     }}>
-      {/* Active dot indicator */}
-      {focused && (
+      {/* Active indicator dot */}
+      {focused ? (
         <View style={{
-          width: 4,
-          height: 4,
-          borderRadius: 2,
+          width:           4,
+          height:          4,
+          borderRadius:    2,
           backgroundColor: COLORS.primary,
-          marginBottom: 5,
+          marginBottom:    5,
         }} />
+      ) : (
+        <View style={{ height: 9 }} />
       )}
-      {/* Push icon down slightly when no dot so it stays vertically centred */}
-      {!focused && <View style={{ height: 9 }} />}
 
       <Ionicons
         name={focused ? name : (`${name}-outline` as any)}
@@ -49,10 +46,10 @@ function TabIcon({
       <Text
         numberOfLines={1}
         style={{
-          color: focused ? COLORS.primary : COLORS.textMuted,
-          fontSize: 11,
-          marginTop: 3,
-          fontWeight: focused ? '700' : '400',
+          color:       focused ? COLORS.primary : COLORS.textMuted,
+          fontSize:    10,   // slightly smaller to fit 4 labels
+          marginTop:   3,
+          fontWeight:  focused ? '700' : '400',
           letterSpacing: 0.2,
         }}
       >
@@ -65,7 +62,7 @@ function TabIcon({
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
 
-  // Tab bar height: icon(22) + dot(9) + label(14) + padding = ~70px + bottom inset
+  // Tab bar height: icon(22) + dot(9) + label(13) + padding = ~64 + bottom inset
   const tabBarHeight = 64 + insets.bottom;
 
   return (
@@ -73,39 +70,39 @@ export default function TabsLayout() {
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          height: tabBarHeight,
-          borderTopWidth: 0,
+          position:        'absolute',
+          bottom:          0,
+          left:            0,
+          right:           0,
+          height:          tabBarHeight,
+          borderTopWidth:  0,
           backgroundColor: 'transparent',
-          elevation: 0,
+          elevation:       0,
         },
         tabBarBackground: () => (
           <BlurView
             intensity={70}
             tint="dark"
             style={{
-              flex: 1,
+              flex:            1,
               backgroundColor: Platform.OS === 'android'
-                ? 'rgba(10, 10, 26, 0.96)' // Android BlurView is often weak — go darker
+                ? 'rgba(10, 10, 26, 0.96)'
                 : 'rgba(10, 10, 26, 0.80)',
-              borderTopWidth: 1,
-              borderTopColor: COLORS.border,
+              borderTopWidth:  1,
+              borderTopColor:  COLORS.border,
             }}
           />
         ),
         tabBarShowLabel: false,
         tabBarItemStyle: {
-          // Each tab item takes equal width; no flex weirdness
-          flex: 1,
-          alignItems: 'center',
+          flex:           1,
+          alignItems:     'center',
           justifyContent: 'flex-start',
-          paddingBottom: 0,
+          paddingBottom:  0,
         },
       }}
     >
+      {/* ── Research ── */}
       <Tabs.Screen
         name="home"
         options={{
@@ -114,6 +111,8 @@ export default function TabsLayout() {
           ),
         }}
       />
+
+      {/* ── History ── */}
       <Tabs.Screen
         name="history"
         options={{
@@ -122,6 +121,18 @@ export default function TabsLayout() {
           ),
         }}
       />
+
+      {/* ── Podcast (NEW — Part 8) ── */}
+      <Tabs.Screen
+        name="podcast"
+        options={{
+          tabBarIcon: ({ focused }) => (
+            <TabIcon name="radio" focused={focused} label="Podcast" />
+          ),
+        }}
+      />
+
+      {/* ── Profile ── */}
       <Tabs.Screen
         name="profile"
         options={{

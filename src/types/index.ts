@@ -1,6 +1,6 @@
 // src/types/index.ts
-// Parts 1 + 2 + 3 + 4 + 5 + 6 + 7
-// Part 7: Added AI Academic Paper Mode types (AcademicPaper, AcademicSection, etc.)
+// Parts 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8
+// Part 8: Added AI Podcast Generator types
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -36,19 +36,12 @@ export interface OnboardingSlide {
 
 export type ResearchDepth = 'quick' | 'deep' | 'expert';
 
-/**
- * Part 7: Research output mode.
- * - 'standard' → the existing multi-section report (default)
- * - 'academic' → generates an additional structured academic paper after the
- *                standard pipeline completes
- */
 export type ResearchMode = 'standard' | 'academic';
 
 export interface ResearchInput {
   query: string;
   depth: ResearchDepth;
   focusAreas: string[];
-  /** Part 7 — defaults to 'standard' when omitted */
   mode?: ResearchMode;
 }
 
@@ -61,7 +54,7 @@ export type AgentName =
   | 'factchecker'
   | 'reporter'
   | 'visualizer'
-  | 'academic'; // Part 7
+  | 'academic';
 
 export type AgentStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -308,11 +301,11 @@ export type ResearchStatus =
   | 'fact_checking'
   | 'generating'
   | 'visualizing'
-  | 'writing_paper'    // Part 7
+  | 'writing_paper'
   | 'completed'
   | 'failed';
 
-// ─── Part 2: Conversation (legacy — kept for backward compat) ─────────────────
+// ─── Part 2: Conversation (legacy) ───────────────────────────────────────────
 
 export interface ConversationMessage {
   id: string;
@@ -342,11 +335,12 @@ export interface UserStats {
   favoriteTopic: string | null;
   reportsThisMonth: number;
   hoursResearched: number;
-  // Part 6 additions
   totalAssistantMessages?: number;
   reportsWithEmbeddings?: number;
-  // Part 7 additions
   academicPapersGenerated?: number;
+  // Part 8 additions
+  totalPodcasts?: number;
+  podcastMinutesGenerated?: number;
 }
 
 export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
@@ -529,14 +523,8 @@ export interface ReportEmbeddingStats {
 
 // ─── Part 7: AI Academic Paper Mode ──────────────────────────────────────────
 
-/**
- * Supported academic citation styles for the paper output.
- */
 export type AcademicCitationStyle = 'apa' | 'mla' | 'chicago' | 'ieee';
 
-/**
- * The seven canonical sections of an academic research paper.
- */
 export type AcademicSectionType =
   | 'abstract'
   | 'introduction'
@@ -546,72 +534,39 @@ export type AcademicSectionType =
   | 'conclusion'
   | 'references';
 
-/**
- * A subsection within a major academic section (e.g. "2.1 Background").
- */
 export interface AcademicSubsection {
   id: string;
   title: string;
   content: string;
 }
 
-/**
- * A single section in the academic paper (e.g. Introduction, Methodology).
- * Each section may contain multiple subsections.
- */
 export interface AcademicSection {
   id: string;
   type: AcademicSectionType;
-  /** Display heading — e.g. "1. Introduction" */
   title: string;
-  /** Full prose content for this section (may be multi-paragraph) */
   content: string;
   subsections?: AcademicSubsection[];
-  /** IDs from Citation[] used in this section */
   citationIds?: string[];
 }
 
-/**
- * The complete AI-generated academic paper linked to a ResearchReport.
- * Stored in the `academic_papers` Supabase table.
- */
 export interface AcademicPaper {
   id: string;
   reportId: string;
   userId: string;
-  /** Full title of the academic paper */
   title: string;
-  /** Short running head (≤50 chars) for header/footer */
   runningHead: string;
-  /** Structured abstract (background, objective, method, findings, conclusion) */
   abstract: string;
-  /** 5–8 keyword phrases for indexing */
   keywords: string[];
-  /**
-   * Ordered sections: abstract → introduction → literature review →
-   * methodology → findings → conclusion → references
-   */
   sections: AcademicSection[];
-  /** Full citation objects (shared from the parent report) */
   citations: Citation[];
-  /** Citation style used throughout the paper */
   citationStyle: AcademicCitationStyle;
-  /** Approximate total word count */
   wordCount: number;
-  /** Estimated page count at standard academic formatting (250 words/page) */
   pageEstimate: number;
-  /** Optional institution line on the title page */
   institution?: string;
-  /** ISO timestamp when the paper was generated */
   generatedAt: string;
-  /** How many times the paper has been exported */
   exportCount: number;
 }
 
-/**
- * The raw JSON output from runAcademicPaperAgent().
- * The orchestrator wraps this into a full AcademicPaper before saving.
- */
 export interface AcademicAgentOutput {
   title: string;
   runningHead: string;
@@ -620,9 +575,6 @@ export interface AcademicAgentOutput {
   sections: Omit<AcademicSection, 'id'>[];
 }
 
-/**
- * State shape managed by useAcademicPaper hook.
- */
 export interface AcademicPaperState {
   paper: AcademicPaper | null;
   isGenerating: boolean;
@@ -633,13 +585,146 @@ export interface AcademicPaperState {
   citationStyle: AcademicCitationStyle;
 }
 
-/**
- * Meta info shown in the paper header / stats bar.
- */
 export interface AcademicPaperMeta {
   wordCount: number;
   pageEstimate: number;
   sectionCount: number;
   citationCount: number;
   generatedAt: string;
+}
+
+// ─── Part 8: AI Podcast Generator ────────────────────────────────────────────
+
+/**
+ * OpenAI TTS voices available for podcast generation.
+ * alloy  — neutral, professional (good default host)
+ * echo   — deep, resonant
+ * fable  — warm, British accent
+ * onyx   — deep, authoritative
+ * nova   — warm, friendly (good default guest)
+ * shimmer — bright, clear
+ */
+export type PodcastVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
+
+export type PodcastStatus =
+  | 'pending'
+  | 'generating_script'
+  | 'generating_audio'
+  | 'completed'
+  | 'failed';
+
+/**
+ * A single spoken turn in the podcast dialogue.
+ * Each turn maps to one TTS audio segment file.
+ */
+export interface PodcastTurn {
+  id: string;
+  /** 0-based index — determines audio file name & playback order */
+  segmentIndex: number;
+  speaker: 'host' | 'guest';
+  /** Display name shown in transcript */
+  speakerName: string;
+  /** Text sent to TTS */
+  text: string;
+  /** Local filesystem path after TTS generation (empty string = not yet generated) */
+  audioPath?: string;
+  /** Estimated playback length in milliseconds */
+  durationMs?: number;
+}
+
+/** The structured dialogue generated by the script agent */
+export interface PodcastScript {
+  turns: PodcastTurn[];
+  totalWords: number;
+  /** Estimated total duration at ~150 wpm */
+  estimatedDurationMinutes: number;
+}
+
+/** Voice + personality configuration chosen by the user */
+export interface PodcastConfig {
+  hostVoice: PodcastVoice;
+  guestVoice: PodcastVoice;
+  hostName: string;
+  guestName: string;
+  /** Target episode length in minutes (default 10) */
+  targetDurationMinutes: number;
+}
+
+/** A pre-defined voice pair the user can select from */
+export interface PodcastVoicePreset {
+  id: string;
+  name: string;
+  description: string;
+  hostVoice: PodcastVoice;
+  guestVoice: PodcastVoice;
+  hostName: string;
+  guestName: string;
+  icon: string;
+  accentColor: string;
+}
+
+/**
+ * The fully generated podcast object — mirrors the `podcasts` Supabase row
+ * plus the config sub-object reconstructed from individual DB columns.
+ */
+export interface Podcast {
+  id: string;
+  userId: string;
+  reportId?: string;
+  title: string;
+  description: string;
+  topic: string;
+  script: PodcastScript;
+  config: PodcastConfig;
+  status: PodcastStatus;
+  completedSegments: number;
+  durationSeconds: number;
+  wordCount: number;
+  /** Ordered array of local file paths, one per turn */
+  audioSegmentPaths: string[];
+  errorMessage?: string;
+  exportCount: number;
+  createdAt: string;
+  completedAt?: string;
+}
+
+/** State managed by usePodcast hook during generation */
+export interface PodcastGenerationState {
+  podcast: Podcast | null;
+  isGeneratingScript: boolean;
+  isGeneratingAudio: boolean;
+  scriptGenerated: boolean;
+  audioProgress: { completed: number; total: number };
+  progressMessage: string;
+  error: string | null;
+}
+
+/** State managed by usePodcastPlayer hook */
+export interface PodcastPlayerState {
+  isPlaying: boolean;
+  currentTurnIndex: number;
+  /** Current playback position in milliseconds within the current segment */
+  positionMs: number;
+  /** Duration of the current segment in milliseconds */
+  segmentDurationMs: number;
+  /** Cumulative position across all segments in milliseconds */
+  totalPositionMs: number;
+  /** Sum of all estimated segment durations in milliseconds */
+  totalDurationMs: number;
+  isLoading: boolean;
+  isBuffering: boolean;
+  playbackRate: number;
+}
+
+/** Callbacks used by the podcast generation pipeline */
+export interface PodcastGenerationCallbacks {
+  onScriptGenerated: (script: PodcastScript) => void;
+  onSegmentGenerated: (
+    segmentIndex: number,
+    totalSegments: number,
+    audioPath: string
+  ) => void;
+  onComplete: (podcast: Podcast) => void;
+  onError: (message: string) => void;
+  onProgress: (message: string) => void;
 }
