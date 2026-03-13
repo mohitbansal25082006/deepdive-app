@@ -15,6 +15,14 @@
 //   BEFORE the setTimeout. This way index.tsx sees profileLoading=true
 //   and waits (returns early) until fetchProfile finishes and sets
 //   the real profile data, then routes correctly based on profile_completed.
+//
+// FIX (logout redirect):
+//   When signOut() is called the user is on a deep app screen
+//   (e.g. /(app)/(tabs)/home) so index.tsx is NOT mounted and its
+//   useEffect never fires — therefore no redirect happens.
+//   Fix: call router.replace('/(auth)/onboarding') directly inside
+//   signOut() after clearing state, so the redirect always fires
+//   regardless of which screen the user is currently on.
 
 import React, {
   createContext,
@@ -25,6 +33,7 @@ import React, {
 } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
+import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { Profile } from '../types';
 
@@ -87,10 +96,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    // Clear local state first so UI updates immediately
     setSession(null);
     setUser(null);
     setProfile(null);
+    setProfileLoading(false);
+
+    // Sign out from Supabase
     await supabase.auth.signOut();
+
+    // Redirect to onboarding — index.tsx is NOT mounted when the user is
+    // deep inside the app, so its useEffect won't fire. We must navigate
+    // here explicitly to guarantee the redirect always happens.
+    router.replace('/(auth)/onboarding');
   };
 
   useEffect(() => {
