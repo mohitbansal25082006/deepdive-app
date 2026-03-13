@@ -1,6 +1,8 @@
 // app/(app)/workspace-members.tsx
-// FIX: Member rows no longer overflow — all text is properly constrained
-//      with flex: 1 / numberOfLines / minWidth: 0 throughout.
+// Part 12 CHANGES:
+//   1. Tapping any member row opens MemberProfileCard bottom sheet
+//   2. Owner sees pending access requests badge + review sheet
+//   3. Full MemberProfileCard + EditAccessRequestModal wired in
 
 import React, { useState } from 'react';
 import {
@@ -13,11 +15,14 @@ import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useWorkspaceMembers } from '../../src/hooks/useWorkspaceMembers';
+import { useWorkspace } from '../../src/hooks/useWorkspace';
+import { usePendingAccessRequests } from '../../src/hooks/useEditAccessRequest';
 import { MemberAvatar } from '../../src/components/workspace/MemberAvatar';
 import { MemberRoleModal } from '../../src/components/workspace/MemberRoleModal';
 import { InviteModal } from '../../src/components/workspace/InviteModal';
-import { useWorkspace } from '../../src/hooks/useWorkspace';
-import { WorkspaceMember, WorkspaceRole } from '../../src/types';
+import { MemberProfileCard } from '../../src/components/workspace/MemberProfileCard';
+import { EditAccessRequestModal } from '../../src/components/workspace/EditAccessRequestModal';
+import { WorkspaceMember, WorkspaceRole, MiniProfile } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
 const ROLE_COLOR: Record<WorkspaceRole, string> = {
@@ -34,14 +39,37 @@ export default function WorkspaceMembersScreen() {
   } = useWorkspaceMembers(id ?? null);
   const { workspace } = useWorkspace(id ?? null);
 
-  const [selectedMember, setSelectedMember] = useState<WorkspaceMember | null>(null);
-  const [showRoleModal,  setShowRoleModal]  = useState(false);
-  const [showInvite,     setShowInvite]     = useState(false);
+  // Part 12 — Pending access requests (owner/editor only)
+  const {
+    requests: pendingRequests,
+    pendingCount,
+    isActioning,
+    approve: approveRequest,
+    deny:    denyRequest,
+  } = usePendingAccessRequests(id ?? null, userRole);
 
-  const handleMemberPress = (member: WorkspaceMember) => {
+  // Modal states
+  const [selectedMember,      setSelectedMember]      = useState<WorkspaceMember | null>(null);
+  const [showRoleModal,       setShowRoleModal]        = useState(false);
+  const [showInvite,          setShowInvite]           = useState(false);
+  const [profileMember,       setProfileMember]        = useState<MiniProfile | null>(null);  // Part 12
+  const [showProfile,         setShowProfile]          = useState(false);                      // Part 12
+  const [showAccessRequests,  setShowAccessRequests]   = useState(false);                      // Part 12
+
+  const isEditor = userRole === 'editor' || isOwner;
+
+  // ── Open role modal (owner taps a non-owner member) ───────────────────────
+  const handleManageMember = (member: WorkspaceMember) => {
     if (!isOwner || member.role === 'owner') return;
     setSelectedMember(member);
     setShowRoleModal(true);
+  };
+
+  // ── Open profile card (any member tap) ────────────────────────────────────
+  const handleViewProfile = (member: WorkspaceMember) => {
+    if (!member.profile) return;
+    setProfileMember(member.profile);
+    setShowProfile(true);
   };
 
   const handleChangeRole = async (userId: string, role: Exclude<WorkspaceRole, 'owner'>) => {
@@ -50,20 +78,16 @@ export default function WorkspaceMembersScreen() {
   };
 
   const handleRemove = async (userId: string) => {
-    Alert.alert(
-      'Remove Member',
-      'Remove this member from the workspace?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove', style: 'destructive',
-          onPress: async () => {
-            const { error } = await remove(userId);
-            if (error) Alert.alert('Error', error);
-          },
+    Alert.alert('Remove Member', 'Remove this member from the workspace?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove', style: 'destructive',
+        onPress: async () => {
+          const { error } = await remove(userId);
+          if (error) Alert.alert('Error', error);
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const handleTransfer = (member: WorkspaceMember) => {
@@ -85,21 +109,37 @@ export default function WorkspaceMembersScreen() {
     );
   };
 
+  const handleApproveRequest = async (requestId: string) => {
+    const { error } = await approveRequest(requestId);
+    if (error) Alert.alert('Error', error);
+    else {
+      Alert.alert('✅ Approved', 'Member has been upgraded to Editor.');
+      refresh(); // Refresh member list to reflect new role
+    }
+  };
+
+  const handleDenyRequest = async (requestId: string) => {
+    const { error } = await denyRequest(requestId);
+    if (error) Alert.alert('Error', error);
+  };
+
   const owners  = members.filter(m => m.role === 'owner');
   const editors = members.filter(m => m.role === 'editor');
   const viewers = members.filter(m => m.role === 'viewer');
 
-  const sections = [
-    { role: 'owner'  as WorkspaceRole, label: 'Owner',   data: owners  },
-    { role: 'editor' as WorkspaceRole, label: 'Editors', data: editors },
-    { role: 'viewer' as WorkspaceRole, label: 'Viewers', data: viewers },
-  ].filter(s => s.data.length > 0);
+  const sections: { role: WorkspaceRole; label: string; data: WorkspaceMember[] }[] = (
+    [
+      { role: 'owner'  as const, label: 'Owner',   data: owners  },
+      { role: 'editor' as const, label: 'Editors', data: editors },
+      { role: 'viewer' as const, label: 'Viewers', data: viewers },
+    ] as { role: WorkspaceRole; label: string; data: WorkspaceMember[] }[]
+  ).filter(s => s.data.length > 0);
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
 
-        {/* Header */}
+        {/* ── Header ── */}
         <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
@@ -108,6 +148,20 @@ export default function WorkspaceMembersScreen() {
             <Text style={styles.title}>Members</Text>
             <Text style={styles.memberCount}>{members.length} total</Text>
           </View>
+
+          {/* Part 12 — Pending requests badge (owner/editor) */}
+          {isEditor && pendingCount > 0 && (
+            <TouchableOpacity
+              onPress={() => setShowAccessRequests(true)}
+              style={styles.pendingBadgeBtn}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="person-add-outline" size={16} color={COLORS.warning} />
+              <Text style={styles.pendingBadgeText}>{pendingCount}</Text>
+              <Text style={styles.pendingBadgeLabel}>Pending</Text>
+            </TouchableOpacity>
+          )}
+
           {isOwner && (
             <TouchableOpacity onPress={() => setShowInvite(true)} style={styles.inviteBtn}>
               <Ionicons name="person-add-outline" size={15} color="#FFF" />
@@ -115,6 +169,22 @@ export default function WorkspaceMembersScreen() {
             </TouchableOpacity>
           )}
         </Animated.View>
+
+        {/* Part 12 — Access request notification banner */}
+        {isEditor && pendingCount > 0 && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.requestBanner}>
+            <Ionicons name="notifications-outline" size={15} color={COLORS.warning} />
+            <Text style={styles.requestBannerText} numberOfLines={1}>
+              {pendingCount} viewer{pendingCount !== 1 ? 's are' : ' is'} requesting editor access
+            </Text>
+            <TouchableOpacity
+              onPress={() => setShowAccessRequests(true)}
+              style={styles.requestBannerCta}
+            >
+              <Text style={styles.requestBannerCtaText}>Review</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
 
         <ScrollView
           contentContainerStyle={styles.scroll}
@@ -139,35 +209,33 @@ export default function WorkspaceMembersScreen() {
 
                   {/* Member rows */}
                   {section.data.map((member, i) => {
-                    const name = member.profile?.fullName ?? member.profile?.username ?? 'Unknown';
-                    const username = member.profile?.username;
+                    const name      = member.profile?.fullName ?? member.profile?.username ?? 'Unknown';
+                    const username  = member.profile?.username;
                     const joinedDate = new Date(member.joinedAt).toLocaleDateString('en-US', {
                       month: 'short', day: 'numeric', year: 'numeric',
                     });
-                    const isClickable = isOwner && member.role !== 'owner';
+                    const canManage = isOwner && member.role !== 'owner';
 
                     return (
                       <Animated.View
                         key={member.id}
                         entering={FadeInDown.duration(300).delay(i * 40)}
                       >
+                        {/* Part 12: whole row tappable → profile card */}
                         <TouchableOpacity
-                          onPress={() => handleMemberPress(member)}
-                          activeOpacity={isClickable ? 0.75 : 1}
+                          onPress={() => handleViewProfile(member)}
+                          activeOpacity={0.75}
                           style={styles.memberCard}
                         >
-                          {/* Left: avatar + info — constrained with minWidth:0 */}
+                          {/* Left: avatar + info */}
                           <View style={styles.memberLeft}>
                             <MemberAvatar
                               profile={member.profile}
                               role={member.role}
                               size={40}
                             />
-                            {/* Text block: must have flex:1 + minWidth:0 to truncate */}
                             <View style={styles.memberInfo}>
-                              <Text style={styles.memberName} numberOfLines={1}>
-                                {name}
-                              </Text>
+                              <Text style={styles.memberName} numberOfLines={1}>{name}</Text>
                               {username && (
                                 <Text style={styles.memberUsername} numberOfLines={1}>
                                   @{username}
@@ -179,7 +247,7 @@ export default function WorkspaceMembersScreen() {
                             </View>
                           </View>
 
-                          {/* Right: role badge + actions */}
+                          {/* Right: role badge + manage button */}
                           <View style={styles.memberRight}>
                             <View style={[
                               styles.roleBadge,
@@ -193,8 +261,9 @@ export default function WorkspaceMembersScreen() {
                               </Text>
                             </View>
 
-                            {isClickable && (
+                            {canManage && (
                               <View style={styles.memberActions}>
+                                {/* Transfer key */}
                                 <TouchableOpacity
                                   onPress={() => handleTransfer(member)}
                                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -202,7 +271,14 @@ export default function WorkspaceMembersScreen() {
                                 >
                                   <Ionicons name="key-outline" size={14} color={COLORS.warning} />
                                 </TouchableOpacity>
-                                <Ionicons name="chevron-forward" size={15} color={COLORS.textMuted} />
+                                {/* Manage role */}
+                                <TouchableOpacity
+                                  onPress={() => handleManageMember(member)}
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  style={[styles.iconBtn, { backgroundColor: `${COLORS.primary}15` }]}
+                                >
+                                  <Ionicons name="settings-outline" size={14} color={COLORS.primary} />
+                                </TouchableOpacity>
                               </View>
                             )}
                           </View>
@@ -240,7 +316,7 @@ export default function WorkspaceMembersScreen() {
           )}
         </ScrollView>
 
-        {/* Role modal */}
+        {/* ── Role management modal ── */}
         <MemberRoleModal
           member={selectedMember}
           visible={showRoleModal}
@@ -250,7 +326,7 @@ export default function WorkspaceMembersScreen() {
           onRemove={handleRemove}
         />
 
-        {/* Invite modal */}
+        {/* ── Invite modal ── */}
         {workspace && (
           <InviteModal
             workspace={workspace}
@@ -261,6 +337,27 @@ export default function WorkspaceMembersScreen() {
           />
         )}
 
+        {/* ── Part 12: Member profile card ── */}
+        {id && (
+          <MemberProfileCard
+            visible={showProfile}
+            member={profileMember}
+            workspaceId={id}
+            onClose={() => { setShowProfile(false); setProfileMember(null); }}
+          />
+        )}
+
+        {/* ── Part 12: Access requests modal (owner/editor) ── */}
+        <EditAccessRequestModal
+          mode="owner"
+          visible={showAccessRequests}
+          requests={pendingRequests}
+          isActioning={isActioning}
+          onApprove={handleApproveRequest}
+          onDeny={handleDenyRequest}
+          onClose={() => setShowAccessRequests(false)}
+        />
+
       </SafeAreaView>
     </LinearGradient>
   );
@@ -270,7 +367,7 @@ const styles = StyleSheet.create({
   // Header
   header: {
     flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.md,
+    paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.sm,
   },
   backBtn: {
     width: 38, height: 38, borderRadius: 12,
@@ -279,9 +376,22 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.border,
     flexShrink: 0,
   },
-  headerInfo:    { flex: 1, minWidth: 0 },
-  title:         { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  memberCount:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 },
+  headerInfo:  { flex: 1, minWidth: 0 },
+  title:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  memberCount: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 },
+
+  // Part 12 — pending badge
+  pendingBadgeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: `${COLORS.warning}15`,
+    borderRadius: RADIUS.lg,
+    paddingHorizontal: 10, paddingVertical: 7,
+    borderWidth: 1, borderColor: `${COLORS.warning}35`,
+    flexShrink: 0,
+  },
+  pendingBadgeText:  { color: COLORS.warning, fontSize: FONTS.sizes.sm, fontWeight: '800' },
+  pendingBadgeLabel: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+
   inviteBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: COLORS.primary,
@@ -291,10 +401,26 @@ const styles = StyleSheet.create({
   },
   inviteBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
 
-  scroll: { paddingHorizontal: SPACING.xl, paddingBottom: 80 },
+  // Part 12 — request banner
+  requestBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: `${COLORS.warning}12`,
+    marginHorizontal: SPACING.xl, marginBottom: SPACING.sm,
+    borderRadius: RADIUS.lg, padding: SPACING.sm,
+    borderWidth: 1, borderColor: `${COLORS.warning}30`,
+  },
+  requestBannerText: { flex: 1, color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  requestBannerCta: {
+    backgroundColor: COLORS.warning,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: 10, paddingVertical: 4,
+  },
+  requestBannerCtaText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
+  scroll:      { paddingHorizontal: SPACING.xl, paddingBottom: 80 },
   loadingWrap: { alignItems: 'center', paddingTop: 60 },
 
-  // Section
+  // Sections
   sectionLabelRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginTop: SPACING.lg, marginBottom: SPACING.sm,
@@ -312,67 +438,27 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     marginBottom: SPACING.sm,
     borderWidth: 1, borderColor: COLORS.border,
-    // Prevent any child from making the card wider than the screen:
     overflow: 'hidden',
   },
-
-  // Left side — MUST have flex:1 + minWidth:0 so text can shrink
   memberLeft: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    minWidth: 0,          // ← key: allows flex children to shrink below natural size
+    minWidth: 0,
     marginRight: SPACING.sm,
   },
-  memberInfo: {
-    flex: 1,
-    minWidth: 0,          // ← key: allows Text to truncate
-  },
-  memberName: {
-    color: COLORS.textPrimary,
-    fontSize: FONTS.sizes.sm,
-    fontWeight: '700',
-    flexShrink: 1,
-  },
-  memberUsername: {
-    color: COLORS.textMuted,
-    fontSize: FONTS.sizes.xs,
-    marginTop: 1,
-    flexShrink: 1,
-  },
-  memberJoined: {
-    color: COLORS.textMuted,
-    fontSize: FONTS.sizes.xs,
-    marginTop: 2,
-    flexShrink: 1,
-  },
+  memberInfo:     { flex: 1, minWidth: 0 },
+  memberName:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', flexShrink: 1 },
+  memberUsername: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1, flexShrink: 1 },
+  memberJoined:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2, flexShrink: 1 },
+  memberRight:    { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
+  roleBadge:      { borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 },
+  roleBadgeText:  { fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'capitalize' },
+  memberActions:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  iconBtn:        { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
 
-  // Right side — fixed width, no flex growth
-  memberRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flexShrink: 0,
-  },
-  roleBadge: {
-    borderRadius: RADIUS.full,
-    paddingHorizontal: 8, paddingVertical: 3,
-  },
-  roleBadgeText: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: '700',
-    textTransform: 'capitalize',
-  },
-  memberActions: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-  },
-  iconBtn: {
-    width: 28, height: 28, borderRadius: 8,
-    alignItems: 'center', justifyContent: 'center',
-  },
-
-  // Leave button
+  // Leave
   leaveBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: `${COLORS.error}10`,

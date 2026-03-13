@@ -1,11 +1,9 @@
 // app/(app)/workspace-detail.tsx
-// Part 11 CHANGES:
-//   1. Search icon in header → opens WorkspaceSearchModal
-//   2. Pinned reports shown at top of feed with pin badge
-//   3. Pin / unpin toggle for editors and owners
-//   4. Settings icon now also shown for editors (opens settings with role=editor param)
-//   5. Reactions loaded per-comment via useCommentReactions (passed to WorkspaceReportCard info)
-//      Note: reactions are shown inside workspace-report.tsx; here we just load pinnedIds.
+// Part 12 CHANGES:
+//   1. Pending access-request notification banner for owners/editors
+//      (shows count, tapping opens workspace-members with requests tab pre-focused)
+//   2. Members tab rows are now tappable → MemberProfileCard
+//   3. usePendingAccessRequests wired in for realtime badge count
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -20,13 +18,16 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../src/lib/supabase';
 import { useWorkspace } from '../../src/hooks/useWorkspace';
 import { useActivityFeed } from '../../src/hooks/useActivityFeed';
+import { usePendingAccessRequests } from '../../src/hooks/useEditAccessRequest';
 import { WorkspaceReportCard } from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem } from '../../src/components/workspace/ActivityItem';
 import { MemberAvatar } from '../../src/components/workspace/MemberAvatar';
 import { InviteModal } from '../../src/components/workspace/InviteModal';
 import { AddToWorkspaceSheet } from '../../src/components/workspace/AddToWorkspaceSheet';
 import { WorkspaceSearchModal } from '../../src/components/workspace/WorkspaceSearchModal';
-import { WorkspaceReport } from '../../src/types';
+import { MemberProfileCard } from '../../src/components/workspace/MemberProfileCard';       // Part 12
+import { EditAccessRequestModal } from '../../src/components/workspace/EditAccessRequestModal'; // Part 12
+import { WorkspaceReport, MiniProfile } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
 type TabId = 'feed' | 'activity' | 'members';
@@ -53,12 +54,27 @@ export default function WorkspaceDetailScreen() {
   } = useWorkspace(id ?? null);
   const { items: activities } = useActivityFeed(id ?? null);
 
+  // Part 12 — pending access requests
+  const {
+    pendingCount,
+    requests: pendingRequests,
+    isActioning,
+    approve: approveRequest,
+    deny:    denyRequest,
+  } = usePendingAccessRequests(id ?? null, userRole);
+
   const [activeTab,      setActiveTab]      = useState<TabId>('feed');
   const [showInvite,     setShowInvite]     = useState(false);
   const [showAddReport,  setShowAddReport]  = useState(false);
-  const [showSearch,     setShowSearch]     = useState(false);   // Part 11
-  const [pinnedIds,      setPinnedIds]      = useState<Set<string>>(new Set()); // Part 11
-  const [isPinToggling,  setIsPinToggling]  = useState(false);   // Part 11
+  const [showSearch,     setShowSearch]     = useState(false);
+  const [pinnedIds,      setPinnedIds]      = useState<Set<string>>(new Set());
+  const [isPinToggling,  setIsPinToggling]  = useState(false);
+
+  // Part 12 — member profile card
+  const [profileMember,  setProfileMember]  = useState<MiniProfile | null>(null);
+  const [showProfile,    setShowProfile]    = useState(false);
+  // Part 12 — access request modal (quick review from detail screen)
+  const [showRequests,   setShowRequests]   = useState(false);
 
   const isOwner  = userRole === 'owner';
   const isEditor = userRole === 'editor' || isOwner;
@@ -78,9 +94,7 @@ export default function WorkspaceDetailScreen() {
     } catch { /* non-fatal */ }
   }, [id]);
 
-  useEffect(() => {
-    loadPinnedIds();
-  }, [loadPinnedIds]);
+  useEffect(() => { loadPinnedIds(); }, [loadPinnedIds]);
 
   // ── Toggle pin ────────────────────────────────────────────────────────────
   const handleTogglePin = async (reportId: string) => {
@@ -117,13 +131,20 @@ export default function WorkspaceDetailScreen() {
 
   // ── Sort feed: pinned first, then by addedAt ───────────────────────────────
   const sortedReports: WorkspaceReport[] = [
-    ...reports
-      .filter((r) => pinnedIds.has(r.reportId))
-      .map((r) => ({ ...r, isPinned: true })),
-    ...reports
-      .filter((r) => !pinnedIds.has(r.reportId))
-      .map((r) => ({ ...r, isPinned: false })),
+    ...reports.filter((r) => pinnedIds.has(r.reportId)).map((r) => ({ ...r, isPinned: true })),
+    ...reports.filter((r) => !pinnedIds.has(r.reportId)).map((r) => ({ ...r, isPinned: false })),
   ];
+
+  // ── Access request handlers ────────────────────────────────────────────────
+  const handleApproveRequest = async (requestId: string) => {
+    const { error } = await approveRequest(requestId);
+    if (error) Alert.alert('Error', error);
+    else refresh(false);
+  };
+  const handleDenyRequest = async (requestId: string) => {
+    const { error } = await denyRequest(requestId);
+    if (error) Alert.alert('Error', error);
+  };
 
   if (error) {
     return (
@@ -149,9 +170,7 @@ export default function WorkspaceDetailScreen() {
             <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
           </TouchableOpacity>
           <View style={styles.topBarCenter}>
-            <Text style={styles.wsName} numberOfLines={1}>
-              {workspace?.name ?? '…'}
-            </Text>
+            <Text style={styles.wsName} numberOfLines={1}>{workspace?.name ?? '…'}</Text>
             {userRole && (
               <View style={styles.rolePill}>
                 <Text style={styles.rolePillText}>{userRole}</Text>
@@ -159,26 +178,14 @@ export default function WorkspaceDetailScreen() {
             )}
           </View>
           <View style={styles.topBarRight}>
-            {/* Search — visible to all members */}
-            <TouchableOpacity
-              onPress={() => setShowSearch(true)}
-              style={styles.iconBtn}
-            >
+            <TouchableOpacity onPress={() => setShowSearch(true)} style={styles.iconBtn}>
               <Ionicons name="search-outline" size={20} color={COLORS.textSecondary} />
             </TouchableOpacity>
-
-            {/* Invite — editors + owners */}
             {isEditor && (
-              <TouchableOpacity
-                onPress={() => setShowInvite(true)}
-                style={styles.iconBtn}
-              >
+              <TouchableOpacity onPress={() => setShowInvite(true)} style={styles.iconBtn}>
                 <Ionicons name="person-add-outline" size={20} color={COLORS.textSecondary} />
               </TouchableOpacity>
             )}
-
-            {/* Settings — owners only get full settings;
-                editors get export-only view via role param */}
             {isEditor && (
               <TouchableOpacity
                 onPress={() =>
@@ -199,6 +206,25 @@ export default function WorkspaceDetailScreen() {
           </View>
         </Animated.View>
 
+        {/* ── Part 12: Pending access request banner ── */}
+        {isEditor && pendingCount > 0 && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.requestBanner}>
+            <View style={styles.requestBannerLeft}>
+              <Ionicons name="person-add-outline" size={16} color={COLORS.warning} />
+              <Text style={styles.requestBannerText} numberOfLines={1}>
+                {pendingCount} member{pendingCount !== 1 ? 's' : ''} requesting editor access
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => setShowRequests(true)}
+              style={styles.requestBannerCta}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.requestBannerCtaText}>Review</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
         {/* ── Stats strip ── */}
         {workspace && (
           <Animated.View entering={FadeIn.duration(500).delay(100)} style={styles.statsStrip}>
@@ -207,6 +233,16 @@ export default function WorkspaceDetailScreen() {
             <StatChip icon="pulse-outline"         value={activities.length} label="Activity" />
             {pinnedIds.size > 0 && (
               <StatChip icon="pin-outline" value={pinnedIds.size} label="Pinned" />
+            )}
+            {/* Part 12 — requests chip */}
+            {isEditor && pendingCount > 0 && (
+              <TouchableOpacity onPress={() => setShowRequests(true)} activeOpacity={0.8}>
+                <View style={[statChipStyles.chip, { backgroundColor: `${COLORS.warning}15` }]}>
+                  <Ionicons name="person-add-outline" size={14} color={COLORS.warning} />
+                  <Text style={[statChipStyles.value, { color: COLORS.warning }]}>{pendingCount}</Text>
+                  <Text style={[statChipStyles.label, { color: COLORS.warning }]}>Requests</Text>
+                </View>
+              </TouchableOpacity>
             )}
           </Animated.View>
         )}
@@ -243,7 +279,6 @@ export default function WorkspaceDetailScreen() {
             />
           }
         >
-
           {/* ── Feed tab ── */}
           {activeTab === 'feed' && (
             <>
@@ -260,7 +295,6 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
-              {/* Pinned section header */}
               {pinnedIds.size > 0 && sortedReports.some((r) => r.isPinned) && (
                 <Animated.View entering={FadeInDown.duration(300)} style={styles.pinnedHeader}>
                   <Ionicons name="pin" size={13} color={COLORS.warning} />
@@ -278,11 +312,7 @@ export default function WorkspaceDetailScreen() {
                       : 'No reports have been shared to this workspace yet.'}
                   </Text>
                   {isEditor && (
-                    <TouchableOpacity
-                      style={styles.emptyAddBtn}
-                      onPress={() => setShowAddReport(true)}
-                      activeOpacity={0.85}
-                    >
+                    <TouchableOpacity style={styles.emptyAddBtn} onPress={() => setShowAddReport(true)} activeOpacity={0.85}>
                       <Ionicons name="add-circle-outline" size={16} color="#FFF" />
                       <Text style={styles.emptyAddBtnText}>Add Report</Text>
                     </TouchableOpacity>
@@ -292,16 +322,13 @@ export default function WorkspaceDetailScreen() {
                 <>
                   {sortedReports.map((wr, i) => (
                     <React.Fragment key={wr.id}>
-                      {/* Section break between pinned and regular */}
-                      {i > 0 &&
-                        sortedReports[i - 1].isPinned &&
-                        !wr.isPinned && (
-                          <View style={styles.sectionDivider}>
-                            <View style={styles.sectionDividerLine} />
-                            <Text style={styles.sectionDividerText}>All Reports</Text>
-                            <View style={styles.sectionDividerLine} />
-                          </View>
-                        )}
+                      {i > 0 && sortedReports[i - 1].isPinned && !wr.isPinned && (
+                        <View style={styles.sectionDivider}>
+                          <View style={styles.sectionDividerLine} />
+                          <Text style={styles.sectionDividerText}>All Reports</Text>
+                          <View style={styles.sectionDividerLine} />
+                        </View>
+                      )}
                       <View style={styles.reportCardWrap}>
                         <WorkspaceReportCard
                           item={wr}
@@ -309,23 +336,15 @@ export default function WorkspaceDetailScreen() {
                           onPress={() =>
                             router.push({
                               pathname: '/(app)/workspace-report' as any,
-                              params: {
-                                reportId:    wr.reportId,
-                                workspaceId: id,
-                                userRole:    userRole ?? 'viewer',
-                              },
+                              params: { reportId: wr.reportId, workspaceId: id, userRole: userRole ?? 'viewer' },
                             })
                           }
                         />
-                        {/* Pin / unpin button for editors */}
                         {isEditor && (
                           <TouchableOpacity
                             onPress={() => handleTogglePin(wr.reportId)}
                             disabled={isPinToggling}
-                            style={[
-                              styles.pinBtn,
-                              wr.isPinned && styles.pinBtnActive,
-                            ]}
+                            style={[styles.pinBtn, wr.isPinned && styles.pinBtnActive]}
                             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                           >
                             <Ionicons
@@ -350,9 +369,7 @@ export default function WorkspaceDetailScreen() {
                 <View style={styles.emptyState}>
                   <Ionicons name="pulse-outline" size={40} color={COLORS.textMuted} />
                   <Text style={styles.emptyTitle}>No activity yet</Text>
-                  <Text style={styles.emptyDesc}>
-                    All workspace actions are logged here in real-time and persist permanently.
-                  </Text>
+                  <Text style={styles.emptyDesc}>All workspace actions are logged here in real-time.</Text>
                 </View>
               ) : (
                 activities.map((a) => <ActivityItem key={a.id} activity={a} />)
@@ -367,10 +384,7 @@ export default function WorkspaceDetailScreen() {
                 <TouchableOpacity
                   style={styles.manageMembersBtn}
                   onPress={() =>
-                    router.push({
-                      pathname: '/(app)/workspace-members' as any,
-                      params:   { id },
-                    })
+                    router.push({ pathname: '/(app)/workspace-members' as any, params: { id } })
                   }
                 >
                   <Ionicons name="settings-outline" size={16} color={COLORS.primary} />
@@ -385,22 +399,34 @@ export default function WorkspaceDetailScreen() {
                   entering={FadeInDown.duration(300).delay(i * 40)}
                   style={styles.memberRow}
                 >
-                  <View style={styles.memberAvatarWrap}>
-                    <MemberAvatar profile={m.profile} role={m.role} size={40} showLabel showRole />
-                  </View>
-                  <View style={styles.memberTextBlock}>
-                    <Text style={styles.memberName} numberOfLines={1} ellipsizeMode="tail">
-                      {m.profile?.fullName ?? m.profile?.username ?? 'Unknown'}
-                    </Text>
-                    <Text style={styles.joinedText} numberOfLines={1} ellipsizeMode="tail">
-                      Joined {formatJoined(m.joinedAt)}
-                    </Text>
-                  </View>
+                  {/* Part 12 — tappable member row → profile card */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (m.profile) {
+                        setProfileMember(m.profile);
+                        setShowProfile(true);
+                      }
+                    }}
+                    activeOpacity={0.75}
+                    style={styles.memberRowInner}
+                  >
+                    <View style={styles.memberAvatarWrap}>
+                      <MemberAvatar profile={m.profile} role={m.role} size={40} showLabel showRole />
+                    </View>
+                    <View style={styles.memberTextBlock}>
+                      <Text style={styles.memberName} numberOfLines={1} ellipsizeMode="tail">
+                        {m.profile?.fullName ?? m.profile?.username ?? 'Unknown'}
+                      </Text>
+                      <Text style={styles.joinedText} numberOfLines={1} ellipsizeMode="tail">
+                        Joined {formatJoined(m.joinedAt)}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+                  </TouchableOpacity>
                 </Animated.View>
               ))}
             </>
           )}
-
         </ScrollView>
 
         {/* ── Invite modal ── */}
@@ -425,7 +451,7 @@ export default function WorkspaceDetailScreen() {
           />
         )}
 
-        {/* ── Search modal (Part 11) ── */}
+        {/* ── Search modal ── */}
         {id && (
           <WorkspaceSearchModal
             visible={showSearch}
@@ -436,6 +462,27 @@ export default function WorkspaceDetailScreen() {
           />
         )}
 
+        {/* ── Part 12: Member profile card ── */}
+        {id && (
+          <MemberProfileCard
+            visible={showProfile}
+            member={profileMember}
+            workspaceId={id}
+            onClose={() => { setShowProfile(false); setProfileMember(null); }}
+          />
+        )}
+
+        {/* ── Part 12: Access requests modal (quick review) ── */}
+        <EditAccessRequestModal
+          mode="owner"
+          visible={showRequests}
+          requests={pendingRequests}
+          isActioning={isActioning}
+          onApprove={handleApproveRequest}
+          onDeny={handleDenyRequest}
+          onClose={() => setShowRequests(false)}
+        />
+
       </SafeAreaView>
     </LinearGradient>
   );
@@ -443,29 +490,18 @@ export default function WorkspaceDetailScreen() {
 
 // ─── StatChip ─────────────────────────────────────────────────────────────────
 
-function StatChip({
-  icon, value, label,
-}: {
-  icon:  keyof typeof Ionicons.glyphMap;
-  value: number;
-  label: string;
-}) {
+function StatChip({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap; value: number; label: string }) {
   return (
-    <View style={statStyles.chip}>
+    <View style={statChipStyles.chip}>
       <Ionicons name={icon} size={14} color={COLORS.primary} />
-      <Text style={statStyles.value}>{value}</Text>
-      <Text style={statStyles.label}>{label}</Text>
+      <Text style={statChipStyles.value}>{value}</Text>
+      <Text style={statChipStyles.label}>{label}</Text>
     </View>
   );
 }
 
-const statStyles = StyleSheet.create({
-  chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: `${COLORS.primary}12`,
-    borderRadius: RADIUS.full,
-    paddingHorizontal: 10, paddingVertical: 5,
-  },
+const statChipStyles = StyleSheet.create({
+  chip:  { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5 },
   value: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
   label: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
 });
@@ -476,130 +512,57 @@ const styles = StyleSheet.create({
   backBtn:     { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
   backBtnText: { color: '#FFF', fontWeight: '700' },
 
-  topBar: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, gap: 8,
-  },
-  backIconBtn: {
-    width: 38, height: 38, borderRadius: 12,
-    backgroundColor: COLORS.backgroundCard,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-  },
+  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, gap: 8 },
+  backIconBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
   topBarCenter: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  wsName:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800', flex: 1 },
-  rolePill: {
-    backgroundColor: `${COLORS.primary}20`,
-    borderRadius: RADIUS.full,
-    paddingHorizontal: 8, paddingVertical: 2,
-  },
-  rolePillText: {
-    color: COLORS.primary, fontSize: FONTS.sizes.xs,
-    fontWeight: '700', textTransform: 'capitalize',
-  },
+  wsName: { color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800', flex: 1 },
+  rolePill: { backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2 },
+  rolePillText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'capitalize' },
   topBarRight: { flexDirection: 'row', gap: 6 },
-  iconBtn: {
-    width: 38, height: 38, borderRadius: 12,
-    backgroundColor: COLORS.backgroundCard,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-  },
+  iconBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
 
-  statsStrip: {
-    flexDirection: 'row', gap: 8, flexWrap: 'wrap',
-    paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm,
+  // Part 12 — request banner
+  requestBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginHorizontal: SPACING.xl, marginBottom: SPACING.xs,
+    backgroundColor: `${COLORS.warning}12`,
+    borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9,
+    borderWidth: 1, borderColor: `${COLORS.warning}30`,
   },
+  requestBannerLeft:  { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
+  requestBannerText:  { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
+  requestBannerCta:   { backgroundColor: COLORS.warning, borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 5 },
+  requestBannerCtaText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
-  tabBar:         { flexDirection: 'row', paddingHorizontal: SPACING.xl, gap: SPACING.sm, marginBottom: SPACING.sm },
-  tabItem: {
-    flex: 1, flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'center', gap: 5,
-    paddingVertical: 9, borderRadius: RADIUS.lg,
-    backgroundColor: COLORS.backgroundCard,
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  tabItemActive:  { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}50` },
-  tabLabel:       { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  statsStrip:  { flexDirection: 'row', gap: 8, flexWrap: 'wrap', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
+  tabBar:      { flexDirection: 'row', paddingHorizontal: SPACING.xl, gap: SPACING.sm, marginBottom: SPACING.sm },
+  tabItem:     { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundCard, borderWidth: 1, borderColor: COLORS.border },
+  tabItemActive: { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}50` },
+  tabLabel:    { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
   tabLabelActive: { color: COLORS.primary },
+  scroll:      { paddingHorizontal: SPACING.xl, paddingBottom: 120 },
 
-  scroll: { paddingHorizontal: SPACING.xl, paddingBottom: 120 },
-
-  addReportCta: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg,
-    borderWidth: 1, borderStyle: 'dashed',
-    borderColor: `${COLORS.primary}50`, marginBottom: SPACING.md,
-  },
+  addReportCta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginBottom: SPACING.md },
   addReportCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-
-  // Pinned section header
-  pinnedHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    marginBottom: SPACING.sm,
-  },
-  pinnedHeaderText: {
-    color: COLORS.warning, fontSize: FONTS.sizes.xs,
-    fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8,
-  },
-
-  // Section divider between pinned and regular
-  sectionDivider: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    marginVertical: SPACING.sm,
-  },
+  pinnedHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm },
+  pinnedHeaderText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
+  sectionDivider: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: SPACING.sm },
   sectionDividerLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
-  sectionDividerText: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-  },
-
-  // Report card with pin button overlay
+  sectionDividerText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
   reportCardWrap: { position: 'relative' },
-  pinBtn: {
-    position: 'absolute', top: 10, right: 10,
-    width: 28, height: 28, borderRadius: 8,
-    backgroundColor: COLORS.backgroundCard,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-    zIndex: 10,
-  },
-  pinBtnActive: {
-    backgroundColor: `${COLORS.warning}15`,
-    borderColor: `${COLORS.warning}40`,
-  },
-
+  pinBtn: { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, zIndex: 10 },
+  pinBtnActive: { backgroundColor: `${COLORS.warning}15`, borderColor: `${COLORS.warning}40` },
   emptyState: { alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700' },
-  emptyDesc:  {
-    color: COLORS.textSecondary, fontSize: FONTS.sizes.sm,
-    textAlign: 'center', lineHeight: 21, maxWidth: 290,
-  },
-  emptyAddBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10,
-    marginTop: 4,
-  },
+  emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21, maxWidth: 290 },
+  emptyAddBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4 },
   emptyAddBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
 
-  manageMembersBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: `${COLORS.primary}12`,
-    borderRadius: RADIUS.lg, padding: SPACING.md,
-    marginBottom: SPACING.md,
-    borderWidth: 1, borderColor: `${COLORS.primary}30`,
-  },
-  manageMembersBtnText: {
-    color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1,
-  },
+  manageMembersBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30` },
+  manageMembersBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 },
 
-  memberRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.lg, padding: SPACING.md,
-    marginBottom: SPACING.sm,
-    borderWidth: 1, borderColor: COLORS.border,
-    overflow: 'hidden',
-  },
+  memberRow: { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
+  memberRowInner: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md },
   memberAvatarWrap: { width: 40, height: 40, flexShrink: 0 },
   memberTextBlock:  { flex: 1, minWidth: 0 },
   memberName:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },

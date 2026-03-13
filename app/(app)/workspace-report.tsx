@@ -1,8 +1,9 @@
 // app/(app)/workspace-report.tsx
-// Part 11 (patched):
-//   - useCommentReactions wired in (reactions + onToggleReaction on every CommentThread)
-//   - Header comment icon ALWAYS opens the sheet showing ALL comments
-//     (clears activeSection so you're never stuck on a section filter)
+// Part 12 CHANGES:
+//   1. "Summarize Discussion" button in comment sheet header
+//      → triggers GPT-4o AI summary → CommentSummaryPanel appears above comments
+//   2. Viewers see a "Request Editor Access" banner + modal (EditAccessRequestModal)
+//   3. useCommentReactions + CommentSummaryPanel + useMyAccessRequest all wired in
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -17,10 +18,14 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useReportComments } from '../../src/hooks/useReportComments';
 import { usePresence } from '../../src/hooks/usePresence';
 import { useCommentReactions } from '../../src/hooks/useCommentReactions';
+import { useMyAccessRequest } from '../../src/hooks/useEditAccessRequest';    // Part 12
 import { CommentThread } from '../../src/components/workspace/CommentThread';
 import { CommentInput } from '../../src/components/workspace/CommentInput';
 import { PresenceBar } from '../../src/components/workspace/PresenceBar';
+import { CommentSummaryPanel } from '../../src/components/workspace/CommentSummaryPanel'; // Part 12
+import { EditAccessRequestModal } from '../../src/components/workspace/EditAccessRequestModal'; // Part 12
 import { supabase } from '../../src/lib/supabase';
+import { generateCommentSummary, CommentSummaryResult } from '../../src/services/commentSummaryService'; // Part 12
 import { ResearchReport, WorkspaceRole } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
@@ -91,6 +96,15 @@ export default function WorkspaceReportScreen() {
   const [showComments,    setShowComments]    = useState(false);
   const [currentUserId,   setCurrentUserId]   = useState('');
 
+  // Part 12 — AI comment summary state
+  const [summary,            setSummary]            = useState<CommentSummaryResult | null>(null);
+  const [isSummarizing,      setIsSummarizing]      = useState(false);
+  const [summaryError,       setSummaryError]       = useState<string | null>(null);
+  const [showSummaryPanel,   setShowSummaryPanel]   = useState(false);
+
+  // Part 12 — Viewer access request
+  const [showRequestModal,  setShowRequestModal]    = useState(false);
+
   useEffect(() => {
     if (!reportId || !workspaceId) {
       setLoadError('Missing report or workspace ID.');
@@ -117,38 +131,54 @@ export default function WorkspaceReportScreen() {
 
   const { othersOnline } = usePresence(reportId ?? null, true);
 
-  // ── Reactions ────────────────────────────────────────────────────────────────
+  // Reactions
   const commentIds = comments.map((c) => c.id);
   const { getReactions, toggle: toggleReaction } = useCommentReactions(commentIds);
 
+  // Part 12 — viewer access request
+  const {
+    myRequest, isSubmitting, hasPendingRequest, hasDeniedRequest,
+    submit: submitRequest, retract: retractRequest,
+  } = useMyAccessRequest(workspaceId ?? null, userRole);
+
   const isEditor      = userRole === 'owner' || userRole === 'editor';
+  const isViewer      = userRole === 'viewer';
   const totalComments = comments.length;
 
-  // ── Section tap from report body ─────────────────────────────────────────────
+  // ── AI Summary ─────────────────────────────────────────────────────────────
+  const handleGenerateSummary = async () => {
+    if (!reportId || !workspaceId) return;
+    setIsSummarizing(true);
+    setSummaryError(null);
+    setShowSummaryPanel(true);
+
+    const { data, error } = await generateCommentSummary(reportId, workspaceId);
+    setSummary(data);
+    setSummaryError(error);
+    setIsSummarizing(false);
+  };
+
+  // ── Section tap ────────────────────────────────────────────────────────────
   const handleSectionTap = (sectionId: string, sectionTitle: string) => {
     if (!isEditor) return;
     setActiveSection({ id: sectionId, title: sectionTitle });
     setShowComments(true);
   };
 
-  // ── Header comment button: ALWAYS opens sheet with ALL comments ───────────────
-  // We clear activeSection so the user always lands on the full comment list,
-  // not a previously-active section filter.
   const handleHeaderCommentPress = () => {
-    setActiveSection(null);       // ← key fix: always reset section filter
+    setActiveSection(null);
     setShowComments(true);
   };
 
   const handleCloseSheet = () => {
     setShowComments(false);
-    // Keep activeSection so if user taps the same section again it re-opens filtered
   };
 
   const visibleComments = activeSection
     ? getCommentsForSection(activeSection.id)
     : comments;
 
-  // ── Loading ─────────────────────────────────────────────────────────────────
+  // ── Loading ────────────────────────────────────────────────────────────────
   if (isLoadingReport) {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={styles.centered}>
@@ -174,7 +204,7 @@ export default function WorkspaceReportScreen() {
     );
   }
 
-  // ── Main ────────────────────────────────────────────────────────────────────
+  // ── Main ───────────────────────────────────────────────────────────────────
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
@@ -193,8 +223,6 @@ export default function WorkspaceReportScreen() {
               {report.sourcesCount > 0 ? ` · ${report.sourcesCount} sources` : ''}
             </Text>
           </View>
-
-          {/* Comment toggle — always shows ALL comments */}
           <TouchableOpacity
             onPress={showComments ? handleCloseSheet : handleHeaderCommentPress}
             style={[styles.commentsToggle, showComments && styles.commentsToggleActive]}
@@ -210,6 +238,45 @@ export default function WorkspaceReportScreen() {
             )}
           </TouchableOpacity>
         </Animated.View>
+
+        {/* ── Part 12: Viewer "Request Editor Access" banner ── */}
+        {isViewer && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.viewerBanner}>
+            {hasPendingRequest ? (
+              <View style={styles.viewerBannerLeft}>
+                <Ionicons name="time-outline" size={14} color={COLORS.warning} />
+                <Text style={styles.viewerBannerTextWarning}>
+                  Editor access request pending…
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.viewerBannerLeft}>
+                <Ionicons name="eye-outline" size={14} color={COLORS.textMuted} />
+                <Text style={styles.viewerBannerText}>
+                  You're a viewer — read only
+                </Text>
+              </View>
+            )}
+            {!hasPendingRequest && (
+              <TouchableOpacity
+                onPress={() => setShowRequestModal(true)}
+                style={styles.viewerBannerCta}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="pencil-outline" size={12} color="#FFF" />
+                <Text style={styles.viewerBannerCtaText}>Request Access</Text>
+              </TouchableOpacity>
+            )}
+            {hasPendingRequest && (
+              <TouchableOpacity
+                onPress={() => setShowRequestModal(true)}
+                style={[styles.viewerBannerCta, { backgroundColor: `${COLORS.warning}30` }]}
+              >
+                <Text style={[styles.viewerBannerCtaText, { color: COLORS.warning }]}>View</Text>
+              </TouchableOpacity>
+            )}
+          </Animated.View>
+        )}
 
         {/* ── Presence ── */}
         {othersOnline.length > 0 && (
@@ -236,7 +303,7 @@ export default function WorkspaceReportScreen() {
           </Animated.View>
         )}
 
-        {/* ── Full-width report body ── */}
+        {/* ── Report body ── */}
         <ScrollView
           style={{ flex: 1 }}
           contentContainerStyle={styles.reportContent}
@@ -280,9 +347,7 @@ export default function WorkspaceReportScreen() {
                     )}
                   </View>
                 </TouchableOpacity>
-
                 <Text style={styles.sectionContent}>{section.content}</Text>
-
                 {((section as any).bullets ?? []).length > 0 && (
                   <View style={styles.bullets}>
                     {((section as any).bullets as string[]).map((b: string, bi: number) => (
@@ -327,7 +392,7 @@ export default function WorkspaceReportScreen() {
           )}
         </ScrollView>
 
-        {/* ── FAB — only when sheet is closed ── */}
+        {/* ── FAB ── */}
         {isEditor && !showComments && (
           <Animated.View entering={FadeIn.duration(300)} style={[styles.fab, { bottom: insets.bottom + 20 }]}>
             <TouchableOpacity
@@ -343,18 +408,14 @@ export default function WorkspaceReportScreen() {
 
       </SafeAreaView>
 
-      {/* ── Bottom sheet via Modal ── */}
+      {/* ── Bottom sheet ── */}
       <Modal
         visible={showComments}
         transparent
         animationType="none"
         onRequestClose={handleCloseSheet}
       >
-        <TouchableOpacity
-          style={styles.sheetBackdrop}
-          activeOpacity={1}
-          onPress={handleCloseSheet}
-        />
+        <TouchableOpacity style={styles.sheetBackdrop} activeOpacity={1} onPress={handleCloseSheet} />
 
         <Animated.View
           entering={SlideInUp.duration(320)}
@@ -371,21 +432,44 @@ export default function WorkspaceReportScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.sheetTitle}>
                 {activeSection
-                  ? `Section: ${activeSection.title.length > 30
-                      ? activeSection.title.slice(0, 30) + '…'
-                      : activeSection.title}`
+                  ? `Section: ${activeSection.title.length > 28 ? activeSection.title.slice(0, 28) + '…' : activeSection.title}`
                   : 'All Comments'}
               </Text>
               {activeSection && (
-                <TouchableOpacity
-                  onPress={() => setActiveSection(null)}
-                  style={styles.clearBtn}
-                >
+                <TouchableOpacity onPress={() => setActiveSection(null)} style={styles.clearBtn}>
                   <Ionicons name="close-circle-outline" size={13} color={COLORS.textMuted} />
                   <Text style={styles.clearBtnText}>Show all comments</Text>
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* Part 12 — Summarize Discussion button */}
+            {totalComments > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setShowSummaryPanel((v) => !v);
+                  if (!showSummaryPanel && !summary) {
+                    handleGenerateSummary();
+                  }
+                }}
+                style={[
+                  styles.summarizeBtn,
+                  showSummaryPanel && styles.summarizeBtnActive,
+                ]}
+                activeOpacity={0.8}
+              >
+                {isSummarizing
+                  ? <ActivityIndicator size="small" color={COLORS.primary} />
+                  : <Ionicons name="sparkles" size={14} color={showSummaryPanel ? COLORS.primary : COLORS.textSecondary} />}
+                <Text style={[
+                  styles.summarizeBtnText,
+                  showSummaryPanel && { color: COLORS.primary },
+                ]}>
+                  {showSummaryPanel ? 'Hide Summary' : 'Summarize'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity onPress={handleCloseSheet} style={styles.sheetCloseBtn}>
               <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
             </TouchableOpacity>
@@ -398,6 +482,18 @@ export default function WorkspaceReportScreen() {
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
+            {/* Part 12 — AI Summary Panel */}
+            {showSummaryPanel && (
+              <CommentSummaryPanel
+                summary={summary}
+                isGenerating={isSummarizing}
+                error={summaryError}
+                totalComments={totalComments}
+                onGenerate={handleGenerateSummary}
+                onClose={() => setShowSummaryPanel(false)}
+              />
+            )}
+
             {commentsLoading ? (
               <ActivityIndicator color={COLORS.primary} style={{ marginTop: 40 }} />
             ) : visibleComments.length === 0 ? (
@@ -406,7 +502,7 @@ export default function WorkspaceReportScreen() {
                 <Text style={styles.noCommentsTitle}>No comments yet</Text>
                 <Text style={styles.noCommentsBody}>
                   {isEditor
-                    ? 'Tap any section heading in the report to start a discussion on that section, or write a general comment below.'
+                    ? 'Tap any section heading in the report to start a discussion, or write a general comment below.'
                     : 'No comments have been added to this report yet.'}
                 </Text>
               </View>
@@ -428,7 +524,7 @@ export default function WorkspaceReportScreen() {
             )}
           </ScrollView>
 
-          {/* Composer */}
+          {/* Composer — editors only */}
           {isEditor && (
             <CommentInput
               sectionTitle={activeSection?.title}
@@ -439,19 +535,27 @@ export default function WorkspaceReportScreen() {
           )}
         </Animated.View>
       </Modal>
+
+      {/* ── Part 12: Viewer access request modal ── */}
+      <EditAccessRequestModal
+        mode="viewer"
+        visible={showRequestModal}
+        workspaceName={report?.title ?? 'Workspace'}
+        existingRequest={myRequest}
+        isSubmitting={isSubmitting}
+        onSubmit={(message) => submitRequest(message)}
+        onRetract={retractRequest}
+        onClose={() => setShowRequestModal(false)}
+      />
     </LinearGradient>
   );
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function StatPill({
-  icon, value, label, color,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  value: string;
-  label: string;
-  color: string;
+function StatPill({ icon, value, label, color }: {
+  icon:  keyof typeof Ionicons.glyphMap;
+  value: string; label: string; color: string;
 }) {
   return (
     <View style={[pill.wrap, { backgroundColor: `${color}12` }]}>
@@ -488,6 +592,24 @@ const styles = StyleSheet.create({
   commentsBadge:        { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
   commentsBadgeText:    { color: '#FFF', fontSize: 9, fontWeight: '800' },
 
+  // Part 12 — viewer banner
+  viewerBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginHorizontal: SPACING.md, marginBottom: SPACING.xs,
+    backgroundColor: COLORS.backgroundCard,
+    borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 8,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  viewerBannerLeft:        { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  viewerBannerText:        { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  viewerBannerTextWarning: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  viewerBannerCta: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS.md, paddingHorizontal: 10, paddingVertical: 5,
+  },
+  viewerBannerCtaText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
   presenceWrap: { paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
   statsStrip:   { flexDirection: 'row', gap: 8, paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
 
@@ -521,11 +643,27 @@ const styles = StyleSheet.create({
   commentsSheet:   { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderTopWidth: 1, borderColor: COLORS.border, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.25, shadowRadius: 16, elevation: 20 },
   handleWrap:      { alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
   handle:          { width: 38, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
-  sheetHeader:     { flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+
+  sheetHeader:     { flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 8 },
   sheetTitle:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' },
   clearBtn:        { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   clearBtnText:    { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  sheetCloseBtn:   { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, flexShrink: 0, marginLeft: SPACING.md },
+
+  // Part 12 — summarize button
+  summarizeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: COLORS.backgroundElevated,
+    borderRadius: RADIUS.lg,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  summarizeBtnActive: {
+    backgroundColor: `${COLORS.primary}12`,
+    borderColor: `${COLORS.primary}40`,
+  },
+  summarizeBtnText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
+  sheetCloseBtn:   { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, flexShrink: 0 },
   commentsList:    { padding: SPACING.xl, paddingBottom: 20 },
   noCommentsWrap:  { alignItems: 'center', paddingTop: 40, paddingHorizontal: SPACING.xl, gap: 10 },
   noCommentsTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
