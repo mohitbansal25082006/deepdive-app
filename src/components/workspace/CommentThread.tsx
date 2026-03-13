@@ -1,6 +1,7 @@
 // src/components/workspace/CommentThread.tsx
-// Redesigned comment thread — cleaner layout, better typography,
-// avatar + name inline, resolve/delete as icon-only actions.
+// Part 11 — Updated: CommentReactionBar wired below each root comment.
+//            Reactions require an editor or owner role to toggle.
+//            Reaction state is passed in from the parent (useCommentReactions).
 
 import React, { useState } from 'react';
 import {
@@ -9,31 +10,36 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import { ReportComment, CommentReply, WorkspaceRole } from '../../types';
+import { ReportComment, CommentReply, CommentReactionSummary, WorkspaceRole } from '../../types';
 import { Avatar } from '../common/Avatar';
+import { CommentReactionBar } from './CommentReactionBar';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
 interface Props {
-  comment:        ReportComment;
-  currentUserId:  string;
-  userRole:       WorkspaceRole | null;
-  onReply:        (commentId: string, text: string) => Promise<void>;
-  onResolve:      (commentId: string) => void;
-  onDeleteComment:(commentId: string) => void;
-  onDeleteReply:  (commentId: string, replyId: string) => void;
+  comment:            ReportComment;
+  currentUserId:      string;
+  userRole:           WorkspaceRole | null;
+  reactions:          CommentReactionSummary[];          // Part 11 — pass from hook
+  onToggleReaction:   (commentId: string, emoji: string) => void; // Part 11
+  onReply:            (commentId: string, text: string) => Promise<void>;
+  onResolve:          (commentId: string) => void;
+  onDeleteComment:    (commentId: string) => void;
+  onDeleteReply:      (commentId: string, replyId: string) => void;
 }
 
 function timeAgo(dateStr: string): string {
   const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
-  if (diff < 60)    return 'just now';
-  if (diff < 3600)  return `${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  if (diff < 604800)return `${Math.floor(diff / 86400)}d`;
+  if (diff < 60)     return 'just now';
+  if (diff < 3600)   return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400)  return `${Math.floor(diff / 3600)}h`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d`;
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 export function CommentThread({
   comment, currentUserId, userRole,
+  reactions,
+  onToggleReaction,
   onReply, onResolve, onDeleteComment, onDeleteReply,
 }: Props) {
   const [showReplyBox, setShowReplyBox] = useState(false);
@@ -63,7 +69,10 @@ export function CommentThread({
         : 'This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => onDeleteComment(comment.id) },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: () => onDeleteComment(comment.id),
+        },
       ],
     );
   };
@@ -78,7 +87,6 @@ export function CommentThread({
     >
       {/* ── Root comment ── */}
       <View style={styles.commentRow}>
-        {/* Avatar wrapper */}
         <View style={styles.avatarWrapper}>
           <Avatar
             url={comment.author?.avatarUrl}
@@ -87,7 +95,6 @@ export function CommentThread({
           />
         </View>
 
-        {/* Bubble */}
         <View style={styles.bubble}>
           {/* Bubble header */}
           <View style={styles.bubbleHeader}>
@@ -96,7 +103,6 @@ export function CommentThread({
             </Text>
             <Text style={styles.timestamp}>{timeAgo(comment.createdAt)}</Text>
 
-            {/* Actions */}
             <View style={styles.actions}>
               {comment.isResolved && (
                 <View style={styles.resolvedPill}>
@@ -142,11 +148,18 @@ export function CommentThread({
             </View>
           )}
 
-          {/* Footer: reply link + thread toggle */}
+          {/* ── Part 11: Reaction bar ── */}
+          <CommentReactionBar
+            summaries={reactions}
+            onToggle={(emoji) => onToggleReaction(comment.id, emoji)}
+            disabled={!isEditor}
+          />
+
+          {/* Footer */}
           <View style={styles.bubbleFooter}>
             {isEditor && (
               <TouchableOpacity
-                onPress={() => setShowReplyBox(v => !v)}
+                onPress={() => setShowReplyBox((v) => !v)}
                 style={styles.footerBtn}
               >
                 <Ionicons name="return-down-forward-outline" size={13} color={COLORS.primary} />
@@ -155,7 +168,7 @@ export function CommentThread({
             )}
             {replyCount > 0 && (
               <TouchableOpacity
-                onPress={() => setCollapsed(v => !v)}
+                onPress={() => setCollapsed((v) => !v)}
                 style={styles.footerBtn}
               >
                 <Ionicons
@@ -176,11 +189,7 @@ export function CommentThread({
       {showReplyBox && (
         <Animated.View entering={FadeIn.duration(200)} style={styles.replyInputWrap}>
           <View style={styles.replyAvatarWrapper}>
-            <Avatar
-              url={undefined}
-              name="Me"
-              size={26}
-            />
+            <Avatar url={undefined} name="Me" size={26} />
           </View>
           <View style={styles.replyInputInner}>
             <TextInput
@@ -194,7 +203,9 @@ export function CommentThread({
               maxLength={1000}
             />
             <View style={styles.replyInputFooter}>
-              <TouchableOpacity onPress={() => { setShowReplyBox(false); setReplyText(''); }}>
+              <TouchableOpacity
+                onPress={() => { setShowReplyBox(false); setReplyText(''); }}
+              >
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -250,9 +261,7 @@ function ReplyRow({
       entering={FadeInDown.duration(220).delay(index * 30)}
       style={styles.replyRow}
     >
-      {/* Thread line */}
       <View style={styles.threadLine} />
-
       <View style={styles.replyRowAvatarWrapper}>
         <Avatar
           url={reply.author?.avatarUrl}
@@ -260,7 +269,6 @@ function ReplyRow({
           size={24}
         />
       </View>
-
       <View style={styles.replyBubble}>
         <View style={styles.bubbleHeader}>
           <Text style={styles.replyAuthor} numberOfLines={1}>
@@ -291,13 +299,11 @@ function ReplyRow({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  // Thread wrapper
   thread: {
     marginBottom: SPACING.md,
     borderRadius: RADIUS.xl,
     backgroundColor: COLORS.backgroundElevated,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderWidth: 1, borderColor: COLORS.border,
     overflow: 'hidden',
     padding: SPACING.md,
   },
@@ -306,200 +312,86 @@ const styles = StyleSheet.create({
     borderColor: `${COLORS.success}25`,
     backgroundColor: `${COLORS.success}06`,
   },
-
-  // Root comment row
-  commentRow: { 
-    flexDirection: 'row', 
-    alignItems: 'flex-start', 
-    gap: 10 
-  },
-  avatarWrapper: { 
-    flexShrink: 0, 
-    marginTop: 2 
-  },
-
-  // Bubble
-  bubble: { 
-    flex: 1 
-  },
-  bubbleHeader: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 6, 
-    marginBottom: 5,
-    flexWrap: 'wrap',
+  commentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  avatarWrapper: { flexShrink: 0, marginTop: 2 },
+  bubble: { flex: 1 },
+  bubbleHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginBottom: 5, flexWrap: 'wrap',
   },
   authorName: {
-    color: COLORS.textPrimary,
-    fontSize: FONTS.sizes.sm,
-    fontWeight: '700',
-    flexShrink: 1,
+    color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
+    fontWeight: '700', flexShrink: 1,
   },
-  timestamp: {
-    color: COLORS.textMuted,
-    fontSize: FONTS.sizes.xs,
-  },
-  actions: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 4, 
-    marginLeft: 'auto' 
-  },
-  actionIcon: { 
-    padding: 3 
-  },
+  timestamp: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  actions: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto' },
+  actionIcon: { padding: 3 },
   resolvedPill: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 3,
+    flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: `${COLORS.success}15`,
     borderRadius: RADIUS.full,
-    paddingHorizontal: 6, 
-    paddingVertical: 2,
+    paddingHorizontal: 6, paddingVertical: 2,
   },
-  resolvedPillText: { 
-    color: COLORS.success, 
-    fontSize: 10, 
-    fontWeight: '700' 
-  },
-  content: {
-    color: COLORS.textSecondary,
-    fontSize: FONTS.sizes.sm,
-    lineHeight: 20,
-  },
-  contentResolved: {
-    textDecorationLine: 'line-through',
-    color: COLORS.textMuted,
-  },
+  resolvedPillText: { color: COLORS.success, fontSize: 10, fontWeight: '700' },
+  content: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20 },
+  contentResolved: { textDecorationLine: 'line-through', color: COLORS.textMuted },
   sectionTag: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 4,
-    marginTop: 6, 
-    alignSelf: 'flex-start',
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    marginTop: 6, alignSelf: 'flex-start',
     backgroundColor: `${COLORS.primary}12`,
     borderRadius: RADIUS.full,
-    paddingHorizontal: 7, 
-    paddingVertical: 2,
+    paddingHorizontal: 7, paddingVertical: 2,
   },
-  sectionTagText: { 
-    color: COLORS.primary, 
-    fontSize: 10, 
-    fontWeight: '600' 
-  },
-  bubbleFooter: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 12, 
-    marginTop: 8 
-  },
-  footerBtn: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 4 
-  },
-  footerBtnText: { 
-    color: COLORS.primary, 
-    fontSize: FONTS.sizes.xs, 
-    fontWeight: '600' 
-  },
-
-  // Reply input
+  sectionTagText: { color: COLORS.primary, fontSize: 10, fontWeight: '600' },
+  bubbleFooter: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 },
+  footerBtn:    { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  footerBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
   replyInputWrap: {
-    flexDirection: 'row', 
-    alignItems: 'flex-start', 
-    gap: 8,
-    marginTop: SPACING.sm,
-    paddingTop: SPACING.sm,
-    borderTopWidth: 1, 
-    borderTopColor: COLORS.border,
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    marginTop: SPACING.sm, paddingTop: SPACING.sm,
+    borderTopWidth: 1, borderTopColor: COLORS.border,
   },
-  replyAvatarWrapper: { 
-    marginTop: 2, 
-    flexShrink: 0 
-  },
-  replyInputInner: { 
-    flex: 1 
-  },
+  replyAvatarWrapper: { marginTop: 2, flexShrink: 0 },
+  replyInputInner:    { flex: 1 },
   replyInput: {
-    color: COLORS.textPrimary,
-    fontSize: FONTS.sizes.sm,
-    borderWidth: 1, 
-    borderColor: `${COLORS.primary}35`,
+    color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
+    borderWidth: 1, borderColor: `${COLORS.primary}35`,
     borderRadius: RADIUS.lg,
-    paddingHorizontal: 12, 
-    paddingVertical: 9,
-    minHeight: 52,
-    backgroundColor: COLORS.backgroundCard,
-    marginBottom: 8,
-    textAlignVertical: 'top',
+    paddingHorizontal: 12, paddingVertical: 9,
+    minHeight: 52, backgroundColor: COLORS.backgroundCard,
+    marginBottom: 8, textAlignVertical: 'top',
   },
   replyInputFooter: {
-    flexDirection: 'row', 
-    alignItems: 'center',
-    justifyContent: 'flex-end', 
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'flex-end', gap: 10,
   },
-  cancelText: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.sm 
-  },
+  cancelText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
   sendBtn: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 5,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: COLORS.primary,
     borderRadius: RADIUS.lg,
-    paddingHorizontal: 12, 
-    paddingVertical: 7,
+    paddingHorizontal: 12, paddingVertical: 7,
   },
-  sendBtnText: { 
-    color: '#FFF', 
-    fontSize: FONTS.sizes.xs, 
-    fontWeight: '700' 
-  },
-
-  // Replies
-  replies: { 
-    marginTop: SPACING.sm, 
-    gap: 0 
-  },
-  replyRow: { 
-    flexDirection: 'row', 
-    alignItems: 'flex-start', 
-    paddingTop: 10, 
-    gap: 8 
-  },
+  sendBtnText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  replies:    { marginTop: SPACING.sm, gap: 0 },
+  replyRow:   { flexDirection: 'row', alignItems: 'flex-start', paddingTop: 10, gap: 8 },
   threadLine: {
-    width: 1.5, 
-    alignSelf: 'stretch',
+    width: 1.5, alignSelf: 'stretch',
     backgroundColor: COLORS.border,
-    marginLeft: 14, 
-    marginRight: -1,
-    borderRadius: 1,
+    marginLeft: 14, marginRight: -1, borderRadius: 1,
   },
-  replyRowAvatarWrapper: { 
-    flexShrink: 0, 
-    marginTop: 1 
-  },
+  replyRowAvatarWrapper: { flexShrink: 0, marginTop: 1 },
   replyBubble: {
-    flex: 1,
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.lg,
-    padding: SPACING.sm,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
+    flex: 1, backgroundColor: COLORS.backgroundCard,
+    borderRadius: RADIUS.lg, padding: SPACING.sm,
+    borderWidth: 1, borderColor: COLORS.border,
   },
   replyAuthor: {
-    color: COLORS.textPrimary,
-    fontSize: FONTS.sizes.xs,
-    fontWeight: '700',
-    flexShrink: 1,
+    color: COLORS.textPrimary, fontSize: FONTS.sizes.xs,
+    fontWeight: '700', flexShrink: 1,
   },
   replyContent: {
-    color: COLORS.textSecondary,
-    fontSize: FONTS.sizes.xs,
-    lineHeight: 18,
-    marginTop: 3,
+    color: COLORS.textSecondary, fontSize: FONTS.sizes.xs,
+    lineHeight: 18, marginTop: 3,
   },
 });

@@ -1,6 +1,5 @@
 // src/types/index.ts
-// Parts 1–9
-// Part 9: Added AI Debate Agent types
+// Parts 1–11 — All type definitions
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -162,12 +161,7 @@ export interface ReportSection {
 // ─── Part 4: Knowledge Graph ──────────────────────────────────────────────────
 
 export type KnowledgeNodeType =
-  | 'root'
-  | 'primary'
-  | 'secondary'
-  | 'concept'
-  | 'company'
-  | 'trend';
+  | 'root' | 'primary' | 'secondary' | 'concept' | 'company' | 'trend';
 
 export interface KnowledgeGraphNode {
   id: string;
@@ -175,12 +169,8 @@ export interface KnowledgeGraphNode {
   type: KnowledgeNodeType;
   weight: number;
   description?: string;
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-  fx?: number | null;
-  fy?: number | null;
+  x?: number; y?: number; vx?: number; vy?: number;
+  fx?: number | null; fy?: number | null;
 }
 
 export interface KnowledgeGraphEdge {
@@ -253,7 +243,6 @@ export interface ResearchReport {
   query: string;
   depth: ResearchDepth;
   focusAreas: string[];
-
   title: string;
   executiveSummary: string;
   sections: ReportSection[];
@@ -261,49 +250,31 @@ export interface ResearchReport {
   futurePredictions: string[];
   citations: Citation[];
   statistics: ExtractedStatistic[];
-
   searchQueries: string[];
   sourcesCount: number;
   reliabilityScore: number;
-
   status: ResearchStatus;
   errorMessage?: string;
   agentLogs: AgentStep[];
-
-  // Part 3
   isPinned?: boolean;
   tags?: string[];
   exportCount?: number;
   viewCount?: number;
-
-  // Part 4 visuals
   knowledgeGraph?: KnowledgeGraph;
   infographicData?: InfographicData;
   sourceImages?: SourceImage[];
-
-  // Part 5 — Slide Generator
   presentationId?: string;
   slideCount?: number;
-
-  // Part 7 — Academic Paper Mode
   academicPaperId?: string;
   researchMode?: ResearchMode;
-
   createdAt: string;
   completedAt?: string;
 }
 
 export type ResearchStatus =
-  | 'pending'
-  | 'planning'
-  | 'searching'
-  | 'analyzing'
-  | 'fact_checking'
-  | 'generating'
-  | 'visualizing'
-  | 'writing_paper'
-  | 'completed'
-  | 'failed';
+  | 'pending' | 'planning' | 'searching' | 'analyzing'
+  | 'fact_checking' | 'generating' | 'visualizing'
+  | 'writing_paper' | 'completed' | 'failed';
 
 // ─── Part 2: Conversation (legacy) ───────────────────────────────────────────
 
@@ -338,10 +309,8 @@ export interface UserStats {
   totalAssistantMessages?: number;
   reportsWithEmbeddings?: number;
   academicPapersGenerated?: number;
-  // Part 8
   totalPodcasts?: number;
   podcastMinutesGenerated?: number;
-  // Part 9
   totalDebates?: number;
 }
 
@@ -377,23 +346,10 @@ export interface FormattedCitation {
 // ─── Part 5: AI Slide Generator ───────────────────────────────────────────────
 
 export type SlideLayout =
-  | 'title'
-  | 'agenda'
-  | 'section'
-  | 'content'
-  | 'bullets'
-  | 'stats'
-  | 'quote'
-  | 'chart_ref'
-  | 'predictions'
-  | 'references'
-  | 'closing';
+  | 'title' | 'agenda' | 'section' | 'content' | 'bullets' | 'stats'
+  | 'quote' | 'chart_ref' | 'predictions' | 'references' | 'closing';
 
-export interface SlideStatItem {
-  value: string;
-  label: string;
-  color?: string;
-}
+export interface SlideStatItem { value: string; label: string; color?: string; }
 
 export interface PresentationSlide {
   id: string;
@@ -416,21 +372,11 @@ export interface PresentationSlide {
 export type PresentationTheme = 'dark' | 'light' | 'corporate' | 'vibrant';
 
 export interface PresentationThemeTokens {
-  background: string;
-  surface: string;
-  primary: string;
-  textPrimary: string;
-  textSecondary: string;
-  textMuted: string;
-  border: string;
+  background: string; surface: string; primary: string;
+  textPrimary: string; textSecondary: string; textMuted: string; border: string;
   pptx: {
-    background: string;
-    surface: string;
-    primary: string;
-    textPrimary: string;
-    textSecondary: string;
-    textMuted: string;
-    border: string;
+    background: string; surface: string; primary: string;
+    textPrimary: string; textSecondary: string; textMuted: string; border: string;
   };
 }
 
@@ -468,59 +414,50 @@ export interface SlideAgentOutput {
 // ─── Part 6: AI Research Assistant Chat (RAG Pipeline) ───────────────────────
 
 export type AssistantMode =
-  | 'general'
-  | 'beginner'
-  | 'compare'
-  | 'contradictions'
-  | 'questions'
-  | 'summarize'
-  | 'factcheck';
+  | 'general' | 'beginner' | 'compare' | 'contradictions'
+  | 'questions' | 'summarize' | 'factcheck';
 
 export interface RetrievedChunkInfo {
-  chunkId:    string;
-  chunkType:  string;
-  similarity: number;
+  chunkId: string; chunkType: string; similarity: number;
 }
 
 export interface AssistantMessage {
-  id:                  string;
-  reportId:            string;
-  userId:              string;
-  role:                'user' | 'assistant';
-  content:             string;
-  mode:                AssistantMode;
-  retrievedChunks?:    RetrievedChunkInfo[];
+  id: string; reportId: string; userId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  mode: AssistantMode;
+  retrievedChunks?: RetrievedChunkInfo[];
   suggestedFollowUps?: string[];
-  isRAGPowered?:       boolean;
-  confidence?:         'high' | 'medium' | 'low';
-  createdAt:           string;
+  isRAGPowered?: boolean;
+  confidence?: 'high' | 'medium' | 'low';
+  createdAt: string;
 }
 
 export interface AssistantAgentResponse {
-  content:             string;
-  mode:                AssistantMode;
-  detectedMode:        AssistantMode;
-  appliedMode:         AssistantMode;
-  suggestedFollowUps:  string[];
-  usedRAG:             boolean;
+  content: string;
+  mode: AssistantMode;
+  detectedMode: AssistantMode;
+  appliedMode: AssistantMode;
+  suggestedFollowUps: string[];
+  usedRAG: boolean;
   retrievedChunkCount: number;
-  confidence:          'high' | 'medium' | 'low';
+  confidence: 'high' | 'medium' | 'low';
 }
 
 export interface AssistantState {
-  messages:      AssistantMessage[];
-  isEmbedding:   boolean;
-  isSending:     boolean;
-  isEmbedded:    boolean;
+  messages: AssistantMessage[];
+  isEmbedding: boolean;
+  isSending: boolean;
+  isEmbedded: boolean;
   embedProgress: { done: number; total: number } | null;
-  activeMode:    AssistantMode;
-  error:         string | null;
+  activeMode: AssistantMode;
+  error: string | null;
 }
 
 export interface ReportEmbeddingStats {
   totalChunks: number;
-  chunkTypes:  Record<string, number>;
-  embeddedAt:  string | null;
+  chunkTypes: Record<string, number>;
+  embeddedAt: string | null;
 }
 
 // ─── Part 7: AI Academic Paper Mode ──────────────────────────────────────────
@@ -528,19 +465,10 @@ export interface ReportEmbeddingStats {
 export type AcademicCitationStyle = 'apa' | 'mla' | 'chicago' | 'ieee';
 
 export type AcademicSectionType =
-  | 'abstract'
-  | 'introduction'
-  | 'literature_review'
-  | 'methodology'
-  | 'findings'
-  | 'conclusion'
-  | 'references';
+  | 'abstract' | 'introduction' | 'literature_review'
+  | 'methodology' | 'findings' | 'conclusion' | 'references';
 
-export interface AcademicSubsection {
-  id: string;
-  title: string;
-  content: string;
-}
+export interface AcademicSubsection { id: string; title: string; content: string; }
 
 export interface AcademicSection {
   id: string;
@@ -552,28 +480,17 @@ export interface AcademicSection {
 }
 
 export interface AcademicPaper {
-  id: string;
-  reportId: string;
-  userId: string;
-  title: string;
-  runningHead: string;
-  abstract: string;
-  keywords: string[];
+  id: string; reportId: string; userId: string;
+  title: string; runningHead: string; abstract: string; keywords: string[];
   sections: AcademicSection[];
   citations: Citation[];
   citationStyle: AcademicCitationStyle;
-  wordCount: number;
-  pageEstimate: number;
-  institution?: string;
-  generatedAt: string;
-  exportCount: number;
+  wordCount: number; pageEstimate: number;
+  institution?: string; generatedAt: string; exportCount: number;
 }
 
 export interface AcademicAgentOutput {
-  title: string;
-  runningHead: string;
-  abstract: string;
-  keywords: string[];
+  title: string; runningHead: string; abstract: string; keywords: string[];
   sections: Omit<AcademicSection, 'id'>[];
 }
 
@@ -588,100 +505,58 @@ export interface AcademicPaperState {
 }
 
 export interface AcademicPaperMeta {
-  wordCount: number;
-  pageEstimate: number;
-  sectionCount: number;
-  citationCount: number;
-  generatedAt: string;
+  wordCount: number; pageEstimate: number;
+  sectionCount: number; citationCount: number; generatedAt: string;
 }
 
 // ─── Part 8: AI Podcast Generator ────────────────────────────────────────────
 
 export type PodcastVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
-
-export type PodcastStatus =
-  | 'pending'
-  | 'generating_script'
-  | 'generating_audio'
-  | 'completed'
-  | 'failed';
+export type PodcastStatus = 'pending' | 'generating_script' | 'generating_audio' | 'completed' | 'failed';
 
 export interface PodcastTurn {
-  id: string;
-  segmentIndex: number;
-  speaker: 'host' | 'guest';
-  speakerName: string;
-  text: string;
-  audioPath?: string;
-  durationMs?: number;
+  id: string; segmentIndex: number;
+  speaker: 'host' | 'guest'; speakerName: string;
+  text: string; audioPath?: string; durationMs?: number;
 }
 
 export interface PodcastScript {
-  turns: PodcastTurn[];
-  totalWords: number;
-  estimatedDurationMinutes: number;
+  turns: PodcastTurn[]; totalWords: number; estimatedDurationMinutes: number;
 }
 
 export interface PodcastConfig {
-  hostVoice: PodcastVoice;
-  guestVoice: PodcastVoice;
-  hostName: string;
-  guestName: string;
-  targetDurationMinutes: number;
+  hostVoice: PodcastVoice; guestVoice: PodcastVoice;
+  hostName: string; guestName: string; targetDurationMinutes: number;
 }
 
 export interface PodcastVoicePreset {
-  id: string;
-  name: string;
-  description: string;
-  hostVoice: PodcastVoice;
-  guestVoice: PodcastVoice;
-  hostName: string;
-  guestName: string;
-  icon: string;
-  accentColor: string;
+  id: string; name: string; description: string;
+  hostVoice: PodcastVoice; guestVoice: PodcastVoice;
+  hostName: string; guestName: string; icon: string; accentColor: string;
 }
 
 export interface Podcast {
-  id: string;
-  userId: string;
-  reportId?: string;
-  title: string;
-  description: string;
-  topic: string;
-  script: PodcastScript;
-  config: PodcastConfig;
+  id: string; userId: string; reportId?: string;
+  title: string; description: string; topic: string;
+  script: PodcastScript; config: PodcastConfig;
   status: PodcastStatus;
-  completedSegments: number;
-  durationSeconds: number;
-  wordCount: number;
-  audioSegmentPaths: string[];
-  errorMessage?: string;
-  exportCount: number;
-  createdAt: string;
-  completedAt?: string;
+  completedSegments: number; durationSeconds: number; wordCount: number;
+  audioSegmentPaths: string[]; errorMessage?: string;
+  exportCount: number; createdAt: string; completedAt?: string;
 }
 
 export interface PodcastGenerationState {
   podcast: Podcast | null;
-  isGeneratingScript: boolean;
-  isGeneratingAudio: boolean;
-  scriptGenerated: boolean;
+  isGeneratingScript: boolean; isGeneratingAudio: boolean; scriptGenerated: boolean;
   audioProgress: { completed: number; total: number };
-  progressMessage: string;
-  error: string | null;
+  progressMessage: string; error: string | null;
 }
 
 export interface PodcastPlayerState {
-  isPlaying: boolean;
-  currentTurnIndex: number;
-  positionMs: number;
-  segmentDurationMs: number;
-  totalPositionMs: number;
-  totalDurationMs: number;
-  isLoading: boolean;
-  isBuffering: boolean;
-  playbackRate: number;
+  isPlaying: boolean; currentTurnIndex: number;
+  positionMs: number; segmentDurationMs: number;
+  totalPositionMs: number; totalDurationMs: number;
+  isLoading: boolean; isBuffering: boolean; playbackRate: number;
 }
 
 export interface PodcastGenerationCallbacks {
@@ -694,162 +569,68 @@ export interface PodcastGenerationCallbacks {
 
 // ─── Part 9: AI Debate Agent ──────────────────────────────────────────────────
 
-/**
- * The six agent roles in a debate session.
- * Each role brings a distinct analytical lens to the topic.
- */
 export type DebateAgentRole =
-  | 'optimist'
-  | 'skeptic'
-  | 'economist'
-  | 'technologist'
-  | 'ethicist'
-  | 'futurist';
+  | 'optimist' | 'skeptic' | 'economist'
+  | 'technologist' | 'ethicist' | 'futurist';
 
-/**
- * Lifecycle status of a debate session row in Supabase.
- */
 export type DebateStatus =
-  | 'pending'
-  | 'searching'
-  | 'debating'
-  | 'moderating'
-  | 'completed'
-  | 'failed';
+  | 'pending' | 'searching' | 'debating' | 'moderating' | 'completed' | 'failed';
 
-/**
- * How strongly an agent is positioned for or against the topic.
- */
 export type DebateStanceType =
-  | 'strongly_for'
-  | 'for'
-  | 'neutral'
-  | 'against'
-  | 'strongly_against';
+  | 'strongly_for' | 'for' | 'neutral' | 'against' | 'strongly_against';
 
-/**
- * A single argument made by a debate agent.
- */
 export interface DebateArgument {
-  id: string;
-  /** Short, punchy headline for the argument (< 15 words) */
-  point: string;
-  /** 2-3 sentence elaboration with evidence */
-  evidence: string;
-  /** Source URL from web search, if available */
-  sourceUrl?: string;
-  strength: 'strong' | 'moderate' | 'weak';
+  id: string; point: string; evidence: string;
+  sourceUrl?: string; strength: 'strong' | 'moderate' | 'weak';
 }
 
-/**
- * The full perspective produced by one debate agent.
- */
 export interface DebatePerspective {
-  agentRole:       DebateAgentRole;
-  agentName:       string;     // e.g. "The Optimist"
-  tagline:         string;     // e.g. "Technology Optimist"
-  stanceLabel:     string;     // e.g. "AI will augment, not replace, programmers"
-  stanceType:      DebateStanceType;
-  /** Multi-paragraph overview of this agent's perspective */
-  summary:         string;
-  arguments:       DebateArgument[];
-  /** Most memorable, shareable statement from this agent */
-  keyQuote:        string;
-  /** 1–10 confidence score the agent assigns to its position */
-  confidence:      number;
-  searchedQueries: string[];
-  sourcesUsed:     Citation[];
-  /** Hex color for UI rendering */
-  color:           string;
-  /** Ionicons icon name */
-  icon:            string;
+  agentRole: DebateAgentRole; agentName: string; tagline: string;
+  stanceLabel: string; stanceType: DebateStanceType;
+  summary: string; arguments: DebateArgument[];
+  keyQuote: string; confidence: number;
+  searchedQueries: string[]; sourcesUsed: Citation[];
+  color: string; icon: string;
 }
 
-/**
- * The moderator's synthesis of all perspectives.
- */
 export interface DebateModerator {
-  /** 3-4 paragraph synthesis of all perspectives */
-  summary:           string;
-  /** Top 4 arguments in favour of the proposition */
-  argumentsFor:      string[];
-  /** Top 4 arguments against the proposition */
-  argumentsAgainst:  string[];
-  /** 2-3 paragraph balanced conclusion */
-  neutralConclusion: string;
-  /** Points where most agents agree */
-  consensusPoints:   string[];
-  /** Fundamental tensions between agents */
-  keyTensions:       string[];
-  /** One powerful balanced verdict sentence */
-  balancedVerdict:   string;
+  summary: string; argumentsFor: string[]; argumentsAgainst: string[];
+  neutralConclusion: string; consensusPoints: string[];
+  keyTensions: string[]; balancedVerdict: string;
 }
 
-/**
- * The complete debate session — mirrors the `debate_sessions` Supabase row.
- */
 export interface DebateSession {
-  id:                 string;
-  userId:             string;
-  topic:              string;
-  /** Refined yes/no or "will/should" question derived from the topic */
-  question:           string;
-  perspectives:       DebatePerspective[];
-  moderator:          DebateModerator | null;
-  status:             DebateStatus;
-  agentRoles:         DebateAgentRole[];
-  searchResultsCount: number;
-  errorMessage?:      string;
-  createdAt:          string;
-  completedAt?:       string;
+  id: string; userId: string; topic: string; question: string;
+  perspectives: DebatePerspective[];
+  moderator: DebateModerator | null;
+  status: DebateStatus; agentRoles: DebateAgentRole[];
+  searchResultsCount: number; errorMessage?: string;
+  createdAt: string; completedAt?: string;
 }
 
-/**
- * Per-agent progress item used in the generation UI.
- */
 export interface DebateAgentProgressItem {
-  role:          DebateAgentRole;
-  label:         string;
-  status:        'pending' | 'searching' | 'thinking' | 'completed' | 'failed';
-  detail?:       string;
-  color:         string;
-  icon:          string;
-  startedAt?:    number;
-  completedAt?:  number;
+  role: DebateAgentRole; label: string;
+  status: 'pending' | 'searching' | 'thinking' | 'completed' | 'failed';
+  detail?: string; color: string; icon: string;
+  startedAt?: number; completedAt?: number;
 }
 
-/**
- * Full state managed by useDebate hook.
- */
 export interface DebateGenerationState {
-  session:          DebateSession | null;
-  agentProgress:    DebateAgentProgressItem[];
-  isSearching:      boolean;
-  isDebating:       boolean;
-  isModerating:     boolean;
-  completedAgents:  number;
-  totalAgents:      number;
-  progressMessage:  string;
-  error:            string | null;
+  session: DebateSession | null;
+  agentProgress: DebateAgentProgressItem[];
+  isSearching: boolean; isDebating: boolean; isModerating: boolean;
+  completedAgents: number; totalAgents: number;
+  progressMessage: string; error: string | null;
 }
 
-/**
- * Config passed to the debate pipeline.
- */
-export interface DebateConfig {
-  /** Defaults to all 6 roles if omitted */
-  agentRoles?: DebateAgentRole[];
-}
+export interface DebateConfig { agentRoles?: DebateAgentRole[]; }
 
-/**
- * Callbacks for the debate orchestrator, mirroring the research orchestrator pattern.
- */
 export interface DebateOrchestratorCallbacks {
   onAgentProgressUpdate: (progress: DebateAgentProgressItem[]) => void;
-  onAgentComplete:       (role: DebateAgentRole, perspective: DebatePerspective) => void;
-  onStatusUpdate:        (message: string) => void;
-  onComplete:            (session: DebateSession) => void;
-  onError:               (message: string) => void;
+  onAgentComplete: (role: DebateAgentRole, perspective: DebatePerspective) => void;
+  onStatusUpdate: (message: string) => void;
+  onComplete: (session: DebateSession) => void;
+  onError: (message: string) => void;
 }
 
 // ─── Part 10: Collaborative Workspace ────────────────────────────────────────
@@ -857,22 +638,30 @@ export interface DebateOrchestratorCallbacks {
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
 export type WorkspaceActivityAction =
-  | 'workspace_created'
-  | 'workspace_updated'
-  | 'report_added'
-  | 'report_removed'
-  | 'member_joined'
-  | 'member_left'
-  | 'member_removed'
-  | 'member_role_changed'
-  | 'comment_added'
-  | 'comment_resolved'
+  | 'workspace_created' | 'workspace_updated'
+  | 'report_added' | 'report_removed'
+  | 'member_joined' | 'member_left' | 'member_removed' | 'member_role_changed'
+  | 'comment_added' | 'comment_resolved'
   | 'ownership_transferred';
+
+// ─── Part 11 additions to WorkspaceSettings ───────────────────────────────────
+export type WorkspaceAccentColor =
+  | 'purple' | 'blue' | 'green' | 'orange' | 'pink' | 'cyan';
+
+export const WORKSPACE_ACCENT_COLORS: Record<WorkspaceAccentColor, string> = {
+  purple: '#6C63FF',
+  blue:   '#3B82F6',
+  green:  '#10B981',
+  orange: '#F59E0B',
+  pink:   '#EC4899',
+  cyan:   '#06B6D4',
+};
 
 export interface WorkspaceSettings {
   notifyOnNewReport?: boolean;
   notifyOnComment?: boolean;
   notifyOnMention?: boolean;
+  accentColor?: WorkspaceAccentColor; // Part 11
 }
 
 export interface Workspace {
@@ -886,7 +675,6 @@ export interface Workspace {
   settings: WorkspaceSettings;
   createdAt: string;
   updatedAt: string;
-  // enriched
   memberCount?: number;
   reportCount?: number;
   userRole?: WorkspaceRole;
@@ -918,6 +706,7 @@ export interface WorkspaceReport {
   report?: Partial<ResearchReport>;
   addedByProfile?: MiniProfile;
   commentCount?: number;
+  isPinned?: boolean; // Part 11
 }
 
 export interface ReportComment {
@@ -935,6 +724,7 @@ export interface ReportComment {
   updatedAt: string;
   author?: MiniProfile;
   replies?: CommentReply[];
+  reactions?: CommentReactionSummary[]; // Part 11
 }
 
 export interface CommentReply {
@@ -969,7 +759,80 @@ export interface PresenceUser {
   reportId?: string;
 }
 
-// ── State shapes ──────────────────────────────────────────────────────────────
+// ─── Part 11: Comment Reactions ───────────────────────────────────────────────
+
+export const REACTION_EMOJIS = ['👍', '✅', '❓', '🔥'] as const;
+export type CommentReactionEmoji = typeof REACTION_EMOJIS[number];
+
+export interface CommentReaction {
+  id: string;
+  commentId: string;
+  userId: string;
+  emoji: CommentReactionEmoji;
+  createdAt: string;
+}
+
+export interface CommentReactionSummary {
+  emoji: CommentReactionEmoji;
+  count: number;
+  hasReacted: boolean; // current user reacted with this emoji
+}
+
+// ─── Part 11: Avatar Picker ───────────────────────────────────────────────────
+
+export type AvatarStyle =
+  | 'avataaars'
+  | 'pixel-art'
+  | 'lorelei'
+  | 'bottts'
+  | 'micah'
+  | 'adventurer'
+  | 'fun-emoji'
+  | 'shapes';
+
+export interface AvatarStyleOption {
+  id: AvatarStyle;
+  label: string;
+  emoji: string;
+}
+
+export interface AvatarOption {
+  url: string;
+  style: AvatarStyle;
+  seed: string;
+}
+
+// ─── Part 11: Workspace Search ────────────────────────────────────────────────
+
+export interface WorkspaceSearchResult {
+  type: 'report' | 'comment' | 'member';
+  id: string;
+  title: string;
+  subtitle: string;
+  reportId?: string;
+  workspaceId?: string;
+  avatarUrl?: string;
+  createdAt?: string;
+}
+
+export interface WorkspaceSearchState {
+  query: string;
+  results: WorkspaceSearchResult[];
+  isSearching: boolean;
+  error: string | null;
+}
+
+// ─── Part 11: Pinned Reports ──────────────────────────────────────────────────
+
+export interface PinnedWorkspaceReport {
+  id: string;
+  workspaceId: string;
+  reportId: string;
+  pinnedBy: string;
+  pinnedAt: string;
+}
+
+// ─── State shapes ──────────────────────────────────────────────────────────────
 
 export interface WorkspaceListState {
   workspaces: Workspace[];
@@ -1005,5 +868,14 @@ export interface ActivityFeedState {
   items: WorkspaceActivity[];
   isLoading: boolean;
   hasMore: boolean;
+  error: string | null;
+}
+
+// ─── Part 11: Reaction state ──────────────────────────────────────────────────
+
+export interface ReactionState {
+  /** Map of commentId → array of reaction summaries */
+  reactionsByComment: Record<string, CommentReactionSummary[]>;
+  isToggling: boolean;
   error: string | null;
 }

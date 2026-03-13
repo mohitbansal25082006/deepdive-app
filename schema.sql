@@ -1,6 +1,6 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1 through 10 — Single Migration File
+-- Parts 1 through 11 (includes 11C patches) — Single Migration File
 --
 -- Includes:
 --   Part 1  — Profiles, Auth, Storage, Subscriptions
@@ -13,6 +13,16 @@
 --   Part 8  — AI Podcast Generator
 --   Part 9  — AI Debate Agent
 --   Part 10 — Collaborative Workspaces + Patch (workspace report access)
+--   Part 11 — Workspace Feature Upgrades (11C patches applied inline):
+--             • workspace_activity persistence fix (ON DELETE SET NULL)
+--             • comment_reactions table (exclusive: one per user per comment)
+--             • pinned_workspace_reports table
+--             • workspace_search_index view (enhanced with ILIKE + subtitle)
+--             • workspaces.logo_url column
+--             • RPCs: toggle_comment_reaction, get_comment_reactions,
+--                     toggle_pin_workspace_report, get_pinned_report_ids,
+--                     search_workspace (full-text + ILIKE fallback),
+--                     get_workspace_activity_feed (returns TABLE with actor snapshot)
 --
 -- Prerequisites:
 --   pgvector must be available (pre-installed on all Supabase projects).
@@ -21,16 +31,19 @@
 -- Run the entire script in one shot in the Supabase SQL Editor.
 -- ============================================================
 
+
 -- ============================================================
 -- EXTENSIONS
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
 
+
 -- ============================================================
 -- SHARED UTILITY FUNCTIONS
 -- Defined early — referenced by multiple triggers
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -47,9 +60,11 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
 -- ============================================================
 -- PART 1 — PROFILES
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.profiles (
   id                UUID    REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
   username          TEXT    UNIQUE,
@@ -101,9 +116,11 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
+
 -- ============================================================
 -- PART 1 — STORAGE (avatars bucket)
 -- ============================================================
+
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
 ON CONFLICT (id) DO NOTHING;
@@ -127,9 +144,11 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+
 -- ============================================================
 -- PART 1 — USER SUBSCRIPTIONS
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.user_subscriptions (
   id                      UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   user_id                 UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
@@ -176,9 +195,11 @@ CREATE TRIGGER on_auth_user_created_subscription
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user_subscription();
 
+
 -- ============================================================
 -- PART 3 — SAVED TOPICS
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.saved_topics (
   id               UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   user_id          UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
@@ -198,9 +219,11 @@ CREATE POLICY "Users can manage own saved topics"
 CREATE INDEX IF NOT EXISTS idx_saved_topics_user_id ON public.saved_topics(user_id);
 CREATE INDEX IF NOT EXISTS idx_saved_topics_notify  ON public.saved_topics(user_id, notify_on_update) WHERE notify_on_update = TRUE;
 
+
 -- ============================================================
 -- PART 3 — PUSH TOKENS
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.push_tokens (
   id         UUID  DEFAULT uuid_generate_v4() PRIMARY KEY,
   user_id    UUID  REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
@@ -224,10 +247,12 @@ CREATE TRIGGER on_push_tokens_updated
   BEFORE UPDATE ON public.push_tokens
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
+
 -- ============================================================
 -- PART 5 — PRESENTATIONS
 -- Created before research_reports (FK reference from research_reports)
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.presentations (
   id           UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   report_id    UUID    NOT NULL,  -- FK added after research_reports created
@@ -267,10 +292,12 @@ CREATE TRIGGER on_presentations_updated
   BEFORE UPDATE ON public.presentations
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
+
 -- ============================================================
 -- PART 7 — ACADEMIC PAPERS
 -- Created before research_reports (FK reference from research_reports)
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.academic_papers (
   id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   report_id      UUID        NOT NULL,  -- FK added after research_reports created
@@ -319,10 +346,12 @@ CREATE TRIGGER on_academic_papers_updated
   BEFORE UPDATE ON public.academic_papers
   FOR EACH ROW EXECUTE PROCEDURE public.handle_updated_at();
 
+
 -- ============================================================
 -- PART 2 — RESEARCH REPORTS
 -- Central table — depends on presentations + academic_papers
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.research_reports (
   id                  UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   user_id             UUID    REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
@@ -384,35 +413,27 @@ CREATE TABLE IF NOT EXISTS public.research_reports (
 
 ALTER TABLE public.research_reports ENABLE ROW LEVEL SECURITY;
 
--- ── Research Reports RLS (Part 2 base + Part 10 patch combined) ──────────────
--- Drop all existing SELECT policies first
-DROP POLICY IF EXISTS "Users can view own reports"                    ON public.research_reports;
-DROP POLICY IF EXISTS "users_can_view_own_reports"                    ON public.research_reports;
-DROP POLICY IF EXISTS "Enable read access for users"                  ON public.research_reports;
-DROP POLICY IF EXISTS "Users can read own reports"                    ON public.research_reports;
-DROP POLICY IF EXISTS "Anyone can view public reports"                ON public.research_reports;
-DROP POLICY IF EXISTS "read_own_or_workspace_shared_reports"          ON public.research_reports;
-DROP POLICY IF EXISTS "Users can insert own reports"                  ON public.research_reports;
-DROP POLICY IF EXISTS "users_can_insert_own_reports"                  ON public.research_reports;
-DROP POLICY IF EXISTS "Users can update own reports"                  ON public.research_reports;
-DROP POLICY IF EXISTS "users_can_update_own_reports"                  ON public.research_reports;
-DROP POLICY IF EXISTS "Users can delete own reports"                  ON public.research_reports;
-DROP POLICY IF EXISTS "users_can_delete_own_reports"                  ON public.research_reports;
+-- Drop all existing policies
+DROP POLICY IF EXISTS "Users can view own reports"                           ON public.research_reports;
+DROP POLICY IF EXISTS "users_can_view_own_reports"                           ON public.research_reports;
+DROP POLICY IF EXISTS "Enable read access for users"                         ON public.research_reports;
+DROP POLICY IF EXISTS "Users can read own reports"                           ON public.research_reports;
+DROP POLICY IF EXISTS "Anyone can view public reports"                       ON public.research_reports;
+DROP POLICY IF EXISTS "read_own_or_workspace_shared_reports"                 ON public.research_reports;
+DROP POLICY IF EXISTS "read_own_or_workspace_shared_or_public_reports"       ON public.research_reports;
+DROP POLICY IF EXISTS "Users can insert own reports"                         ON public.research_reports;
+DROP POLICY IF EXISTS "users_can_insert_own_reports"                         ON public.research_reports;
+DROP POLICY IF EXISTS "Users can update own reports"                         ON public.research_reports;
+DROP POLICY IF EXISTS "users_can_update_own_reports"                         ON public.research_reports;
+DROP POLICY IF EXISTS "Users can delete own reports"                         ON public.research_reports;
+DROP POLICY IF EXISTS "users_can_delete_own_reports"                         ON public.research_reports;
 
--- SELECT: own reports + workspace-shared reports + public reports (Part 10 patch)
-CREATE POLICY "read_own_or_workspace_shared_or_public_reports"
+-- NOTE: The full SELECT policy (which joins workspace_reports + workspace_members)
+-- is intentionally deferred to AFTER those tables are created in Part 10 below.
+-- A temporary simple policy is applied here so the table is usable immediately.
+CREATE POLICY "read_own_or_public_reports_temp"
   ON public.research_reports FOR SELECT
-  USING (
-    user_id = auth.uid()
-    OR is_public = TRUE
-    OR EXISTS (
-      SELECT 1
-      FROM   public.workspace_reports  wr
-      JOIN   public.workspace_members  wm ON wm.workspace_id = wr.workspace_id
-      WHERE  wr.report_id  = research_reports.id
-      AND    wm.user_id    = auth.uid()
-    )
-  );
+  USING (user_id = auth.uid() OR is_public = TRUE);
 
 CREATE POLICY "users_can_insert_own_reports"
   ON public.research_reports FOR INSERT
@@ -441,7 +462,7 @@ CREATE INDEX IF NOT EXISTS idx_research_reports_is_public       ON public.resear
 CREATE INDEX IF NOT EXISTS idx_research_reports_presentation_id ON public.research_reports(presentation_id) WHERE presentation_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_research_reports_academic_paper  ON public.research_reports(academic_paper_id) WHERE academic_paper_id IS NOT NULL;
 
--- ── Deferred FKs on presentations + academic_papers ──────────────────────────
+-- Deferred FKs on presentations + academic_papers
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -466,9 +487,11 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_presentations_report_id   ON public.presentations(report_id);
 CREATE INDEX IF NOT EXISTS academic_papers_report_fk_idx ON public.academic_papers(report_id);
 
+
 -- ============================================================
 -- PART 2 — RESEARCH CONVERSATIONS (legacy follow-up chat)
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.research_conversations (
   id         UUID  DEFAULT uuid_generate_v4() PRIMARY KEY,
   report_id  UUID  REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
@@ -490,9 +513,11 @@ CREATE POLICY "Users can insert own conversations"
 
 CREATE INDEX IF NOT EXISTS idx_research_conversations_report_id ON public.research_conversations(report_id);
 
+
 -- ============================================================
 -- PART 4 — PUBLIC REPORT VIEW TRACKING
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.public_report_views (
   id         UUID  DEFAULT uuid_generate_v4() PRIMARY KEY,
   report_id  UUID  REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
@@ -514,9 +539,11 @@ CREATE POLICY "Anyone can log a public report view"
 
 CREATE INDEX IF NOT EXISTS idx_public_report_views_report_id ON public.public_report_views(report_id);
 
+
 -- ============================================================
 -- PART 6 — REPORT EMBEDDINGS (RAG pipeline)
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.report_embeddings (
   id         UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   report_id  UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
@@ -547,9 +574,11 @@ CREATE INDEX IF NOT EXISTS idx_report_embeddings_user_id      ON public.report_e
 CREATE INDEX IF NOT EXISTS idx_report_embeddings_vector       ON public.report_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_report_embeddings_report_chunk ON public.report_embeddings(report_id, chunk_id);
 
+
 -- ============================================================
 -- PART 6 — ASSISTANT CONVERSATIONS (RAG chat)
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.assistant_conversations (
   id                   UUID    DEFAULT uuid_generate_v4() PRIMARY KEY,
   report_id            UUID    REFERENCES public.research_reports(id) ON DELETE CASCADE NOT NULL,
@@ -581,9 +610,11 @@ CREATE INDEX IF NOT EXISTS idx_assistant_conversations_report_id   ON public.ass
 CREATE INDEX IF NOT EXISTS idx_assistant_conversations_user_report ON public.assistant_conversations(user_id, report_id);
 CREATE INDEX IF NOT EXISTS idx_assistant_conversations_created_at  ON public.assistant_conversations(created_at DESC);
 
+
 -- ============================================================
 -- PART 8 — PODCASTS
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.podcasts (
   id                  UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id             UUID        REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
@@ -645,9 +676,11 @@ CREATE TRIGGER on_podcasts_updated
   BEFORE UPDATE ON public.podcasts
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
+
 -- ============================================================
 -- PART 9 — DEBATE SESSIONS
 -- ============================================================
+
 CREATE TABLE IF NOT EXISTS public.debate_sessions (
   id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id              UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -687,8 +720,10 @@ CREATE INDEX IF NOT EXISTS debate_sessions_user_id_idx    ON public.debate_sessi
 CREATE INDEX IF NOT EXISTS debate_sessions_created_at_idx ON public.debate_sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS debate_sessions_status_idx     ON public.debate_sessions(status);
 
+
 -- ============================================================
 -- PART 10 — COLLABORATIVE WORKSPACES
+-- (Part 11C: logo_url added directly to workspaces table)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS public.workspaces (
@@ -696,6 +731,7 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   name         TEXT        NOT NULL,
   description  TEXT,
   avatar_url   TEXT,
+  logo_url     TEXT        DEFAULT NULL,   -- Part 11C
   invite_code  TEXT        UNIQUE NOT NULL DEFAULT substring(gen_random_uuid()::text, 1, 8),
   owner_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   is_personal  BOOLEAN     NOT NULL DEFAULT false,
@@ -703,6 +739,10 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Idempotent logo_url addition for existing databases
+ALTER TABLE public.workspaces
+  ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT NULL;
 
 CREATE TABLE IF NOT EXISTS public.workspace_members (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -749,6 +789,8 @@ CREATE TABLE IF NOT EXISTS public.comment_replies (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Part 11: workspace_activity uses ON DELETE SET NULL so activities survive
+-- after an actor's account is deleted or they leave the workspace.
 CREATE TABLE IF NOT EXISTS public.workspace_activity (
   id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id  UUID        NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
@@ -760,7 +802,47 @@ CREATE TABLE IF NOT EXISTS public.workspace_activity (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Part 11: Fix workspace_activity actor persistence on existing databases
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'workspace_activity'
+      AND column_name  = 'actor_id'
+  ) THEN
+    ALTER TABLE public.workspace_activity
+      ALTER COLUMN actor_id DROP NOT NULL;
+    ALTER TABLE public.workspace_activity
+      DROP CONSTRAINT IF EXISTS workspace_activity_actor_id_fkey;
+    ALTER TABLE public.workspace_activity
+      ADD CONSTRAINT workspace_activity_actor_id_fkey
+      FOREIGN KEY (actor_id)
+      REFERENCES auth.users(id)
+      ON DELETE SET NULL;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'workspace_activity'
+      AND column_name  = 'user_id'
+  ) THEN
+    ALTER TABLE public.workspace_activity
+      ALTER COLUMN user_id DROP NOT NULL;
+    ALTER TABLE public.workspace_activity
+      DROP CONSTRAINT IF EXISTS workspace_activity_user_id_fkey;
+    ALTER TABLE public.workspace_activity
+      ADD CONSTRAINT workspace_activity_user_id_fkey
+      FOREIGN KEY (user_id)
+      REFERENCES auth.users(id)
+      ON DELETE SET NULL;
+  END IF;
+END $$;
+
+
 -- ── Part 10 Indexes ───────────────────────────────────────────────────────────
+
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner             ON public.workspaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_invite_code       ON public.workspaces(invite_code);
 CREATE INDEX IF NOT EXISTS idx_workspace_members_user       ON public.workspace_members(user_id);
@@ -777,7 +859,31 @@ CREATE INDEX IF NOT EXISTS idx_workspace_activity_workspace ON public.workspace_
 CREATE INDEX IF NOT EXISTS idx_workspace_activity_created   ON public.workspace_activity(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workspace_activity_user      ON public.workspace_activity(user_id);
 
+
+-- ── research_reports: upgrade to full workspace-aware SELECT policy ───────────
+-- workspace_reports + workspace_members now exist; replace the temporary
+-- "own + public only" policy created earlier with the complete version.
+
+DROP POLICY IF EXISTS "read_own_or_public_reports_temp"                ON public.research_reports;
+DROP POLICY IF EXISTS "read_own_or_workspace_shared_or_public_reports" ON public.research_reports;
+
+CREATE POLICY "read_own_or_workspace_shared_or_public_reports"
+  ON public.research_reports FOR SELECT
+  USING (
+    user_id = auth.uid()
+    OR is_public = TRUE
+    OR EXISTS (
+      SELECT 1
+      FROM   public.workspace_reports  wr
+      JOIN   public.workspace_members  wm ON wm.workspace_id = wr.workspace_id
+      WHERE  wr.report_id = research_reports.id
+        AND  wm.user_id   = auth.uid()
+    )
+  );
+
+
 -- ── Part 10 updated_at triggers ──────────────────────────────────────────────
+
 DROP TRIGGER IF EXISTS workspaces_updated_at      ON public.workspaces;
 DROP TRIGGER IF EXISTS report_comments_updated_at ON public.report_comments;
 DROP TRIGGER IF EXISTS comment_replies_updated_at ON public.comment_replies;
@@ -794,7 +900,9 @@ CREATE TRIGGER comment_replies_updated_at
   BEFORE UPDATE ON public.comment_replies
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
+
 -- ── Part 10 RLS ───────────────────────────────────────────────────────────────
+
 ALTER TABLE public.workspaces         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workspace_members  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workspace_reports  ENABLE ROW LEVEL SECURITY;
@@ -802,7 +910,9 @@ ALTER TABLE public.report_comments    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comment_replies    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workspace_activity ENABLE ROW LEVEL SECURITY;
 
--- Helper functions
+-- ── Helper functions (two-arg + single-arg overloads for Part 10/11) ─────────
+
+-- Two-arg version: explicit user_id (internal use)
 CREATE OR REPLACE FUNCTION public.is_workspace_member(p_workspace_id UUID, p_user_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -811,11 +921,32 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
+-- Single-arg version: uses auth.uid() (called by Part 11 RLS + RPCs)
+CREATE OR REPLACE FUNCTION public.is_workspace_member(p_workspace_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.workspace_members
+    WHERE workspace_id = p_workspace_id AND user_id = auth.uid()
+  );
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Role helper (two-arg)
 CREATE OR REPLACE FUNCTION public.get_workspace_role(p_workspace_id UUID, p_user_id UUID)
 RETURNS TEXT AS $$
   SELECT role FROM public.workspace_members
   WHERE workspace_id = p_workspace_id AND user_id = p_user_id
   LIMIT 1;
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Editor/owner check using auth.uid() (called by Part 11 RLS + RPCs)
+CREATE OR REPLACE FUNCTION public.is_workspace_editor_or_owner(p_workspace_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.workspace_members
+    WHERE workspace_id = p_workspace_id
+      AND user_id      = auth.uid()
+      AND role         IN ('owner', 'editor')
+  );
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
 -- workspaces
@@ -936,16 +1067,192 @@ CREATE POLICY "workspace_activity_select" ON public.workspace_activity
 CREATE POLICY "workspace_activity_insert" ON public.workspace_activity
   FOR INSERT WITH CHECK (public.is_workspace_member(workspace_id, auth.uid()));
 
+
 -- ── Part 10 Realtime ──────────────────────────────────────────────────────────
+
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.report_comments;    EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.comment_replies;    EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_activity; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_members;  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_reports;  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+
+-- ============================================================
+-- PART 11 — COMMENT REACTIONS TABLE
+-- One reaction per (comment_id, user_id) — exclusive model (11C).
+-- The UNIQUE constraint on (comment_id, user_id) enforces this at
+-- the DB level; toggle_comment_reaction enforces replacement logic.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.comment_reactions (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  comment_id  UUID        NOT NULL
+                          REFERENCES public.report_comments(id)
+                          ON DELETE CASCADE,
+  user_id     UUID        NOT NULL
+                          REFERENCES auth.users(id)
+                          ON DELETE CASCADE,
+  emoji       TEXT        NOT NULL
+                          CHECK (emoji IN ('👍', '✅', '❓', '🔥')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (comment_id, user_id)           -- exclusive: one reaction per user per comment
+);
+
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_comment_id
+  ON public.comment_reactions(comment_id);
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_user_id
+  ON public.comment_reactions(user_id);
+
+
+-- ============================================================
+-- PART 11 — PINNED WORKSPACE REPORTS TABLE
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.pinned_workspace_reports (
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID        NOT NULL
+                           REFERENCES public.workspaces(id)
+                           ON DELETE CASCADE,
+  report_id    UUID        NOT NULL
+                           REFERENCES public.research_reports(id)
+                           ON DELETE CASCADE,
+  pinned_by    UUID        NOT NULL
+                           REFERENCES auth.users(id)
+                           ON DELETE CASCADE,
+  pinned_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (workspace_id, report_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pinned_workspace_reports_workspace
+  ON public.pinned_workspace_reports(workspace_id);
+
+
+-- ── Part 11 RLS ───────────────────────────────────────────────────────────────
+
+ALTER TABLE public.comment_reactions        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.pinned_workspace_reports ENABLE ROW LEVEL SECURITY;
+
+-- comment_reactions: any workspace member can read
+CREATE POLICY "comment_reactions_select_member"
+  ON public.comment_reactions FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.report_comments rc
+      JOIN   public.workspace_members wm
+             ON wm.workspace_id = rc.workspace_id
+      WHERE  rc.id      = comment_id
+        AND  wm.user_id = auth.uid()
+    )
+  );
+
+-- comment_reactions: editors/owners can add
+CREATE POLICY "comment_reactions_insert_editor"
+  ON public.comment_reactions FOR INSERT
+  WITH CHECK (
+    user_id = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM public.report_comments rc
+      WHERE rc.id = comment_id
+        AND public.is_workspace_editor_or_owner(rc.workspace_id)
+    )
+  );
+
+-- comment_reactions: users can remove their own
+CREATE POLICY "comment_reactions_delete_own"
+  ON public.comment_reactions FOR DELETE
+  USING (user_id = auth.uid());
+
+-- pinned_workspace_reports: any member can read
+CREATE POLICY "pinned_reports_select_member"
+  ON public.pinned_workspace_reports FOR SELECT
+  USING (public.is_workspace_member(workspace_id));
+
+-- pinned_workspace_reports: editors/owners can pin
+CREATE POLICY "pinned_reports_insert_editor"
+  ON public.pinned_workspace_reports FOR INSERT
+  WITH CHECK (
+    public.is_workspace_editor_or_owner(workspace_id)
+    AND pinned_by = auth.uid()
+  );
+
+-- pinned_workspace_reports: editors/owners can unpin
+CREATE POLICY "pinned_reports_delete_editor"
+  ON public.pinned_workspace_reports FOR DELETE
+  USING (public.is_workspace_editor_or_owner(workspace_id));
+
+
+-- ── Part 11 Realtime ──────────────────────────────────────────────────────────
+
+DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.comment_reactions;        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.pinned_workspace_reports; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+
+-- ============================================================
+-- PART 11 — workspace_search_index VIEW
+-- (11C version: enhanced subtitle for members + ILIKE-friendly)
+-- ============================================================
+
+CREATE OR REPLACE VIEW public.workspace_search_index AS
+  -- Reports
+  SELECT
+    wr.workspace_id,
+    'report'                                                AS result_type,
+    wr.report_id::TEXT                                      AS result_id,
+    COALESCE(rr.title, rr.query, 'Untitled Report')        AS title,
+    COALESCE(LEFT(rr.executive_summary, 120), '')           AS subtitle,
+    wr.report_id::TEXT                                      AS report_id,
+    NULL::TEXT                                              AS avatar_url,
+    wr.added_at                                             AS created_at,
+    to_tsvector('english',
+      COALESCE(rr.title, '')        || ' ' ||
+      COALESCE(rr.query, '')        || ' ' ||
+      COALESCE(rr.executive_summary, '')
+    )                                                       AS search_vec
+  FROM public.workspace_reports wr
+  JOIN public.research_reports  rr ON rr.id = wr.report_id
+
+  UNION ALL
+
+  -- Comments
+  SELECT
+    rc.workspace_id,
+    'comment'                                               AS result_type,
+    rc.id::TEXT                                             AS result_id,
+    LEFT(rc.content, 80)                                    AS title,
+    ''                                                      AS subtitle,
+    rc.report_id::TEXT                                      AS report_id,
+    NULL::TEXT                                              AS avatar_url,
+    rc.created_at,
+    to_tsvector('english', rc.content)                      AS search_vec
+  FROM public.report_comments rc
+
+  UNION ALL
+
+  -- Members (name + username searchable via tsvector AND ILIKE)
+  SELECT
+    wm.workspace_id,
+    'member'                                                AS result_type,
+    wm.user_id::TEXT                                        AS result_id,
+    COALESCE(p.full_name, p.username, 'Unknown Member')     AS title,
+    COALESCE(p.username, '') || ' · ' || wm.role            AS subtitle,
+    NULL::TEXT                                              AS report_id,
+    p.avatar_url                                            AS avatar_url,
+    wm.joined_at                                            AS created_at,
+    to_tsvector('english',
+      COALESCE(p.full_name, '') || ' ' ||
+      COALESCE(p.username,  '') || ' ' ||
+      wm.role
+    )                                                       AS search_vec
+  FROM public.workspace_members wm
+  JOIN public.profiles           p ON p.id = wm.user_id;
+
+GRANT SELECT ON public.workspace_search_index TO authenticated;
+
+
 -- ============================================================
 -- DROP ALL FUNCTIONS BEFORE RECREATING (avoids 42P13 errors)
 -- ============================================================
+
 DROP FUNCTION IF EXISTS public.get_user_research_stats(uuid);
 DROP FUNCTION IF EXISTS public.get_user_debate_stats(uuid);
 DROP FUNCTION IF EXISTS public.get_user_complete_stats(uuid);
@@ -963,10 +1270,17 @@ DROP FUNCTION IF EXISTS public.regenerate_invite_code(uuid);
 DROP FUNCTION IF EXISTS public.transfer_workspace_ownership(uuid, uuid);
 DROP FUNCTION IF EXISTS public.get_user_workspace_stats(uuid);
 DROP FUNCTION IF EXISTS public.handle_new_user_workspace();
+DROP FUNCTION IF EXISTS public.toggle_comment_reaction(uuid, text);
+DROP FUNCTION IF EXISTS public.get_comment_reactions(uuid[]);
+DROP FUNCTION IF EXISTS public.toggle_pin_workspace_report(uuid, uuid);
+DROP FUNCTION IF EXISTS public.get_pinned_report_ids(uuid);
+DROP FUNCTION IF EXISTS public.search_workspace(uuid, text, int);
+
 
 -- ============================================================
 -- PART 5 — RPC: get_presentations_for_report
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_presentations_for_report(
   p_report_id UUID,
   p_user_id   UUID
@@ -993,9 +1307,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_presentations_for_report(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 5 — RPC: increment_presentation_export
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.increment_presentation_export(
   p_presentation_id UUID,
   p_user_id         UUID
@@ -1010,9 +1326,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.increment_presentation_export(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 6 — RPC: match_report_chunks
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.match_report_chunks(
   query_embedding vector(1536),
   p_report_id     UUID,
@@ -1045,9 +1363,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.match_report_chunks(vector, UUID, UUID, INT, FLOAT) TO authenticated;
 
+
 -- ============================================================
 -- PART 6 — RPC: is_report_embedded
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.is_report_embedded(
   p_report_id UUID,
   p_user_id   UUID
@@ -1063,9 +1383,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.is_report_embedded(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 6 — RPC: get_assistant_conversation
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_assistant_conversation(
   p_report_id UUID,
   p_user_id   UUID,
@@ -1097,9 +1419,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_assistant_conversation(UUID, UUID, INT) TO authenticated;
 
+
 -- ============================================================
 -- PART 6 — RPC: delete_report_embeddings
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.delete_report_embeddings(
   p_report_id UUID,
   p_user_id   UUID
@@ -1113,9 +1437,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.delete_report_embeddings(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 6 — RPC: get_report_embedding_stats
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_report_embedding_stats(
   p_report_id UUID,
   p_user_id   UUID
@@ -1143,9 +1469,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_report_embedding_stats(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 7 — RPC: get_academic_paper_by_report
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_academic_paper_by_report(p_report_id UUID)
 RETURNS SETOF public.academic_papers
 LANGUAGE sql SECURITY DEFINER STABLE AS $$
@@ -1156,9 +1484,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_academic_paper_by_report(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 7 — RPC: increment_academic_export_count
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.increment_academic_export_count(p_paper_id UUID)
 RETURNS VOID LANGUAGE sql SECURITY DEFINER AS $$
   UPDATE public.academic_papers
@@ -1168,9 +1498,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.increment_academic_export_count(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 7 — RPC: get_user_academic_stats
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_user_academic_stats(p_user_id UUID)
 RETURNS TABLE (
   total_papers       BIGINT,
@@ -1196,9 +1528,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_user_academic_stats(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 8 — RPC: get_podcast_by_report
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_podcast_by_report(
   p_report_id UUID,
   p_user_id   UUID
@@ -1215,9 +1549,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_podcast_by_report(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 8 — RPC: get_user_podcast_stats
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_user_podcast_stats(p_user_id UUID)
 RETURNS JSON LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE result JSON;
@@ -1242,9 +1578,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_user_podcast_stats(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 8 — RPC: increment_podcast_export_count
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.increment_podcast_export_count(p_podcast_id UUID)
 RETURNS VOID LANGUAGE sql SECURITY DEFINER AS $$
   UPDATE public.podcasts SET export_count = export_count + 1 WHERE id = p_podcast_id;
@@ -1252,9 +1590,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.increment_podcast_export_count(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 9 — RPC: get_user_debate_stats
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_user_debate_stats(p_user_id UUID)
 RETURNS JSON
 LANGUAGE plpgsql SECURITY DEFINER
@@ -1283,10 +1623,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_user_debate_stats(UUID) TO authenticated;
 
+
 -- ============================================================
--- CORE STATS RPC — get_user_research_stats (Parts 1-9)
--- RETURNS TABLE (snake_case) — shape the useStats hook expects.
+-- PART 3/STATS — RPC: get_user_research_stats (Parts 1-9)
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_user_research_stats(p_user_id UUID)
 RETURNS TABLE (
   total_reports             BIGINT,
@@ -1385,9 +1726,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID) TO authenticated;
 
+
 -- ============================================================
--- COMPREHENSIVE STATS — get_user_complete_stats (Parts 1-9)
+-- COMPREHENSIVE STATS — RPC: get_user_complete_stats (Parts 1-9)
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_user_complete_stats(p_user_id UUID)
 RETURNS TABLE (
   total_reports               BIGINT,
@@ -1502,9 +1845,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_user_complete_stats(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 4 — RPC: get_public_report
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_public_report(p_token TEXT)
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE v_report JSONB;
@@ -1527,9 +1872,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_public_report(TEXT) TO anon, authenticated;
 
+
 -- ============================================================
 -- PART 4 — RPC: set_report_public
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.set_report_public(
   p_report_id UUID,
   p_user_id   UUID,
@@ -1562,11 +1909,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN) TO authenticated;
 
+
 -- ============================================================
--- PART 10 — RPC: get_workspace_report (patch)
--- Fetches a report for a workspace member, bypassing RLS.
--- workspace-report.tsx calls this when direct .select() returns null.
+-- PART 10 — RPC: get_workspace_report
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_workspace_report(
   p_report_id    UUID,
   p_workspace_id UUID
@@ -1591,9 +1938,11 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_workspace_report(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: create_workspace
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.create_workspace(
   p_name        TEXT,
   p_description TEXT    DEFAULT NULL,
@@ -1619,9 +1968,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.create_workspace(TEXT, TEXT, BOOLEAN) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: join_workspace_by_code
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.join_workspace_by_code(p_invite_code TEXT)
 RETURNS public.workspace_members AS $$
 DECLARE
@@ -1650,9 +2001,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.join_workspace_by_code(TEXT) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: preview_workspace_by_code
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.preview_workspace_by_code(p_invite_code TEXT)
 RETURNS JSON AS $$
 DECLARE
@@ -1672,6 +2025,7 @@ BEGIN
     'name',         v_workspace.name,
     'description',  v_workspace.description,
     'avatar_url',   v_workspace.avatar_url,
+    'logo_url',     v_workspace.logo_url,
     'member_count', v_count
   );
 END;
@@ -1679,9 +2033,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.preview_workspace_by_code(TEXT) TO authenticated, anon;
 
+
 -- ============================================================
 -- PART 10 — RPC: get_workspace_feed
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_workspace_feed(
   p_workspace_id UUID,
   p_limit        INT DEFAULT 20,
@@ -1702,6 +2058,10 @@ BEGIN
         'report_id',       wr.report_id,
         'added_by',        wr.added_by,
         'added_at',        wr.added_at,
+        'is_pinned',       EXISTS (
+          SELECT 1 FROM public.pinned_workspace_reports pwr
+          WHERE pwr.workspace_id = wr.workspace_id AND pwr.report_id = wr.report_id
+        ),
         'report', json_build_object(
           'id',                rr.id,
           'title',             rr.title,
@@ -1738,9 +2098,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.get_workspace_feed(UUID, INT, INT) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: get_report_comments_with_profiles
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_report_comments_with_profiles(
   p_report_id    UUID,
   p_workspace_id UUID
@@ -1802,9 +2164,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.get_report_comments_with_profiles(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: get_section_comment_counts
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_section_comment_counts(
   p_report_id    UUID,
   p_workspace_id UUID
@@ -1831,51 +2195,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.get_section_comment_counts(UUID, UUID) TO authenticated;
 
--- ============================================================
--- PART 10 — RPC: get_workspace_activity_feed
--- ============================================================
-CREATE OR REPLACE FUNCTION public.get_workspace_activity_feed(
-  p_workspace_id UUID,
-  p_limit        INT DEFAULT 30
-)
-RETURNS JSON AS $$
-BEGIN
-  IF NOT public.is_workspace_member(p_workspace_id, auth.uid()) THEN
-    RAISE EXCEPTION 'Access denied';
-  END IF;
-
-  RETURN (
-    SELECT COALESCE(json_agg(item ORDER BY wa.created_at DESC), '[]'::json)
-    FROM public.workspace_activity wa
-    LEFT JOIN public.profiles p ON p.id = wa.user_id
-    CROSS JOIN LATERAL (
-      SELECT json_build_object(
-        'id',            wa.id,
-        'workspace_id',  wa.workspace_id,
-        'user_id',       wa.user_id,
-        'action',        wa.action,
-        'resource_type', wa.resource_type,
-        'resource_id',   wa.resource_id,
-        'metadata',      wa.metadata,
-        'created_at',    wa.created_at,
-        'actor_profile', json_build_object(
-          'id', p.id, 'username', p.username,
-          'full_name', p.full_name, 'avatar_url', p.avatar_url
-        )
-      ) AS item
-    ) items
-    WHERE wa.workspace_id = p_workspace_id
-    ORDER BY wa.created_at DESC
-    LIMIT p_limit
-  );
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-GRANT EXECUTE ON FUNCTION public.get_workspace_activity_feed(UUID, INT) TO authenticated;
 
 -- ============================================================
 -- PART 10 — RPC: get_workspace_members_with_profiles
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_workspace_members_with_profiles(p_workspace_id UUID)
 RETURNS JSON AS $$
 BEGIN
@@ -1909,9 +2233,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.get_workspace_members_with_profiles(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: toggle_comment_resolved
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.toggle_comment_resolved(p_comment_id UUID)
 RETURNS public.report_comments AS $$
 DECLARE
@@ -1940,9 +2266,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.toggle_comment_resolved(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: regenerate_invite_code
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.regenerate_invite_code(p_workspace_id UUID)
 RETURNS TEXT AS $$
 DECLARE v_code TEXT;
@@ -1958,9 +2286,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.regenerate_invite_code(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: transfer_workspace_ownership
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.transfer_workspace_ownership(
   p_workspace_id UUID,
   p_new_owner_id UUID
@@ -1994,9 +2324,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.transfer_workspace_ownership(UUID, UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — RPC: get_user_workspace_stats
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.get_user_workspace_stats(p_user_id UUID DEFAULT auth.uid())
 RETURNS JSON AS $$
 BEGIN
@@ -2011,12 +2343,13 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.get_user_workspace_stats(UUID) TO authenticated;
 
+
 -- ============================================================
 -- PART 10 — Auto-create personal workspace trigger (opt-in)
 -- Uncomment the trigger below to auto-create a personal
--- workspace on new user signup. By default it is disabled —
--- call create_workspace() manually from the app on first login.
+-- workspace on new user signup. Disabled by default.
 -- ============================================================
+
 CREATE OR REPLACE FUNCTION public.handle_new_user_workspace()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -2031,9 +2364,265 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 --   AFTER INSERT ON public.profiles
 --   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user_workspace();
 
+
+-- ============================================================
+-- PART 11 — RPC: toggle_comment_reaction (11C exclusive version)
+-- One reaction per (comment_id, user_id).
+-- Tapping the same emoji removes it; tapping a different one
+-- replaces the existing reaction.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.toggle_comment_reaction(
+  p_comment_id UUID,
+  p_emoji      TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_existing_emoji TEXT;
+  v_added          BOOLEAN;
+BEGIN
+  IF p_emoji NOT IN ('👍', '✅', '❓', '🔥') THEN
+    RAISE EXCEPTION 'Invalid emoji. Must be one of: 👍 ✅ ❓ 🔥';
+  END IF;
+
+  -- Check what (if any) emoji this user already has on this comment
+  SELECT emoji INTO v_existing_emoji
+  FROM   public.comment_reactions
+  WHERE  comment_id = p_comment_id
+    AND  user_id    = auth.uid()
+  LIMIT 1;
+
+  IF v_existing_emoji IS NOT NULL THEN
+    -- Always remove the existing reaction first
+    DELETE FROM public.comment_reactions
+    WHERE  comment_id = p_comment_id
+      AND  user_id    = auth.uid();
+
+    IF v_existing_emoji = p_emoji THEN
+      -- Same emoji tapped again → toggle OFF
+      RETURN jsonb_build_object(
+        'added',         false,
+        'emoji',         p_emoji,
+        'removed_emoji', v_existing_emoji
+      );
+    ELSE
+      -- Different emoji tapped → replace with new one
+      INSERT INTO public.comment_reactions (comment_id, user_id, emoji)
+      VALUES (p_comment_id, auth.uid(), p_emoji);
+      v_added := true;
+    END IF;
+  ELSE
+    -- No prior reaction → add fresh
+    INSERT INTO public.comment_reactions (comment_id, user_id, emoji)
+    VALUES (p_comment_id, auth.uid(), p_emoji);
+    v_added := true;
+  END IF;
+
+  RETURN jsonb_build_object('added', v_added, 'emoji', p_emoji);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.toggle_comment_reaction(UUID, TEXT) TO authenticated;
+
+
+-- ============================================================
+-- PART 11 — RPC: get_comment_reactions
+-- Returns one row per (comment_id, emoji) with count + whether
+-- the current user has reacted.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_comment_reactions(
+  p_comment_ids UUID[]
+)
+RETURNS TABLE (
+  comment_id   UUID,
+  emoji        TEXT,
+  count        BIGINT,
+  has_reacted  BOOLEAN
+)
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT
+    cr.comment_id,
+    cr.emoji,
+    COUNT(*)::BIGINT                     AS count,
+    BOOL_OR(cr.user_id = auth.uid())     AS has_reacted
+  FROM public.comment_reactions cr
+  WHERE cr.comment_id = ANY(p_comment_ids)
+  GROUP BY cr.comment_id, cr.emoji
+  ORDER BY cr.comment_id, cr.emoji;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_comment_reactions(UUID[]) TO authenticated;
+
+
+-- ============================================================
+-- PART 11 — RPC: toggle_pin_workspace_report
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.toggle_pin_workspace_report(
+  p_workspace_id UUID,
+  p_report_id    UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_existing_id UUID;
+  v_pinned      BOOLEAN;
+BEGIN
+  IF NOT public.is_workspace_editor_or_owner(p_workspace_id) THEN
+    RAISE EXCEPTION 'Only editors and owners can pin reports';
+  END IF;
+
+  SELECT id INTO v_existing_id
+  FROM   public.pinned_workspace_reports
+  WHERE  workspace_id = p_workspace_id
+    AND  report_id    = p_report_id;
+
+  IF v_existing_id IS NOT NULL THEN
+    DELETE FROM public.pinned_workspace_reports WHERE id = v_existing_id;
+    v_pinned := false;
+  ELSE
+    INSERT INTO public.pinned_workspace_reports (workspace_id, report_id, pinned_by)
+    VALUES (p_workspace_id, p_report_id, auth.uid());
+    v_pinned := true;
+  END IF;
+
+  RETURN jsonb_build_object('pinned', v_pinned);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.toggle_pin_workspace_report(UUID, UUID) TO authenticated;
+
+
+-- ============================================================
+-- PART 11 — RPC: get_pinned_report_ids
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_pinned_report_ids(p_workspace_id UUID)
+RETURNS TABLE (report_id UUID)
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT report_id
+  FROM   public.pinned_workspace_reports
+  WHERE  workspace_id = p_workspace_id
+    AND  public.is_workspace_member(p_workspace_id)
+  ORDER  BY pinned_at DESC;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_pinned_report_ids(UUID) TO authenticated;
+
+
+-- ============================================================
+-- PART 11 — RPC: search_workspace (11C advanced version)
+-- Combines full-text tsvector ranking with ILIKE fallback so
+-- partial title/name queries always return results.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.search_workspace(
+  p_workspace_id UUID,
+  p_query        TEXT,
+  p_limit        INT DEFAULT 25
+)
+RETURNS TABLE (
+  result_type TEXT,
+  result_id   TEXT,
+  title       TEXT,
+  subtitle    TEXT,
+  report_id   TEXT,
+  avatar_url  TEXT,
+  created_at  TIMESTAMPTZ,
+  rank        REAL
+)
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  WITH q AS (
+    SELECT
+      CASE WHEN length(trim(p_query)) > 0
+           THEN websearch_to_tsquery('english', p_query)
+           ELSE to_tsquery('english', 'a | b')
+      END AS tsq,
+      '%' || lower(trim(p_query)) || '%' AS ilike_pat,
+      trim(p_query)                       AS raw
+  )
+  SELECT
+    s.result_type,
+    s.result_id,
+    s.title,
+    s.subtitle,
+    s.report_id,
+    s.avatar_url,
+    s.created_at,
+    CASE
+      WHEN s.search_vec @@ (SELECT tsq FROM q)
+        THEN ts_rank(s.search_vec, (SELECT tsq FROM q)) + 0.5
+      ELSE 0.1
+    END::REAL AS rank
+  FROM public.workspace_search_index s, q
+  WHERE s.workspace_id = p_workspace_id
+    AND public.is_workspace_member(p_workspace_id)
+    AND length(q.raw) > 0
+    AND (
+      s.search_vec @@ q.tsq
+      OR lower(s.title)    LIKE q.ilike_pat
+      OR lower(s.subtitle) LIKE q.ilike_pat
+    )
+  ORDER BY rank DESC, s.created_at DESC
+  LIMIT p_limit;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.search_workspace(UUID, TEXT, INT) TO authenticated;
+
+
+-- ============================================================
+-- PART 11 — RPC: get_workspace_activity_feed (TABLE version)
+-- Safe when actor_id / user_id is NULL after SET NULL cascade.
+-- Returns TABLE (snake_case) with actor snapshot columns.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_workspace_activity_feed(
+  p_workspace_id UUID,
+  p_limit        INT DEFAULT 30
+)
+RETURNS TABLE (
+  id             UUID,
+  workspace_id   UUID,
+  user_id        UUID,
+  action         TEXT,
+  resource_type  TEXT,
+  resource_id    UUID,
+  metadata       JSONB,
+  created_at     TIMESTAMPTZ,
+  actor_name     TEXT,
+  actor_username TEXT,
+  actor_avatar   TEXT
+)
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT
+    wa.id,
+    wa.workspace_id,
+    wa.user_id,
+    wa.action,
+    wa.resource_type,
+    wa.resource_id::UUID,
+    COALESCE(wa.metadata, '{}')                               AS metadata,
+    wa.created_at,
+    COALESCE(p.full_name, p.username, 'Deleted User')         AS actor_name,
+    p.username                                                 AS actor_username,
+    p.avatar_url                                               AS actor_avatar
+  FROM public.workspace_activity wa
+  LEFT JOIN public.profiles p ON p.id = wa.user_id
+  WHERE wa.workspace_id = p_workspace_id
+    AND public.is_workspace_member(p_workspace_id)
+  ORDER BY wa.created_at DESC
+  LIMIT p_limit;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_workspace_activity_feed(UUID, INT) TO authenticated;
+
+
 -- ============================================================
 -- TABLE & FUNCTION COMMENTS
 -- ============================================================
+
 COMMENT ON TABLE public.research_reports      IS 'Core research reports table (Parts 1-7)';
 COMMENT ON TABLE public.presentations         IS 'AI-generated slide decks (Part 5)';
 COMMENT ON TABLE public.academic_papers       IS 'AI-generated academic papers (Part 7)';
@@ -2041,27 +2630,38 @@ COMMENT ON TABLE public.podcasts              IS 'AI-generated podcast episodes 
 COMMENT ON TABLE public.debate_sessions       IS 'AI Debate Agent sessions (Part 9)';
 COMMENT ON TABLE public.report_embeddings     IS 'pgvector chunks for RAG pipeline (Part 6)';
 COMMENT ON TABLE public.assistant_conversations IS 'RAG-powered chat messages (Part 6)';
-COMMENT ON TABLE public.workspaces            IS 'Collaborative workspaces (Part 10)';
+COMMENT ON TABLE public.workspaces            IS 'Collaborative workspaces (Parts 10-11)';
 COMMENT ON TABLE public.workspace_members     IS 'Workspace membership + roles (Part 10)';
 COMMENT ON TABLE public.workspace_reports     IS 'Reports shared into workspaces (Part 10)';
 COMMENT ON TABLE public.report_comments       IS 'Threaded comments on reports (Part 10)';
 COMMENT ON TABLE public.comment_replies       IS 'Replies to report comments (Part 10)';
-COMMENT ON TABLE public.workspace_activity    IS 'Realtime activity feed (Part 10)';
+COMMENT ON TABLE public.workspace_activity    IS 'Realtime activity feed (Parts 10-11)';
+COMMENT ON TABLE public.comment_reactions     IS 'Emoji reactions on comments — exclusive one-per-user model (Part 11)';
+COMMENT ON TABLE public.pinned_workspace_reports IS 'Pinned reports in workspace feed (Part 11)';
 
-COMMENT ON FUNCTION public.get_user_research_stats(UUID) IS
-  'Profile stats — RETURNS TABLE (snake_case). Parts 1-9 columns. Used by useStats hook.';
-COMMENT ON FUNCTION public.get_user_complete_stats(UUID) IS
-  'Full analytics stats across all features Parts 1-9.';
-COMMENT ON FUNCTION public.get_workspace_report(UUID, UUID) IS
-  'Fetch a report by ID for a workspace member, bypassing RLS (Part 10 patch).';
+COMMENT ON VIEW  public.workspace_search_index IS 'Unified search index: reports + comments + members (Part 11, 11C)';
+
+COMMENT ON FUNCTION public.get_user_research_stats(UUID)         IS 'Profile stats — RETURNS TABLE (snake_case). Parts 1-9. Used by useStats hook.';
+COMMENT ON FUNCTION public.get_user_complete_stats(UUID)         IS 'Full analytics stats across all features Parts 1-9.';
+COMMENT ON FUNCTION public.get_workspace_report(UUID, UUID)      IS 'Fetch a report for a workspace member, bypassing RLS (Part 10 patch).';
+COMMENT ON FUNCTION public.toggle_comment_reaction(UUID, TEXT)   IS 'Exclusive emoji reaction toggle: one per user per comment (Part 11, 11C).';
+COMMENT ON FUNCTION public.search_workspace(UUID, TEXT, INT)     IS 'Full-text + ILIKE workspace search across reports, comments, members (Part 11, 11C).';
+COMMENT ON FUNCTION public.get_workspace_activity_feed(UUID, INT) IS 'Activity feed with actor snapshot; null-safe for deleted users (Part 11).';
+COMMENT ON FUNCTION public.is_workspace_editor_or_owner(UUID)    IS 'Returns true if auth.uid() is an editor or owner of the workspace (Part 11).';
+
 
 -- ============================================================
--- Done ✓  All Parts 1-10 + patch installed.
+-- Done ✓  All Parts 1-11 (including 11C patches) installed.
 --
 -- Verification queries:
 --   SELECT * FROM pg_extension WHERE extname = 'vector';
+--
 --   SELECT table_name FROM information_schema.tables
 --     WHERE table_schema = 'public' ORDER BY table_name;
+--
 --   SELECT proname FROM pg_proc
 --     WHERE pronamespace = 'public'::regnamespace ORDER BY proname;
+--
+--   SELECT viewname FROM pg_views
+--     WHERE schemaname = 'public' ORDER BY viewname;
 -- ============================================================

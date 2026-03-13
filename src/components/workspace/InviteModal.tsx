@@ -1,6 +1,7 @@
 // src/components/workspace/InviteModal.tsx
 // FIX: Copy now writes the raw invite code string (not the deepdive:// URL).
 // FIX: Regenerate Code button removed.
+// FIX: Share Invite Link button removed.
 
 import React, { useState } from 'react';
 import {
@@ -10,9 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeIn, SlideInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
-import * as Share from 'expo-sharing';
 import { Workspace } from '../../types';
-import { buildInviteUrl } from '../../services/workspaceInviteService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
 interface Props {
@@ -32,19 +31,6 @@ export function InviteModal({ workspace, visible, isOwner, onClose, onCodeUpdate
     await Clipboard.setStringAsync(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
-  };
-
-  // ── Share the full deep-link URL via the OS share sheet ───────────────────
-  const handleShare = async () => {
-    try {
-      const url = buildInviteUrl(code);
-      const message = `Join my workspace "${workspace.name}" on DeepDive AI!\n\nInvite code: ${code}\nOr open: ${url}`;
-      if (await Share.isAvailableAsync()) {
-        // expo-sharing only shares files; use the RN Share API instead
-        const { Share: RNShare } = require('react-native');
-        await RNShare.share({ message });
-      }
-    } catch { /* user dismissed */ }
   };
 
   return (
@@ -94,12 +80,6 @@ export function InviteModal({ workspace, visible, isOwner, onClose, onCodeUpdate
                 {copied ? 'Copied!' : 'Copy'}
               </Text>
             </View>
-          </TouchableOpacity>
-
-          {/* Share button */}
-          <TouchableOpacity onPress={handleShare} style={styles.shareBtn} activeOpacity={0.85}>
-            <Ionicons name="share-social-outline" size={18} color="#FFF" />
-            <Text style={styles.shareBtnText}>Share Invite Link</Text>
           </TouchableOpacity>
         </Animated.View>
       </Animated.View>
@@ -185,16 +165,4 @@ const styles = StyleSheet.create({
     borderColor: `${COLORS.success}30`,
   },
   copyText: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
-
-  // Share button
-  shareBtn: {
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.lg,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  shareBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
 });
