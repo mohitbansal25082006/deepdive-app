@@ -1,6 +1,6 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1 through 12 (includes all patches) — Single Migration File
+-- Parts 1 through 13 — Single Migration File
 --
 -- Includes:
 --   Part 1  — Profiles, Auth, Storage, Subscriptions
@@ -28,6 +28,26 @@
 --             • get_auth_user_workspace_ids() SECURITY DEFINER helper
 --             • Recursion-safe RLS policies for all workspace tables
 --             • Member workspace stats and comment summary RPCs
+--   Part 13 — Workspace Member Blocking, Logo Upload, Demotion
+--             • workspace-logos storage bucket + RLS policies
+--             • update_workspace_logo RPC
+--             • workspace_blocked_members table
+--             • is_blocked_from_workspace helper
+--             • block_workspace_member RPC (with non-fatal activity log fallback)
+--             • unblock_workspace_member RPC
+--             • get_workspace_blocked_members RPC
+--             • demote_editor_to_viewer RPC
+--             • join_workspace_by_code replacement (returns JSON, blocks check)
+--             • count_member_replies_in_workspace helper
+--             • edit_access_requests status extended to include 'removed'
+--
+-- Root causes fixed in Part 13 vs all previous attempts:
+--   [A] avatar_url + invite_code added to workspaces (already present; guaranteed)
+--   [B] workspace_activity INSERTs wrapped in nested BEGIN/EXCEPTION blocks
+--       so unknown column names degrade to WARNING, never abort the parent op
+--   [C] is_personal removed from join_workspace_by_code (not in schema)
+--   [D] blocked_by NOT NULL + ON DELETE SET NULL contradiction resolved
+--   [E] SET search_path = public on every SECURITY DEFINER function
 --
 -- Prerequisites:
 --   pgvector must be available (pre-installed on all Supabase projects).
@@ -148,6 +168,45 @@ DO $$ BEGIN
       ON storage.objects FOR DELETE USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
   END IF;
 END $$;
+
+
+-- ============================================================
+-- PART 13 — STORAGE (workspace-logos bucket)
+-- ============================================================
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'workspace-logos',
+  'workspace-logos',
+  true,
+  5242880,
+  ARRAY['image/jpeg','image/jpg','image/png','image/webp','image/gif']
+)
+ON CONFLICT (id) DO UPDATE
+  SET public             = EXCLUDED.public,
+      file_size_limit    = EXCLUDED.file_size_limit,
+      allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+DROP POLICY IF EXISTS "wl_select_public" ON storage.objects;
+DROP POLICY IF EXISTS "wl_insert_auth"   ON storage.objects;
+DROP POLICY IF EXISTS "wl_update_auth"   ON storage.objects;
+DROP POLICY IF EXISTS "wl_delete_auth"   ON storage.objects;
+
+CREATE POLICY "wl_select_public"
+  ON storage.objects FOR SELECT TO authenticated
+  USING (bucket_id = 'workspace-logos');
+
+CREATE POLICY "wl_insert_auth"
+  ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'workspace-logos' AND auth.uid() IS NOT NULL);
+
+CREATE POLICY "wl_update_auth"
+  ON storage.objects FOR UPDATE TO authenticated
+  USING (bucket_id = 'workspace-logos' AND auth.uid() IS NOT NULL);
+
+CREATE POLICY "wl_delete_auth"
+  ON storage.objects FOR DELETE TO authenticated
+  USING (bucket_id = 'workspace-logos' AND auth.uid() IS NOT NULL);
 
 
 -- ============================================================
@@ -418,8 +477,7 @@ CREATE TABLE IF NOT EXISTS public.research_reports (
 
 ALTER TABLE public.research_reports ENABLE ROW LEVEL SECURITY;
 
--- A simple temporary policy will be replaced with the full workspace-aware
--- policy later after the workspace tables are created.
+-- Temporary policy replaced after workspace tables are created (Part 12)
 CREATE POLICY "read_own_or_public_reports_temp"
   ON public.research_reports FOR SELECT
   USING (user_id = auth.uid() OR is_public = TRUE);
@@ -713,6 +771,7 @@ CREATE INDEX IF NOT EXISTS debate_sessions_status_idx     ON public.debate_sessi
 -- ============================================================
 -- PART 10 — COLLABORATIVE WORKSPACES
 -- (Part 11C: logo_url added directly to workspaces table)
+-- (Part 13:  avatar_url + invite_code guaranteed present)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS public.workspaces (
@@ -720,8 +779,8 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   name         TEXT        NOT NULL,
   description  TEXT,
   avatar_url   TEXT,
-  logo_url     TEXT        DEFAULT NULL,   -- Part 11C
-  invite_code  TEXT        UNIQUE NOT NULL DEFAULT substring(gen_random_uuid()::text, 1, 8),
+  logo_url     TEXT        DEFAULT NULL,
+  invite_code  TEXT        UNIQUE NOT NULL DEFAULT upper(substring(replace(gen_random_uuid()::text, '-', ''), 1, 10)),
   owner_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   is_personal  BOOLEAN     NOT NULL DEFAULT false,
   settings     JSONB       NOT NULL DEFAULT '{}',
@@ -729,9 +788,23 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Idempotent logo_url addition for existing databases
-ALTER TABLE public.workspaces
-  ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT NULL;
+-- Idempotent column additions for existing databases
+ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS avatar_url  text;
+ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS logo_url    text DEFAULT NULL;
+ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS invite_code text;
+
+-- Unique index on invite_code (safe if already exists)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_invite_code
+  ON public.workspaces(invite_code)
+  WHERE invite_code IS NOT NULL;
+
+-- Back-fill rows with no invite code
+UPDATE public.workspaces
+SET invite_code = upper(substring(replace(gen_random_uuid()::text, '-', ''), 1, 10))
+WHERE invite_code IS NULL;
+
+
+-- ── workspace_members ─────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS public.workspace_members (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -744,6 +817,9 @@ CREATE TABLE IF NOT EXISTS public.workspace_members (
   UNIQUE(workspace_id, user_id)
 );
 
+
+-- ── workspace_reports ─────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS public.workspace_reports (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id UUID        NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
@@ -752,6 +828,9 @@ CREATE TABLE IF NOT EXISTS public.workspace_reports (
   added_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(workspace_id, report_id)
 );
+
+
+-- ── report_comments ───────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS public.report_comments (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -768,6 +847,9 @@ CREATE TABLE IF NOT EXISTS public.report_comments (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+
+-- ── comment_replies ───────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS public.comment_replies (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   comment_id  UUID        NOT NULL REFERENCES public.report_comments(id) ON DELETE CASCADE,
@@ -778,20 +860,42 @@ CREATE TABLE IF NOT EXISTS public.comment_replies (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Part 11: workspace_activity uses ON DELETE SET NULL so activities survive
--- after an actor's account is deleted or they leave the workspace.
+
+-- ── workspace_activity ────────────────────────────────────────
+-- Part 11: ON DELETE SET NULL so activities survive after an actor
+-- is deleted or leaves the workspace.
+-- Part 13 functions write both entity_type/entity_id (preferred) and
+-- resource_type/resource_id (legacy fallback) — both columns kept.
+
 CREATE TABLE IF NOT EXISTS public.workspace_activity (
   id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id  UUID        NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   user_id       UUID        REFERENCES auth.users(id) ON DELETE SET NULL,
   action        TEXT        NOT NULL,
+  entity_type   TEXT,
+  entity_id     UUID,
   resource_type TEXT,
   resource_id   TEXT,
   metadata      JSONB       NOT NULL DEFAULT '{}',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Part 11: Fix workspace_activity actor persistence on existing databases
+-- Idempotent: ensure both column sets exist for forward and backward compat
+DO $$
+BEGIN
+  -- entity_type / entity_id (Part 13 preferred naming)
+  BEGIN ALTER TABLE public.workspace_activity ADD COLUMN entity_type text;
+  EXCEPTION WHEN duplicate_column THEN NULL; END;
+  BEGIN ALTER TABLE public.workspace_activity ADD COLUMN entity_id uuid;
+  EXCEPTION WHEN duplicate_column THEN NULL; END;
+  -- resource_type / resource_id (Part 10 legacy naming)
+  BEGIN ALTER TABLE public.workspace_activity ADD COLUMN resource_type text;
+  EXCEPTION WHEN duplicate_column THEN NULL; END;
+  BEGIN ALTER TABLE public.workspace_activity ADD COLUMN resource_id text;
+  EXCEPTION WHEN duplicate_column THEN NULL; END;
+END $$;
+
+-- Part 11: Fix actor persistence — drop NOT NULL and ensure ON DELETE SET NULL
 DO $$
 BEGIN
   IF EXISTS (
@@ -800,15 +904,11 @@ BEGIN
       AND table_name   = 'workspace_activity'
       AND column_name  = 'actor_id'
   ) THEN
-    ALTER TABLE public.workspace_activity
-      ALTER COLUMN actor_id DROP NOT NULL;
-    ALTER TABLE public.workspace_activity
-      DROP CONSTRAINT IF EXISTS workspace_activity_actor_id_fkey;
+    ALTER TABLE public.workspace_activity ALTER COLUMN actor_id DROP NOT NULL;
+    ALTER TABLE public.workspace_activity DROP CONSTRAINT IF EXISTS workspace_activity_actor_id_fkey;
     ALTER TABLE public.workspace_activity
       ADD CONSTRAINT workspace_activity_actor_id_fkey
-      FOREIGN KEY (actor_id)
-      REFERENCES auth.users(id)
-      ON DELETE SET NULL;
+      FOREIGN KEY (actor_id) REFERENCES auth.users(id) ON DELETE SET NULL;
   END IF;
 
   IF EXISTS (
@@ -817,23 +917,65 @@ BEGIN
       AND table_name   = 'workspace_activity'
       AND column_name  = 'user_id'
   ) THEN
-    ALTER TABLE public.workspace_activity
-      ALTER COLUMN user_id DROP NOT NULL;
-    ALTER TABLE public.workspace_activity
-      DROP CONSTRAINT IF EXISTS workspace_activity_user_id_fkey;
+    ALTER TABLE public.workspace_activity ALTER COLUMN user_id DROP NOT NULL;
+    ALTER TABLE public.workspace_activity DROP CONSTRAINT IF EXISTS workspace_activity_user_id_fkey;
     ALTER TABLE public.workspace_activity
       ADD CONSTRAINT workspace_activity_user_id_fkey
-      FOREIGN KEY (user_id)
-      REFERENCES auth.users(id)
-      ON DELETE SET NULL;
+      FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
   END IF;
 END $$;
 
 
--- ── Part 10 Indexes ───────────────────────────────────────────────────────────
+-- ── Part 13 — workspace_blocked_members ───────────────────────
+-- FIX [D]: blocked_by must allow NULL (ON DELETE SET NULL cannot
+-- coexist with NOT NULL — the deleted-user cascade would violate it).
+
+CREATE TABLE IF NOT EXISTS public.workspace_blocked_members (
+  id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  workspace_id    UUID        NOT NULL REFERENCES public.workspaces(id)  ON DELETE CASCADE,
+  blocked_user_id UUID        NOT NULL REFERENCES auth.users(id)          ON DELETE CASCADE,
+  blocked_by      UUID        REFERENCES auth.users(id)                   ON DELETE SET NULL,
+  reason          TEXT,
+  blocked_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(workspace_id, blocked_user_id)
+);
+
+-- Idempotent: drop NOT NULL from blocked_by if table already existed with it
+DO $$
+BEGIN
+  ALTER TABLE public.workspace_blocked_members ALTER COLUMN blocked_by DROP NOT NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+ALTER TABLE public.workspace_blocked_members ENABLE ROW LEVEL SECURITY;
+
+CREATE INDEX IF NOT EXISTS idx_blocked_ws   ON public.workspace_blocked_members(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_blocked_user ON public.workspace_blocked_members(blocked_user_id);
+
+DROP POLICY IF EXISTS "blocked_select_owner" ON public.workspace_blocked_members;
+DROP POLICY IF EXISTS "blocked_insert_owner" ON public.workspace_blocked_members;
+DROP POLICY IF EXISTS "blocked_delete_owner" ON public.workspace_blocked_members;
+
+CREATE POLICY "blocked_select_owner"
+  ON public.workspace_blocked_members FOR SELECT TO authenticated
+  USING (public.get_workspace_role(workspace_id, auth.uid()) = 'owner');
+
+CREATE POLICY "blocked_insert_owner"
+  ON public.workspace_blocked_members FOR INSERT TO authenticated
+  WITH CHECK (
+    public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
+    AND blocked_by = auth.uid()
+  );
+
+CREATE POLICY "blocked_delete_owner"
+  ON public.workspace_blocked_members FOR DELETE TO authenticated
+  USING (public.get_workspace_role(workspace_id, auth.uid()) = 'owner');
+
+
+-- ── Part 10 Indexes ───────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner             ON public.workspaces(owner_id);
-CREATE INDEX IF NOT EXISTS idx_workspaces_invite_code       ON public.workspaces(invite_code);
+CREATE INDEX IF NOT EXISTS idx_workspaces_invite_code_plain ON public.workspaces(invite_code);
 CREATE INDEX IF NOT EXISTS idx_workspace_members_user       ON public.workspace_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace  ON public.workspace_members(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_reports_workspace  ON public.workspace_reports(workspace_id);
@@ -849,7 +991,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_activity_created   ON public.workspace_
 CREATE INDEX IF NOT EXISTS idx_workspace_activity_user      ON public.workspace_activity(user_id);
 
 
--- ── Part 10 updated_at triggers ──────────────────────────────────────────────
+-- ── Part 10 updated_at triggers ──────────────────────────────
 
 DROP TRIGGER IF EXISTS workspaces_updated_at      ON public.workspaces;
 DROP TRIGGER IF EXISTS report_comments_updated_at ON public.report_comments;
@@ -868,7 +1010,7 @@ CREATE TRIGGER comment_replies_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
--- ── Part 10 RLS ───────────────────────────────────────────────────────────────
+-- ── Part 10 RLS enablement ────────────────────────────────────
 
 ALTER TABLE public.workspaces         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workspace_members  ENABLE ROW LEVEL SECURITY;
@@ -881,9 +1023,6 @@ ALTER TABLE public.workspace_activity ENABLE ROW LEVEL SECURITY;
 -- ============================================================
 -- PART 12 — RLS RECURSION FIX — SECURITY DEFINER HELPER
 -- ============================================================
--- This function runs as its OWNER (postgres role), so it bypasses
--- RLS on workspace_members when called from within a policy USING clause.
--- Mark STABLE so the planner can cache the result within a single statement.
 
 CREATE OR REPLACE FUNCTION public.get_auth_user_workspace_ids()
 RETURNS SETOF uuid
@@ -905,100 +1044,67 @@ GRANT  EXECUTE ON FUNCTION public.get_auth_user_workspace_ids() TO authenticated
 -- PART 12 — RECURSION-SAFE RLS POLICIES
 -- ============================================================
 
--- ── PROFILES (Part 12 recursion-safe policies) ─────────────────
+-- ── PROFILES ──────────────────────────────────────────────────
 
 DROP POLICY IF EXISTS "profiles_select_own"           ON public.profiles;
 DROP POLICY IF EXISTS "profiles_select_co_members"    ON public.profiles;
 DROP POLICY IF EXISTS "profiles_select_authenticated" ON public.profiles;
 
--- Policy A: users can always read their own profile
 CREATE POLICY "profiles_select_own"
-  ON public.profiles
-  FOR SELECT
-  TO authenticated
-  USING (
-    id = auth.uid()
-  );
+  ON public.profiles FOR SELECT TO authenticated
+  USING (id = auth.uid());
 
--- Policy B: users can read profiles of people who share a workspace.
--- Uses the SECURITY DEFINER function — no recursive sub-select.
 CREATE POLICY "profiles_select_co_members"
-  ON public.profiles
-  FOR SELECT
-  TO authenticated
+  ON public.profiles FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1
       FROM   public.workspace_members wm_other
-      WHERE  wm_other.user_id       = profiles.id          -- profile being read
-        AND  wm_other.workspace_id IN (
-               SELECT public.get_auth_user_workspace_ids() -- current user's workspaces
-             )
+      WHERE  wm_other.user_id       = profiles.id
+        AND  wm_other.workspace_id IN (SELECT public.get_auth_user_workspace_ids())
     )
   );
 
 
--- ── WORKSPACE_MEMBERS (Part 12 recursion-safe) ─────────────────
+-- ── WORKSPACE_MEMBERS ─────────────────────────────────────────
 
 DROP POLICY IF EXISTS "workspace_members_select_own_workspace" ON public.workspace_members;
 DROP POLICY IF EXISTS "workspace_members_select"               ON public.workspace_members;
 
 CREATE POLICY "workspace_members_select"
-  ON public.workspace_members
-  FOR SELECT
-  TO authenticated
-  USING (
-    -- Any member of this workspace can see all rows in this workspace.
-    -- get_auth_user_workspace_ids() runs SECURITY DEFINER, so no recursion.
-    workspace_id IN (SELECT public.get_auth_user_workspace_ids())
-  );
+  ON public.workspace_members FOR SELECT TO authenticated
+  USING (workspace_id IN (SELECT public.get_auth_user_workspace_ids()));
 
 
--- ── WORKSPACE_REPORTS (Part 12 recursion-safe) ─────────────────
+-- ── WORKSPACE_REPORTS ─────────────────────────────────────────
 
 DROP POLICY IF EXISTS "workspace_reports_select" ON public.workspace_reports;
 
 CREATE POLICY "workspace_reports_select"
-  ON public.workspace_reports
-  FOR SELECT
-  TO authenticated
-  USING (
-    workspace_id IN (SELECT public.get_auth_user_workspace_ids())
-  );
+  ON public.workspace_reports FOR SELECT TO authenticated
+  USING (workspace_id IN (SELECT public.get_auth_user_workspace_ids()));
 
 
--- ── REPORT_COMMENTS (Part 12 recursion-safe) ─────────────────
+-- ── REPORT_COMMENTS ───────────────────────────────────────────
 
 DROP POLICY IF EXISTS "report_comments_select" ON public.report_comments;
 
 CREATE POLICY "report_comments_select"
-  ON public.report_comments
-  FOR SELECT
-  TO authenticated
-  USING (
-    workspace_id IN (SELECT public.get_auth_user_workspace_ids())
-  );
+  ON public.report_comments FOR SELECT TO authenticated
+  USING (workspace_id IN (SELECT public.get_auth_user_workspace_ids()));
 
 
--- ── RESEARCH_REPORTS (Part 12 recursion-safe) ─────────────────
--- Replace the temporary policy with the full workspace-aware version
+-- ── RESEARCH_REPORTS ──────────────────────────────────────────
 
 DROP POLICY IF EXISTS "read_own_or_public_reports_temp"                ON public.research_reports;
 DROP POLICY IF EXISTS "read_own_or_workspace_shared_or_public_reports" ON public.research_reports;
 
 CREATE POLICY "research_reports_select_shared_workspace"
-  ON public.research_reports
-  FOR SELECT
-  TO authenticated
+  ON public.research_reports FOR SELECT TO authenticated
   USING (
-    -- Own reports
     user_id = auth.uid()
-    OR
-    -- Public reports
-    is_public = TRUE
-    OR
-    -- Reports added to any workspace the current user belongs to
-    id IN (
+    OR is_public = TRUE
+    OR id IN (
       SELECT wr.report_id
       FROM   public.workspace_reports wr
       WHERE  wr.workspace_id IN (SELECT public.get_auth_user_workspace_ids())
@@ -1006,9 +1112,8 @@ CREATE POLICY "research_reports_select_shared_workspace"
   );
 
 
--- ── Original Part 10 RLS policies (INSERT/UPDATE/DELETE) ───────
+-- ── workspace INSERT / UPDATE / DELETE ────────────────────────
 
--- workspaces (INSERT/UPDATE/DELETE)
 DROP POLICY IF EXISTS "workspaces_insert" ON public.workspaces;
 DROP POLICY IF EXISTS "workspaces_update" ON public.workspaces;
 DROP POLICY IF EXISTS "workspaces_delete" ON public.workspaces;
@@ -1020,7 +1125,7 @@ CREATE POLICY "workspaces_update" ON public.workspaces
 CREATE POLICY "workspaces_delete" ON public.workspaces
   FOR DELETE USING (auth.uid() = owner_id);
 
--- workspace_members (INSERT/UPDATE/DELETE)
+-- workspace_members
 DROP POLICY IF EXISTS "workspace_members_insert" ON public.workspace_members;
 DROP POLICY IF EXISTS "workspace_members_update" ON public.workspace_members;
 DROP POLICY IF EXISTS "workspace_members_delete" ON public.workspace_members;
@@ -1038,9 +1143,9 @@ CREATE POLICY "workspace_members_delete" ON public.workspace_members
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- workspace_reports (INSERT/DELETE)
+-- workspace_reports
 DROP POLICY IF EXISTS "workspace_reports_insert" ON public.workspace_reports;
-DROP POLICY IF EXISTS "workspace_reports_delete" ON public.workspace_reports;
+DROP POLICY IF EXISTS "workspace_reports_delete"  ON public.workspace_reports;
 
 CREATE POLICY "workspace_reports_insert" ON public.workspace_reports
   FOR INSERT WITH CHECK (
@@ -1052,7 +1157,7 @@ CREATE POLICY "workspace_reports_delete" ON public.workspace_reports
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- report_comments (INSERT/UPDATE/DELETE)
+-- report_comments
 DROP POLICY IF EXISTS "report_comments_insert" ON public.report_comments;
 DROP POLICY IF EXISTS "report_comments_update" ON public.report_comments;
 DROP POLICY IF EXISTS "report_comments_delete" ON public.report_comments;
@@ -1073,9 +1178,9 @@ CREATE POLICY "report_comments_delete" ON public.report_comments
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- comment_replies (INSERT/DELETE)
+-- comment_replies
 DROP POLICY IF EXISTS "comment_replies_insert" ON public.comment_replies;
-DROP POLICY IF EXISTS "comment_replies_delete" ON public.comment_replies;
+DROP POLICY IF EXISTS "comment_replies_delete"  ON public.comment_replies;
 
 CREATE POLICY "comment_replies_insert" ON public.comment_replies
   FOR INSERT WITH CHECK (
@@ -1096,25 +1201,24 @@ CREATE POLICY "comment_replies_delete" ON public.comment_replies
     )
   );
 
--- workspace_activity (INSERT)
+-- workspace_activity
 DROP POLICY IF EXISTS "workspace_activity_insert" ON public.workspace_activity;
-
 CREATE POLICY "workspace_activity_insert" ON public.workspace_activity
   FOR INSERT WITH CHECK (public.is_workspace_member(workspace_id, auth.uid()));
 
 
 -- ============================================================
--- PART 10 — HELPER FUNCTIONS (two-arg + single-arg overloads)
+-- PART 10 — HELPER FUNCTIONS
 -- ============================================================
 
--- Two-arg version: explicit user_id (internal use)
+-- Two-arg version: explicit user_id
 CREATE OR REPLACE FUNCTION public.is_workspace_member(p_workspace_id UUID, p_user_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.workspace_members
     WHERE workspace_id = p_workspace_id AND user_id = p_user_id
   );
-$$ LANGUAGE sql SECURITY DEFINER STABLE;
+$$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
 -- Single-arg version: uses auth.uid()
 CREATE OR REPLACE FUNCTION public.is_workspace_member(p_workspace_id UUID)
@@ -1123,15 +1227,15 @@ RETURNS BOOLEAN AS $$
     SELECT 1 FROM public.workspace_members
     WHERE workspace_id = p_workspace_id AND user_id = auth.uid()
   );
-$$ LANGUAGE sql SECURITY DEFINER STABLE;
+$$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
--- Role helper (two-arg)
+-- Role helper
 CREATE OR REPLACE FUNCTION public.get_workspace_role(p_workspace_id UUID, p_user_id UUID)
 RETURNS TEXT AS $$
   SELECT role FROM public.workspace_members
   WHERE workspace_id = p_workspace_id AND user_id = p_user_id
   LIMIT 1;
-$$ LANGUAGE sql SECURITY DEFINER STABLE;
+$$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
 -- Editor/owner check using auth.uid()
 CREATE OR REPLACE FUNCTION public.is_workspace_editor_or_owner(p_workspace_id UUID)
@@ -1142,7 +1246,7 @@ RETURNS BOOLEAN AS $$
       AND user_id      = auth.uid()
       AND role         IN ('owner', 'editor')
   );
-$$ LANGUAGE sql SECURITY DEFINER STABLE;
+$$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
 
 -- ============================================================
@@ -1155,31 +1259,25 @@ DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_activ
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_members;  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_reports;  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;            EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.workspace_blocked_members; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 
 -- ============================================================
 -- PART 11 — COMMENT REACTIONS TABLE
--- One reaction per (comment_id, user_id) — exclusive model (11C).
+-- One reaction per (comment_id, user_id) — exclusive model.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS public.comment_reactions (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  comment_id  UUID        NOT NULL
-                          REFERENCES public.report_comments(id)
-                          ON DELETE CASCADE,
-  user_id     UUID        NOT NULL
-                          REFERENCES auth.users(id)
-                          ON DELETE CASCADE,
-  emoji       TEXT        NOT NULL
-                          CHECK (emoji IN ('👍', '✅', '❓', '🔥')),
+  comment_id  UUID        NOT NULL REFERENCES public.report_comments(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  emoji       TEXT        NOT NULL CHECK (emoji IN ('👍', '✅', '❓', '🔥')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (comment_id, user_id)           -- exclusive: one reaction per user per comment
+  UNIQUE (comment_id, user_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_comment_reactions_comment_id
-  ON public.comment_reactions(comment_id);
-CREATE INDEX IF NOT EXISTS idx_comment_reactions_user_id
-  ON public.comment_reactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_comment_id ON public.comment_reactions(comment_id);
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_user_id    ON public.comment_reactions(user_id);
 
 
 -- ============================================================
@@ -1188,42 +1286,32 @@ CREATE INDEX IF NOT EXISTS idx_comment_reactions_user_id
 
 CREATE TABLE IF NOT EXISTS public.pinned_workspace_reports (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  workspace_id UUID        NOT NULL
-                           REFERENCES public.workspaces(id)
-                           ON DELETE CASCADE,
-  report_id    UUID        NOT NULL
-                           REFERENCES public.research_reports(id)
-                           ON DELETE CASCADE,
-  pinned_by    UUID        NOT NULL
-                           REFERENCES auth.users(id)
-                           ON DELETE CASCADE,
+  workspace_id UUID        NOT NULL REFERENCES public.workspaces(id)        ON DELETE CASCADE,
+  report_id    UUID        NOT NULL REFERENCES public.research_reports(id)   ON DELETE CASCADE,
+  pinned_by    UUID        NOT NULL REFERENCES auth.users(id)               ON DELETE CASCADE,
   pinned_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, report_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_pinned_workspace_reports_workspace
-  ON public.pinned_workspace_reports(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_pinned_workspace_reports_workspace ON public.pinned_workspace_reports(workspace_id);
 
 
--- ── Part 11 RLS ───────────────────────────────────────────────────────────────
+-- ── Part 11 RLS ───────────────────────────────────────────────
 
 ALTER TABLE public.comment_reactions        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pinned_workspace_reports ENABLE ROW LEVEL SECURITY;
 
--- comment_reactions: any workspace member can read
 CREATE POLICY "comment_reactions_select_member"
   ON public.comment_reactions FOR SELECT
   USING (
     EXISTS (
       SELECT 1 FROM public.report_comments rc
-      JOIN   public.workspace_members wm
-             ON wm.workspace_id = rc.workspace_id
+      JOIN   public.workspace_members wm ON wm.workspace_id = rc.workspace_id
       WHERE  rc.id      = comment_id
         AND  wm.user_id = auth.uid()
     )
   );
 
--- comment_reactions: editors/owners can add
 CREATE POLICY "comment_reactions_insert_editor"
   ON public.comment_reactions FOR INSERT
   WITH CHECK (
@@ -1235,17 +1323,14 @@ CREATE POLICY "comment_reactions_insert_editor"
     )
   );
 
--- comment_reactions: users can remove their own
 CREATE POLICY "comment_reactions_delete_own"
   ON public.comment_reactions FOR DELETE
   USING (user_id = auth.uid());
 
--- pinned_workspace_reports: any member can read
 CREATE POLICY "pinned_reports_select_member"
   ON public.pinned_workspace_reports FOR SELECT
   USING (public.is_workspace_member(workspace_id));
 
--- pinned_workspace_reports: editors/owners can pin
 CREATE POLICY "pinned_reports_insert_editor"
   ON public.pinned_workspace_reports FOR INSERT
   WITH CHECK (
@@ -1253,24 +1338,22 @@ CREATE POLICY "pinned_reports_insert_editor"
     AND pinned_by = auth.uid()
   );
 
--- pinned_workspace_reports: editors/owners can unpin
 CREATE POLICY "pinned_reports_delete_editor"
   ON public.pinned_workspace_reports FOR DELETE
   USING (public.is_workspace_editor_or_owner(workspace_id));
 
 
--- ── Part 11 Realtime ──────────────────────────────────────────────────────────
+-- ── Part 11 Realtime ──────────────────────────────────────────
 
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.comment_reactions;        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.pinned_workspace_reports; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 
 -- ============================================================
--- PART 11 — workspace_search_index VIEW (11C version)
+-- PART 11 — workspace_search_index VIEW
 -- ============================================================
 
 CREATE OR REPLACE VIEW public.workspace_search_index AS
-  -- Reports
   SELECT
     wr.workspace_id,
     'report'                                                AS result_type,
@@ -1290,7 +1373,6 @@ CREATE OR REPLACE VIEW public.workspace_search_index AS
 
   UNION ALL
 
-  -- Comments
   SELECT
     rc.workspace_id,
     'comment'                                               AS result_type,
@@ -1305,7 +1387,6 @@ CREATE OR REPLACE VIEW public.workspace_search_index AS
 
   UNION ALL
 
-  -- Members (name + username searchable via tsvector AND ILIKE)
   SELECT
     wm.workspace_id,
     'member'                                                AS result_type,
@@ -1328,29 +1409,59 @@ GRANT SELECT ON public.workspace_search_index TO authenticated;
 
 -- ============================================================
 -- PART 12 — EDIT ACCESS REQUESTS TABLE
--- Viewers can request Editor access. One active request per (workspace, user).
+-- Part 13: status check extended to include 'removed'
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS public.edit_access_requests (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id UUID        NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   user_id      UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  message      TEXT,                    -- optional reason from the requester
+  message      TEXT,
   status       TEXT        NOT NULL DEFAULT 'pending'
-                           CHECK (status IN ('pending', 'approved', 'denied')),
+                           CHECK (status IN ('pending', 'approved', 'denied', 'removed')),
   reviewed_by  UUID        REFERENCES auth.users(id) ON DELETE SET NULL,
   reviewed_at  TIMESTAMPTZ,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (workspace_id, user_id)        -- one active request per user per workspace
+  UNIQUE (workspace_id, user_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_edit_access_requests_workspace
-  ON public.edit_access_requests(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_edit_access_requests_user
-  ON public.edit_access_requests(user_id);
-CREATE INDEX IF NOT EXISTS idx_edit_access_requests_status
-  ON public.edit_access_requests(status);
+-- Idempotent: if table already existed without 'removed', update the constraint
+DO $$
+DECLARE
+  v_con text;
+BEGIN
+  FOR v_con IN
+    SELECT con.conname
+    FROM   pg_constraint con
+    JOIN   pg_class      cls ON cls.oid = con.conrelid
+    JOIN   pg_namespace  ns  ON ns.oid  = cls.relnamespace
+    WHERE  ns.nspname  = 'public'
+      AND  cls.relname = 'edit_access_requests'
+      AND  con.contype = 'c'
+      AND  con.conname LIKE '%status%'
+  LOOP
+    EXECUTE format(
+      'ALTER TABLE public.edit_access_requests DROP CONSTRAINT IF EXISTS %I',
+      v_con
+    );
+  END LOOP;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER TABLE public.edit_access_requests
+    ADD CONSTRAINT edit_access_requests_status_check
+    CHECK (status IN ('pending','approved','denied','removed'));
+EXCEPTION
+  WHEN undefined_table  THEN NULL;
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_edit_access_requests_workspace ON public.edit_access_requests(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_edit_access_requests_user      ON public.edit_access_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_edit_access_requests_status    ON public.edit_access_requests(status);
 
 DROP TRIGGER IF EXISTS edit_access_requests_updated_at ON public.edit_access_requests;
 CREATE TRIGGER edit_access_requests_updated_at
@@ -1359,7 +1470,6 @@ CREATE TRIGGER edit_access_requests_updated_at
 
 ALTER TABLE public.edit_access_requests ENABLE ROW LEVEL SECURITY;
 
--- SELECT: the requester or any editor/owner of the workspace can see requests
 CREATE POLICY "edit_access_requests_select"
   ON public.edit_access_requests FOR SELECT
   USING (
@@ -1367,7 +1477,6 @@ CREATE POLICY "edit_access_requests_select"
     OR public.is_workspace_editor_or_owner(workspace_id)
   );
 
--- INSERT: a member of the workspace can create a request for themselves
 CREATE POLICY "edit_access_requests_insert"
   ON public.edit_access_requests FOR INSERT
   WITH CHECK (
@@ -1375,12 +1484,10 @@ CREATE POLICY "edit_access_requests_insert"
     AND public.is_workspace_member(workspace_id)
   );
 
--- UPDATE: only owner/editor can update (approve/deny)
 CREATE POLICY "edit_access_requests_update"
   ON public.edit_access_requests FOR UPDATE
   USING (public.is_workspace_editor_or_owner(workspace_id));
 
--- DELETE: requester can retract their own request; owner can purge
 CREATE POLICY "edit_access_requests_delete"
   ON public.edit_access_requests FOR DELETE
   USING (
@@ -1388,7 +1495,6 @@ CREATE POLICY "edit_access_requests_delete"
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- Realtime
 DO $$ BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE public.edit_access_requests;
 EXCEPTION WHEN duplicate_object THEN NULL;
@@ -1396,19 +1502,14 @@ END $$;
 
 
 -- ============================================================
--- ADDITIONAL INDEXES FOR PART 12 PERFORMANCE
+-- ADDITIONAL INDEXES (Parts 12-13 performance)
 -- ============================================================
 
-CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id
-  ON public.workspace_members(user_id);
-CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id
-  ON public.workspace_members(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_workspace_reports_workspace_id
-  ON public.workspace_reports(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_workspace_reports_added_by
-  ON public.workspace_reports(added_by);
-CREATE INDEX IF NOT EXISTS idx_report_comments_workspace_user
-  ON public.report_comments(workspace_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id      ON public.workspace_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON public.workspace_members(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_reports_workspace_id ON public.workspace_reports(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_reports_added_by     ON public.workspace_reports(added_by);
+CREATE INDEX IF NOT EXISTS idx_report_comments_workspace_user ON public.report_comments(workspace_id, user_id);
 
 
 -- ============================================================
@@ -1445,6 +1546,14 @@ DROP FUNCTION IF EXISTS public.get_pending_access_requests(uuid);
 DROP FUNCTION IF EXISTS public.get_member_workspace_stats(uuid, uuid);
 DROP FUNCTION IF EXISTS public.get_comment_summary_context(uuid, uuid);
 DROP FUNCTION IF EXISTS public.get_auth_user_workspace_ids();
+-- Part 13 additions
+DROP FUNCTION IF EXISTS public.update_workspace_logo(uuid, text);
+DROP FUNCTION IF EXISTS public.is_blocked_from_workspace(uuid, uuid);
+DROP FUNCTION IF EXISTS public.block_workspace_member(uuid, uuid, text);
+DROP FUNCTION IF EXISTS public.unblock_workspace_member(uuid, uuid);
+DROP FUNCTION IF EXISTS public.get_workspace_blocked_members(uuid);
+DROP FUNCTION IF EXISTS public.demote_editor_to_viewer(uuid, uuid);
+DROP FUNCTION IF EXISTS public.count_member_replies_in_workspace(uuid, uuid);
 
 
 -- ============================================================
@@ -1538,10 +1647,7 @@ GRANT EXECUTE ON FUNCTION public.match_report_chunks(vector, UUID, UUID, INT, FL
 -- PART 6 — RPC: is_report_embedded
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.is_report_embedded(
-  p_report_id UUID,
-  p_user_id   UUID
-)
+CREATE OR REPLACE FUNCTION public.is_report_embedded(p_report_id UUID, p_user_id UUID)
 RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   RETURN EXISTS (
@@ -1594,10 +1700,7 @@ GRANT EXECUTE ON FUNCTION public.get_assistant_conversation(UUID, UUID, INT) TO 
 -- PART 6 — RPC: delete_report_embeddings
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.delete_report_embeddings(
-  p_report_id UUID,
-  p_user_id   UUID
-)
+CREATE OR REPLACE FUNCTION public.delete_report_embeddings(p_report_id UUID, p_user_id UUID)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   DELETE FROM public.report_embeddings
@@ -1612,10 +1715,7 @@ GRANT EXECUTE ON FUNCTION public.delete_report_embeddings(UUID, UUID) TO authent
 -- PART 6 — RPC: get_report_embedding_stats
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.get_report_embedding_stats(
-  p_report_id UUID,
-  p_user_id   UUID
-)
+CREATE OR REPLACE FUNCTION public.get_report_embedding_stats(p_report_id UUID, p_user_id UUID)
 RETURNS TABLE (
   total_chunks BIGINT,
   chunk_types  JSONB,
@@ -1703,10 +1803,7 @@ GRANT EXECUTE ON FUNCTION public.get_user_academic_stats(UUID) TO authenticated;
 -- PART 8 — RPC: get_podcast_by_report
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.get_podcast_by_report(
-  p_report_id UUID,
-  p_user_id   UUID
-)
+CREATE OR REPLACE FUNCTION public.get_podcast_by_report(p_report_id UUID, p_user_id UUID)
 RETURNS SETOF public.podcasts
 LANGUAGE sql SECURITY DEFINER STABLE AS $$
   SELECT * FROM public.podcasts
@@ -1795,7 +1892,7 @@ GRANT EXECUTE ON FUNCTION public.get_user_debate_stats(UUID) TO authenticated;
 
 
 -- ============================================================
--- PART 3/STATS — RPC: get_user_research_stats (Parts 1-9)
+-- PART 3/STATS — RPC: get_user_research_stats
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_user_research_stats(p_user_id UUID)
@@ -1898,7 +1995,7 @@ GRANT EXECUTE ON FUNCTION public.get_user_research_stats(UUID) TO authenticated;
 
 
 -- ============================================================
--- COMPREHENSIVE STATS — RPC: get_user_complete_stats (Parts 1-9)
+-- COMPREHENSIVE STATS — RPC: get_user_complete_stats
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_user_complete_stats(p_user_id UUID)
@@ -2070,8 +2167,7 @@ BEGIN
     RETURNING public_token INTO v_token;
     RETURN v_token;
   ELSE
-    UPDATE public.research_reports
-    SET is_public = FALSE WHERE id = p_report_id;
+    UPDATE public.research_reports SET is_public = FALSE WHERE id = p_report_id;
     RETURN NULL;
   END IF;
 END;
@@ -2084,13 +2180,9 @@ GRANT EXECUTE ON FUNCTION public.set_report_public(UUID, UUID, BOOLEAN) TO authe
 -- PART 10 — RPC: get_workspace_report
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.get_workspace_report(
-  p_report_id    UUID,
-  p_workspace_id UUID
-)
+CREATE OR REPLACE FUNCTION public.get_workspace_report(p_report_id UUID, p_workspace_id UUID)
 RETURNS SETOF public.research_reports
-LANGUAGE sql
-SECURITY DEFINER
+LANGUAGE sql SECURITY DEFINER
 SET search_path = public
 AS $$
   SELECT r.*
@@ -2134,40 +2226,69 @@ BEGIN
 
   RETURN v_workspace;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.create_workspace(TEXT, TEXT, BOOLEAN) TO authenticated;
 
 
 -- ============================================================
--- PART 10 — RPC: join_workspace_by_code
+-- PART 13 — RPC: join_workspace_by_code (DEFINITIVE VERSION)
+-- Returns JSON. Checks blocked list. No is_personal reference.
+-- Activity log is non-fatal with entity_type/resource_type fallback.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.join_workspace_by_code(p_invite_code TEXT)
-RETURNS public.workspace_members AS $$
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
 DECLARE
-  v_workspace public.workspaces;
-  v_member    public.workspace_members;
+  v_ws record;
 BEGIN
-  SELECT * INTO v_workspace FROM public.workspaces WHERE invite_code = p_invite_code;
+  SELECT id, name INTO v_ws
+  FROM   public.workspaces
+  WHERE  invite_code = p_invite_code::text
+  LIMIT 1;
+
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'Invalid invite code';
+    RAISE EXCEPTION 'Invalid invite code — no workspace found';
   END IF;
 
-  IF public.is_workspace_member(v_workspace.id, auth.uid()) THEN
-    RAISE EXCEPTION 'Already a member of this workspace';
+  IF public.is_blocked_from_workspace(v_ws.id, auth.uid()) THEN
+    RAISE EXCEPTION 'You have been blocked from joining this workspace';
+  END IF;
+
+  IF public.is_workspace_member(v_ws.id, auth.uid()) THEN
+    RAISE EXCEPTION 'You are already a member of this workspace';
   END IF;
 
   INSERT INTO public.workspace_members (workspace_id, user_id, role)
-  VALUES (v_workspace.id, auth.uid(), 'viewer')
-  RETURNING * INTO v_member;
+  VALUES (v_ws.id, auth.uid(), 'viewer');
 
-  INSERT INTO public.workspace_activity (workspace_id, user_id, action, resource_type, resource_id)
-  VALUES (v_workspace.id, auth.uid(), 'member_joined', 'member', auth.uid()::text);
+  -- Activity log — non-fatal, with column-name fallback
+  BEGIN
+    INSERT INTO public.workspace_activity
+      (workspace_id, user_id, action, entity_type, entity_id)
+    VALUES (v_ws.id, auth.uid(), 'member_joined', 'user', auth.uid());
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      INSERT INTO public.workspace_activity
+        (workspace_id, user_id, action, resource_type, resource_id)
+      VALUES (v_ws.id, auth.uid(), 'member_joined', 'user', auth.uid()::text);
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'join_workspace_by_code: activity log skipped — %', SQLERRM;
+    END;
+  END;
 
-  RETURN v_member;
+  RETURN json_build_object(
+    'id',           gen_random_uuid(),
+    'workspace_id', v_ws.id,
+    'user_id',      auth.uid(),
+    'role',         'viewer',
+    'joined_at',    now()
+  );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 GRANT EXECUTE ON FUNCTION public.join_workspace_by_code(TEXT) TO authenticated;
 
@@ -2199,9 +2320,315 @@ BEGIN
     'member_count', v_count
   );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.preview_workspace_by_code(TEXT) TO authenticated, anon;
+
+
+-- ============================================================
+-- PART 13 — RPC: update_workspace_logo
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.update_workspace_logo(
+  p_workspace_id uuid,
+  p_avatar_url   text
+) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NOT public.is_workspace_editor_or_owner(p_workspace_id) THEN
+    RAISE EXCEPTION 'Only owners and editors can update the workspace logo';
+  END IF;
+
+  UPDATE public.workspaces
+     SET avatar_url = p_avatar_url,
+         updated_at = now()
+   WHERE id = p_workspace_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Workspace not found';
+  END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.update_workspace_logo(uuid, text) TO authenticated;
+
+
+-- ============================================================
+-- PART 13 — HELPER: is_blocked_from_workspace
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.is_blocked_from_workspace(
+  p_workspace_id uuid,
+  p_user_id      uuid DEFAULT auth.uid()
+) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM   public.workspace_blocked_members
+    WHERE  workspace_id    = p_workspace_id
+      AND  blocked_user_id = p_user_id
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_blocked_from_workspace(uuid, uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 13 — RPC: block_workspace_member
+-- FIX [B]: workspace_activity INSERT is non-fatal with column-name fallback.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.block_workspace_member(
+  p_workspace_id uuid,
+  p_user_id      uuid,
+  p_reason       text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_target_role text;
+BEGIN
+  IF public.get_workspace_role(p_workspace_id, auth.uid()) != 'owner' THEN
+    RAISE EXCEPTION 'Only the workspace owner can block members';
+  END IF;
+
+  IF p_user_id = auth.uid() THEN
+    RAISE EXCEPTION 'You cannot block yourself';
+  END IF;
+
+  v_target_role := public.get_workspace_role(p_workspace_id, p_user_id);
+  IF v_target_role = 'owner' THEN
+    RAISE EXCEPTION 'Cannot block a workspace owner';
+  END IF;
+
+  -- Remove from workspace
+  DELETE FROM public.workspace_members
+   WHERE workspace_id = p_workspace_id
+     AND user_id      = p_user_id;
+
+  -- Update access requests (non-fatal)
+  BEGIN
+    UPDATE public.edit_access_requests
+       SET status      = 'denied',
+           reviewed_by = auth.uid(),
+           reviewed_at = now(),
+           updated_at  = now()
+     WHERE workspace_id = p_workspace_id
+       AND user_id      = p_user_id
+       AND status       = 'pending';
+
+    UPDATE public.edit_access_requests
+       SET status      = 'removed',
+           reviewed_by = auth.uid(),
+           reviewed_at = now(),
+           updated_at  = now()
+     WHERE workspace_id = p_workspace_id
+       AND user_id      = p_user_id
+       AND status       = 'approved';
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'block_workspace_member: edit_access_requests update skipped — %', SQLERRM;
+  END;
+
+  -- Insert into blocked list
+  INSERT INTO public.workspace_blocked_members
+    (workspace_id, blocked_user_id, blocked_by, reason)
+  VALUES (p_workspace_id, p_user_id, auth.uid(), p_reason)
+  ON CONFLICT (workspace_id, blocked_user_id) DO NOTHING;
+
+  -- Activity log — non-fatal with column-name fallback
+  BEGIN
+    INSERT INTO public.workspace_activity
+      (workspace_id, user_id, action, entity_type, entity_id, metadata)
+    VALUES (
+      p_workspace_id, auth.uid(), 'member_blocked',
+      'user', p_user_id,
+      jsonb_build_object('reason', p_reason)
+    );
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      INSERT INTO public.workspace_activity
+        (workspace_id, user_id, action, resource_type, resource_id, metadata)
+      VALUES (
+        p_workspace_id, auth.uid(), 'member_blocked',
+        'user', p_user_id::text,
+        jsonb_build_object('reason', p_reason)
+      );
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'block_workspace_member: activity log skipped — %', SQLERRM;
+    END;
+  END;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.block_workspace_member(uuid, uuid, text) TO authenticated;
+
+
+-- ============================================================
+-- PART 13 — RPC: unblock_workspace_member
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.unblock_workspace_member(
+  p_workspace_id uuid,
+  p_user_id      uuid
+) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF public.get_workspace_role(p_workspace_id, auth.uid()) != 'owner' THEN
+    RAISE EXCEPTION 'Only the workspace owner can unblock members';
+  END IF;
+
+  DELETE FROM public.workspace_blocked_members
+   WHERE workspace_id    = p_workspace_id
+     AND blocked_user_id = p_user_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.unblock_workspace_member(uuid, uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 13 — RPC: get_workspace_blocked_members
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_workspace_blocked_members(p_workspace_id uuid)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF public.get_workspace_role(p_workspace_id, auth.uid()) != 'owner' THEN
+    RAISE EXCEPTION 'Only the workspace owner can view blocked members';
+  END IF;
+
+  RETURN COALESCE((
+    SELECT json_agg(row_data ORDER BY (row_data->>'blocked_at') DESC)
+    FROM (
+      SELECT json_build_object(
+        'id',               b.id,
+        'workspace_id',     b.workspace_id,
+        'blocked_user_id',  b.blocked_user_id,
+        'blocked_by',       b.blocked_by,
+        'reason',           b.reason,
+        'blocked_at',       b.blocked_at,
+        'profile', json_build_object(
+          'id',         p.id,
+          'username',   p.username,
+          'full_name',  p.full_name,
+          'avatar_url', p.avatar_url
+        )
+      ) AS row_data
+      FROM public.workspace_blocked_members b
+      LEFT JOIN public.profiles p ON p.id = b.blocked_user_id
+      WHERE b.workspace_id = p_workspace_id
+    ) sub
+  ), '[]'::json);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_workspace_blocked_members(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 13 — RPC: demote_editor_to_viewer
+-- Activity log is non-fatal with column-name fallback.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.demote_editor_to_viewer(
+  p_workspace_id uuid,
+  p_user_id      uuid
+) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF public.get_workspace_role(p_workspace_id, auth.uid()) != 'owner' THEN
+    RAISE EXCEPTION 'Only the workspace owner can demote members';
+  END IF;
+
+  UPDATE public.workspace_members
+     SET role = 'viewer'
+   WHERE workspace_id = p_workspace_id
+     AND user_id      = p_user_id;
+
+  -- Update access request (non-fatal)
+  BEGIN
+    UPDATE public.edit_access_requests ear
+       SET status      = 'removed',
+           reviewed_by = auth.uid(),
+           reviewed_at = now(),
+           updated_at  = now()
+     WHERE ear.id = (
+         SELECT id FROM public.edit_access_requests
+          WHERE workspace_id = p_workspace_id
+            AND user_id      = p_user_id
+            AND status       = 'approved'
+          ORDER BY created_at DESC
+          LIMIT 1
+     );
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'demote_editor_to_viewer: edit_access_requests update skipped — %', SQLERRM;
+  END;
+
+  -- Activity log — non-fatal with column-name fallback
+  BEGIN
+    INSERT INTO public.workspace_activity
+      (workspace_id, user_id, action, entity_type, entity_id, metadata)
+    VALUES (
+      p_workspace_id, auth.uid(), 'member_role_changed',
+      'user', p_user_id,
+      jsonb_build_object('new_role','viewer','previous_role','editor')
+    );
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      INSERT INTO public.workspace_activity
+        (workspace_id, user_id, action, resource_type, resource_id, metadata)
+      VALUES (
+        p_workspace_id, auth.uid(), 'member_role_changed',
+        'user', p_user_id::text,
+        jsonb_build_object('new_role','viewer','previous_role','editor')
+      );
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'demote_editor_to_viewer: activity log skipped — %', SQLERRM;
+    END;
+  END;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.demote_editor_to_viewer(uuid, uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 13 — HELPER: count_member_replies_in_workspace
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.count_member_replies_in_workspace(
+  p_workspace_id uuid,
+  p_user_id      uuid
+) RETURNS bigint
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN (
+    SELECT COUNT(cr.id)
+      FROM public.comment_replies cr
+      JOIN public.report_comments rc ON rc.id = cr.comment_id
+     WHERE rc.workspace_id = p_workspace_id
+       AND cr.user_id      = p_user_id
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.count_member_replies_in_workspace(uuid, uuid) TO authenticated;
 
 
 -- ============================================================
@@ -2223,12 +2650,12 @@ BEGIN
     SELECT COALESCE(json_agg(item), '[]'::json)
     FROM (
       SELECT json_build_object(
-        'id',              wr.id,
-        'workspace_id',    wr.workspace_id,
-        'report_id',       wr.report_id,
-        'added_by',        wr.added_by,
-        'added_at',        wr.added_at,
-        'is_pinned',       EXISTS (
+        'id',           wr.id,
+        'workspace_id', wr.workspace_id,
+        'report_id',    wr.report_id,
+        'added_by',     wr.added_by,
+        'added_at',     wr.added_at,
+        'is_pinned',    EXISTS (
           SELECT 1 FROM public.pinned_workspace_reports pwr
           WHERE pwr.workspace_id = wr.workspace_id AND pwr.report_id = wr.report_id
         ),
@@ -2264,7 +2691,7 @@ BEGIN
     ) sub
   );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.get_workspace_feed(UUID, INT, INT) TO authenticated;
 
@@ -2330,7 +2757,7 @@ BEGIN
     WHERE rc.report_id = p_report_id AND rc.workspace_id = p_workspace_id
   );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.get_report_comments_with_profiles(UUID, UUID) TO authenticated;
 
@@ -2361,7 +2788,7 @@ BEGIN
     ) sub
   );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.get_section_comment_counts(UUID, UUID) TO authenticated;
 
@@ -2399,7 +2826,7 @@ BEGIN
     WHERE wm.workspace_id = p_workspace_id
   );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.get_workspace_members_with_profiles(UUID) TO authenticated;
 
@@ -2432,7 +2859,7 @@ BEGIN
 
   RETURN v_comment;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.toggle_comment_resolved(UUID) TO authenticated;
 
@@ -2448,11 +2875,11 @@ BEGIN
   IF (SELECT owner_id FROM public.workspaces WHERE id = p_workspace_id) != auth.uid() THEN
     RAISE EXCEPTION 'Owner only';
   END IF;
-  v_code := substring(gen_random_uuid()::text, 1, 8);
+  v_code := upper(substring(replace(gen_random_uuid()::text, '-', ''), 1, 10));
   UPDATE public.workspaces SET invite_code = v_code WHERE id = p_workspace_id;
   RETURN v_code;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.regenerate_invite_code(UUID) TO authenticated;
 
@@ -2474,15 +2901,9 @@ BEGIN
     RAISE EXCEPTION 'New owner must be a member';
   END IF;
 
-  UPDATE public.workspaces
-    SET owner_id = p_new_owner_id
-    WHERE id = p_workspace_id;
-  UPDATE public.workspace_members
-    SET role = 'owner'
-    WHERE workspace_id = p_workspace_id AND user_id = p_new_owner_id;
-  UPDATE public.workspace_members
-    SET role = 'editor'
-    WHERE workspace_id = p_workspace_id AND user_id = auth.uid();
+  UPDATE public.workspaces SET owner_id = p_new_owner_id WHERE id = p_workspace_id;
+  UPDATE public.workspace_members SET role = 'owner'  WHERE workspace_id = p_workspace_id AND user_id = p_new_owner_id;
+  UPDATE public.workspace_members SET role = 'editor' WHERE workspace_id = p_workspace_id AND user_id = auth.uid();
 
   INSERT INTO public.workspace_activity
     (workspace_id, user_id, action, resource_type, resource_id, metadata)
@@ -2490,7 +2911,7 @@ BEGIN
     (p_workspace_id, auth.uid(), 'ownership_transferred', 'workspace',
      p_workspace_id::text, json_build_object('new_owner_id', p_new_owner_id));
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.transfer_workspace_ownership(UUID, UUID) TO authenticated;
 
@@ -2509,7 +2930,7 @@ BEGIN
     'total_reports_shared', (SELECT COUNT(*) FROM public.workspace_reports WHERE added_by = p_user_id)
   );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 GRANT EXECUTE ON FUNCTION public.get_user_workspace_stats(UUID) TO authenticated;
 
@@ -2524,9 +2945,9 @@ BEGIN
   PERFORM public.create_workspace('My Workspace', 'Personal research space', true);
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
--- To enable: uncomment these two lines:
+-- To enable: uncomment the two lines below:
 -- DROP TRIGGER IF EXISTS on_new_profile_create_workspace ON public.profiles;
 -- CREATE TRIGGER on_new_profile_create_workspace
 --   AFTER INSERT ON public.profiles
@@ -2534,18 +2955,12 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
 -- ============================================================
--- PART 11 — RPC: toggle_comment_reaction (11C exclusive version)
--- One reaction per (comment_id, user_id).
--- Tapping the same emoji removes it; tapping a different one
--- replaces the existing reaction.
+-- PART 11 — RPC: toggle_comment_reaction
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.toggle_comment_reaction(
-  p_comment_id UUID,
-  p_emoji      TEXT
-)
+CREATE OR REPLACE FUNCTION public.toggle_comment_reaction(p_comment_id UUID, p_emoji TEXT)
 RETURNS JSONB
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_existing_emoji TEXT;
   v_added          BOOLEAN;
@@ -2554,34 +2969,23 @@ BEGIN
     RAISE EXCEPTION 'Invalid emoji. Must be one of: 👍 ✅ ❓ 🔥';
   END IF;
 
-  -- Check what (if any) emoji this user already has on this comment
   SELECT emoji INTO v_existing_emoji
   FROM   public.comment_reactions
-  WHERE  comment_id = p_comment_id
-    AND  user_id    = auth.uid()
+  WHERE  comment_id = p_comment_id AND user_id = auth.uid()
   LIMIT 1;
 
   IF v_existing_emoji IS NOT NULL THEN
-    -- Always remove the existing reaction first
     DELETE FROM public.comment_reactions
-    WHERE  comment_id = p_comment_id
-      AND  user_id    = auth.uid();
+    WHERE comment_id = p_comment_id AND user_id = auth.uid();
 
     IF v_existing_emoji = p_emoji THEN
-      -- Same emoji tapped again → toggle OFF
-      RETURN jsonb_build_object(
-        'added',         false,
-        'emoji',         p_emoji,
-        'removed_emoji', v_existing_emoji
-      );
+      RETURN jsonb_build_object('added', false, 'emoji', p_emoji, 'removed_emoji', v_existing_emoji);
     ELSE
-      -- Different emoji tapped → replace with new one
       INSERT INTO public.comment_reactions (comment_id, user_id, emoji)
       VALUES (p_comment_id, auth.uid(), p_emoji);
       v_added := true;
     END IF;
   ELSE
-    -- No prior reaction → add fresh
     INSERT INTO public.comment_reactions (comment_id, user_id, emoji)
     VALUES (p_comment_id, auth.uid(), p_emoji);
     v_added := true;
@@ -2596,25 +3000,21 @@ GRANT EXECUTE ON FUNCTION public.toggle_comment_reaction(UUID, TEXT) TO authenti
 
 -- ============================================================
 -- PART 11 — RPC: get_comment_reactions
--- Returns one row per (comment_id, emoji) with count + whether
--- the current user has reacted.
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION public.get_comment_reactions(
-  p_comment_ids UUID[]
-)
+CREATE OR REPLACE FUNCTION public.get_comment_reactions(p_comment_ids UUID[])
 RETURNS TABLE (
-  comment_id   UUID,
-  emoji        TEXT,
-  count        BIGINT,
-  has_reacted  BOOLEAN
+  comment_id  UUID,
+  emoji       TEXT,
+  count       BIGINT,
+  has_reacted BOOLEAN
 )
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT
     cr.comment_id,
     cr.emoji,
-    COUNT(*)::BIGINT                     AS count,
-    BOOL_OR(cr.user_id = auth.uid())     AS has_reacted
+    COUNT(*)::BIGINT                 AS count,
+    BOOL_OR(cr.user_id = auth.uid()) AS has_reacted
   FROM public.comment_reactions cr
   WHERE cr.comment_id = ANY(p_comment_ids)
   GROUP BY cr.comment_id, cr.emoji
@@ -2633,7 +3033,7 @@ CREATE OR REPLACE FUNCTION public.toggle_pin_workspace_report(
   p_report_id    UUID
 )
 RETURNS JSONB
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_existing_id UUID;
   v_pinned      BOOLEAN;
@@ -2644,8 +3044,7 @@ BEGIN
 
   SELECT id INTO v_existing_id
   FROM   public.pinned_workspace_reports
-  WHERE  workspace_id = p_workspace_id
-    AND  report_id    = p_report_id;
+  WHERE  workspace_id = p_workspace_id AND report_id = p_report_id;
 
   IF v_existing_id IS NOT NULL THEN
     DELETE FROM public.pinned_workspace_reports WHERE id = v_existing_id;
@@ -2669,7 +3068,7 @@ GRANT EXECUTE ON FUNCTION public.toggle_pin_workspace_report(UUID, UUID) TO auth
 
 CREATE OR REPLACE FUNCTION public.get_pinned_report_ids(p_workspace_id UUID)
 RETURNS TABLE (report_id UUID)
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT report_id
   FROM   public.pinned_workspace_reports
   WHERE  workspace_id = p_workspace_id
@@ -2681,9 +3080,7 @@ GRANT EXECUTE ON FUNCTION public.get_pinned_report_ids(UUID) TO authenticated;
 
 
 -- ============================================================
--- PART 11 — RPC: search_workspace (11C advanced version)
--- Combines full-text tsvector ranking with ILIKE fallback so
--- partial title/name queries always return results.
+-- PART 11 — RPC: search_workspace
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.search_workspace(
@@ -2701,7 +3098,7 @@ RETURNS TABLE (
   created_at  TIMESTAMPTZ,
   rank        REAL
 )
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   WITH q AS (
     SELECT
       CASE WHEN length(trim(p_query)) > 0
@@ -2741,8 +3138,7 @@ GRANT EXECUTE ON FUNCTION public.search_workspace(UUID, TEXT, INT) TO authentica
 
 
 -- ============================================================
--- PART 11 — RPC: get_workspace_activity_feed (TABLE version)
--- Safe when user_id is NULL after SET NULL cascade.
+-- PART 11 — RPC: get_workspace_activity_feed
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_workspace_activity_feed(
@@ -2762,19 +3158,19 @@ RETURNS TABLE (
   actor_username TEXT,
   actor_avatar   TEXT
 )
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT
     wa.id,
     wa.workspace_id,
     wa.user_id,
     wa.action,
-    wa.resource_type,
-    wa.resource_id::UUID,
-    COALESCE(wa.metadata, '{}')                               AS metadata,
+    COALESCE(wa.resource_type, wa.entity_type::text),
+    COALESCE(wa.resource_id::uuid, wa.entity_id),
+    COALESCE(wa.metadata, '{}'),
     wa.created_at,
-    COALESCE(p.full_name, p.username, 'Deleted User')         AS actor_name,
-    p.username                                                 AS actor_username,
-    p.avatar_url                                               AS actor_avatar
+    COALESCE(p.full_name, p.username, 'Deleted User') AS actor_name,
+    p.username                                          AS actor_username,
+    p.avatar_url                                        AS actor_avatar
   FROM public.workspace_activity wa
   LEFT JOIN public.profiles p ON p.id = wa.user_id
   WHERE wa.workspace_id = p_workspace_id
@@ -2795,7 +3191,7 @@ CREATE OR REPLACE FUNCTION public.request_editor_access(
   p_message      TEXT DEFAULT NULL
 )
 RETURNS public.edit_access_requests
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_role    TEXT;
   v_request public.edit_access_requests;
@@ -2810,13 +3206,11 @@ BEGIN
     RAISE EXCEPTION 'You already have editor or higher access';
   END IF;
 
-  INSERT INTO public.edit_access_requests
-    (workspace_id, user_id, message, status)
-  VALUES
-    (p_workspace_id, auth.uid(), p_message, 'pending')
+  INSERT INTO public.edit_access_requests (workspace_id, user_id, message, status)
+  VALUES (p_workspace_id, auth.uid(), p_message, 'pending')
   ON CONFLICT (workspace_id, user_id) DO UPDATE
-    SET message    = EXCLUDED.message,
-        status     = 'pending',
+    SET message     = EXCLUDED.message,
+        status      = 'pending',
         reviewed_by = NULL,
         reviewed_at = NULL,
         updated_at  = now()
@@ -2835,16 +3229,12 @@ GRANT EXECUTE ON FUNCTION public.request_editor_access(UUID, TEXT) TO authentica
 
 CREATE OR REPLACE FUNCTION public.approve_editor_request(p_request_id UUID)
 RETURNS VOID
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_request public.edit_access_requests;
 BEGIN
-  SELECT * INTO v_request
-  FROM public.edit_access_requests WHERE id = p_request_id;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Request not found';
-  END IF;
+  SELECT * INTO v_request FROM public.edit_access_requests WHERE id = p_request_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Request not found'; END IF;
 
   IF NOT public.is_workspace_editor_or_owner(v_request.workspace_id) THEN
     RAISE EXCEPTION 'Only editors and owners can approve requests';
@@ -2854,34 +3244,20 @@ BEGIN
     RAISE EXCEPTION 'Request is already %', v_request.status;
   END IF;
 
-  -- Upgrade the member's role
   UPDATE public.workspace_members
     SET role = 'editor'
-    WHERE workspace_id = v_request.workspace_id
-      AND user_id      = v_request.user_id;
+    WHERE workspace_id = v_request.workspace_id AND user_id = v_request.user_id;
 
-  -- Mark the request approved
   UPDATE public.edit_access_requests
-    SET status      = 'approved',
-        reviewed_by = auth.uid(),
-        reviewed_at = now(),
-        updated_at  = now()
+    SET status = 'approved', reviewed_by = auth.uid(), reviewed_at = now(), updated_at = now()
     WHERE id = p_request_id;
 
-  -- Log activity
   INSERT INTO public.workspace_activity
     (workspace_id, user_id, action, resource_type, resource_id, metadata)
   VALUES (
-    v_request.workspace_id,
-    auth.uid(),
-    'member_role_changed',
-    'member',
+    v_request.workspace_id, auth.uid(), 'member_role_changed', 'member',
     v_request.user_id::text,
-    jsonb_build_object(
-      'new_role', 'editor',
-      'reason',   'access_request_approved',
-      'request_id', p_request_id
-    )
+    jsonb_build_object('new_role','editor','reason','access_request_approved','request_id',p_request_id)
   );
 END;
 $$;
@@ -2895,16 +3271,12 @@ GRANT EXECUTE ON FUNCTION public.approve_editor_request(UUID) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.deny_editor_request(p_request_id UUID)
 RETURNS VOID
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_request public.edit_access_requests;
 BEGIN
-  SELECT * INTO v_request
-  FROM public.edit_access_requests WHERE id = p_request_id;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Request not found';
-  END IF;
+  SELECT * INTO v_request FROM public.edit_access_requests WHERE id = p_request_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Request not found'; END IF;
 
   IF NOT public.is_workspace_editor_or_owner(v_request.workspace_id) THEN
     RAISE EXCEPTION 'Only editors and owners can deny requests';
@@ -2915,10 +3287,7 @@ BEGIN
   END IF;
 
   UPDATE public.edit_access_requests
-    SET status      = 'denied',
-        reviewed_by = auth.uid(),
-        reviewed_at = now(),
-        updated_at  = now()
+    SET status = 'denied', reviewed_by = auth.uid(), reviewed_at = now(), updated_at = now()
     WHERE id = p_request_id;
 END;
 $$;
@@ -2932,12 +3301,10 @@ GRANT EXECUTE ON FUNCTION public.deny_editor_request(UUID) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.retract_editor_request(p_workspace_id UUID)
 RETURNS VOID
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   DELETE FROM public.edit_access_requests
-  WHERE workspace_id = p_workspace_id
-    AND user_id      = auth.uid()
-    AND status       = 'pending';
+  WHERE workspace_id = p_workspace_id AND user_id = auth.uid() AND status = 'pending';
 END;
 $$;
 
@@ -2950,7 +3317,7 @@ GRANT EXECUTE ON FUNCTION public.retract_editor_request(UUID) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.get_pending_access_requests(p_workspace_id UUID)
 RETURNS JSON
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   IF NOT public.is_workspace_editor_or_owner(p_workspace_id) THEN
     RAISE EXCEPTION 'Access denied';
@@ -2978,8 +3345,7 @@ BEGIN
     ), '[]'::json)
     FROM public.edit_access_requests r
     LEFT JOIN public.profiles p ON p.id = r.user_id
-    WHERE r.workspace_id = p_workspace_id
-      AND r.status       = 'pending'
+    WHERE r.workspace_id = p_workspace_id AND r.status = 'pending'
   );
 END;
 $$;
@@ -2996,7 +3362,7 @@ CREATE OR REPLACE FUNCTION public.get_member_workspace_stats(
   p_user_id      UUID
 )
 RETURNS JSON
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_role      TEXT;
   v_joined_at TIMESTAMPTZ;
@@ -3021,11 +3387,8 @@ BEGIN
       SELECT COUNT(*) FROM public.report_comments
       WHERE workspace_id = p_workspace_id AND user_id = p_user_id
     ),
-    'replies_made', (
-      SELECT COUNT(*) FROM public.comment_replies cr
-      JOIN public.report_comments rc ON rc.id = cr.comment_id
-      WHERE rc.workspace_id = p_workspace_id AND cr.user_id = p_user_id
-    ),
+    'replies_made',
+      public.count_member_replies_in_workspace(p_workspace_id, p_user_id),
     'reports_pinned', (
       SELECT COUNT(*) FROM public.pinned_workspace_reports
       WHERE workspace_id = p_workspace_id AND pinned_by = p_user_id
@@ -3046,7 +3409,7 @@ CREATE OR REPLACE FUNCTION public.get_comment_summary_context(
   p_workspace_id UUID
 )
 RETURNS JSON
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   IF NOT public.is_workspace_member(p_workspace_id) THEN
     RAISE EXCEPTION 'Access denied';
@@ -3090,47 +3453,65 @@ GRANT EXECUTE ON FUNCTION public.get_comment_summary_context(UUID, UUID) TO auth
 -- TABLE & FUNCTION COMMENTS
 -- ============================================================
 
-COMMENT ON TABLE public.research_reports      IS 'Core research reports table (Parts 1-7)';
-COMMENT ON TABLE public.presentations         IS 'AI-generated slide decks (Part 5)';
-COMMENT ON TABLE public.academic_papers       IS 'AI-generated academic papers (Part 7)';
-COMMENT ON TABLE public.podcasts              IS 'AI-generated podcast episodes (Part 8)';
-COMMENT ON TABLE public.debate_sessions       IS 'AI Debate Agent sessions (Part 9)';
-COMMENT ON TABLE public.report_embeddings     IS 'pgvector chunks for RAG pipeline (Part 6)';
-COMMENT ON TABLE public.assistant_conversations IS 'RAG-powered chat messages (Part 6)';
-COMMENT ON TABLE public.workspaces            IS 'Collaborative workspaces (Parts 10-11)';
-COMMENT ON TABLE public.workspace_members     IS 'Workspace membership + roles (Part 10)';
-COMMENT ON TABLE public.workspace_reports     IS 'Reports shared into workspaces (Part 10)';
-COMMENT ON TABLE public.report_comments       IS 'Threaded comments on reports (Part 10)';
-COMMENT ON TABLE public.comment_replies       IS 'Replies to report comments (Part 10)';
-COMMENT ON TABLE public.workspace_activity    IS 'Realtime activity feed (Parts 10-11)';
-COMMENT ON TABLE public.comment_reactions     IS 'Emoji reactions on comments — exclusive one-per-user model (Part 11)';
+COMMENT ON TABLE public.research_reports         IS 'Core research reports table (Parts 1-7)';
+COMMENT ON TABLE public.presentations            IS 'AI-generated slide decks (Part 5)';
+COMMENT ON TABLE public.academic_papers          IS 'AI-generated academic papers (Part 7)';
+COMMENT ON TABLE public.podcasts                 IS 'AI-generated podcast episodes (Part 8)';
+COMMENT ON TABLE public.debate_sessions          IS 'AI Debate Agent sessions (Part 9)';
+COMMENT ON TABLE public.report_embeddings        IS 'pgvector chunks for RAG pipeline (Part 6)';
+COMMENT ON TABLE public.assistant_conversations  IS 'RAG-powered chat messages (Part 6)';
+COMMENT ON TABLE public.workspaces               IS 'Collaborative workspaces (Parts 10-13)';
+COMMENT ON TABLE public.workspace_members        IS 'Workspace membership + roles (Part 10)';
+COMMENT ON TABLE public.workspace_reports        IS 'Reports shared into workspaces (Part 10)';
+COMMENT ON TABLE public.report_comments          IS 'Threaded comments on reports (Part 10)';
+COMMENT ON TABLE public.comment_replies          IS 'Replies to report comments (Part 10)';
+COMMENT ON TABLE public.workspace_activity       IS 'Realtime activity feed (Parts 10-13; dual entity_type/resource_type columns)';
+COMMENT ON TABLE public.comment_reactions        IS 'Emoji reactions on comments — exclusive one-per-user model (Part 11)';
 COMMENT ON TABLE public.pinned_workspace_reports IS 'Pinned reports in workspace feed (Part 11)';
-COMMENT ON TABLE public.edit_access_requests  IS 'Viewer-to-editor access upgrade requests with owner approve/deny (Part 12)';
+COMMENT ON TABLE public.edit_access_requests     IS 'Viewer-to-editor access upgrade requests; status includes removed (Parts 12-13)';
+COMMENT ON TABLE public.workspace_blocked_members IS 'Blocked member list per workspace; blocked_by nullable (Part 13)';
 
-COMMENT ON VIEW  public.workspace_search_index IS 'Unified search index: reports + comments + members (Part 11, 11C)';
+COMMENT ON VIEW  public.workspace_search_index   IS 'Unified search index: reports + comments + members (Parts 11, 11C)';
 
-COMMENT ON FUNCTION public.get_user_research_stats(UUID)         IS 'Profile stats — RETURNS TABLE (snake_case). Parts 1-9. Used by useStats hook.';
-COMMENT ON FUNCTION public.get_user_complete_stats(UUID)         IS 'Full analytics stats across all features Parts 1-9.';
-COMMENT ON FUNCTION public.get_workspace_report(UUID, UUID)      IS 'Fetch a report for a workspace member, bypassing RLS (Part 10 patch).';
-COMMENT ON FUNCTION public.toggle_comment_reaction(UUID, TEXT)   IS 'Exclusive emoji reaction toggle: one per user per comment (Part 11, 11C).';
-COMMENT ON FUNCTION public.search_workspace(UUID, TEXT, INT)     IS 'Full-text + ILIKE workspace search across reports, comments, members (Part 11, 11C).';
-COMMENT ON FUNCTION public.get_workspace_activity_feed(UUID, INT) IS 'Activity feed with actor snapshot; null-safe for deleted users (Part 11).';
-COMMENT ON FUNCTION public.is_workspace_editor_or_owner(UUID)    IS 'Returns true if auth.uid() is an editor or owner of the workspace (Part 11).';
-COMMENT ON FUNCTION public.get_auth_user_workspace_ids()         IS 'SECURITY DEFINER helper that returns workspace IDs the current user belongs to (Part 12).';
-COMMENT ON FUNCTION public.request_editor_access(UUID, TEXT)     IS 'Viewer submits request for editor access; upserts to allow re-request after denial (Part 12)';
-COMMENT ON FUNCTION public.approve_editor_request(UUID)          IS 'Owner/editor approves a pending editor access request, upgrading the member role (Part 12)';
-COMMENT ON FUNCTION public.deny_editor_request(UUID)             IS 'Owner/editor denies a pending editor access request (Part 12)';
-COMMENT ON FUNCTION public.retract_editor_request(UUID)          IS 'Requester cancels their own pending access request (Part 12)';
-COMMENT ON FUNCTION public.get_pending_access_requests(UUID)     IS 'Returns all pending editor access requests with requester profile data (Part 12)';
-COMMENT ON FUNCTION public.get_member_workspace_stats(UUID, UUID) IS 'Returns per-member activity stats within a workspace for MemberProfileCard (Part 12)';
-COMMENT ON FUNCTION public.get_comment_summary_context(UUID, UUID) IS 'Returns structured comment + reply text for GPT-4o AI summary (Part 12)';
+COMMENT ON FUNCTION public.get_user_research_stats(UUID)            IS 'Profile stats — RETURNS TABLE (snake_case). Parts 1-9.';
+COMMENT ON FUNCTION public.get_user_complete_stats(UUID)            IS 'Full analytics stats across all features Parts 1-9.';
+COMMENT ON FUNCTION public.get_workspace_report(UUID, UUID)         IS 'Fetch a report for a workspace member, bypassing RLS (Part 10 patch).';
+COMMENT ON FUNCTION public.toggle_comment_reaction(UUID, TEXT)      IS 'Exclusive emoji reaction toggle: one per user per comment (Part 11, 11C).';
+COMMENT ON FUNCTION public.search_workspace(UUID, TEXT, INT)        IS 'Full-text + ILIKE workspace search across reports, comments, members (Part 11, 11C).';
+COMMENT ON FUNCTION public.get_workspace_activity_feed(UUID, INT)   IS 'Activity feed with actor snapshot; null-safe for deleted users (Parts 11-13).';
+COMMENT ON FUNCTION public.is_workspace_editor_or_owner(UUID)       IS 'Returns true if auth.uid() is editor or owner of the workspace (Part 11).';
+COMMENT ON FUNCTION public.get_auth_user_workspace_ids()            IS 'SECURITY DEFINER helper: workspace IDs the current user belongs to (Part 12).';
+COMMENT ON FUNCTION public.request_editor_access(UUID, TEXT)        IS 'Viewer submits request for editor access (Part 12).';
+COMMENT ON FUNCTION public.approve_editor_request(UUID)             IS 'Approve a pending editor access request, upgrading the member role (Part 12).';
+COMMENT ON FUNCTION public.deny_editor_request(UUID)                IS 'Deny a pending editor access request (Part 12).';
+COMMENT ON FUNCTION public.retract_editor_request(UUID)             IS 'Requester cancels their own pending access request (Part 12).';
+COMMENT ON FUNCTION public.get_pending_access_requests(UUID)        IS 'Returns all pending editor access requests with requester profile data (Part 12).';
+COMMENT ON FUNCTION public.get_member_workspace_stats(UUID, UUID)   IS 'Per-member activity stats within a workspace for MemberProfileCard (Parts 12-13).';
+COMMENT ON FUNCTION public.get_comment_summary_context(UUID, UUID)  IS 'Structured comment + reply text for GPT-4o AI summary (Part 12).';
+COMMENT ON FUNCTION public.update_workspace_logo(UUID, TEXT)        IS 'Editor/owner updates workspace avatar_url (Part 13).';
+COMMENT ON FUNCTION public.is_blocked_from_workspace(UUID, UUID)    IS 'Returns true if the given user is blocked from the workspace (Part 13).';
+COMMENT ON FUNCTION public.block_workspace_member(UUID, UUID, TEXT) IS 'Owner blocks a member: removes them, records block, updates requests (Part 13).';
+COMMENT ON FUNCTION public.unblock_workspace_member(UUID, UUID)     IS 'Owner removes a block entry, allowing the user to rejoin (Part 13).';
+COMMENT ON FUNCTION public.get_workspace_blocked_members(UUID)      IS 'Owner fetches list of blocked members with profiles (Part 13).';
+COMMENT ON FUNCTION public.demote_editor_to_viewer(UUID, UUID)      IS 'Owner demotes an editor to viewer, marking their approved request removed (Part 13).';
+COMMENT ON FUNCTION public.count_member_replies_in_workspace(UUID, UUID) IS 'Helper: count replies by a user across all workspace comments (Part 13).';
+COMMENT ON FUNCTION public.join_workspace_by_code(TEXT)             IS 'Join via invite code; checks block list; returns JSON; no is_personal ref (Part 13).';
 
 
 -- ============================================================
--- Done ✓ All Parts 1-12 (including all patches) installed.
+-- POSTGREST SCHEMA CACHE RELOAD
+-- Forces PostgREST to pick up all new/replaced functions
+-- immediately without waiting for the automatic reload interval.
+-- ============================================================
+
+NOTIFY pgrst, 'reload schema';
+
+
+-- ============================================================
+-- Done ✓  All Parts 1-13 installed.
 --
 -- Verification queries:
---   SELECT * FROM pg_extension WHERE extname = 'vector';
+--   SELECT * FROM pg_extension WHERE extname IN ('uuid-ossp','vector');
 --   SELECT table_name FROM information_schema.tables
 --     WHERE table_schema = 'public' ORDER BY table_name;
 --   SELECT proname FROM pg_proc

@@ -1,7 +1,9 @@
 // src/components/workspace/EditAccessRequestModal.tsx
-// Part 12 — Two-mode modal:
-//   • VIEWER mode: compose + submit an access request
-//   • OWNER/EDITOR mode: review + approve/deny pending requests
+// Part 12 — Two-mode modal (viewer compose / owner review).
+// Part 13B UPDATE:
+//   • Added 'removed' status state for viewer — shows "You were removed as
+//     editor" warning card, then allows the viewer to re-submit a fresh request.
+//   • Added `hasRemovedRequest` prop to ViewerProps.
 
 import React, { useState } from 'react';
 import {
@@ -22,14 +24,14 @@ import { COLORS, FONTS, RADIUS } from '../../constants/theme';
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface ViewerProps {
-  mode:            'viewer';
-  visible:         boolean;
-  workspaceName:   string;
-  existingRequest: EditAccessRequest | null;
-  isSubmitting:    boolean;
-  onSubmit:        (message: string) => void;
-  onRetract:       () => void;
-  onClose:         () => void;
+  mode:               'viewer';
+  visible:            boolean;
+  workspaceName:      string;
+  existingRequest:    EditAccessRequest | null;
+  isSubmitting:       boolean;
+  onSubmit:           (message: string) => void;
+  onRetract:          () => void;
+  onClose:            () => void;
 }
 
 interface OwnerProps {
@@ -62,9 +64,9 @@ export function EditAccessRequestModal(props: Props) {
         exiting={FadeOut.duration(150)}
         style={StyleSheet.absoluteFillObject}
       >
-        <TouchableOpacity 
-          style={{ flex: 1 }} 
-          activeOpacity={1} 
+        <TouchableOpacity
+          style={{ flex: 1 }}
+          activeOpacity={1}
           onPress={props.onClose}
         />
       </Animated.View>
@@ -74,22 +76,10 @@ export function EditAccessRequestModal(props: Props) {
         style={styles.kavWrap}
       >
         <Animated.View
-          entering={SlideInDown
-            .duration(300)
-            .springify()
-            .damping(15)
-            .stiffness(200)
-            .mass(1)
-          }
+          entering={SlideInDown.duration(300).springify().damping(15).stiffness(200).mass(1)}
           exiting={SlideOutDown.duration(200)}
-          style={[
-            styles.sheet, 
-            { 
-              paddingBottom: Math.max(insets.bottom, 20),
-            }
-          ]}
+          style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 20) }]}
         >
-          {/* Handle */}
           <View style={styles.handleWrap}>
             <View style={styles.handle} />
           </View>
@@ -120,11 +110,15 @@ function ViewerContent({
   const hasPending  = existingRequest?.status === 'pending';
   const hasDenied   = existingRequest?.status === 'denied';
   const hasApproved = existingRequest?.status === 'approved';
+  const hasRemoved  = existingRequest?.status === 'removed'; // ← Part 13B
 
   const handleSubmit = () => {
     onSubmit(message.trim());
     setMessage('');
   };
+
+  // Whether we should show the compose form (no request, denied, or removed)
+  const showForm = !hasPending && !hasApproved;
 
   return (
     <View style={styles.content}>
@@ -143,7 +137,6 @@ function ViewerContent({
       </View>
 
       {hasApproved ? (
-        // Already approved — shouldn't normally reach here
         <StatusCard
           icon="checkmark-circle"
           iconColor={COLORS.success}
@@ -152,8 +145,8 @@ function ViewerContent({
           bg={`${COLORS.success}10`}
           border={`${COLORS.success}30`}
         />
+
       ) : hasPending ? (
-        // Pending request
         <>
           <StatusCard
             icon="time-outline"
@@ -181,10 +174,24 @@ function ViewerContent({
             <Text style={styles.retractBtnText}>Retract Request</Text>
           </TouchableOpacity>
         </>
+
       ) : (
-        // No request yet (or denied — allow re-request)
+        // No request / denied / removed — show compose form
         <>
-          {hasDenied && (
+          {/* ── Part 13B: Removed status banner ── */}
+          {hasRemoved && (
+            <StatusCard
+              icon="person-remove-outline"
+              iconColor={COLORS.error}
+              title="Editor Access Removed"
+              body="The workspace owner has removed your editor access. You are now a viewer again. You can submit a new request if you need editor access."
+              bg={`${COLORS.error}10`}
+              border={`${COLORS.error}30`}
+            />
+          )}
+
+          {/* Denied banner (existing from Part 12) */}
+          {hasDenied && !hasRemoved && (
             <StatusCard
               icon="close-circle-outline"
               iconColor={COLORS.error}
@@ -225,7 +232,13 @@ function ViewerContent({
               ? <ActivityIndicator size="small" color="#FFF" />
               : <Ionicons name="send-outline" size={16} color="#FFF" />}
             <Text style={styles.submitBtnText}>
-              {isSubmitting ? 'Sending…' : hasDenied ? 'Re-submit Request' : 'Send Request'}
+              {isSubmitting
+                ? 'Sending…'
+                : hasRemoved
+                  ? 'Request Editor Access Again'
+                  : hasDenied
+                    ? 'Re-submit Request'
+                    : 'Send Request'}
             </Text>
           </TouchableOpacity>
         </>
@@ -237,15 +250,10 @@ function ViewerContent({
 // ─── Owner content ────────────────────────────────────────────────────────────
 
 function OwnerContent({
-  requests,
-  isActioning,
-  onApprove,
-  onDeny,
-  onClose,
+  requests, isActioning, onApprove, onDeny, onClose,
 }: Omit<OwnerProps, 'mode' | 'visible'>) {
   return (
     <View style={styles.content}>
-      {/* Header */}
       <View style={styles.headerRow}>
         <View style={[styles.headerIconWrap, { backgroundColor: `${COLORS.warning}15` }]}>
           <Ionicons name="person-add-outline" size={22} color={COLORS.warning} />
@@ -298,7 +306,7 @@ function RequestCard({
   onApprove:   () => void;
   onDeny:      () => void;
 }) {
-  const name = request.profile?.fullName ?? request.profile?.username ?? 'Unknown';
+  const name  = request.profile?.fullName ?? request.profile?.username ?? 'Unknown';
   const since = new Date(request.createdAt).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric',
   });
@@ -306,11 +314,7 @@ function RequestCard({
   return (
     <View style={reqStyles.card}>
       <View style={reqStyles.top}>
-        <Avatar
-          url={request.profile?.avatarUrl}
-          name={name}
-          size={40}
-        />
+        <Avatar url={request.profile?.avatarUrl} name={name} size={40} />
         <View style={{ flex: 1 }}>
           <Text style={reqStyles.name} numberOfLines={1}>{name}</Text>
           {request.profile?.username && (
@@ -383,16 +387,7 @@ function StatusCard({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
-  kavWrap: {
-    position: 'absolute', 
-    left: 0, 
-    right: 0, 
-    bottom: 0,
-  },
+  kavWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   sheet: {
     backgroundColor:      COLORS.backgroundCard,
     borderTopLeftRadius:  26,
@@ -406,279 +401,55 @@ const styles = StyleSheet.create({
     elevation:            20,
     overflow: 'hidden',
   },
-  handleWrap: { 
-    alignItems: 'center', 
-    paddingTop: 10, 
-    paddingBottom: 6,
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 20,
-  },
-  handle: { 
-    width: 40, 
-    height: 4, 
-    borderRadius: 2, 
-    backgroundColor: COLORS.border,
-  },
-  content: { 
-    paddingHorizontal: 24, 
-    paddingBottom: 16,
-    paddingTop: 44, // Space for handle
-  },
+  handleWrap: { alignItems: 'center', paddingTop: 10, paddingBottom: 6, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 },
+  handle:     { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
+  content:    { paddingHorizontal: 24, paddingBottom: 16, paddingTop: 44 },
 
-  headerRow: {
-    flexDirection: 'row', 
-    alignItems: 'center',
-    gap: 16, 
-    marginBottom: 20,
-  },
-  headerIconWrap: {
-    width: 48, 
-    height: 48, 
-    borderRadius: 14,
-    alignItems: 'center', 
-    justifyContent: 'center',
-  },
-  title: { 
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.lg, 
-    fontWeight: '800',
-  },
-  subtitle: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    marginTop: 2,
-  },
-  closeBtn: {
-    width: 32, 
-    height: 32, 
-    borderRadius: 10,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center', 
-    justifyContent: 'center',
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 4,
-  },
+  headerRow:     { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 20 },
+  headerIconWrap:{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  title:         { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  subtitle:      { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  closeBtn:      { width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
 
-  fieldLabel: { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '600', 
-    marginBottom: 8,
-  },
-  fieldOptional: { 
-    color: COLORS.textMuted, 
-    fontWeight: '400',
-  },
-  messageInput: {
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.sm,
-    paddingHorizontal: 16, 
-    paddingVertical: 12,
-    minHeight: 100,
-  },
-  charCount: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    alignSelf: 'flex-end', 
-    marginTop: 4,
-  },
-  helperText:  {
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs,
-    lineHeight: 18, 
-    marginTop: 8, 
-    marginBottom: 16,
-  },
+  fieldLabel:    { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: 8 },
+  fieldOptional: { color: COLORS.textMuted, fontWeight: '400' },
+  messageInput:  { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, paddingHorizontal: 16, paddingVertical: 12, minHeight: 100 },
+  charCount:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, alignSelf: 'flex-end', marginTop: 4 },
+  helperText:    { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 18, marginTop: 8, marginBottom: 16 },
 
-  submitBtn: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    gap: 8,
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.lg, 
-    paddingVertical: 14,
-  },
-  submitBtnText: { 
-    color: '#FFF', 
-    fontSize: FONTS.sizes.base, 
-    fontWeight: '700',
-  },
+  submitBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14 },
+  submitBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
 
-  retractBtn: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    gap: 8,
-    backgroundColor: `${COLORS.error}10`,
-    borderRadius: RADIUS.lg, 
-    paddingVertical: 12,
-    borderWidth: 1, 
-    borderColor: `${COLORS.error}30`,
-    marginTop: 16,
-  },
-  retractBtnText: { 
-    color: COLORS.error, 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '600',
-  },
+  retractBtn:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, paddingVertical: 12, borderWidth: 1, borderColor: `${COLORS.error}30`, marginTop: 16 },
+  retractBtnText: { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '600' },
 
-  messagePreview: {
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg, 
-    padding: 16,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-    marginBottom: 8,
-  },
-  messagePreviewLabel: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    fontWeight: '600', 
-    marginBottom: 4,
-  },
-  messagePreviewText:  { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.sm, 
-    fontStyle: 'italic',
-  },
+  messagePreview:      { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: 16, borderWidth: 1, borderColor: COLORS.border, marginBottom: 8 },
+  messagePreviewLabel: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 4 },
+  messagePreviewText:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontStyle: 'italic' },
 
-  emptyWrap: { 
-    alignItems: 'center', 
-    paddingVertical: 24, 
-    gap: 10,
-  },
-  emptyTitle: { 
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.base, 
-    fontWeight: '700',
-  },
-  emptyDesc:  { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.sm,
-  },
+  emptyWrap:  { alignItems: 'center', paddingVertical: 24, gap: 10 },
+  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
+  emptyDesc:  { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
 });
 
 const statusStyles = StyleSheet.create({
-  card: {
-    flexDirection: 'row', 
-    alignItems: 'flex-start', 
-    gap: 10,
-    borderRadius: RADIUS.lg, 
-    padding: 16,
-    borderWidth: 1, 
-    marginBottom: 16,
-  },
-  title: { 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '700', 
-    marginBottom: 4,
-  },
-  body:  { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.xs, 
-    lineHeight: 18,
-  },
+  card: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: RADIUS.lg, padding: 16, borderWidth: 1, marginBottom: 16 },
+  title:{ fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 4 },
+  body: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18 },
 });
 
 const reqStyles = StyleSheet.create({
-  card: {
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.xl, 
-    padding: 16,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-  },
-  top: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 10, 
-    marginBottom: 8,
-  },
-  name: { 
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '700',
-  },
-  username:  { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs,
-  },
-  since: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    marginTop: 2,
-  },
-  messageWrap: {
-    flexDirection: 'row', 
-    gap: 6, 
-    alignItems: 'flex-start',
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.lg, 
-    padding: 8,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-    marginBottom: 8,
-  },
-  message: { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.xs, 
-    lineHeight: 18, 
-    flex: 1, 
-    fontStyle: 'italic',
-  },
-  noMessage: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    fontStyle: 'italic', 
-    marginBottom: 8,
-  },
-  actions: { 
-    flexDirection: 'row', 
-    gap: 8,
-  },
-  denyBtn: {
-    flex: 1, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    gap: 5,
-    backgroundColor: `${COLORS.error}12`,
-    borderRadius: RADIUS.lg, 
-    paddingVertical: 10,
-    borderWidth: 1, 
-    borderColor: `${COLORS.error}30`,
-  },
-  denyText: { 
-    color: COLORS.error, 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '700',
-  },
-  approveBtn: {
-    flex: 2, 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    gap: 5,
-    backgroundColor: COLORS.success,
-    borderRadius: RADIUS.lg, 
-    paddingVertical: 10,
-  },
-  approveText: { 
-    color: '#FFF', 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '700',
-  },
+  card:      { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: 16, borderWidth: 1, borderColor: COLORS.border },
+  top:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  name:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  username:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  since:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  messageWrap: { flexDirection: 'row', gap: 6, alignItems: 'flex-start', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: 8, borderWidth: 1, borderColor: COLORS.border, marginBottom: 8 },
+  message:    { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18, flex: 1, fontStyle: 'italic' },
+  noMessage:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic', marginBottom: 8 },
+  actions:    { flexDirection: 'row', gap: 8 },
+  denyBtn:    { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg, paddingVertical: 10, borderWidth: 1, borderColor: `${COLORS.error}30` },
+  denyText:   { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  approveBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, backgroundColor: COLORS.success, borderRadius: RADIUS.lg, paddingVertical: 10 },
+  approveText:{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
 });

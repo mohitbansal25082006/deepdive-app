@@ -1,6 +1,11 @@
 // src/components/workspace/MemberProfileCard.tsx
-// Part 12 — Full bottom-sheet profile card with smooth animation.
-// Tap any member avatar anywhere in the workspace UI to open this.
+// Part 12 — Full bottom-sheet profile card.
+// Part 13A UPDATE:
+//   • Added optional onNavigateToReport callback
+//   • Added optional onNavigateToComment callback
+//   • Recent Reports rows are now tappable → calls onNavigateToReport
+//   • Recent Comments rows are now tappable → calls onNavigateToComment
+//   • Card closes itself before triggering navigation
 
 import React, { useEffect, useRef } from 'react';
 import {
@@ -21,18 +26,37 @@ import { COLORS, FONTS, RADIUS } from '../../constants/theme';
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.78;
 
-const ROLE_CONFIG: Record<WorkspaceRole, { label: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
-  owner:  { label: 'Owner',  color: COLORS.pro,     icon: 'shield-checkmark' },
-  editor: { label: 'Editor', color: COLORS.primary,  icon: 'create' },
-  viewer: { label: 'Viewer', color: COLORS.textMuted, icon: 'eye-outline' },
+const ROLE_CONFIG: Record<
+  WorkspaceRole,
+  { label: string; color: string; icon: keyof typeof Ionicons.glyphMap }
+> = {
+  owner:  { label: 'Owner',  color: COLORS.pro,        icon: 'shield-checkmark' },
+  editor: { label: 'Editor', color: COLORS.primary,    icon: 'create'           },
+  viewer: { label: 'Viewer', color: COLORS.textMuted,  icon: 'eye-outline'      },
 };
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   visible:     boolean;
   member:      MiniProfile | null;
   workspaceId: string;
   onClose:     () => void;
+  /**
+   * Part 13A — Called when user taps a "Reports Added" item.
+   * Receives the reportId (= research_reports.id).
+   * The card closes itself before calling this.
+   */
+  onNavigateToReport?: (reportId: string) => void;
+  /**
+   * Part 13A — Called when user taps a "Recent Comments" item.
+   * Receives reportId + commentId so the parent can deep-link.
+   * The card closes itself before calling this.
+   */
+  onNavigateToComment?: (reportId: string, commentId: string) => void;
 }
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatDate(dateStr: string): string {
   if (!dateStr) return '—';
@@ -49,7 +73,16 @@ function timeAgo(dateStr: string): string {
   return formatDate(dateStr);
 }
 
-export function MemberProfileCard({ visible, member, workspaceId, onClose }: Props) {
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function MemberProfileCard({
+  visible,
+  member,
+  workspaceId,
+  onClose,
+  onNavigateToReport,
+  onNavigateToComment,
+}: Props) {
   const insets = useSafeAreaInsets();
   const { data, isLoading, error, load, clear } = useMemberProfile();
   const scrollViewRef = useRef<ScrollView>(null);
@@ -57,10 +90,7 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
   useEffect(() => {
     if (visible && member?.id) {
       load(member.id, workspaceId);
-      // Scroll to top when opening
-      setTimeout(() => {
-        scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-      }, 50);
+      setTimeout(() => scrollViewRef.current?.scrollTo({ y: 0, animated: false }), 50);
     } else if (!visible) {
       clear();
     }
@@ -70,10 +100,29 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
     ? ROLE_CONFIG[data.workspaceStats.role]
     : null;
 
-  // Handle animation completion - wrapped in runOnJS if needed, but for now just a placeholder
-  const handleAnimationEnd = () => {
-    // Animation completed callback
+  // ── Navigation handlers — close first, then navigate ──────────────────────
+  const handleReportPress = (reportId: string) => {
+    if (!reportId || !onNavigateToReport) return;
+    onClose();
+    // Small delay so modal slide-out animation doesn't conflict with navigation
+    setTimeout(() => onNavigateToReport(reportId), 200);
   };
+
+  const handleCommentPress = (reportId: string, commentId: string) => {
+    if (!reportId) return;
+    onClose();
+    setTimeout(() => {
+      if (onNavigateToComment) {
+        onNavigateToComment(reportId, commentId);
+      } else if (onNavigateToReport) {
+        // Fallback: navigate to the report even if no comment deep-link
+        onNavigateToReport(reportId);
+      }
+    }, 200);
+  };
+
+  const hasReportNav  = !!onNavigateToReport;
+  const hasCommentNav = !!(onNavigateToComment || onNavigateToReport);
 
   return (
     <Modal
@@ -89,30 +138,14 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
         exiting={FadeOut.duration(150)}
         style={StyleSheet.absoluteFillObject}
       >
-        <TouchableOpacity 
-          style={{ flex: 1 }} 
-          activeOpacity={1} 
-          onPress={onClose}
-        />
+        <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
       </Animated.View>
 
       {/* Sheet */}
       <Animated.View
-        entering={SlideInDown
-          .duration(300)
-          .springify()
-          .damping(15)
-          .stiffness(200)
-          .mass(1)
-        }
+        entering={SlideInDown.duration(300).springify().damping(15).stiffness(200).mass(1)}
         exiting={SlideOutDown.duration(200)}
-        style={[
-          styles.sheet, 
-          { 
-            height: SHEET_HEIGHT, 
-            paddingBottom: Math.max(insets.bottom, 16),
-          }
-        ]}
+        style={[styles.sheet, { height: SHEET_HEIGHT, paddingBottom: Math.max(insets.bottom, 16) }]}
       >
         {/* Handle */}
         <View style={styles.handleWrap}>
@@ -124,6 +157,7 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
           <Ionicons name="close" size={18} color={COLORS.textMuted} />
         </TouchableOpacity>
 
+        {/* ── Content states ── */}
         {isLoading ? (
           <View style={styles.centered}>
             <ActivityIndicator color={COLORS.primary} size="large" />
@@ -142,11 +176,8 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
             bounces={false}
             overScrollMode="never"
           >
-            {/* ── Hero section ── */}
-            <Animated.View 
-              entering={FadeIn.duration(300)} 
-              style={styles.hero}
-            >
+            {/* ── Hero ── */}
+            <Animated.View entering={FadeIn.duration(300)} style={styles.hero}>
               <View style={styles.avatarRing}>
                 <Avatar
                   url={data.profile.avatarUrl}
@@ -165,7 +196,6 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
                 <Text style={styles.heroOccupation}>{data.occupation}</Text>
               )}
 
-              {/* Role badge */}
               {roleConf && (
                 <View style={[styles.roleBadge, { backgroundColor: `${roleConf.color}18` }]}>
                   <Ionicons name={roleConf.icon} size={13} color={roleConf.color} />
@@ -175,7 +205,6 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
                 </View>
               )}
 
-              {/* Join date */}
               {data.workspaceStats.joinedAt && (
                 <Text style={styles.joinedText}>
                   Joined workspace {formatDate(data.workspaceStats.joinedAt)}
@@ -185,18 +214,15 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
 
             {/* ── Bio ── */}
             {data.bio && (
-              <Animated.View 
-                entering={FadeIn.duration(300).delay(50)} 
-                style={styles.bioCard}
-              >
+              <Animated.View entering={FadeIn.duration(300).delay(50)} style={styles.bioCard}>
                 <Text style={styles.bioText}>{data.bio}</Text>
               </Animated.View>
             )}
 
             {/* ── Interests ── */}
             {data.interests && data.interests.length > 0 && (
-              <Animated.View 
-                entering={FadeIn.duration(300).delay(70)} 
+              <Animated.View
+                entering={FadeIn.duration(300).delay(70)}
                 style={styles.interestsWrap}
               >
                 {data.interests.map((tag) => (
@@ -208,10 +234,7 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
             )}
 
             {/* ── Stats grid ── */}
-            <Animated.View 
-              entering={FadeIn.duration(300).delay(90)} 
-              style={styles.statsGrid}
-            >
+            <Animated.View entering={FadeIn.duration(300).delay(90)} style={styles.statsGrid}>
               <StatBox
                 icon="document-text-outline"
                 value={data.workspaceStats.reportsAdded}
@@ -238,12 +261,25 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
               />
             </Animated.View>
 
-            {/* ── Recent Reports ── */}
+            {/* ── Recent Reports (tappable in Part 13A) ── */}
             {data.recentReports.length > 0 && (
               <Animated.View entering={FadeIn.duration(300).delay(110)}>
-                <SectionHeader icon="document-text-outline" title="Reports Added" />
+                <SectionHeader
+                  icon="document-text-outline"
+                  title="Reports Added"
+                  hasNav={hasReportNav}
+                />
                 {data.recentReports.map((report) => (
-                  <View key={report.id} style={styles.listItem}>
+                  <TouchableOpacity
+                    key={report.id}
+                    style={[
+                      styles.listItem,
+                      hasReportNav && styles.listItemTappable,
+                    ]}
+                    activeOpacity={hasReportNav ? 0.7 : 1}
+                    onPress={() => hasReportNav && handleReportPress(report.id)}
+                    disabled={!hasReportNav}
+                  >
                     <View style={styles.listItemDot} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.listItemTitle} numberOfLines={2}>
@@ -251,37 +287,71 @@ export function MemberProfileCard({ visible, member, workspaceId, onClose }: Pro
                       </Text>
                       <Text style={styles.listItemMeta}>{timeAgo(report.addedAt)}</Text>
                     </View>
-                  </View>
+                    {hasReportNav && (
+                      <Ionicons
+                        name="chevron-forward"
+                        size={14}
+                        color={COLORS.primary}
+                        style={{ marginLeft: 4 }}
+                      />
+                    )}
+                  </TouchableOpacity>
                 ))}
               </Animated.View>
             )}
 
-            {/* ── Recent Comments ── */}
+            {/* ── Recent Comments (tappable in Part 13A) ── */}
             {data.recentComments.length > 0 && (
               <Animated.View entering={FadeIn.duration(300).delay(130)}>
-                <SectionHeader icon="chatbubble-outline" title="Recent Comments" />
+                <SectionHeader
+                  icon="chatbubble-outline"
+                  title="Recent Comments"
+                  hasNav={hasCommentNav}
+                />
                 {data.recentComments.map((comment) => (
-                  <View key={comment.id} style={styles.commentItem}>
+                  <TouchableOpacity
+                    key={comment.id}
+                    style={[
+                      styles.commentItem,
+                      hasCommentNav && styles.commentItemTappable,
+                    ]}
+                    activeOpacity={hasCommentNav ? 0.7 : 1}
+                    onPress={() =>
+                      hasCommentNav && handleCommentPress(comment.reportId, comment.id)
+                    }
+                    disabled={!hasCommentNav}
+                  >
                     <View style={styles.commentItemInner}>
-                      <Text style={styles.commentItemMeta} numberOfLines={1}>
-                        On: {comment.reportTitle}
-                        {comment.sectionId ? ' (section)' : ''}
-                      </Text>
+                      <View style={styles.commentItemTopRow}>
+                        <Text style={styles.commentItemMeta} numberOfLines={1}>
+                          On: {comment.reportTitle}
+                          {comment.sectionId ? ' (section)' : ''}
+                        </Text>
+                        {hasCommentNav && (
+                          <Ionicons
+                            name="chevron-forward"
+                            size={12}
+                            color={COLORS.primary}
+                          />
+                        )}
+                      </View>
                       <Text style={styles.commentItemContent} numberOfLines={3}>
                         "{comment.content}"
                       </Text>
                       <Text style={styles.listItemMeta}>{timeAgo(comment.createdAt)}</Text>
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 ))}
               </Animated.View>
             )}
 
-            {/* Empty activity state */}
+            {/* Empty activity */}
             {data.recentReports.length === 0 && data.recentComments.length === 0 && (
               <View style={styles.emptyActivity}>
                 <Ionicons name="time-outline" size={32} color={COLORS.textMuted} />
-                <Text style={styles.emptyActivityText}>No activity in this workspace yet</Text>
+                <Text style={styles.emptyActivityText}>
+                  No activity in this workspace yet
+                </Text>
               </View>
             )}
           </ScrollView>
@@ -313,15 +383,21 @@ function StatBox({
 }
 
 function SectionHeader({
-  icon, title,
+  icon, title, hasNav,
 }: {
-  icon:  keyof typeof Ionicons.glyphMap;
-  title: string;
+  icon:   keyof typeof Ionicons.glyphMap;
+  title:  string;
+  hasNav: boolean;
 }) {
   return (
     <View style={secStyles.row}>
       <Ionicons name={icon} size={14} color={COLORS.primary} />
       <Text style={secStyles.title}>{title}</Text>
+      {hasNav && (
+        <View style={secStyles.tapHint}>
+          <Text style={secStyles.tapHintText}>tap to open</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -329,290 +405,119 @@ function SectionHeader({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
   sheet: {
-    position:              'absolute',
-    left:                  0,
-    right:                 0,
-    bottom:                0,
-    backgroundColor:       COLORS.backgroundCard,
-    borderTopLeftRadius:   28,
-    borderTopRightRadius:  28,
-    borderTopWidth:        1,
-    borderColor:           COLORS.border,
-    shadowColor:           '#000',
-    shadowOffset:          { width: 0, height: -6 },
-    shadowOpacity:         0.3,
-    shadowRadius:          20,
-    elevation:             24,
-    overflow: 'hidden',
+    position:             'absolute',
+    left: 0, right: 0, bottom: 0,
+    backgroundColor:      COLORS.backgroundCard,
+    borderTopLeftRadius:  28,
+    borderTopRightRadius: 28,
+    borderTopWidth:       1,
+    borderColor:          COLORS.border,
+    shadowColor:          '#000',
+    shadowOffset:         { width: 0, height: -6 },
+    shadowOpacity:        0.3,
+    shadowRadius:         20,
+    elevation:            24,
+    overflow:             'hidden',
   },
-  handleWrap: { 
-    alignItems: 'center', 
-    paddingTop: 10, 
-    paddingBottom: 4,
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 20,
+  handleWrap: {
+    alignItems:     'center',
+    paddingTop:     10,
+    paddingBottom:  4,
+    position:       'absolute',
+    top: 0, left: 0, right: 0,
+    zIndex:         20,
   },
-  handle: { 
-    width: 40, 
-    height: 4, 
-    borderRadius: 2, 
+  handle: {
+    width: 40, height: 4, borderRadius: 2,
     backgroundColor: COLORS.border,
   },
   closeBtn: {
-    position: 'absolute', 
-    top: 12, 
-    right: 16,
-    width: 32, 
-    height: 32, 
-    borderRadius: 10,
+    position:        'absolute',
+    top: 12, right: 16,
+    width: 32, height: 32,
+    borderRadius:    10,
     backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center', 
-    justifyContent: 'center',
-    borderWidth: 1, 
-    borderColor: COLORS.border,
+    alignItems:      'center',
+    justifyContent:  'center',
+    borderWidth: 1, borderColor: COLORS.border,
     zIndex: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 4,
   },
-  centered: {
-    flex: 1, 
-    alignItems: 'center', 
-    justifyContent: 'center',
-    gap: 12, 
-    paddingHorizontal: 24,
-  },
-  loadingText: { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.sm,
-  },
-  errorText: { 
-    color: COLORS.textSecondary, 
-    textAlign: 'center', 
-    fontSize: FONTS.sizes.sm,
-  },
+  centered:    { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 24 },
+  loadingText: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm },
+  errorText:   { color: COLORS.textSecondary, textAlign: 'center', fontSize: FONTS.sizes.sm },
 
-  scroll: { 
-    paddingHorizontal: 24, 
-    paddingTop: 44,
-    paddingBottom: 20,
-  },
+  scroll:    { paddingHorizontal: 24, paddingTop: 44, paddingBottom: 20 },
 
   // Hero
-  hero: { 
-    alignItems: 'center', 
-    paddingTop: 8, 
-    paddingBottom: 16, 
-    gap: 6,
-  },
-  avatarRing: {
-    width: 84, 
-    height: 84, 
-    borderRadius: 42,
-    borderWidth: 3, 
-    borderColor: `${COLORS.primary}40`,
-    alignItems: 'center', 
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  heroName: { 
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.xl, 
-    fontWeight: '800',
-  },
-  heroUsername: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.sm,
-  },
-  heroOccupation: { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.sm, 
-    fontStyle: 'italic',
-  },
-  roleBadge: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 5,
-    borderRadius: RADIUS.full,
-    paddingHorizontal: 12, 
-    paddingVertical: 5,
-    marginTop: 4,
-  },
-  roleBadgeText: { 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '700',
-  },
-  joinedText: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    marginTop: 4,
-  },
+  hero:           { alignItems: 'center', paddingTop: 8, paddingBottom: 16, gap: 6 },
+  avatarRing:     { width: 84, height: 84, borderRadius: 42, borderWidth: 3, borderColor: `${COLORS.primary}40`, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  heroName:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  heroUsername:   { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+  heroOccupation: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontStyle: 'italic' },
+  roleBadge:      { flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 5, marginTop: 4 },
+  roleBadgeText:  { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  joinedText:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 },
 
   // Bio
-  bioCard: {
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg,
-    padding: 16,
-    marginBottom: 8,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-  },
-  bioText: { 
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.sm, 
-    lineHeight: 20,
-  },
+  bioCard: { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: COLORS.border },
+  bioText: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20 },
 
   // Interests
-  interestsWrap: {
-    flexDirection: 'row', 
-    flexWrap: 'wrap', 
-    gap: 8,
-    marginBottom: 16,
-  },
-  interestTag: {
-    backgroundColor: `${COLORS.primary}15`,
-    borderRadius: RADIUS.full,
-    paddingHorizontal: 10, 
-    paddingVertical: 4,
-    borderWidth: 1, 
-    borderColor: `${COLORS.primary}25`,
-  },
-  interestTagText: { 
-    color: COLORS.primary, 
-    fontSize: FONTS.sizes.xs, 
-    fontWeight: '600',
-  },
+  interestsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
+  interestTag:   { backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  interestTagText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
 
-  // Stats grid
-  statsGrid: {
-    flexDirection: 'row', 
-    flexWrap: 'wrap', 
-    gap: 8,
-    marginBottom: 16,
-  },
+  // Stats
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
 
-  // List items (reports)
+  // Report list items
   listItem: {
-    flexDirection: 'row', 
-    alignItems: 'flex-start', 
-    gap: 10,
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
     backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg, 
-    padding: 12,
-    marginBottom: 6,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
+    borderRadius: RADIUS.lg, padding: 12, marginBottom: 6,
+    borderWidth: 1, borderColor: COLORS.border,
   },
-  listItemDot: {
-    width: 6, 
-    height: 6, 
-    borderRadius: 3,
-    backgroundColor: COLORS.primary,
-    marginTop: 6, 
-    flexShrink: 0,
+  listItemTappable: {
+    borderColor: `${COLORS.primary}30`,
   },
-  listItemTitle: { 
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.sm, 
-    fontWeight: '600',
-  },
-  listItemMeta: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    marginTop: 2,
-  },
+  listItemDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.primary, marginTop: 6, flexShrink: 0 },
+  listItemTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  listItemMeta:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
 
   // Comment items
-  commentItem: {
-    marginBottom: 6,
-  },
+  commentItem:         { marginBottom: 6 },
+  commentItemTappable: {},
   commentItemInner: {
     backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg, 
-    padding: 12,
-    borderWidth: 1, 
-    borderColor: COLORS.border,
-    borderLeftWidth: 3, 
-    borderLeftColor: `${COLORS.info}60`,
+    borderRadius: RADIUS.lg, padding: 12,
+    borderWidth: 1, borderColor: COLORS.border,
+    borderLeftWidth: 3, borderLeftColor: `${COLORS.info}60`,
   },
-  commentItemMeta: {
-    color: COLORS.primary, 
-    fontSize: FONTS.sizes.xs,
-    fontWeight: '600', 
-    marginBottom: 4,
-  },
-  commentItemContent: {
-    color: COLORS.textSecondary, 
-    fontSize: FONTS.sizes.sm,
-    lineHeight: 19, 
-    fontStyle: 'italic',
-  },
+  commentItemTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  commentItemMeta:    { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
+  commentItemContent: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 19, fontStyle: 'italic' },
 
   // Empty
-  emptyActivity: {
-    alignItems: 'center', 
-    paddingVertical: 24, 
-    gap: 10,
-  },
-  emptyActivityText: {
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.sm, 
-    textAlign: 'center',
-  },
+  emptyActivity:     { alignItems: 'center', paddingVertical: 24, gap: 10 },
+  emptyActivityText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center' },
 });
 
 const statStyles = StyleSheet.create({
   box: {
     width: '47%',
     backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg,
-    padding: 16,
-    alignItems: 'center', 
-    gap: 6,
-    borderWidth: 1,
+    borderRadius: RADIUS.lg, padding: 16,
+    alignItems: 'center', gap: 6, borderWidth: 1,
   },
-  iconWrap: {
-    width: 36, 
-    height: 36, 
-    borderRadius: 10,
-    alignItems: 'center', 
-    justifyContent: 'center',
-  },
-  value: { 
-    fontSize: FONTS.sizes.xl, 
-    fontWeight: '800',
-  },
-  label: { 
-    color: COLORS.textMuted, 
-    fontSize: FONTS.sizes.xs, 
-    textAlign: 'center',
-  },
+  iconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  value:    { fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  label:    { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center' },
 });
 
 const secStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 6,
-    marginBottom: 8, 
-    marginTop: 16,
-  },
-  title: {
-    color: COLORS.textPrimary, 
-    fontSize: FONTS.sizes.sm,
-    fontWeight: '700', 
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8, marginTop: 16 },
+  title: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, flex: 1 },
+  tapHint: { backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2 },
+  tapHintText: { color: COLORS.primary, fontSize: 9, fontWeight: '700' },
 });

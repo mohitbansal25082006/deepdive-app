@@ -1,27 +1,32 @@
 // app/(app)/workspace-members.tsx
-// Part 12 CHANGES:
-//   1. Tapping any member row opens MemberProfileCard bottom sheet
-//   2. Owner sees pending access requests badge + review sheet
-//   3. Full MemberProfileCard + EditAccessRequestModal wired in
+// Part 12 — Member management with role change, invite, profile card, access requests.
+// Part 13B UPDATE:
+//   • Owner sees a block (ban) button per editor/viewer row.
+//   • Owner sees a "Blocked Members" button at the top (with count badge).
+//   • BlockedMembersModal wired in for viewing and unblocking.
+//   • Leave Workspace button is clearly visible for viewers and editors.
+//   • Block action calls blockMember service; member is immediately removed from list.
 
 import React, { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   Alert, ActivityIndicator, StyleSheet,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient }       from 'expo-linear-gradient';
+import { Ionicons }              from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView }          from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useWorkspaceMembers } from '../../src/hooks/useWorkspaceMembers';
-import { useWorkspace } from '../../src/hooks/useWorkspace';
-import { usePendingAccessRequests } from '../../src/hooks/useEditAccessRequest';
-import { MemberAvatar } from '../../src/components/workspace/MemberAvatar';
-import { MemberRoleModal } from '../../src/components/workspace/MemberRoleModal';
-import { InviteModal } from '../../src/components/workspace/InviteModal';
-import { MemberProfileCard } from '../../src/components/workspace/MemberProfileCard';
-import { EditAccessRequestModal } from '../../src/components/workspace/EditAccessRequestModal';
+import { useWorkspaceMembers }          from '../../src/hooks/useWorkspaceMembers';
+import { useWorkspace }                 from '../../src/hooks/useWorkspace';
+import { usePendingAccessRequests }     from '../../src/hooks/useEditAccessRequest';
+import { useBlockedMembers }            from '../../src/hooks/useBlockedMembers';
+import { MemberAvatar }                 from '../../src/components/workspace/MemberAvatar';
+import { MemberRoleModal }              from '../../src/components/workspace/MemberRoleModal';
+import { InviteModal }                  from '../../src/components/workspace/InviteModal';
+import { MemberProfileCard }            from '../../src/components/workspace/MemberProfileCard';
+import { EditAccessRequestModal }       from '../../src/components/workspace/EditAccessRequestModal';
+import { BlockedMembersModal }          from '../../src/components/workspace/BlockedMembersModal';
 import { WorkspaceMember, WorkspaceRole, MiniProfile } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
@@ -33,50 +38,66 @@ const ROLE_COLOR: Record<WorkspaceRole, string> = {
 
 export default function WorkspaceMembersScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+
   const {
     members, isLoading, isUpdating, userRole, isOwner,
     refresh, changeRole, remove, leave, transferOwner,
   } = useWorkspaceMembers(id ?? null);
-  const { workspace } = useWorkspace(id ?? null);
 
-  // Part 12 — Pending access requests (owner/editor only)
+  const { workspace }             = useWorkspace(id ?? null);
+  const isEditor                  = userRole === 'editor' || isOwner;
+
+  // Pending access requests
   const {
-    requests: pendingRequests,
-    pendingCount,
-    isActioning,
-    approve: approveRequest,
-    deny:    denyRequest,
+    requests: pendingRequests, pendingCount,
+    isActioning, approve: approveRequest, deny: denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
+  // Blocked members (owner only)
+  const { blocked, block } = useBlockedMembers(isOwner ? (id ?? null) : null);
+
   // Modal states
-  const [selectedMember,      setSelectedMember]      = useState<WorkspaceMember | null>(null);
-  const [showRoleModal,       setShowRoleModal]        = useState(false);
-  const [showInvite,          setShowInvite]           = useState(false);
-  const [profileMember,       setProfileMember]        = useState<MiniProfile | null>(null);  // Part 12
-  const [showProfile,         setShowProfile]          = useState(false);                      // Part 12
-  const [showAccessRequests,  setShowAccessRequests]   = useState(false);                      // Part 12
+  const [selectedMember,     setSelectedMember]     = useState<WorkspaceMember | null>(null);
+  const [showRoleModal,      setShowRoleModal]       = useState(false);
+  const [showInvite,         setShowInvite]          = useState(false);
+  const [profileMember,      setProfileMember]       = useState<MiniProfile | null>(null);
+  const [showProfile,        setShowProfile]         = useState(false);
+  const [showAccessRequests, setShowAccessRequests]  = useState(false);
+  const [showBlocked,        setShowBlocked]         = useState(false);
+  const [isBlocking,         setIsBlocking]          = useState(false);
 
-  const isEditor = userRole === 'editor' || isOwner;
-
-  // ── Open role modal (owner taps a non-owner member) ───────────────────────
+  // ── Open role modal ──────────────────────────────────────────────────────
   const handleManageMember = (member: WorkspaceMember) => {
     if (!isOwner || member.role === 'owner') return;
     setSelectedMember(member);
     setShowRoleModal(true);
   };
 
-  // ── Open profile card (any member tap) ────────────────────────────────────
+  // ── Open profile card ────────────────────────────────────────────────────
   const handleViewProfile = (member: WorkspaceMember) => {
     if (!member.profile) return;
     setProfileMember(member.profile);
     setShowProfile(true);
   };
 
-  const handleChangeRole = async (userId: string, role: Exclude<WorkspaceRole, 'owner'>) => {
+  // ── Navigate from profile card to a report ───────────────────────────────
+  const handleNavigateToReport = (reportId: string) => {
+    router.push({
+      pathname: '/(app)/workspace-report' as any,
+      params:   { reportId, workspaceId: id, userRole: userRole ?? 'viewer' },
+    });
+  };
+
+  // ── Change role ──────────────────────────────────────────────────────────
+  const handleChangeRole = async (
+    userId: string,
+    role:   Exclude<WorkspaceRole, 'owner'>,
+  ) => {
     const { error } = await changeRole(userId, role);
     if (error) Alert.alert('Error', error);
   };
 
+  // ── Remove member ────────────────────────────────────────────────────────
   const handleRemove = async (userId: string) => {
     Alert.alert('Remove Member', 'Remove this member from the workspace?', [
       { text: 'Cancel', style: 'cancel' },
@@ -90,6 +111,7 @@ export default function WorkspaceMembersScreen() {
     ]);
   };
 
+  // ── Transfer ownership ───────────────────────────────────────────────────
   const handleTransfer = (member: WorkspaceMember) => {
     const name = member.profile?.fullName ?? member.profile?.username ?? 'this member';
     Alert.alert(
@@ -109,12 +131,61 @@ export default function WorkspaceMembersScreen() {
     );
   };
 
+  // ── Block member (Part 13B) ───────────────────────────────────────────────
+  const handleBlockMember = (member: WorkspaceMember) => {
+    if (!isOwner) return;
+    const name = member.profile?.fullName ?? member.profile?.username ?? 'this member';
+    Alert.alert(
+      'Block Member',
+      `Block ${name}?\n\nThey will be removed immediately and cannot rejoin this workspace via invite code. You can unblock them later from the Blocked Members panel.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            setIsBlocking(true);
+            const { error } = await block(member.userId);
+            setIsBlocking(false);
+            if (error) {
+              Alert.alert('Error', error);
+            } else {
+              // Refresh member list — blocked user is now removed
+              refresh();
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Leave workspace ───────────────────────────────────────────────────────
+  const handleLeave = () => {
+    Alert.alert(
+      'Leave Workspace',
+      'Are you sure you want to leave this workspace? You will lose access to all shared reports and comments.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await leave();
+            if (!error) router.replace('/(app)/(tabs)/workspace' as any);
+            else Alert.alert('Error', error);
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Access requests ───────────────────────────────────────────────────────
   const handleApproveRequest = async (requestId: string) => {
     const { error } = await approveRequest(requestId);
     if (error) Alert.alert('Error', error);
     else {
       Alert.alert('✅ Approved', 'Member has been upgraded to Editor.');
-      refresh(); // Refresh member list to reflect new role
+      refresh();
     }
   };
 
@@ -123,17 +194,18 @@ export default function WorkspaceMembersScreen() {
     if (error) Alert.alert('Error', error);
   };
 
-  const owners  = members.filter(m => m.role === 'owner');
-  const editors = members.filter(m => m.role === 'editor');
-  const viewers = members.filter(m => m.role === 'viewer');
+  // ── Group members by role ─────────────────────────────────────────────────
+  const owners  = members.filter((m) => m.role === 'owner');
+  const editors = members.filter((m) => m.role === 'editor');
+  const viewers = members.filter((m) => m.role === 'viewer');
 
   const sections: { role: WorkspaceRole; label: string; data: WorkspaceMember[] }[] = (
     [
-      { role: 'owner'  as const, label: 'Owner',   data: owners  },
-      { role: 'editor' as const, label: 'Editors', data: editors },
-      { role: 'viewer' as const, label: 'Viewers', data: viewers },
+      { role: 'owner'  as WorkspaceRole, label: 'Owner',   data: owners  },
+      { role: 'editor' as WorkspaceRole, label: 'Editors', data: editors },
+      { role: 'viewer' as WorkspaceRole, label: 'Viewers', data: viewers },
     ] as { role: WorkspaceRole; label: string; data: WorkspaceMember[] }[]
-  ).filter(s => s.data.length > 0);
+  ).filter((s) => s.data.length > 0);
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -149,7 +221,7 @@ export default function WorkspaceMembersScreen() {
             <Text style={styles.memberCount}>{members.length} total</Text>
           </View>
 
-          {/* Part 12 — Pending requests badge (owner/editor) */}
+          {/* Pending requests badge */}
           {isEditor && pendingCount > 0 && (
             <TouchableOpacity
               onPress={() => setShowAccessRequests(true)}
@@ -170,7 +242,7 @@ export default function WorkspaceMembersScreen() {
           )}
         </Animated.View>
 
-        {/* Part 12 — Access request notification banner */}
+        {/* ── Access request banner ── */}
         {isEditor && pendingCount > 0 && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.requestBanner}>
             <Ionicons name="notifications-outline" size={15} color={COLORS.warning} />
@@ -186,6 +258,28 @@ export default function WorkspaceMembersScreen() {
           </Animated.View>
         )}
 
+        {/* ── Blocked members button (owner only) ── */}
+        {isOwner && (
+          <Animated.View entering={FadeIn.duration(300).delay(60)} style={styles.blockedRow}>
+            <TouchableOpacity
+              onPress={() => setShowBlocked(true)}
+              style={styles.blockedBtn}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.blockedIconWrap, { backgroundColor: `${COLORS.error}15` }]}>
+                <Ionicons name="ban-outline" size={16} color={COLORS.error} />
+              </View>
+              <Text style={styles.blockedBtnText}>Blocked Members</Text>
+              {blocked.length > 0 && (
+                <View style={styles.blockedCountBadge}>
+                  <Text style={styles.blockedCountText}>{blocked.length}</Text>
+                </View>
+              )}
+              <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
         <ScrollView
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
@@ -196,7 +290,7 @@ export default function WorkspaceMembersScreen() {
             </View>
           ) : (
             <>
-              {sections.map(section => (
+              {sections.map((section) => (
                 <Animated.View key={section.role} entering={FadeInDown.duration(400)}>
                   {/* Section label */}
                   <View style={styles.sectionLabelRow}>
@@ -207,10 +301,9 @@ export default function WorkspaceMembersScreen() {
                     <Text style={styles.sectionCount}>{section.data.length}</Text>
                   </View>
 
-                  {/* Member rows */}
                   {section.data.map((member, i) => {
-                    const name      = member.profile?.fullName ?? member.profile?.username ?? 'Unknown';
-                    const username  = member.profile?.username;
+                    const name       = member.profile?.fullName ?? member.profile?.username ?? 'Unknown';
+                    const username   = member.profile?.username;
                     const joinedDate = new Date(member.joinedAt).toLocaleDateString('en-US', {
                       month: 'short', day: 'numeric', year: 'numeric',
                     });
@@ -221,7 +314,6 @@ export default function WorkspaceMembersScreen() {
                         key={member.id}
                         entering={FadeInDown.duration(300).delay(i * 40)}
                       >
-                        {/* Part 12: whole row tappable → profile card */}
                         <TouchableOpacity
                           onPress={() => handleViewProfile(member)}
                           activeOpacity={0.75}
@@ -229,11 +321,7 @@ export default function WorkspaceMembersScreen() {
                         >
                           {/* Left: avatar + info */}
                           <View style={styles.memberLeft}>
-                            <MemberAvatar
-                              profile={member.profile}
-                              role={member.role}
-                              size={40}
-                            />
+                            <MemberAvatar profile={member.profile} role={member.role} size={40} />
                             <View style={styles.memberInfo}>
                               <Text style={styles.memberName} numberOfLines={1}>{name}</Text>
                               {username && (
@@ -247,7 +335,7 @@ export default function WorkspaceMembersScreen() {
                             </View>
                           </View>
 
-                          {/* Right: role badge + manage button */}
+                          {/* Right: role badge + action buttons */}
                           <View style={styles.memberRight}>
                             <View style={[
                               styles.roleBadge,
@@ -263,7 +351,7 @@ export default function WorkspaceMembersScreen() {
 
                             {canManage && (
                               <View style={styles.memberActions}>
-                                {/* Transfer key */}
+                                {/* Transfer ownership */}
                                 <TouchableOpacity
                                   onPress={() => handleTransfer(member)}
                                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -271,6 +359,7 @@ export default function WorkspaceMembersScreen() {
                                 >
                                   <Ionicons name="key-outline" size={14} color={COLORS.warning} />
                                 </TouchableOpacity>
+
                                 {/* Manage role */}
                                 <TouchableOpacity
                                   onPress={() => handleManageMember(member)}
@@ -278,6 +367,16 @@ export default function WorkspaceMembersScreen() {
                                   style={[styles.iconBtn, { backgroundColor: `${COLORS.primary}15` }]}
                                 >
                                   <Ionicons name="settings-outline" size={14} color={COLORS.primary} />
+                                </TouchableOpacity>
+
+                                {/* Part 13B — Block button (owner only) */}
+                                <TouchableOpacity
+                                  onPress={() => handleBlockMember(member)}
+                                  disabled={isBlocking}
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  style={[styles.iconBtn, { backgroundColor: `${COLORS.error}12` }]}
+                                >
+                                  <Ionicons name="ban-outline" size={14} color={COLORS.error} />
                                 </TouchableOpacity>
                               </View>
                             )}
@@ -289,28 +388,30 @@ export default function WorkspaceMembersScreen() {
                 </Animated.View>
               ))}
 
-              {/* Leave workspace (non-owners) */}
+              {/* ── Part 13B: Leave Workspace (non-owners) ── */}
               {userRole !== 'owner' && (
-                <TouchableOpacity
-                  onPress={() =>
-                    Alert.alert('Leave Workspace', 'Are you sure you want to leave?', [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'Leave', style: 'destructive',
-                        onPress: async () => {
-                          const { error } = await leave();
-                          if (!error) router.replace('/(app)/(tabs)/workspace' as any);
-                          else Alert.alert('Error', error);
-                        },
-                      },
-                    ])
-                  }
-                  style={styles.leaveBtn}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="log-out-outline" size={18} color={COLORS.error} />
-                  <Text style={styles.leaveBtnText}>Leave Workspace</Text>
-                </TouchableOpacity>
+                <Animated.View entering={FadeInDown.duration(400).delay(200)}>
+                  <View style={styles.leaveDivider}>
+                    <View style={styles.leaveDividerLine} />
+                  </View>
+                  <View style={styles.leaveSection}>
+                    <Text style={styles.leaveSectionTitle}>Leave Workspace</Text>
+                    <Text style={styles.leaveSectionDesc}>
+                      You will lose access to all shared reports and comments in this workspace.
+                      {userRole === 'editor'
+                        ? ' Your role is currently Editor.'
+                        : ' Your role is currently Viewer.'}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={handleLeave}
+                      style={styles.leaveBtn}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="log-out-outline" size={18} color={COLORS.error} />
+                      <Text style={styles.leaveBtnText}>Leave Workspace</Text>
+                    </TouchableOpacity>
+                  </View>
+                </Animated.View>
               )}
             </>
           )}
@@ -337,17 +438,18 @@ export default function WorkspaceMembersScreen() {
           />
         )}
 
-        {/* ── Part 12: Member profile card ── */}
+        {/* ── Member profile card ── */}
         {id && (
           <MemberProfileCard
             visible={showProfile}
             member={profileMember}
             workspaceId={id}
             onClose={() => { setShowProfile(false); setProfileMember(null); }}
+            onNavigateToReport={handleNavigateToReport}
           />
         )}
 
-        {/* ── Part 12: Access requests modal (owner/editor) ── */}
+        {/* ── Access requests modal ── */}
         <EditAccessRequestModal
           mode="owner"
           visible={showAccessRequests}
@@ -358,13 +460,23 @@ export default function WorkspaceMembersScreen() {
           onClose={() => setShowAccessRequests(false)}
         />
 
+        {/* ── Part 13B: Blocked members modal ── */}
+        {id && isOwner && (
+          <BlockedMembersModal
+            visible={showBlocked}
+            workspaceId={id}
+            onClose={() => setShowBlocked(false)}
+          />
+        )}
+
       </SafeAreaView>
     </LinearGradient>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  // Header
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.sm,
@@ -373,35 +485,28 @@ const styles = StyleSheet.create({
     width: 38, height: 38, borderRadius: 12,
     backgroundColor: COLORS.backgroundCard,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-    flexShrink: 0,
+    borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
   },
-  headerInfo:  { flex: 1, minWidth: 0 },
-  title:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  memberCount: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 },
+  headerInfo:   { flex: 1, minWidth: 0 },
+  title:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  memberCount:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 },
 
-  // Part 12 — pending badge
   pendingBadgeBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: `${COLORS.warning}15`,
-    borderRadius: RADIUS.lg,
+    backgroundColor: `${COLORS.warning}15`, borderRadius: RADIUS.lg,
     paddingHorizontal: 10, paddingVertical: 7,
-    borderWidth: 1, borderColor: `${COLORS.warning}35`,
-    flexShrink: 0,
+    borderWidth: 1, borderColor: `${COLORS.warning}35`, flexShrink: 0,
   },
   pendingBadgeText:  { color: COLORS.warning, fontSize: FONTS.sizes.sm, fontWeight: '800' },
   pendingBadgeLabel: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' },
 
   inviteBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.lg,
-    paddingHorizontal: 14, paddingVertical: 9,
-    flexShrink: 0,
+    backgroundColor: COLORS.primary, borderRadius: RADIUS.lg,
+    paddingHorizontal: 14, paddingVertical: 9, flexShrink: 0,
   },
   inviteBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
 
-  // Part 12 — request banner
   requestBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: `${COLORS.warning}12`,
@@ -410,17 +515,29 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: `${COLORS.warning}30`,
   },
   requestBannerText: { flex: 1, color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  requestBannerCta: {
-    backgroundColor: COLORS.warning,
-    borderRadius: RADIUS.md,
-    paddingHorizontal: 10, paddingVertical: 4,
-  },
+  requestBannerCta:  { backgroundColor: COLORS.warning, borderRadius: RADIUS.md, paddingHorizontal: 10, paddingVertical: 4 },
   requestBannerCtaText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
+  // Part 13B — blocked members button
+  blockedRow: { paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
+  blockedBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: COLORS.backgroundCard,
+    borderRadius: RADIUS.lg, padding: SPACING.md,
+    borderWidth: 1, borderColor: `${COLORS.error}25`,
+  },
+  blockedIconWrap: { width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  blockedBtnText:  { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  blockedCountBadge: {
+    backgroundColor: COLORS.error, borderRadius: RADIUS.full,
+    minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 5,
+  },
+  blockedCountText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
 
   scroll:      { paddingHorizontal: SPACING.xl, paddingBottom: 80 },
   loadingWrap: { alignItems: 'center', paddingTop: 60 },
 
-  // Sections
   sectionLabelRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginTop: SPACING.lg, marginBottom: SPACING.sm,
@@ -429,42 +546,42 @@ const styles = StyleSheet.create({
   sectionLabel: { fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' },
   sectionCount: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
 
-  // Member card
   memberCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row', alignItems: 'center',
     backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.lg,
-    padding: SPACING.md,
-    marginBottom: SPACING.sm,
-    borderWidth: 1, borderColor: COLORS.border,
-    overflow: 'hidden',
+    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
   },
-  memberLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minWidth: 0,
-    marginRight: SPACING.sm,
-  },
+  memberLeft:     { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0, marginRight: SPACING.sm },
   memberInfo:     { flex: 1, minWidth: 0 },
-  memberName:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', flexShrink: 1 },
-  memberUsername: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1, flexShrink: 1 },
-  memberJoined:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2, flexShrink: 1 },
+  memberName:     { color: COLORS.textPrimary,   fontSize: FONTS.sizes.sm, fontWeight: '700', flexShrink: 1 },
+  memberUsername: { color: COLORS.textMuted,     fontSize: FONTS.sizes.xs, marginTop: 1, flexShrink: 1 },
+  memberJoined:   { color: COLORS.textMuted,     fontSize: FONTS.sizes.xs, marginTop: 2, flexShrink: 1 },
   memberRight:    { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   roleBadge:      { borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 },
   roleBadgeText:  { fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'capitalize' },
-  memberActions:  { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  memberActions:  { flexDirection: 'row', alignItems: 'center', gap: 5 },
   iconBtn:        { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
 
-  // Leave
-  leaveBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: `${COLORS.error}10`,
-    borderRadius: RADIUS.lg, padding: SPACING.md,
-    marginTop: SPACING.xl,
-    borderWidth: 1, borderColor: `${COLORS.error}30`,
+  // Leave section
+  leaveDivider:     { paddingVertical: SPACING.lg, alignItems: 'center' },
+  leaveDividerLine: { width: '60%', height: 1, backgroundColor: `${COLORS.error}20` },
+  leaveSection: {
+    backgroundColor: `${COLORS.error}08`,
+    borderRadius: RADIUS.xl,
+    padding: SPACING.lg,
+    borderWidth: 1, borderColor: `${COLORS.error}20`,
+    gap: 10,
+    marginBottom: SPACING.md,
   },
-  leaveBtnText: { color: COLORS.error, fontSize: FONTS.sizes.base, fontWeight: '600' },
+  leaveSectionTitle: { color: COLORS.error, fontSize: FONTS.sizes.base, fontWeight: '800' },
+  leaveSectionDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20 },
+  leaveBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: `${COLORS.error}15`,
+    borderRadius: RADIUS.lg, padding: SPACING.md,
+    borderWidth: 1, borderColor: `${COLORS.error}30`,
+    alignSelf: 'flex-start',
+  },
+  leaveBtnText: { color: COLORS.error, fontSize: FONTS.sizes.base, fontWeight: '700' },
 });

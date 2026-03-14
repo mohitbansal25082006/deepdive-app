@@ -1,24 +1,31 @@
 // app/(app)/workspace-settings.tsx
-// Part 11 (patched D) — Logo section removed:
-//   - Member count reads from members array (not workspace.memberCount)
-//   - "Copy Invite Code" replaces old share-link button
-//   - PDF export accessible to editors (role param)
-//   - Editors see only Export & Sharing section
+// Part 11 (patched) — Copy invite code, editor PDF export, etc.
+// Part 13A UPDATE:
+//   • New "Workspace Logo" section at the top — visible to BOTH owners AND editors.
+//   • Logo preview with current image, pick-from-library button, take-photo button,
+//     and remove-logo button.
+//   • Uses workspaceMediaService (Part 13A) which calls update_workspace_logo RPC,
+//     allowing editors to update the logo despite owner-only RLS on the workspaces table.
 
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  TextInput, Alert, ActivityIndicator, StyleSheet,
+  View, Text, ScrollView, TouchableOpacity, TextInput,
+  Alert, ActivityIndicator, Image, ActionSheetIOS,
+  Platform, StyleSheet,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, ZoomIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useWorkspace } from '../../src/hooks/useWorkspace';
 import { exportWorkspaceAsPDF } from '../../src/services/workspaceExport';
-import { supabase } from '../../src/lib/supabase';
+import {
+  pickAndUploadWorkspaceLogo,
+  takeAndUploadWorkspaceLogo,
+  removeWorkspaceLogo,
+} from '../../src/services/workspaceMediaService';
 import { WorkspaceRole } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
@@ -28,37 +35,148 @@ export default function WorkspaceSettingsScreen() {
   const { id, role: roleParam } = useLocalSearchParams<{ id: string; role?: string }>();
   const userRole = (roleParam as WorkspaceRole) ?? 'owner';
   const isOwner  = userRole === 'owner';
+  const isEditor = userRole === 'editor' || isOwner;
 
-  const { workspace, reports, members, update, remove, isLoading } = useWorkspace(id ?? null);
+  const { workspace, reports, members, update, remove, refresh, isLoading } =
+    useWorkspace(id ?? null);
 
+  // General info fields (owner only)
   const [name,        setName]        = useState('');
   const [description, setDescription] = useState('');
   const [isSaving,    setIsSaving]    = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [codeCopied,  setCodeCopied]  = useState(false);
 
+  // Logo state (owner + editor)
+  const [logoUrl,       setLogoUrl]       = useState<string | null>(null);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+
   useEffect(() => {
     if (workspace) {
       setName(workspace.name);
       setDescription(workspace.description ?? '');
+      setLogoUrl(workspace.avatarUrl ?? null);
     }
   }, [workspace]);
 
-  // ── Save general settings ────────────────────────────────────────────────────
-  const hasChanges = isOwner && workspace && (
-    name.trim() !== workspace.name ||
-    description.trim() !== (workspace.description ?? '')
-  );
+  // ── General save (owner only) ──────────────────────────────────────────────
+
+  const hasChanges =
+    isOwner &&
+    workspace &&
+    (name.trim() !== workspace.name ||
+      description.trim() !== (workspace.description ?? ''));
 
   const handleSave = async () => {
     if (!hasChanges) return;
     setIsSaving(true);
-    const { error } = await update({ name: name.trim(), description: description.trim() } as any);
+    const { error } = await update({
+      name: name.trim(),
+      description: description.trim(),
+    } as any);
     setIsSaving(false);
     if (error) Alert.alert('Error', error);
   };
 
-  // ── Delete workspace ─────────────────────────────────────────────────────────
+  // ── Logo upload ────────────────────────────────────────────────────────────
+
+  const handleLogoUpload = async (source: 'library' | 'camera') => {
+    if (!id || !isEditor) return;
+    setIsUploadingLogo(true);
+
+    const result =
+      source === 'camera'
+        ? await takeAndUploadWorkspaceLogo(id)
+        : await pickAndUploadWorkspaceLogo(id);
+
+    setIsUploadingLogo(false);
+
+    if (result.cancelled) return; // user dismissed picker
+    if (result.error) {
+      Alert.alert('Upload Failed', result.error);
+      return;
+    }
+    if (result.url) {
+      setLogoUrl(result.url);
+      // Also refresh the workspace in the hook so the card reflects the new logo
+      await refresh?.();
+    }
+  };
+
+  const handlePickLogo = () => {
+    if (!isEditor) return;
+
+    // On iOS show ActionSheet for camera vs library choice
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options:       ['Cancel', 'Take Photo', 'Choose from Library', 'Remove Logo'],
+          destructiveButtonIndex: 3,
+          cancelButtonIndex:      0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) handleLogoUpload('camera');
+          if (buttonIndex === 2) handleLogoUpload('library');
+          if (buttonIndex === 3) handleRemoveLogo();
+        },
+      );
+    } else {
+      // Android — show a simple Alert
+      Alert.alert('Workspace Logo', 'Choose an option', [
+        { text: 'Cancel',              style: 'cancel' },
+        { text: 'Take Photo',          onPress: () => handleLogoUpload('camera')  },
+        { text: 'Choose from Library', onPress: () => handleLogoUpload('library') },
+        {
+          text: 'Remove Logo',
+          style: 'destructive',
+          onPress: handleRemoveLogo,
+        },
+      ]);
+    }
+  };
+
+  const handleRemoveLogo = async () => {
+    if (!id || !logoUrl) return;
+    Alert.alert('Remove Logo', 'Remove the workspace logo?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: async () => {
+          setIsUploadingLogo(true);
+          const { error } = await removeWorkspaceLogo(id, logoUrl);
+          setIsUploadingLogo(false);
+          if (error) Alert.alert('Error', error);
+          else {
+            setLogoUrl(null);
+            await refresh?.();
+          }
+        },
+      },
+    ]);
+  };
+
+  // ── PDF export ─────────────────────────────────────────────────────────────
+
+  const handleExportPDF = async () => {
+    if (!workspace) return;
+    setIsExporting(true);
+    const { success, error } = await exportWorkspaceAsPDF(workspace, reports);
+    setIsExporting(false);
+    if (!success && error) Alert.alert('Export Failed', error);
+  };
+
+  // ── Copy invite code ───────────────────────────────────────────────────────
+
+  const handleCopyInviteCode = async () => {
+    if (!workspace) return;
+    await Clipboard.setStringAsync(workspace.inviteCode);
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 2500);
+  };
+
+  // ── Delete workspace ───────────────────────────────────────────────────────
+
   const handleDelete = () => {
     Alert.alert(
       'Delete Workspace',
@@ -66,7 +184,8 @@ export default function WorkspaceSettingsScreen() {
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Delete Forever', style: 'destructive',
+          text: 'Delete Forever',
+          style: 'destructive',
           onPress: async () => {
             const { error } = await remove();
             if (!error) router.replace('/(app)/(tabs)/workspace' as any);
@@ -77,24 +196,10 @@ export default function WorkspaceSettingsScreen() {
     );
   };
 
-  // ── Export PDF ───────────────────────────────────────────────────────────────
-  const handleExportPDF = async () => {
-    if (!workspace) return;
-    setIsExporting(true);
-    const { success, error } = await exportWorkspaceAsPDF(workspace, reports);
-    setIsExporting(false);
-    if (!success && error) Alert.alert('Export Failed', error);
-  };
+  // ── Render ─────────────────────────────────────────────────────────────────
 
-  // ── Copy invite code ─────────────────────────────────────────────────────────
-  const handleCopyInviteCode = async () => {
-    if (!workspace) return;
-    await Clipboard.setStringAsync(workspace.inviteCode);
-    setCodeCopied(true);
-    setTimeout(() => setCodeCopied(false), 2500);
-  };
+  const initials = (workspace?.name ?? '').slice(0, 2).toUpperCase();
 
-  // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
@@ -108,7 +213,11 @@ export default function WorkspaceSettingsScreen() {
             {isOwner ? 'Workspace Settings' : 'Export & Sharing'}
           </Text>
           {hasChanges && isOwner && (
-            <TouchableOpacity onPress={handleSave} disabled={isSaving} style={styles.saveBtn}>
+            <TouchableOpacity
+              onPress={handleSave}
+              disabled={isSaving}
+              style={styles.saveBtn}
+            >
               {isSaving
                 ? <ActivityIndicator size="small" color="#FFF" />
                 : <Text style={styles.saveBtnText}>Save</Text>}
@@ -123,9 +232,95 @@ export default function WorkspaceSettingsScreen() {
             </View>
           ) : (
             <>
-              {/* ── General — owner only ── */}
+              {/* ── WORKSPACE LOGO (owner + editor) ── */}
+              {isEditor && (
+                <Animated.View entering={FadeInDown.duration(400).delay(40)}>
+                  <Text style={styles.sectionLabel}>Workspace Logo</Text>
+
+                  <View style={styles.logoSection}>
+                    {/* Current logo preview */}
+                    <TouchableOpacity
+                      onPress={handlePickLogo}
+                      disabled={isUploadingLogo}
+                      activeOpacity={0.8}
+                      style={styles.logoPreviewBtn}
+                    >
+                      {isUploadingLogo ? (
+                        <View style={styles.logoPlaceholder}>
+                          <ActivityIndicator color={COLORS.primary} />
+                        </View>
+                      ) : logoUrl ? (
+                        <Animated.View entering={ZoomIn.duration(300)}>
+                          <Image
+                            source={{ uri: logoUrl }}
+                            style={styles.logoImage}
+                            resizeMode="cover"
+                          />
+                          {/* Edit overlay */}
+                          <View style={styles.logoEditOverlay}>
+                            <Ionicons name="camera" size={16} color="#FFF" />
+                          </View>
+                        </Animated.View>
+                      ) : (
+                        <LinearGradient
+                          colors={COLORS.gradientPrimary as readonly [string, string]}
+                          style={styles.logoPlaceholder}
+                        >
+                          <Text style={styles.logoInitials}>{initials}</Text>
+                          <View style={styles.logoAddBadge}>
+                            <Ionicons name="add" size={14} color="#FFF" />
+                          </View>
+                        </LinearGradient>
+                      )}
+                    </TouchableOpacity>
+
+                    {/* Action buttons */}
+                    <View style={styles.logoActions}>
+                      <TouchableOpacity
+                        onPress={() => handleLogoUpload('library')}
+                        disabled={isUploadingLogo}
+                        style={styles.logoActionBtn}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="images-outline" size={16} color={COLORS.primary} />
+                        <Text style={styles.logoActionBtnText}>Choose Image</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        onPress={() => handleLogoUpload('camera')}
+                        disabled={isUploadingLogo}
+                        style={styles.logoActionBtn}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="camera-outline" size={16} color={COLORS.primary} />
+                        <Text style={styles.logoActionBtnText}>Take Photo</Text>
+                      </TouchableOpacity>
+
+                      {logoUrl && (
+                        <TouchableOpacity
+                          onPress={handleRemoveLogo}
+                          disabled={isUploadingLogo}
+                          style={[styles.logoActionBtn, styles.logoRemoveBtn]}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={COLORS.error} />
+                          <Text style={[styles.logoActionBtnText, { color: COLORS.error }]}>
+                            Remove
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+
+                  <Text style={styles.logoHint}>
+                    Square images work best (max 5 MB). Visible to all workspace members.
+                  </Text>
+                </Animated.View>
+              )}
+
+              {/* ── GENERAL INFO (owner only) ── */}
               {isOwner && (
-                <Animated.View entering={FadeInDown.duration(400).delay(60)}>
+                <Animated.View entering={FadeInDown.duration(400).delay(80)}>
                   <Text style={styles.sectionLabel}>General</Text>
                   <View style={styles.fieldWrap}>
                     <Text style={styles.fieldLabel}>Workspace Name</Text>
@@ -153,7 +348,7 @@ export default function WorkspaceSettingsScreen() {
                 </Animated.View>
               )}
 
-              {/* ── Export & Sharing ── */}
+              {/* ── EXPORT & SHARING ── */}
               <Animated.View entering={FadeInDown.duration(400).delay(120)}>
                 <Text style={styles.sectionLabel}>Export & Sharing</Text>
 
@@ -203,11 +398,10 @@ export default function WorkspaceSettingsScreen() {
                 </TouchableOpacity>
               </Animated.View>
 
-              {/* ── Stats ── */}
+              {/* ── STATS ── */}
               <Animated.View entering={FadeInDown.duration(400).delay(160)}>
                 <Text style={styles.sectionLabel}>Stats</Text>
                 <View style={styles.statsGrid}>
-                  {/* members.length is always accurate — no memberCount dependency */}
                   <StatBox label="Members" value={String(members.length)} />
                   <StatBox label="Reports" value={String(reports.length)} />
                   <StatBox
@@ -219,15 +413,21 @@ export default function WorkspaceSettingsScreen() {
                 </View>
               </Animated.View>
 
-              {/* ── Danger zone — owner only ── */}
+              {/* ── DANGER ZONE (owner only) ── */}
               {isOwner && (
                 <Animated.View entering={FadeInDown.duration(400).delay(200)}>
                   <Text style={[styles.sectionLabel, { color: COLORS.error }]}>Danger Zone</Text>
-                  <TouchableOpacity onPress={handleDelete} style={styles.deleteBtn} activeOpacity={0.8}>
+                  <TouchableOpacity
+                    onPress={handleDelete}
+                    style={styles.deleteBtn}
+                    activeOpacity={0.8}
+                  >
                     <Ionicons name="trash-outline" size={18} color={COLORS.error} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.deleteBtnText}>Delete Workspace</Text>
-                      <Text style={styles.deleteBtnDesc}>Permanently removes workspace and all data</Text>
+                      <Text style={styles.deleteBtnDesc}>
+                        Permanently removes workspace and all data
+                      </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={COLORS.error} />
                   </TouchableOpacity>
@@ -251,6 +451,7 @@ function StatBox({ label, value }: { label: string; value: string }) {
     </View>
   );
 }
+
 const stat = StyleSheet.create({
   box:   { flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
   value: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
@@ -269,10 +470,88 @@ const styles = StyleSheet.create({
   loadingWrap: { alignItems: 'center', paddingTop: 60 },
   sectionLabel:{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm, marginTop: SPACING.lg },
 
+  // ── Logo section ──
+  logoSection: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           SPACING.lg,
+    backgroundColor: COLORS.backgroundCard,
+    borderRadius:  RADIUS.xl,
+    padding:       SPACING.md,
+    borderWidth:   1,
+    borderColor:   COLORS.border,
+  },
+  logoPreviewBtn: { position: 'relative' },
+  logoImage: {
+    width: 80, height: 80, borderRadius: 20,
+    borderWidth: 2, borderColor: `${COLORS.primary}40`,
+  },
+  logoPlaceholder: {
+    width: 80, height: 80, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+    position: 'relative',
+    borderWidth: 2, borderColor: `${COLORS.primary}30`,
+  },
+  logoInitials: { color: '#FFF', fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
+  logoAddBadge: {
+    position:        'absolute',
+    bottom:          -4,
+    right:           -4,
+    width:           24,
+    height:          24,
+    borderRadius:    12,
+    backgroundColor: COLORS.primary,
+    alignItems:      'center',
+    justifyContent:  'center',
+    borderWidth:     2,
+    borderColor:     COLORS.backgroundCard,
+  },
+  logoEditOverlay: {
+    position:        'absolute',
+    bottom:          0,
+    right:           0,
+    width:           28,
+    height:          28,
+    borderRadius:    14,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    alignItems:      'center',
+    justifyContent:  'center',
+    borderWidth:     2,
+    borderColor:     COLORS.backgroundCard,
+  },
+  logoActions: { flex: 1, gap: 8 },
+  logoActionBtn: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    gap:             6,
+    backgroundColor: `${COLORS.primary}12`,
+    borderRadius:    RADIUS.lg,
+    paddingHorizontal: SPACING.md,
+    paddingVertical:   8,
+    borderWidth:     1,
+    borderColor:     `${COLORS.primary}25`,
+  },
+  logoActionBtnText: {
+    color:      COLORS.primary,
+    fontSize:   FONTS.sizes.sm,
+    fontWeight: '600',
+  },
+  logoRemoveBtn: {
+    backgroundColor: `${COLORS.error}10`,
+    borderColor:     `${COLORS.error}25`,
+  },
+  logoHint: {
+    color:     COLORS.textMuted,
+    fontSize:  FONTS.sizes.xs,
+    marginTop: 8,
+    marginBottom: 4,
+    lineHeight: 17,
+  },
+
   // Fields
-  fieldWrap:   { marginBottom: SPACING.md },
-  fieldLabel:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 },
-  input:       { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 12, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, borderWidth: 1, borderColor: COLORS.border },
+  fieldWrap:  { marginBottom: SPACING.md },
+  fieldLabel: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 },
+  input:      { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 12, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, borderWidth: 1, borderColor: COLORS.border },
 
   // Action rows
   actionRow:   { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border },
@@ -281,7 +560,7 @@ const styles = StyleSheet.create({
   actionDesc:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
 
   // Stats
-  statsGrid:   { flexDirection: 'row', gap: SPACING.sm },
+  statsGrid: { flexDirection: 'row', gap: SPACING.sm },
 
   // Delete
   deleteBtn:     { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30` },
