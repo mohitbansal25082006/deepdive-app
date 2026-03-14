@@ -1,5 +1,5 @@
 // app/(app)/_layout.tsx
-// Part 16: Added workspace-shared-debate route.
+// Part 17: Added workspace-chat route.
 
 import { useEffect }                       from 'react';
 import { Stack, router }                   from 'expo-router';
@@ -88,6 +88,18 @@ export default function AppLayout() {
         PDF/Copy/Share allowed; re-generation NOT available.
       */}
       <Stack.Screen name="workspace-shared-debate" options={{ animation: 'slide_from_right' }} />
+
+      {/*
+        ── Part 17: Advanced Workspace Chat ──
+        Team chat accessible ONLY by owners and editors.
+        Real-time messaging, reactions, reply threads, pins,
+        typing indicators, read receipts, search.
+        Viewers see a locked screen explaining access requirements.
+      */}
+      <Stack.Screen
+        name="workspace-chat"
+        options={{ animation: 'slide_from_right' }}
+      />
     </Stack>
   );
 }

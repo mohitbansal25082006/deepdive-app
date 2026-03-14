@@ -1,14 +1,14 @@
 // app/(app)/workspace-detail.tsx
-// Part 16 UPDATE — Shared tab now includes AI debate sessions alongside
-// presentations, academic papers, and podcast episodes.
+// Part 17 UPDATE — Added Team Chat button in the top bar (chatbubbles icon).
+// Navigates to workspace-chat screen passing workspaceId, name, and userRole.
+// Chat button shows an unread badge when there are unread messages.
+// Only owners and editors see an active chat icon (viewers see it greyed out
+// and still navigate but hit the locked screen in workspace-chat.tsx).
 //
-// Changes from Part 15:
-//   • useDebateSharing hook wired in
-//   • SharedDebateCard rendered in Shared tab (new "Debates" section)
-//   • Navigation to workspace-shared-debate screen for debate items
-//   • Debate export handlers (PDF, Copy, Share text) wired through
-//   • Shared tab stats strip shows debate count
-//   • Total shared count includes debates
+// Changes from Part 16:
+//   • useWorkspaceChatUnread hook wired to show badge on chat icon
+//   • "Chat" button added to topBarRight actions
+//   • Navigation to workspace-chat screen
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -50,6 +50,7 @@ import {
   shareDebateText,
 }                                    from '../../src/services/debateExport';
 import { sharedDebateToSession }     from '../../src/services/debateSharingService';
+import { getChatUnreadCount }        from '../../src/services/chatService';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
   SharedPodcast, SharedDebate,
@@ -92,12 +93,9 @@ export default function WorkspaceDetailScreen() {
     deny:    denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
-  // Part 14: presentations + papers
-  const sharing = useWorkspaceSharing(id ?? null);
-  // Part 15: podcasts
+  const sharing       = useWorkspaceSharing(id ?? null);
   const podcastSharing = usePodcastSharing(id ?? null);
-  // Part 16: debates
-  const debateSharing = useDebateSharing(id ?? null);
+  const debateSharing  = useDebateSharing(id ?? null);
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
   const [showInvite,    setShowInvite]    = useState(false);
@@ -109,6 +107,9 @@ export default function WorkspaceDetailScreen() {
   const [profileMember, setProfileMember] = useState<MiniProfile | null>(null);
   const [showProfile,   setShowProfile]   = useState(false);
   const [showRequests,  setShowRequests]  = useState(false);
+
+  // Part 17: unread chat badge
+  const [chatUnread, setChatUnread] = useState(0);
 
   const isOwner  = userRole === 'owner';
   const isEditor = userRole === 'editor' || isOwner;
@@ -126,6 +127,18 @@ export default function WorkspaceDetailScreen() {
   }, [id]);
 
   useEffect(() => { loadPinnedIds(); }, [loadPinnedIds]);
+
+  // ── Part 17: Load chat unread count ───────────────────────────────────────
+  useEffect(() => {
+    if (!id || !isEditor) return;
+    getChatUnreadCount(id).then(count => setChatUnread(count));
+    // Poll every 30s as a lightweight fallback
+    const interval = setInterval(async () => {
+      const count = await getChatUnreadCount(id);
+      setChatUnread(count);
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [id, isEditor]);
 
   // ── Toggle pin ─────────────────────────────────────────────────────────────
   const handleTogglePin = async (reportId: string) => {
@@ -163,7 +176,21 @@ export default function WorkspaceDetailScreen() {
     setShowProfile(true);
   }, []);
 
-  // ── Open shared content (presentations + papers) ───────────────────────────
+  // ── Part 17: Open chat ─────────────────────────────────────────────────────
+  const openChat = useCallback(() => {
+    if (!id) return;
+    setChatUnread(0); // optimistically clear badge
+    router.push({
+      pathname: '/(app)/workspace-chat' as any,
+      params: {
+        id:   id,
+        name: workspace?.name ?? 'Team Chat',
+        role: userRole ?? 'viewer',
+      },
+    });
+  }, [id, workspace?.name, userRole]);
+
+  // ── Open shared content ────────────────────────────────────────────────────
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({
       pathname: '/(app)/workspace-shared-viewer' as any,
@@ -176,7 +203,6 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id]);
 
-  // ── Open shared podcast ────────────────────────────────────────────────────
   const handleOpenSharedPodcast = useCallback((podcast: SharedPodcast) => {
     router.push({
       pathname: '/(app)/workspace-shared-podcast-player' as any,
@@ -184,7 +210,6 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id]);
 
-  // ── Open shared debate (Part 16) ───────────────────────────────────────────
   const handleOpenSharedDebate = useCallback((debate: SharedDebate) => {
     router.push({
       pathname: '/(app)/workspace-shared-debate' as any,
@@ -203,7 +228,6 @@ export default function WorkspaceDetailScreen() {
     if (error) Alert.alert('Error', error);
   }, [podcastSharing]);
 
-  // ── Remove shared debate (Part 16) ────────────────────────────────────────
   const handleRemoveSharedDebate = useCallback(async (debate: SharedDebate) => {
     const { error } = await debateSharing.remove(debate.debateId);
     if (error) Alert.alert('Error', error);
@@ -225,32 +249,20 @@ export default function WorkspaceDetailScreen() {
     catch { Alert.alert('Error', 'Failed to copy script'); }
   }, []);
 
-  // ── Debate export handlers (Part 16) ──────────────────────────────────────
+  // ── Debate export handlers ─────────────────────────────────────────────────
   const handleExportDebatePDF = useCallback(async (debate: SharedDebate) => {
-    try {
-      const session = sharedDebateToSession(debate);
-      await exportDebateAsPDF(session);
-    } catch (err) {
-      Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export PDF');
-    }
+    try { await exportDebateAsPDF(sharedDebateToSession(debate)); }
+    catch (err) { Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export PDF'); }
   }, []);
 
   const handleCopyDebateText = useCallback(async (debate: SharedDebate) => {
-    try {
-      const session = sharedDebateToSession(debate);
-      await copyDebateSummary(session);
-    } catch {
-      Alert.alert('Error', 'Failed to copy debate text');
-    }
+    try { await copyDebateSummary(sharedDebateToSession(debate)); }
+    catch { Alert.alert('Error', 'Failed to copy debate text'); }
   }, []);
 
   const handleShareDebateText = useCallback(async (debate: SharedDebate) => {
-    try {
-      const session = sharedDebateToSession(debate);
-      await shareDebateText(session);
-    } catch {
-      // user cancelled
-    }
+    try { await shareDebateText(sharedDebateToSession(debate)); }
+    catch {}
   }, []);
 
   // ── Leave workspace ────────────────────────────────────────────────────────
@@ -304,7 +316,6 @@ export default function WorkspaceDetailScreen() {
     );
   }
 
-  // ── Computed counts ────────────────────────────────────────────────────────
   const presentationCount = sharing.presentations.length;
   const paperCount        = sharing.papers.length;
   const podcastCount      = podcastSharing.podcasts.length;
@@ -329,6 +340,23 @@ export default function WorkspaceDetailScreen() {
             )}
           </View>
           <View style={styles.topBarRight}>
+            {/* Part 17: Chat button — shown for editors/owners with unread badge */}
+            {isEditor && (
+              <TouchableOpacity
+                onPress={openChat}
+                style={[styles.iconBtn, styles.chatBtn]}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="chatbubbles-outline" size={20} color={COLORS.primary} />
+                {chatUnread > 0 && (
+                  <View style={styles.chatBadge}>
+                    <Text style={styles.chatBadgeText}>
+                      {chatUnread > 9 ? '9+' : chatUnread}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
             <TouchableOpacity onPress={() => setShowSearch(true)} style={styles.iconBtn}>
               <Ionicons name="search-outline" size={20} color={COLORS.textSecondary} />
             </TouchableOpacity>
@@ -359,6 +387,19 @@ export default function WorkspaceDetailScreen() {
             </View>
             <TouchableOpacity onPress={() => setShowRequests(true)} style={styles.requestBannerCta} activeOpacity={0.85}>
               <Text style={styles.requestBannerCtaText}>Review</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        {/* ── Part 17: Chat CTA banner (for editors — shown when chatUnread > 0) ── */}
+        {isEditor && chatUnread > 0 && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.chatCTABanner}>
+            <Ionicons name="chatbubbles" size={15} color={COLORS.primary} />
+            <Text style={styles.chatCTAText} numberOfLines={1}>
+              {chatUnread} new {chatUnread === 1 ? 'message' : 'messages'} in team chat
+            </Text>
+            <TouchableOpacity onPress={openChat} style={styles.chatCTABtn} activeOpacity={0.85}>
+              <Text style={styles.chatCTABtnText}>Open Chat</Text>
             </TouchableOpacity>
           </Animated.View>
         )}
@@ -438,6 +479,31 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
+              {/* Part 17: Quick chat CTA for editors in feed tab */}
+              {isEditor && (
+                <Animated.View entering={FadeInDown.duration(400).delay(50)}>
+                  <TouchableOpacity onPress={openChat} style={styles.chatFeedCta} activeOpacity={0.8}>
+                    <View style={styles.chatFeedCtaLeft}>
+                      <View style={styles.chatFeedCtaIcon}>
+                        <Ionicons name="chatbubbles" size={18} color={COLORS.primary} />
+                      </View>
+                      <View>
+                        <Text style={styles.chatFeedCtaTitle}>Team Chat</Text>
+                        <Text style={styles.chatFeedCtaSub}>Private to owners & editors</Text>
+                      </View>
+                    </View>
+                    <View style={styles.chatFeedCtaRight}>
+                      {chatUnread > 0 && (
+                        <View style={styles.chatFeedBadge}>
+                          <Text style={styles.chatFeedBadgeText}>{chatUnread}</Text>
+                        </View>
+                      )}
+                      <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+                    </View>
+                  </TouchableOpacity>
+                </Animated.View>
+              )}
+
               {pinnedIds.size > 0 && sortedReports.some((r) => r.isPinned) && (
                 <Animated.View entering={FadeInDown.duration(300)} style={styles.pinnedHeader}>
                   <Ionicons name="pin" size={13} color={COLORS.warning} />
@@ -494,10 +560,9 @@ export default function WorkspaceDetailScreen() {
             </>
           )}
 
-          {/* ── SHARED TAB (Parts 14 + 15 + 16) ── */}
+          {/* ── SHARED TAB ── */}
           {activeTab === 'shared' && (
             <>
-              {/* Section header */}
               <Animated.View entering={FadeInDown.duration(400)} style={styles.sharedHeader}>
                 <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={styles.sharedHeaderIcon}>
                   <Ionicons name="share-social" size={18} color="#FFF" />
@@ -510,7 +575,6 @@ export default function WorkspaceDetailScreen() {
                 </View>
               </Animated.View>
 
-              {/* Filter summary chips */}
               {totalSharedCount > 0 && (
                 <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
                   <FilterChip label={`All (${totalSharedCount})`}         icon="apps-outline"    active />
@@ -521,80 +585,50 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
-              {/* Presentations */}
               {sharing.presentations.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                   <ContentSectionHeader label="Presentations"   count={sharing.presentations.length} colors={['#6C63FF', '#8B5CF6']} />
                   {sharing.presentations.map((item, i) => (
-                    <SharedContentCard
-                      key={item.id} item={item} index={i} userRole={userRole}
-                      onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent}
-                    />
+                    <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
                   ))}
                 </Animated.View>
               )}
 
-              {/* Academic Papers */}
               {sharing.papers.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(140)}>
                   <ContentSectionHeader label="Academic Papers" count={sharing.papers.length} colors={['#10B981', '#059669']} badgeColor={COLORS.success} />
                   {sharing.papers.map((item, i) => (
-                    <SharedContentCard
-                      key={item.id} item={item} index={i} userRole={userRole}
-                      onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent}
-                    />
+                    <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
                   ))}
                 </Animated.View>
               )}
 
-              {/* Podcasts (Part 15) */}
               {podcastSharing.podcasts.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(180)}>
                   <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length} colors={['#FF6584', '#FF8FA3']} badgeColor="#FF6584" />
                   {podcastSharing.podcasts.map((podcast, i) => (
-                    <SharedPodcastCard
-                      key={podcast.id} item={podcast} index={i} userRole={userRole}
-                      onPlay={handleOpenSharedPodcast}
-                      onRemove={handleRemoveSharedPodcast}
-                      onDownloadMP3={handleDownloadPodcastMP3}
-                      onExportPDF={handleExportPodcastPDF}
-                      onCopyScript={handleCopyPodcastScript}
-                    />
+                    <SharedPodcastCard key={podcast.id} item={podcast} index={i} userRole={userRole} onPlay={handleOpenSharedPodcast} onRemove={handleRemoveSharedPodcast} onDownloadMP3={handleDownloadPodcastMP3} onExportPDF={handleExportPodcastPDF} onCopyScript={handleCopyPodcastScript} />
                   ))}
                 </Animated.View>
               )}
 
-              {/* Debates (Part 16) */}
               {debateSharing.debates.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(220)}>
                   <ContentSectionHeader label="AI Debates" count={debateSharing.debates.length} colors={['#6C63FF', '#9B59FF']} badgeColor={COLORS.primary} />
                   {debateSharing.debates.map((debate, i) => (
-                    <SharedDebateCard
-                      key={debate.id} item={debate} index={i} userRole={userRole}
-                      onView={handleOpenSharedDebate}
-                      onRemove={handleRemoveSharedDebate}
-                      onExportPDF={handleExportDebatePDF}
-                      onCopyText={handleCopyDebateText}
-                      onShareText={handleShareDebateText}
-                    />
+                    <SharedDebateCard key={debate.id} item={debate} index={i} userRole={userRole} onView={handleOpenSharedDebate} onRemove={handleRemoveSharedDebate} onExportPDF={handleExportDebatePDF} onCopyText={handleCopyDebateText} onShareText={handleShareDebateText} />
                   ))}
                 </Animated.View>
               )}
 
-              {/* Empty state */}
-              {totalSharedCount === 0 &&
-                !sharing.isLoading &&
-                !podcastSharing.isLoading &&
-                !debateSharing.isLoading && (
+              {totalSharedCount === 0 && !sharing.isLoading && !podcastSharing.isLoading && !debateSharing.isLoading && (
                 <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
                   <View style={styles.sharedEmptyIcon}>
                     <Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} />
                   </View>
                   <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
                   <Text style={styles.emptyDesc}>
-                    {isEditor
-                      ? 'Share presentations, academic papers, podcast episodes, and debate sessions from your reports into this workspace.'
-                      : 'No content has been shared to this workspace yet.'}
+                    {isEditor ? 'Share presentations, academic papers, podcast episodes, and debate sessions from your reports into this workspace.' : 'No content has been shared to this workspace yet.'}
                   </Text>
                   {isEditor && (
                     <View style={styles.sharedEmptyHint}>
@@ -635,6 +669,26 @@ export default function WorkspaceDetailScreen() {
                   <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
                 </TouchableOpacity>
               )}
+
+              {/* Part 17: Chat entry point in Members tab */}
+              {isEditor && (
+                <TouchableOpacity onPress={openChat} style={styles.chatMembersEntryBtn} activeOpacity={0.8}>
+                  <View style={styles.chatMembersEntryIcon}>
+                    <Ionicons name="chatbubbles" size={18} color={COLORS.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.chatMembersEntryTitle}>Team Chat</Text>
+                    <Text style={styles.chatMembersEntrySub}>Chat with owners & editors only</Text>
+                  </View>
+                  {chatUnread > 0 && (
+                    <View style={styles.chatFeedBadge}>
+                      <Text style={styles.chatFeedBadgeText}>{chatUnread}</Text>
+                    </View>
+                  )}
+                  <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+
               {members.map((m, i) => (
                 <Animated.View key={m.id} entering={FadeInDown.duration(300).delay(i * 40)} style={styles.memberRow}>
                   <TouchableOpacity
@@ -657,6 +711,7 @@ export default function WorkspaceDetailScreen() {
                   </TouchableOpacity>
                 </Animated.View>
               ))}
+
               {userRole !== 'owner' && userRole !== null && (
                 <Animated.View entering={FadeInDown.duration(300).delay(200)}>
                   <View style={styles.leaveSection}>
@@ -674,40 +729,18 @@ export default function WorkspaceDetailScreen() {
 
         {/* ── Modals ── */}
         {workspace && (
-          <InviteModal
-            workspace={workspace} visible={showInvite} isOwner={isOwner}
-            onClose={() => setShowInvite(false)}
-            onCodeUpdated={() => update({ name: workspace.name })}
-          />
+          <InviteModal workspace={workspace} visible={showInvite} isOwner={isOwner} onClose={() => setShowInvite(false)} onCodeUpdated={() => update({ name: workspace.name })} />
         )}
         {id && (
-          <AddToWorkspaceSheet
-            workspaceId={id} existingReportIds={existingReportIds}
-            visible={showAddReport} onClose={() => setShowAddReport(false)}
-            onAdded={(reportId) => addReport?.(reportId)}
-          />
+          <AddToWorkspaceSheet workspaceId={id} existingReportIds={existingReportIds} visible={showAddReport} onClose={() => setShowAddReport(false)} onAdded={(reportId) => addReport?.(reportId)} />
         )}
         {id && (
-          <WorkspaceSearchModal
-            visible={showSearch} workspaceId={id} userRole={userRole}
-            onClose={() => setShowSearch(false)}
-            onOpenReport={openReport}
-            onOpenMemberProfile={handleOpenMemberProfile}
-          />
+          <WorkspaceSearchModal visible={showSearch} workspaceId={id} userRole={userRole} onClose={() => setShowSearch(false)} onOpenReport={openReport} onOpenMemberProfile={handleOpenMemberProfile} />
         )}
         {id && (
-          <MemberProfileCard
-            visible={showProfile} member={profileMember} workspaceId={id}
-            onClose={() => { setShowProfile(false); setProfileMember(null); }}
-            onNavigateToReport={openReport}
-            onNavigateToComment={(reportId, _commentId) => openReport(reportId)}
-          />
+          <MemberProfileCard visible={showProfile} member={profileMember} workspaceId={id} onClose={() => { setShowProfile(false); setProfileMember(null); }} onNavigateToReport={openReport} onNavigateToComment={(reportId, _commentId) => openReport(reportId)} />
         )}
-        <EditAccessRequestModal
-          mode="owner" visible={showRequests} requests={pendingRequests}
-          isActioning={isActioning} onApprove={handleApproveRequest}
-          onDeny={handleDenyRequest} onClose={() => setShowRequests(false)}
-        />
+        <EditAccessRequestModal mode="owner" visible={showRequests} requests={pendingRequests} isActioning={isActioning} onApprove={handleApproveRequest} onDeny={handleDenyRequest} onClose={() => setShowRequests(false)} />
       </SafeAreaView>
     </LinearGradient>
   );
@@ -724,9 +757,7 @@ function FilterChip({ label, icon, active }: { label: string; icon: string; acti
   );
 }
 
-function ContentSectionHeader({
-  label, count, colors, badgeColor = COLORS.primary,
-}: { label: string; count: number; colors: [string, string]; badgeColor?: string }) {
+function ContentSectionHeader({ label, count, colors, badgeColor = COLORS.primary }: { label: string; count: number; colors: [string, string]; badgeColor?: string }) {
   return (
     <View style={styles.contentSectionHeader}>
       <LinearGradient colors={colors} style={styles.contentSectionDot} />
@@ -738,9 +769,7 @@ function ContentSectionHeader({
   );
 }
 
-function StatChip({ icon, value, label }: {
-  icon: keyof typeof Ionicons.glyphMap; value: number; label: string;
-}) {
+function StatChip({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap; value: number; label: string }) {
   return (
     <View style={statChipStyles.chip}>
       <Ionicons name={icon} size={14} color={COLORS.primary} />
@@ -771,6 +800,17 @@ const styles = StyleSheet.create({
   topBarRight:  { flexDirection: 'row', gap: 6 },
   iconBtn:      { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
 
+  // Part 17: Chat button
+  chatBtn:      { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
+  chatBadge:    { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.error, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3, borderWidth: 2, borderColor: COLORS.background },
+  chatBadgeText:{ color: '#FFF', fontSize: 8, fontWeight: '800' },
+
+  // Part 17: Chat CTA banner
+  chatCTABanner:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: SPACING.xl, marginBottom: SPACING.xs, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  chatCTAText:      { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1, marginLeft: 8 },
+  chatCTABtn:       { backgroundColor: COLORS.primary, borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 5 },
+  chatCTABtnText:   { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
   requestBanner:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: SPACING.xl, marginBottom: SPACING.xs, backgroundColor: `${COLORS.warning}12`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.warning}30` },
   requestBannerLeft:    { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   requestBannerText:    { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
@@ -789,8 +829,25 @@ const styles = StyleSheet.create({
 
   scroll: { paddingHorizontal: SPACING.xl, paddingBottom: 120 },
 
-  addReportCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginBottom: SPACING.md },
+  addReportCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginBottom: SPACING.sm },
   addReportCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+
+  // Part 17: Chat CTA in feed
+  chatFeedCta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  chatFeedCtaLeft:  { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  chatFeedCtaIcon:  { width: 40, height: 40, borderRadius: 13, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  chatFeedCtaTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  chatFeedCtaSub:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  chatFeedCtaRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  chatFeedBadge:    { backgroundColor: COLORS.error, borderRadius: RADIUS.full, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  chatFeedBadgeText:{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '800' },
+
+  // Part 17: Chat entry in Members tab
+  chatMembersEntryBtn:   { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  chatMembersEntryIcon:  { width: 38, height: 38, borderRadius: 12, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  chatMembersEntryTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  chatMembersEntrySub:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+
   pinnedHeader:     { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm },
   pinnedHeaderText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
   sectionDivider:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: SPACING.sm },
@@ -800,10 +857,10 @@ const styles = StyleSheet.create({
   pinBtn:           { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, zIndex: 10 },
   pinBtnActive:     { backgroundColor: `${COLORS.warning}15`, borderColor: `${COLORS.warning}40` },
 
-  sharedHeader:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
-  sharedHeaderIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  sharedHeaderTitle:{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' },
-  sharedHeaderSub:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3, lineHeight: 16 },
+  sharedHeader:      { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  sharedHeaderIcon:  { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  sharedHeaderTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' },
+  sharedHeaderSub:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3, lineHeight: 16 },
 
   filterRow:            { flexDirection: 'row', gap: 8, marginBottom: SPACING.md, flexWrap: 'wrap' },
   filterChip:           { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: COLORS.border },

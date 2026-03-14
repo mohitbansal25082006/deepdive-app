@@ -17,7 +17,9 @@
       "bundleIdentifier": "com.deepdive.ai",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries.",
-        "NSSpeechRecognitionUsageDescription": "DeepDive AI uses speech recognition to convert your spoken research queries to text."
+        "NSSpeechRecognitionUsageDescription": "DeepDive AI uses speech recognition to convert your spoken research queries to text.",
+        "NSPhotoLibraryUsageDescription": "DeepDive AI needs access to your photos to attach images to chat messages.",
+        "NSCameraUsageDescription": "DeepDive AI needs access to your camera to take photos for chat messages."
       },
       "associatedDomains": [
         "applinks:deepdive.app"
@@ -36,7 +38,12 @@
         "RECORD_AUDIO",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
       ],
       "intentFilters": [
         {
@@ -81,10 +88,12 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "DeepDive AI needs access to your photos to set your profile picture.",
-          "cameraPermission": "DeepDive AI needs access to your camera to take a profile picture."
+          "photosPermission": "DeepDive AI needs access to your photos to set your profile picture and attach images to chat messages.",
+          "cameraPermission": "DeepDive AI needs access to your camera to take photos for your profile and chat messages.",
+          "microphonePermission": false
         }
       ],
+      "expo-document-picker",
       [
         "expo-av",
         {
