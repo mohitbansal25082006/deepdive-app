@@ -1,5 +1,6 @@
 // src/types/index.ts
-// Parts 1–13 — All type definitions
+// Parts 1–15 — All type definitions
+// Part 15 adds: SharedPodcast, SharedPodcastState, extended SharedContentType to include 'podcast'
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -637,14 +638,13 @@ export interface DebateOrchestratorCallbacks {
 
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
-// Part 13B: added 'member_blocked'
 export type WorkspaceActivityAction =
   | 'workspace_created' | 'workspace_updated'
   | 'report_added'      | 'report_removed'
   | 'member_joined'     | 'member_left'     | 'member_removed'
   | 'member_role_changed' | 'comment_added' | 'comment_resolved'
   | 'ownership_transferred'
-  | 'member_blocked';  // ← Part 13B
+  | 'member_blocked';
 
 // ─── Part 11 WorkspaceSettings ────────────────────────────────────────────────
 
@@ -874,8 +874,9 @@ export interface ReactionState {
 }
 
 // ─── Part 14: Workspace Shared Content ────────────────────────────────────────
+// Part 15: Extended SharedContentType to include 'podcast'
 
-export type SharedContentType = 'presentation' | 'academic_paper';
+export type SharedContentType = 'presentation' | 'academic_paper' | 'podcast';
 
 export interface SharedWorkspaceContent {
   id:           string;
@@ -897,4 +898,78 @@ export interface WorkspaceSharingState {
   isLoading:  boolean;
   isSharing:  boolean;
   error:      string | null;
+}
+
+// ─── Part 15: Shared Podcast ──────────────────────────────────────────────────
+
+/**
+ * A podcast episode shared into a workspace.
+ * Stores a full denormalised copy of the podcast data (script, audio paths)
+ * so any workspace member can play or download it without owning the source row.
+ */
+export interface SharedPodcast {
+  /** Row ID in shared_podcasts table */
+  id:                 string;
+  workspaceId:        string;
+  podcastId:          string;
+  sharedBy:           string;
+  reportId?:          string;
+
+  // Denormalised podcast fields
+  title:              string;
+  description:        string;
+  topic:              string;
+  hostName:           string;
+  guestName:          string;
+  durationSeconds:    number;
+  wordCount:          number;
+  completedSegments:  number;
+
+  // Full playable data
+  script:             PodcastScript;
+  audioSegmentPaths:  string[];
+
+  // Analytics
+  downloadCount:      number;
+  playCount:          number;
+
+  sharedAt:           string;
+  sharerName?:        string;
+  sharerAvatar?:      string;
+}
+
+export interface SharedPodcastState {
+  podcasts:   SharedPodcast[];
+  isLoading:  boolean;
+  isSharing:  boolean;
+  error:      string | null;
+}
+
+/**
+ * Lightweight summary shown in SharedContentCard for podcasts.
+ * Derived from SharedPodcast.
+ */
+export interface SharedPodcastSummary {
+  id:              string;
+  workspaceId:     string;
+  podcastId:       string;
+  title:           string;
+  hostName:        string;
+  guestName:       string;
+  durationSeconds: number;
+  downloadCount:   number;
+  playCount:       number;
+  sharedAt:        string;
+  sharerName?:     string;
+}
+
+// ─── Part 15: Workspace Report Download ──────────────────────────────────────
+
+export interface WorkspaceReportDownload {
+  id:           string;
+  workspaceId:  string;
+  reportId:     string;
+  downloadedBy: string;
+  downloadedAt: string;
+  format:       'pdf' | 'markdown' | 'text';
 }

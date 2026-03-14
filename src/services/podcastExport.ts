@@ -1,34 +1,35 @@
 // src/services/podcastExport.ts
-// Part 8 — Podcast export utilities: MP3, PDF, clipboard script copy.
+// Part 15 UPDATED — exportPodcastAsMP3 now handles BOTH:
+//   • Local file:/// paths  (own device, original generation)
+//   • https:// Supabase Storage URLs  (workspace-shared audio)
 //
-// MP3 STRATEGY:
-//   Each podcast turn is stored as a separate .mp3 file on device.
-//   MP3 files are "frame-based" — concatenating their raw bytes produces a
-//   valid playable file in all major media players (iTunes, VLC, Android Media).
-//   We read every segment as Base64, decode to Uint8Array, concatenate, encode
-//   back to Base64, write to a temp file, then share/delete.
+// FIX:
+//   The original code called readAsStringAsync(path, { encoding: Base64 })
+//   which only works for local paths. https:// URLs throw because
+//   expo-file-system cannot read a URL as a local file.
 //
-// PDF STRATEGY:
-//   Build a full HTML page of the script with speaker colours, then use
-//   expo-print to render it as a PDF file and expo-sharing to share.
-//
-// SCRIPT COPY:
-//   Build plain-text transcript and push to expo-clipboard.
+//   Solution: Before reading, check if the path is an https:// URL.
+//   If so, use FileSystem.downloadAsync() to cache it locally first,
+//   then read the cached file as Base64 normally.
+//   Cached files are placed in cacheDirectory so the OS can clear
+//   them when space is needed — they won't accumulate permanently.
 
 import {
   documentDirectory,
+  cacheDirectory,
   readAsStringAsync,
   writeAsStringAsync,
   getInfoAsync,
   deleteAsync,
+  downloadAsync,
   EncodingType,
-}                        from 'expo-file-system/legacy';
+} from 'expo-file-system/legacy';
 import * as Print        from 'expo-print';
 import * as Sharing      from 'expo-sharing';
 import * as Clipboard    from 'expo-clipboard';
 import { Podcast }       from '../types';
 
-// ─── Binary helpers ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function base64ToUint8Array(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -49,14 +50,70 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function isRemoteUrl(path: string): boolean {
+  return path.startsWith('http://') || path.startsWith('https://');
+}
+
+/**
+ * Given a path that is either a local file URI or an https:// URL,
+ * returns a guaranteed-local file URI that can be read by readAsStringAsync.
+ *
+ * For local paths  → returned as-is (after existence check).
+ * For https:// URLs → downloaded to cacheDirectory and the local path returned.
+ *
+ * Returns null if the file cannot be obtained.
+ */
+async function ensureLocalPath(
+  pathOrUrl: string,
+  cacheKey:  string,
+): Promise<string | null> {
+  if (!pathOrUrl) return null;
+
+  // ── Remote URL — download to cache first ─────────────────────────────────
+  if (isRemoteUrl(pathOrUrl)) {
+    const localCachePath = `${cacheDirectory ?? ''}podcast_export_${cacheKey}.mp3`;
+
+    // Check if already cached from a previous export
+    try {
+      const existing = await getInfoAsync(localCachePath);
+      if (existing.exists && (existing as any).size > 100) {
+        return localCachePath;
+      }
+    } catch {}
+
+    // Download from Supabase Storage
+    try {
+      const result = await downloadAsync(pathOrUrl, localCachePath);
+      if (result.status === 200) {
+        return localCachePath;
+      }
+      console.warn(`[podcastExport] download failed HTTP ${result.status} for ${pathOrUrl}`);
+      return null;
+    } catch (err) {
+      console.warn(`[podcastExport] download error for ${pathOrUrl}:`, err);
+      return null;
+    }
+  }
+
+  // ── Local path — verify it exists ─────────────────────────────────────────
+  try {
+    const info = await getInfoAsync(pathOrUrl);
+    if (info.exists) return pathOrUrl;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── MP3 Export ───────────────────────────────────────────────────────────────
 
 /**
  * Concatenate all available audio segments into a single .mp3 file and
- * open the native share sheet so the user can save / AirDrop / send it.
+ * open the native share sheet.
  *
- * The temp file is deleted after sharing regardless of whether the share
- * succeeded (the share sheet copies the file before returning).
+ * Works for BOTH:
+ *   • Local file:/// paths (podcast generated on this device)
+ *   • https:// Supabase Storage URLs (podcast shared from another device)
  */
 export async function exportPodcastAsMP3(podcast: Podcast): Promise<void> {
   const paths = (podcast.audioSegmentPaths ?? []).filter(Boolean);
@@ -65,33 +122,47 @@ export async function exportPodcastAsMP3(podcast: Podcast): Promise<void> {
     throw new Error('No audio segments found for this episode.');
   }
 
-  // ── Read all segments ──────────────────────────────────────────────────────
+  // ── Step 1: Ensure all segments are local (download remote ones) ──────────
+
+  const localPaths: (string | null)[] = await Promise.all(
+    paths.map((path, index) =>
+      ensureLocalPath(path, `${podcast.id}_${index}`)
+    )
+  );
+
+  // ── Step 2: Read all local segments as Base64 ─────────────────────────────
 
   const chunks: Uint8Array[] = [];
 
-  for (const path of paths) {
-    try {
-      const info = await getInfoAsync(path);
-      if (!info.exists) continue;
+  for (let i = 0; i < localPaths.length; i++) {
+    const localPath = localPaths[i];
+    if (!localPath) {
+      console.warn(`[podcastExport] skipping segment ${i} — could not obtain local file`);
+      continue;
+    }
 
-      const base64 = await readAsStringAsync(path, {
+    try {
+      const base64 = await readAsStringAsync(localPath, {
         encoding: EncodingType.Base64,
       });
+
+      if (!base64 || base64.length === 0) continue;
+
       const bytes = base64ToUint8Array(base64);
       if (bytes.length > 0) chunks.push(bytes);
-    } catch {
-      // Skip unreadable / missing segment — non-fatal
+    } catch (err) {
+      console.warn(`[podcastExport] read error segment ${i}:`, err);
     }
   }
 
   if (chunks.length === 0) {
     throw new Error(
-      'Audio files could not be read. They may have been cleared by the OS. ' +
-      'Try regenerating the podcast.'
+      'Audio files could not be read.\n\n' +
+      'For shared podcasts, this may be a network issue — please check your connection and try again.'
     );
   }
 
-  // ── Concatenate ────────────────────────────────────────────────────────────
+  // ── Step 3: Concatenate all chunks ────────────────────────────────────────
 
   const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
   const combined    = new Uint8Array(totalLength);
@@ -102,9 +173,8 @@ export async function exportPodcastAsMP3(podcast: Podcast): Promise<void> {
     offset += chunk.length;
   }
 
-  // ── Write temp file ────────────────────────────────────────────────────────
+  // ── Step 4: Write combined MP3 to documentDirectory ──────────────────────
 
-  // Sanitise title for use in a filename
   const safeTitle  = podcast.title
     .replace(/[^a-zA-Z0-9 _-]/g, '')
     .replace(/\s+/g, '_')
@@ -115,7 +185,7 @@ export async function exportPodcastAsMP3(podcast: Podcast): Promise<void> {
     encoding: EncodingType.Base64,
   });
 
-  // ── Share ──────────────────────────────────────────────────────────────────
+  // ── Step 5: Share ─────────────────────────────────────────────────────────
 
   const canShare = await Sharing.isAvailableAsync();
   if (!canShare) {
@@ -131,22 +201,27 @@ export async function exportPodcastAsMP3(podcast: Podcast): Promise<void> {
     UTI:         'public.mp3',
   });
 
-  // ── Cleanup temp file ──────────────────────────────────────────────────────
-  // Share sheet has already copied the file, so it's safe to delete now.
+  // ── Step 6: Cleanup output file (share sheet has already copied it) ───────
 
   try {
     await deleteAsync(outputPath, { idempotent: true });
-  } catch {
-    // Non-fatal
+  } catch {}
+
+  // ── Step 7: Cleanup cached remote segments ────────────────────────────────
+  // Only clean up the ones we downloaded (not original local files)
+
+  for (let i = 0; i < paths.length; i++) {
+    if (isRemoteUrl(paths[i])) {
+      const cachePath = `${cacheDirectory ?? ''}podcast_export_${podcast.id}_${i}.mp3`;
+      try {
+        await deleteAsync(cachePath, { idempotent: true });
+      } catch {}
+    }
   }
 }
 
 // ─── Script Copy ──────────────────────────────────────────────────────────────
 
-/**
- * Build a readable plain-text transcript and copy it to the clipboard.
- * Returns the full text string so the caller can show a confirmation toast.
- */
 export async function copyPodcastScriptToClipboard(podcast: Podcast): Promise<string> {
   const turns = podcast.script?.turns ?? [];
 
@@ -185,9 +260,9 @@ function buildPodcastHTML(podcast: Podcast): string {
   const minutes  = Math.round(podcast.durationSeconds / 60);
 
   const turnsHTML = turns.map((turn, i) => {
-    const isHost   = turn.speaker === 'host';
-    const bgColor  = isHost ? '#f0eeff' : '#fff0f4';
-    const barColor = isHost ? '#6C63FF' : '#FF6584';
+    const isHost    = turn.speaker === 'host';
+    const bgColor   = isHost ? '#f0eeff' : '#fff0f4';
+    const barColor  = isHost ? '#6C63FF' : '#FF6584';
     const nameColor = isHost ? '#6C63FF' : '#FF6584';
 
     return `
@@ -199,30 +274,19 @@ function buildPodcastHTML(podcast: Podcast): string {
         margin-bottom: 14px;
       ">
         <div class="speaker" style="
-          color:       ${nameColor};
-          font-size:   11px;
-          font-weight: 800;
+          color:          ${nameColor};
+          font-size:      11px;
+          font-weight:    800;
           letter-spacing: 1px;
           text-transform: uppercase;
-          margin-bottom: 6px;
+          margin-bottom:  6px;
         ">
           ${turn.speakerName}
-          <span style="
-            color:       #aaa;
-            font-weight: 400;
-            font-size:   10px;
-            margin-left: 6px;
-            text-transform: none;
-            letter-spacing: 0;
-          ">
+          <span style="color:#aaa;font-weight:400;font-size:10px;margin-left:6px;text-transform:none;letter-spacing:0;">
             Turn ${i + 1}
           </span>
         </div>
-        <div class="text" style="
-          font-size:   14px;
-          line-height: 1.7;
-          color:       #333;
-        ">
+        <div class="text" style="font-size:14px;line-height:1.7;color:#333;">
           ${turn.text}
         </div>
       </div>`;
@@ -234,158 +298,54 @@ function buildPodcastHTML(podcast: Podcast): string {
 <meta charset="UTF-8"/>
 <title>${podcast.title}</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-    font-size:   14px;
-    line-height: 1.6;
-    color:       #1a1a2e;
-    background:  #fff;
-  }
-  .cover {
-    background: linear-gradient(135deg, #6C63FF 0%, #FF6584 100%);
-    color:       white;
-    padding:     52px 48px 44px;
-  }
-  .cover-label {
-    font-size:     11px;
-    font-weight:   700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    opacity:       0.75;
-    margin-bottom: 14px;
-    display:       flex;
-    align-items:   center;
-    gap:           6px;
-  }
-  .cover h1 {
-    font-size:   28px;
-    font-weight: 800;
-    line-height: 1.3;
-    margin-bottom: 14px;
-  }
-  .cover p {
-    font-size:   15px;
-    opacity:     0.88;
-    line-height: 1.6;
-    max-width:   560px;
-    margin-bottom: 24px;
-  }
-  .cover-meta {
-    display:     flex;
-    gap:         18px;
-    flex-wrap:   wrap;
-    font-size:   12px;
-    opacity:     0.78;
-  }
-  .cover-meta span {
-    display:     flex;
-    align-items: center;
-    gap:         5px;
-  }
-  .stats-bar {
-    display:         flex;
-    background:      #f8f7ff;
-    padding:         18px 48px;
-    gap:             40px;
-    border-bottom:   2px solid #ebe9ff;
-  }
-  .stat-item { text-align: center; }
-  .stat-item .value {
-    font-size:   20px;
-    font-weight: 800;
-    color:       #6C63FF;
-  }
-  .stat-item .label {
-    font-size:      10px;
-    color:          #999;
-    text-transform: uppercase;
-    letter-spacing: .5px;
-    margin-top:     2px;
-  }
-  .content { padding: 40px 48px; }
-  .section-heading {
-    font-size:      12px;
-    font-weight:    700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color:          #6C63FF;
-    margin-bottom:  20px;
-    padding-bottom: 10px;
-    border-bottom:  2px solid #ebe9ff;
-  }
-  .footer {
-    background:  #f8f7ff;
-    padding:     22px 48px;
-    text-align:  center;
-    font-size:   11px;
-    color:       #bbb;
-    border-top:  1px solid #ebe9ff;
-    margin-top:  40px;
-  }
-  @media print {
-    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:14px; line-height:1.6; color:#1a1a2e; background:#fff; }
+  .cover { background:linear-gradient(135deg,#6C63FF 0%,#FF6584 100%); color:white; padding:52px 48px 44px; }
+  .cover-label { font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; opacity:.75; margin-bottom:14px; }
+  .cover h1 { font-size:28px; font-weight:800; line-height:1.3; margin-bottom:14px; }
+  .cover p { font-size:15px; opacity:.88; line-height:1.6; max-width:560px; margin-bottom:24px; }
+  .cover-meta { display:flex; gap:18px; flex-wrap:wrap; font-size:12px; opacity:.78; }
+  .stats-bar { display:flex; background:#f8f7ff; padding:18px 48px; gap:40px; border-bottom:2px solid #ebe9ff; }
+  .stat-item { text-align:center; }
+  .stat-item .value { font-size:20px; font-weight:800; color:#6C63FF; }
+  .stat-item .label { font-size:10px; color:#999; text-transform:uppercase; letter-spacing:.5px; margin-top:2px; }
+  .content { padding:40px 48px; }
+  .section-heading { font-size:12px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#6C63FF; margin-bottom:20px; padding-bottom:10px; border-bottom:2px solid #ebe9ff; }
+  .footer { background:#f8f7ff; padding:22px 48px; text-align:center; font-size:11px; color:#bbb; border-top:1px solid #ebe9ff; margin-top:40px; }
+  @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
 </style>
 </head>
 <body>
-
   <div class="cover">
     <div class="cover-label">🎙 DeepDive AI Podcast</div>
     <h1>${podcast.title}</h1>
     <p>${podcast.description}</p>
     <div class="cover-meta">
-      <span>🎤 ${podcast.config.hostName} & ${podcast.config.guestName}</span>
+      <span>🎤 ${podcast.config.hostName} &amp; ${podcast.config.guestName}</span>
       <span>⏱ ~${minutes} min</span>
       <span>💬 ${turns.length} turns</span>
       <span>📅 ${formatDate(podcast.createdAt)}</span>
     </div>
   </div>
-
   <div class="stats-bar">
-    <div class="stat-item">
-      <div class="value">${minutes}</div>
-      <div class="label">Minutes</div>
-    </div>
-    <div class="stat-item">
-      <div class="value">${turns.length}</div>
-      <div class="label">Turns</div>
-    </div>
-    <div class="stat-item">
-      <div class="value">${podcast.script?.totalWords?.toLocaleString() ?? '—'}</div>
-      <div class="label">Words</div>
-    </div>
-    <div class="stat-item">
-      <div class="value">${turns.filter(t => t.speaker === 'host').length}</div>
-      <div class="label">Host turns</div>
-    </div>
-    <div class="stat-item">
-      <div class="value">${turns.filter(t => t.speaker === 'guest').length}</div>
-      <div class="label">Guest turns</div>
-    </div>
+    <div class="stat-item"><div class="value">${minutes}</div><div class="label">Minutes</div></div>
+    <div class="stat-item"><div class="value">${turns.length}</div><div class="label">Turns</div></div>
+    <div class="stat-item"><div class="value">${podcast.script?.totalWords?.toLocaleString() ?? '—'}</div><div class="label">Words</div></div>
+    <div class="stat-item"><div class="value">${turns.filter(t => t.speaker === 'host').length}</div><div class="label">Host turns</div></div>
+    <div class="stat-item"><div class="value">${turns.filter(t => t.speaker === 'guest').length}</div><div class="label">Guest turns</div></div>
   </div>
-
   <div class="content">
     <div class="section-heading">Full Transcript</div>
     ${turnsHTML}
   </div>
-
-  <div class="footer">
-    Generated by DeepDive AI · ${formatDate(podcast.createdAt)} · deepdive.app
-  </div>
-
+  <div class="footer">Generated by DeepDive AI · ${formatDate(podcast.createdAt)} · deepdive.app</div>
 </body>
 </html>`;
 }
 
-/**
- * Render the podcast script as a styled PDF and open the native share sheet.
- */
 export async function exportPodcastAsPDF(podcast: Podcast): Promise<void> {
-  const html = buildPodcastHTML(podcast);
-
+  const html    = buildPodcastHTML(podcast);
   const { uri } = await Print.printToFileAsync({ html, base64: false });
-
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
     await Sharing.shareAsync(uri, {

@@ -1,28 +1,31 @@
 // app/(app)/workspace-detail.tsx
-// Part 14 — Added "Shared" tab showing presentations & academic papers
-// shared into the workspace. Members can open/export; editors/owners can remove.
+// Part 15 — Shared tab now includes podcast episodes alongside
+// presentations and academic papers.
 //
-// Changes from Part 13:
-//   • New tab: "Shared" (4th tab alongside Feed / Activity / Members)
-//   • useWorkspaceSharing hook wired in
-//   • SharedContentCard rendered in Shared tab
-//   • Navigation to slide-preview / academic-paper when card is opened
+// Changes from Part 14:
+//  • usePodcastSharing hook wired in
+//  • SharedPodcastCard rendered in Shared tab
+//  • Navigation to workspace-shared-podcast-player for podcast items
+//  • Shared tab stats strip shows podcast count
+//  • handleOpenSharedContent routes podcasts to the new player screen
+//  • Podcast download handlers (MP3, PDF, copy script) wired through
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   RefreshControl, StyleSheet, Alert,
 } from 'react-native';
-import { LinearGradient }   from 'expo-linear-gradient';
-import { Ionicons }          from '@expo/vector-icons';
+import { LinearGradient }    from 'expo-linear-gradient';
+import { Ionicons }           from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import { SafeAreaView }      from 'react-native-safe-area-context';
+import { SafeAreaView }       from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase }          from '../../src/lib/supabase';
-import { useWorkspace }      from '../../src/hooks/useWorkspace';
-import { useActivityFeed }   from '../../src/hooks/useActivityFeed';
+import { supabase }           from '../../src/lib/supabase';
+import { useWorkspace }       from '../../src/hooks/useWorkspace';
+import { useActivityFeed }    from '../../src/hooks/useActivityFeed';
 import { usePendingAccessRequests }  from '../../src/hooks/useEditAccessRequest';
 import { useWorkspaceSharing }       from '../../src/hooks/useWorkspaceSharing';
+import { usePodcastSharing }         from '../../src/hooks/usePodcastSharing';
 import { WorkspaceReportCard }       from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem }              from '../../src/components/workspace/ActivityItem';
 import { MemberAvatar }              from '../../src/components/workspace/MemberAvatar';
@@ -32,8 +35,15 @@ import { WorkspaceSearchModal }      from '../../src/components/workspace/Worksp
 import { MemberProfileCard }         from '../../src/components/workspace/MemberProfileCard';
 import { EditAccessRequestModal }    from '../../src/components/workspace/EditAccessRequestModal';
 import { SharedContentCard }         from '../../src/components/workspace/SharedContentCard';
+import { SharedPodcastCard }         from '../../src/components/workspace/SharedPodcastCard';
 import {
-  WorkspaceReport, MiniProfile, SharedWorkspaceContent,
+  exportPodcastAsMP3,
+  exportPodcastAsPDF,
+  copyPodcastScriptToClipboard,
+} from '../../src/services/podcastExport';
+import { sharedPodcastToPodcast }    from '../../src/services/podcastSharingService';
+import {
+  WorkspaceReport, MiniProfile, SharedWorkspaceContent, SharedPodcast,
 } from '../../src/types';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
@@ -73,8 +83,10 @@ export default function WorkspaceDetailScreen() {
     deny:    denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
-  // Part 14: shared content
+  // Part 14: presentations + papers
   const sharing = useWorkspaceSharing(id ?? null);
+  // Part 15: podcasts
+  const podcastSharing = usePodcastSharing(id ?? null);
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
   const [showInvite,    setShowInvite]    = useState(false);
@@ -99,7 +111,7 @@ export default function WorkspaceDetailScreen() {
       if (data) {
         setPinnedIds(new Set((data as { report_id: string }[]).map((r) => r.report_id)));
       }
-    } catch { /* non-fatal */ }
+    } catch {}
   }, [id]);
 
   useEffect(() => { loadPinnedIds(); }, [loadPinnedIds]);
@@ -110,8 +122,7 @@ export default function WorkspaceDetailScreen() {
     setIsPinToggling(true);
     try {
       const { data, error } = await supabase.rpc('toggle_pin_workspace_report', {
-        p_workspace_id: id,
-        p_report_id:    reportId,
+        p_workspace_id: id, p_report_id: reportId,
       });
       if (error) throw error;
       const result = data as { pinned: boolean };
@@ -136,26 +147,12 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id, userRole]);
 
-  const handleOpenReportFromSearch = useCallback((reportId: string) => {
-    openReport(reportId);
-  }, [openReport]);
-
-  const handleNavigateToComment = useCallback((reportId: string, commentId: string) => {
-    router.push({
-      pathname: '/(app)/workspace-report' as any,
-      params:   { reportId, workspaceId: id, userRole: userRole ?? 'viewer', scrollToComment: commentId },
-    });
-  }, [id, userRole]);
-
   const handleOpenMemberProfile = useCallback((member: MiniProfile) => {
     setProfileMember(member);
     setShowProfile(true);
   }, []);
 
-  // ── Part 14: Open shared content ───────────────────────────────────────────
-  // Routes to workspace-shared-viewer which uses SECURITY DEFINER RPCs to
-  // load the content, bypassing owner RLS so non-owners view without
-  // triggering any generation flow.
+  // ── Open shared content (Part 14: presentations + papers) ─────────────────
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({
       pathname: '/(app)/workspace-shared-viewer' as any,
@@ -168,17 +165,63 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id]);
 
-  // ── Part 14: Remove shared content ────────────────────────────────────────
+  // ── Open shared podcast (Part 15) ─────────────────────────────────────────
+  const handleOpenSharedPodcast = useCallback((podcast: SharedPodcast) => {
+    router.push({
+      pathname: '/(app)/workspace-shared-podcast-player' as any,
+      params:   {
+        workspaceId:  id,
+        sharedId:     podcast.id,
+        contentTitle: podcast.title,
+      },
+    });
+  }, [id]);
+
+  // ── Remove shared content ──────────────────────────────────────────────────
   const handleRemoveSharedContent = useCallback(async (item: SharedWorkspaceContent) => {
     const { error } = await sharing.remove(item.contentType, item.contentId);
     if (error) Alert.alert('Error', error);
   }, [sharing]);
 
+  // ── Remove shared podcast (Part 15) ───────────────────────────────────────
+  const handleRemoveSharedPodcast = useCallback(async (podcast: SharedPodcast) => {
+    const { error } = await podcastSharing.remove(podcast.podcastId);
+    if (error) Alert.alert('Error', error);
+  }, [podcastSharing]);
+
+  // ── Podcast export handlers (Part 15) ─────────────────────────────────────
+  const handleDownloadPodcastMP3 = useCallback(async (podcast: SharedPodcast) => {
+    try {
+      const p = sharedPodcastToPodcast(podcast);
+      await exportPodcastAsMP3(p);
+    } catch (err) {
+      Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export MP3');
+    }
+  }, []);
+
+  const handleExportPodcastPDF = useCallback(async (podcast: SharedPodcast) => {
+    try {
+      const p = sharedPodcastToPodcast(podcast);
+      await exportPodcastAsPDF(p);
+    } catch (err) {
+      Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export PDF');
+    }
+  }, []);
+
+  const handleCopyPodcastScript = useCallback(async (podcast: SharedPodcast) => {
+    try {
+      const p = sharedPodcastToPodcast(podcast);
+      await copyPodcastScriptToClipboard(p);
+    } catch (err) {
+      Alert.alert('Error', 'Failed to copy script');
+    }
+  }, []);
+
   // ── Leave workspace ────────────────────────────────────────────────────────
   const handleLeave = () => {
     Alert.alert(
       'Leave Workspace',
-      'Are you sure you want to leave this workspace? You will lose access to all shared reports and comments.',
+      'Are you sure you want to leave? You will lose access to all shared content.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -195,12 +238,12 @@ export default function WorkspaceDetailScreen() {
     );
   };
 
-  // ── Access request handlers ────────────────────────────────────────────────
   const handleApproveRequest = async (requestId: string) => {
     const { error } = await approveRequest(requestId);
     if (error) Alert.alert('Error', error);
     else refresh(false);
   };
+
   const handleDenyRequest = async (requestId: string) => {
     const { error } = await denyRequest(requestId);
     if (error) Alert.alert('Error', error);
@@ -226,8 +269,11 @@ export default function WorkspaceDetailScreen() {
     );
   }
 
-  // Shared tab badge count
-  const sharedCount = sharing.items.length;
+  // ── Computed counts ────────────────────────────────────────────────────────
+  const presentationCount = sharing.presentations.length;
+  const paperCount        = sharing.papers.length;
+  const podcastCount      = podcastSharing.podcasts.length;
+  const totalSharedCount  = presentationCount + paperCount + podcastCount;
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -257,19 +303,10 @@ export default function WorkspaceDetailScreen() {
             )}
             {isEditor && (
               <TouchableOpacity
-                onPress={() =>
-                  router.push({
-                    pathname: '/(app)/workspace-settings' as any,
-                    params:   { id, role: userRole ?? 'editor' },
-                  })
-                }
+                onPress={() => router.push({ pathname: '/(app)/workspace-settings' as any, params: { id, role: userRole ?? 'editor' } })}
                 style={styles.iconBtn}
               >
-                <Ionicons
-                  name={isOwner ? 'settings-outline' : 'share-outline'}
-                  size={20}
-                  color={COLORS.textSecondary}
-                />
+                <Ionicons name={isOwner ? 'settings-outline' : 'share-outline'} size={20} color={COLORS.textSecondary} />
               </TouchableOpacity>
             )}
           </View>
@@ -284,11 +321,7 @@ export default function WorkspaceDetailScreen() {
                 {pendingCount} member{pendingCount !== 1 ? 's' : ''} requesting editor access
               </Text>
             </View>
-            <TouchableOpacity
-              onPress={() => setShowRequests(true)}
-              style={styles.requestBannerCta}
-              activeOpacity={0.85}
-            >
+            <TouchableOpacity onPress={() => setShowRequests(true)} style={styles.requestBannerCta} activeOpacity={0.85}>
               <Text style={styles.requestBannerCtaText}>Review</Text>
             </TouchableOpacity>
           </Animated.View>
@@ -297,10 +330,10 @@ export default function WorkspaceDetailScreen() {
         {/* ── Stats strip ── */}
         {workspace && (
           <Animated.View entering={FadeIn.duration(500).delay(100)} style={styles.statsStrip}>
-            <StatChip icon="people-outline"        value={members.length}    label="Members"  />
-            <StatChip icon="document-text-outline" value={reports.length}    label="Reports"  />
-            <StatChip icon="share-social-outline"  value={sharedCount}       label="Shared"   />
-            <StatChip icon="pulse-outline"         value={activities.length} label="Activity" />
+            <StatChip icon="people-outline"        value={members.length}       label="Members"  />
+            <StatChip icon="document-text-outline" value={reports.length}       label="Reports"  />
+            <StatChip icon="share-social-outline"  value={totalSharedCount}     label="Shared"   />
+            <StatChip icon="pulse-outline"         value={activities.length}    label="Activity" />
             {isEditor && pendingCount > 0 && (
               <TouchableOpacity onPress={() => setShowRequests(true)} activeOpacity={0.8}>
                 <View style={[statChipStyles.chip, { backgroundColor: `${COLORS.warning}15` }]}>
@@ -317,8 +350,7 @@ export default function WorkspaceDetailScreen() {
         <View style={styles.tabBar}>
           {TABS.map((tab) => {
             const isActive = activeTab === tab.id;
-            // Badge for shared tab
-            const badge = tab.id === 'shared' && sharedCount > 0 ? sharedCount : null;
+            const badge = tab.id === 'shared' && totalSharedCount > 0 ? totalSharedCount : null;
             return (
               <TouchableOpacity
                 key={tab.id}
@@ -326,11 +358,7 @@ export default function WorkspaceDetailScreen() {
                 style={[styles.tabItem, isActive && styles.tabItemActive]}
               >
                 <View style={{ position: 'relative' }}>
-                  <Ionicons
-                    name={tab.icon}
-                    size={15}
-                    color={isActive ? COLORS.primary : COLORS.textMuted}
-                  />
+                  <Ionicons name={tab.icon} size={15} color={isActive ? COLORS.primary : COLORS.textMuted} />
                   {badge !== null && (
                     <View style={styles.tabBadge}>
                       <Text style={styles.tabBadgeText}>{badge > 9 ? '9+' : badge}</Text>
@@ -352,7 +380,12 @@ export default function WorkspaceDetailScreen() {
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
-              onRefresh={() => { refresh(true); loadPinnedIds(); sharing.load(); }}
+              onRefresh={() => {
+                refresh(true);
+                loadPinnedIds();
+                sharing.load();
+                podcastSharing.load();
+              }}
               tintColor={COLORS.primary}
             />
           }
@@ -363,11 +396,7 @@ export default function WorkspaceDetailScreen() {
             <>
               {isEditor && (
                 <Animated.View entering={FadeInDown.duration(400)}>
-                  <TouchableOpacity
-                    style={styles.addReportCta}
-                    onPress={() => setShowAddReport(true)}
-                    activeOpacity={0.8}
-                  >
+                  <TouchableOpacity style={styles.addReportCta} onPress={() => setShowAddReport(true)} activeOpacity={0.8}>
                     <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
                     <Text style={styles.addReportCtaText}>Add a research report</Text>
                   </TouchableOpacity>
@@ -391,11 +420,7 @@ export default function WorkspaceDetailScreen() {
                       : 'No reports have been shared to this workspace yet.'}
                   </Text>
                   {isEditor && (
-                    <TouchableOpacity
-                      style={styles.emptyAddBtn}
-                      onPress={() => setShowAddReport(true)}
-                      activeOpacity={0.85}
-                    >
+                    <TouchableOpacity style={styles.emptyAddBtn} onPress={() => setShowAddReport(true)} activeOpacity={0.85}>
                       <Ionicons name="add-circle-outline" size={16} color="#FFF" />
                       <Text style={styles.emptyAddBtnText}>Add Report</Text>
                     </TouchableOpacity>
@@ -412,11 +437,7 @@ export default function WorkspaceDetailScreen() {
                       </View>
                     )}
                     <View style={styles.reportCardWrap}>
-                      <WorkspaceReportCard
-                        item={wr}
-                        index={i}
-                        onPress={() => openReport(wr.reportId)}
-                      />
+                      <WorkspaceReportCard item={wr} index={i} onPress={() => openReport(wr.reportId)} />
                       {isEditor && (
                         <TouchableOpacity
                           onPress={() => handleTogglePin(wr.reportId)}
@@ -438,86 +459,36 @@ export default function WorkspaceDetailScreen() {
             </>
           )}
 
-          {/* ── SHARED TAB (Part 14) ── */}
+          {/* ── SHARED TAB (Part 14 + Part 15) ── */}
           {activeTab === 'shared' && (
             <>
               {/* Section header */}
               <Animated.View entering={FadeInDown.duration(400)} style={styles.sharedHeader}>
-                <LinearGradient
-                  colors={['#6C63FF', '#8B5CF6']}
-                  style={styles.sharedHeaderIcon}
-                >
+                <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={styles.sharedHeaderIcon}>
                   <Ionicons name="share-social" size={18} color="#FFF" />
                 </LinearGradient>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.sharedHeaderTitle}>Shared Content</Text>
                   <Text style={styles.sharedHeaderSub}>
-                    Presentations and academic papers shared by team members
+                    Presentations, papers and podcast episodes shared by team members
                   </Text>
                 </View>
               </Animated.View>
 
-              {/* Filter chips */}
-              {sharedCount > 0 && (
-                <Animated.View
-                  entering={FadeInDown.duration(300).delay(80)}
-                  style={styles.filterRow}
-                >
-                  {[
-                    {
-                      label: `All (${sharedCount})`,
-                      count: sharedCount,
-                      icon:  'apps-outline',
-                    },
-                    {
-                      label: `Slides (${sharing.presentations.length})`,
-                      count: sharing.presentations.length,
-                      icon:  'easel-outline',
-                    },
-                    {
-                      label: `Papers (${sharing.papers.length})`,
-                      count: sharing.papers.length,
-                      icon:  'school-outline',
-                    },
-                  ].map(f => (
-                    <View
-                      key={f.label}
-                      style={[
-                        styles.filterChip,
-                        f.count === sharedCount && styles.filterChipActive,
-                      ]}
-                    >
-                      <Ionicons
-                        name={f.icon as any}
-                        size={11}
-                        color={f.count === sharedCount ? COLORS.primary : COLORS.textMuted}
-                      />
-                      <Text style={[
-                        styles.filterChipText,
-                        f.count === sharedCount && styles.filterChipTextActive,
-                      ]}>
-                        {f.label}
-                      </Text>
-                    </View>
-                  ))}
+              {/* Filter summary chips */}
+              {totalSharedCount > 0 && (
+                <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
+                  <FilterChip label={`All (${totalSharedCount})`}     icon="apps-outline"           active />
+                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`} icon="easel-outline" />}
+                  {paperCount > 0 && <FilterChip label={`Papers (${paperCount})`}   icon="school-outline" />}
+                  {podcastCount > 0 && <FilterChip label={`Podcasts (${podcastCount})`} icon="mic-outline" />}
                 </Animated.View>
               )}
 
-              {/* Presentations section */}
+              {/* Presentations */}
               {sharing.presentations.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-                  <View style={styles.contentSectionHeader}>
-                    <LinearGradient
-                      colors={['#6C63FF', '#8B5CF6']}
-                      style={styles.contentSectionDot}
-                    />
-                    <Text style={styles.contentSectionTitle}>Presentations</Text>
-                    <View style={styles.contentSectionBadge}>
-                      <Text style={styles.contentSectionBadgeText}>
-                        {sharing.presentations.length}
-                      </Text>
-                    </View>
-                  </View>
+                  <ContentSectionHeader label="Presentations" count={sharing.presentations.length} colors={['#6C63FF', '#8B5CF6']} />
                   {sharing.presentations.map((item, i) => (
                     <SharedContentCard
                       key={item.id}
@@ -531,24 +502,10 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
-              {/* Academic Papers section */}
+              {/* Academic Papers */}
               {sharing.papers.length > 0 && (
-                <Animated.View entering={FadeInDown.duration(400).delay(160)}>
-                  <View style={styles.contentSectionHeader}>
-                    <LinearGradient
-                      colors={['#10B981', '#059669']}
-                      style={styles.contentSectionDot}
-                    />
-                    <Text style={styles.contentSectionTitle}>Academic Papers</Text>
-                    <View style={[styles.contentSectionBadge, {
-                      backgroundColor: `${COLORS.success}20`,
-                      borderColor: `${COLORS.success}35`,
-                    }]}>
-                      <Text style={[styles.contentSectionBadgeText, { color: COLORS.success }]}>
-                        {sharing.papers.length}
-                      </Text>
-                    </View>
-                  </View>
+                <Animated.View entering={FadeInDown.duration(400).delay(140)}>
+                  <ContentSectionHeader label="Academic Papers" count={sharing.papers.length} colors={['#10B981', '#059669']} badgeColor={COLORS.success} />
                   {sharing.papers.map((item, i) => (
                     <SharedContentCard
                       key={item.id}
@@ -562,8 +519,28 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
+              {/* Podcasts (Part 15) */}
+              {podcastSharing.podcasts.length > 0 && (
+                <Animated.View entering={FadeInDown.duration(400).delay(180)}>
+                  <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length} colors={['#FF6584', '#FF8FA3']} badgeColor="#FF6584" />
+                  {podcastSharing.podcasts.map((podcast, i) => (
+                    <SharedPodcastCard
+                      key={podcast.id}
+                      item={podcast}
+                      index={i}
+                      userRole={userRole}
+                      onPlay={handleOpenSharedPodcast}
+                      onRemove={handleRemoveSharedPodcast}
+                      onDownloadMP3={handleDownloadPodcastMP3}
+                      onExportPDF={handleExportPodcastPDF}
+                      onCopyScript={handleCopyPodcastScript}
+                    />
+                  ))}
+                </Animated.View>
+              )}
+
               {/* Empty state */}
-              {sharing.items.length === 0 && !sharing.isLoading && (
+              {totalSharedCount === 0 && !sharing.isLoading && !podcastSharing.isLoading && (
                 <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
                   <View style={styles.sharedEmptyIcon}>
                     <Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} />
@@ -571,14 +548,14 @@ export default function WorkspaceDetailScreen() {
                   <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
                   <Text style={styles.emptyDesc}>
                     {isEditor
-                      ? 'Share presentations and academic papers from your research reports into this workspace.'
-                      : 'No presentations or academic papers have been shared to this workspace yet.'}
+                      ? 'Share presentations, academic papers, and podcast episodes from your reports into this workspace.'
+                      : 'No content has been shared to this workspace yet.'}
                   </Text>
                   {isEditor && (
                     <View style={styles.sharedEmptyHint}>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
                       <Text style={styles.sharedEmptyHintText}>
-                        Open a report → generate slides or a paper → tap the share icon
+                        Open a report → generate content → tap the share icon to share here
                       </Text>
                     </View>
                   )}
@@ -606,29 +583,17 @@ export default function WorkspaceDetailScreen() {
               {isOwner && (
                 <TouchableOpacity
                   style={styles.manageMembersBtn}
-                  onPress={() =>
-                    router.push({ pathname: '/(app)/workspace-members' as any, params: { id } })
-                  }
+                  onPress={() => router.push({ pathname: '/(app)/workspace-members' as any, params: { id } })}
                 >
                   <Ionicons name="settings-outline" size={16} color={COLORS.primary} />
                   <Text style={styles.manageMembersBtnText}>Manage Members & Roles</Text>
                   <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
                 </TouchableOpacity>
               )}
-
               {members.map((m, i) => (
-                <Animated.View
-                  key={m.id}
-                  entering={FadeInDown.duration(300).delay(i * 40)}
-                  style={styles.memberRow}
-                >
+                <Animated.View key={m.id} entering={FadeInDown.duration(300).delay(i * 40)} style={styles.memberRow}>
                   <TouchableOpacity
-                    onPress={() => {
-                      if (m.profile) {
-                        setProfileMember(m.profile);
-                        setShowProfile(true);
-                      }
-                    }}
+                    onPress={() => { if (m.profile) { setProfileMember(m.profile); setShowProfile(true); } }}
                     activeOpacity={0.75}
                     style={styles.memberRowInner}
                   >
@@ -647,16 +612,11 @@ export default function WorkspaceDetailScreen() {
                   </TouchableOpacity>
                 </Animated.View>
               ))}
-
               {userRole !== 'owner' && userRole !== null && (
                 <Animated.View entering={FadeInDown.duration(300).delay(200)}>
                   <View style={styles.leaveSection}>
                     <Text style={styles.leaveSectionLabel}>Your membership</Text>
-                    <TouchableOpacity
-                      onPress={handleLeave}
-                      style={styles.leaveBtn}
-                      activeOpacity={0.8}
-                    >
+                    <TouchableOpacity onPress={handleLeave} style={styles.leaveBtn} activeOpacity={0.8}>
                       <Ionicons name="log-out-outline" size={16} color={COLORS.error} />
                       <Text style={styles.leaveBtnText}>Leave Workspace</Text>
                     </TouchableOpacity>
@@ -692,7 +652,7 @@ export default function WorkspaceDetailScreen() {
             workspaceId={id}
             userRole={userRole}
             onClose={() => setShowSearch(false)}
-            onOpenReport={handleOpenReportFromSearch}
+            onOpenReport={openReport}
             onOpenMemberProfile={handleOpenMemberProfile}
           />
         )}
@@ -702,8 +662,8 @@ export default function WorkspaceDetailScreen() {
             member={profileMember}
             workspaceId={id}
             onClose={() => { setShowProfile(false); setProfileMember(null); }}
-            onNavigateToReport={handleOpenReportFromSearch}
-            onNavigateToComment={handleNavigateToComment}
+            onNavigateToReport={openReport}
+            onNavigateToComment={(reportId, _commentId) => openReport(reportId)}
           />
         )}
         <EditAccessRequestModal
@@ -720,7 +680,41 @@ export default function WorkspaceDetailScreen() {
   );
 }
 
-// ─── StatChip ─────────────────────────────────────────────────────────────────
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function FilterChip({ label, icon, active }: { label: string; icon: string; active?: boolean }) {
+  return (
+    <View style={[styles.filterChip, active && styles.filterChipActive]}>
+      <Ionicons name={icon as any} size={11} color={active ? COLORS.primary : COLORS.textMuted} />
+      <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{label}</Text>
+    </View>
+  );
+}
+
+function ContentSectionHeader({
+  label,
+  count,
+  colors,
+  badgeColor = COLORS.primary,
+}: {
+  label:       string;
+  count:       number;
+  colors:      [string, string];
+  badgeColor?: string;
+}) {
+  return (
+    <View style={styles.contentSectionHeader}>
+      <LinearGradient colors={colors} style={styles.contentSectionDot} />
+      <Text style={styles.contentSectionTitle}>{label}</Text>
+      <View style={[styles.contentSectionBadge, {
+        backgroundColor: `${badgeColor}20`,
+        borderColor:     `${badgeColor}35`,
+      }]}>
+        <Text style={[styles.contentSectionBadgeText, { color: badgeColor }]}>{count}</Text>
+      </View>
+    </View>
+  );
+}
 
 function StatChip({ icon, value, label }: {
   icon: keyof typeof Ionicons.glyphMap; value: number; label: string;
@@ -739,8 +733,6 @@ const statChipStyles = StyleSheet.create({
   value: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
   label: { color: COLORS.textMuted,   fontSize: FONTS.sizes.xs },
 });
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl },
@@ -765,7 +757,6 @@ const styles = StyleSheet.create({
 
   statsStrip: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
 
-  // Tabs
   tabBar:         { flexDirection: 'row', paddingHorizontal: SPACING.xl, gap: 6, marginBottom: SPACING.sm },
   tabItem:        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 9, borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundCard, borderWidth: 1, borderColor: COLORS.border },
   tabItemActive:  { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}50` },
@@ -776,7 +767,6 @@ const styles = StyleSheet.create({
 
   scroll: { paddingHorizontal: SPACING.xl, paddingBottom: 120 },
 
-  // Feed
   addReportCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginBottom: SPACING.md },
   addReportCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
   pinnedHeader:     { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm },
@@ -788,46 +778,43 @@ const styles = StyleSheet.create({
   pinBtn:           { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, zIndex: 10 },
   pinBtnActive:     { backgroundColor: `${COLORS.warning}15`, borderColor: `${COLORS.warning}40` },
 
-  // Shared tab
   sharedHeader:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
   sharedHeaderIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   sharedHeaderTitle:{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' },
   sharedHeaderSub:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3, lineHeight: 16 },
 
-  filterRow:       { flexDirection: 'row', gap: 8, marginBottom: SPACING.md, flexWrap: 'wrap' },
-  filterChip:      { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: COLORS.border },
-  filterChipActive:{ backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
-  filterChipText:  { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
+  filterRow:            { flexDirection: 'row', gap: 8, marginBottom: SPACING.md, flexWrap: 'wrap' },
+  filterChip:           { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: COLORS.border },
+  filterChipActive:     { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
+  filterChipText:       { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
   filterChipTextActive: { color: COLORS.primary },
 
-  contentSectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.sm },
-  contentSectionDot:    { width: 14, height: 14, borderRadius: 4, flexShrink: 0 },
-  contentSectionTitle:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', flex: 1 },
-  contentSectionBadge:  { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.primary}30` },
+  contentSectionHeader:    { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.sm },
+  contentSectionDot:       { width: 14, height: 14, borderRadius: 4, flexShrink: 0 },
+  contentSectionTitle:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', flex: 1 },
+  contentSectionBadge:     { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.primary}30` },
   contentSectionBadgeText: { color: COLORS.primary, fontSize: 10, fontWeight: '700' },
 
   sharedEmptyIcon: { width: 72, height: 72, borderRadius: 20, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
   sharedEmptyHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.primary}20`, marginTop: 4, maxWidth: 280 },
   sharedEmptyHintText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 },
 
-  // Empty
   emptyState: { alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyTitle: { color: COLORS.textPrimary,   fontSize: FONTS.sizes.lg, fontWeight: '700' },
   emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21, maxWidth: 290 },
   emptyAddBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4 },
   emptyAddBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
 
-  // Members
   manageMembersBtn:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30` },
   manageMembersBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 },
-  memberRow:       { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
-  memberRowInner:  { flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md },
-  memberAvatarWrap:{ width: 40, height: 40, flexShrink: 0 },
-  memberTextBlock: { flex: 1, minWidth: 0 },
-  memberName:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  joinedText:      { color: COLORS.textMuted,   fontSize: FONTS.sizes.xs, marginTop: 2 },
+  memberRow:            { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
+  memberRowInner:       { flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md },
+  memberAvatarWrap:     { width: 40, height: 40, flexShrink: 0 },
+  memberTextBlock:      { flex: 1, minWidth: 0 },
+  memberName:           { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  joinedText:           { color: COLORS.textMuted,   fontSize: FONTS.sizes.xs, marginTop: 2 },
 
-  leaveSection: { marginTop: SPACING.xl, backgroundColor: `${COLORS.error}08`, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}20`, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  leaveSection:      { marginTop: SPACING.xl, backgroundColor: `${COLORS.error}08`, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}20`, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   leaveSectionLabel: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
   leaveBtn:          { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${COLORS.error}15`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.error}30`, flexShrink: 0 },
   leaveBtnText:      { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '700' },
