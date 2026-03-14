@@ -1,6 +1,8 @@
 // app/(app)/_layout.tsx
 // Part 10: Added workspace-detail, workspace-members, workspace-settings,
 //          workspace-report stack routes.
+// Part 14: Added workspace-shared-viewer route for shared presentations
+//          and academic papers opened from workspace Shared tab.
 
 import { useEffect }                       from 'react';
 import { Stack, router }                   from 'expo-router';
@@ -76,6 +78,17 @@ export default function AppLayout() {
       <Stack.Screen name="workspace-settings" options={{ animation: 'slide_from_right' }} />
       <Stack.Screen
         name="workspace-report"
+        options={{ animation: 'slide_from_right' }}
+      />
+
+      {/*
+        ── Part 14: Workspace Shared Content Viewer ──
+        Opens presentations and academic papers shared into a workspace.
+        Uses SECURITY DEFINER RPCs so any workspace member can view
+        content they don't own — without triggering any generation flow.
+      */}
+      <Stack.Screen
+        name="workspace-shared-viewer"
         options={{ animation: 'slide_from_right' }}
       />
     </Stack>

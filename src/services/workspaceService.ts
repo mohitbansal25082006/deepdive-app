@@ -178,10 +178,41 @@ export async function joinWorkspaceByCode(
   try {
     const { data, error } = await supabase
       .rpc('join_workspace_by_code', { p_invite_code: code.trim() });
-    if (error) throw error;
-    return { data: mapWorkspaceMember(data as Record<string, unknown>), error: null };
+
+    if (error) {
+      // Map specific Postgres error codes to friendly messages
+      const msg = error.message ?? '';
+      if (msg.includes('already_member') || error.code === 'P0001') {
+        return {
+          data:  null,
+          error: 'You are already a member of this workspace.',
+        };
+      }
+      if (msg.includes('blocked') || error.code === 'P0002') {
+        return {
+          data:  null,
+          error: 'You have been blocked from joining this workspace.',
+        };
+      }
+      if (msg.includes('invalid_code') || error.code === 'P0003') {
+        return {
+          data:  null,
+          error: 'Invalid invite code. Please check and try again.',
+        };
+      }
+      throw error;
+    }
+
+    // RPC returns SETOF — data is an array; grab first row
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) throw new Error('No member record returned');
+
+    return { data: mapWorkspaceMember(row as Record<string, unknown>), error: null };
   } catch (err) {
-    return { data: null, error: err instanceof Error ? err.message : 'Failed to join workspace' };
+    return {
+      data:  null,
+      error: err instanceof Error ? err.message : 'Failed to join workspace',
+    };
   }
 }
 

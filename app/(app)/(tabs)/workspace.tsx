@@ -1,7 +1,13 @@
 // app/(app)/(tabs)/workspace.tsx
-// FIX: Create and Join modals no longer hide behind the keyboard.
-//      Each modal wraps its sheet in KeyboardAvoidingView so the
-//      content slides up above the keyboard on both iOS and Android.
+// Part 14 fix — Better error messages when joining a workspace:
+//   • Already a member → "You are already a member of this workspace."
+//   • Blocked         → "You have been blocked from joining this workspace."
+//   • Invalid code    → "Invalid invite code. Please check and try again."
+// The joinWorkspaceByCode service function now maps Postgres error codes
+// to these friendly strings, so this file just displays the error as-is.
+//
+// Also: join error shown inline below the code input (not just an Alert)
+// for a smoother UX.
 
 import React, { useState } from 'react';
 import {
@@ -29,6 +35,38 @@ import { WorkspaceCard } from '../../../src/components/workspace/WorkspaceCard';
 import { joinWorkspaceByCode, previewWorkspaceByCode } from '../../../src/services/workspaceService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
 
+// ─── Join error type so we can show a specific icon ──────────────────────────
+
+type JoinErrorKind = 'already_member' | 'blocked' | 'invalid_code' | 'generic';
+
+function parseErrorKind(msg: string | null): JoinErrorKind {
+  if (!msg) return 'generic';
+  const lower = msg.toLowerCase();
+  if (lower.includes('already')) return 'already_member';
+  if (lower.includes('blocked')) return 'blocked';
+  if (lower.includes('invalid') || lower.includes('invite')) return 'invalid_code';
+  return 'generic';
+}
+
+function joinErrorIcon(kind: JoinErrorKind): keyof typeof Ionicons.glyphMap {
+  switch (kind) {
+    case 'already_member': return 'checkmark-circle-outline';
+    case 'blocked':        return 'ban-outline';
+    case 'invalid_code':   return 'key-outline';
+    default:               return 'alert-circle-outline';
+  }
+}
+
+function joinErrorColor(kind: JoinErrorKind): string {
+  switch (kind) {
+    case 'already_member': return COLORS.info;
+    case 'blocked':        return COLORS.error;
+    default:               return COLORS.warning;
+  }
+}
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
 export default function WorkspaceTab() {
   const { user } = useAuth();
   const { workspaces, isLoading, error, refresh, create } = useWorkspaceList();
@@ -40,10 +78,14 @@ export default function WorkspaceTab() {
   const [joinCode,    setJoinCode]    = useState('');
   const [isCreating,  setIsCreating]  = useState(false);
   const [isJoining,   setIsJoining]   = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshing,  setRefreshing]  = useState(false);
   const [joinPreview, setJoinPreview] = useState<{
     id: string; name: string; description: string | null; memberCount: number;
   } | null>(null);
+
+  // Part 14: inline join error state (so we can show icon + colour)
+  const [joinError,     setJoinError]     = useState<string | null>(null);
+  const [joinErrorKind, setJoinErrorKind] = useState<JoinErrorKind>('generic');
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -68,24 +110,56 @@ export default function WorkspaceTab() {
   const handleJoinCodeChange = async (code: string) => {
     setJoinCode(code);
     setJoinPreview(null);
+    setJoinError(null);
     if (code.length >= 8) {
       const { data } = await previewWorkspaceByCode(code);
       if (data) setJoinPreview(data);
     }
   };
 
+  const resetJoinModal = () => {
+    setJoinCode('');
+    setJoinPreview(null);
+    setJoinError(null);
+    setJoinErrorKind('generic');
+  };
+
   const handleJoin = async () => {
     if (!joinCode.trim()) return;
     setIsJoining(true);
+    setJoinError(null);
+
     const { data, error } = await joinWorkspaceByCode(joinCode.trim());
     setIsJoining(false);
-    if (error) { Alert.alert('Error', error); return; }
+
+    if (error) {
+      // Part 14: show inline error with specific message + icon
+      const kind = parseErrorKind(error);
+      setJoinError(error);
+      setJoinErrorKind(kind);
+
+      // For "already member" also navigate directly to that workspace
+      if (kind === 'already_member' && joinPreview?.id) {
+        setTimeout(() => {
+          setShowJoin(false);
+          resetJoinModal();
+          router.push({
+            pathname: '/(app)/workspace-detail' as any,
+            params: { id: joinPreview.id },
+          });
+        }, 1400);
+      }
+      return;
+    }
+
     setShowJoin(false);
-    setJoinCode('');
-    setJoinPreview(null);
+    resetJoinModal();
     refresh();
     if (data) {
-      router.push({ pathname: '/(app)/workspace-detail' as any, params: { id: data.workspaceId } });
+      router.push({
+        pathname: '/(app)/workspace-detail' as any,
+        params: { id: data.workspaceId },
+      });
     }
   };
 
@@ -186,22 +260,16 @@ export default function WorkspaceTab() {
           )}
         </ScrollView>
 
-        {/* ── Create workspace modal ──────────────────────────────────────── */}
+        {/* ── Create workspace modal ── */}
         <Modal
           visible={showCreate}
           transparent
           animationType="fade"
           onRequestClose={() => setShowCreate(false)}
         >
-          {/*
-            KeyboardAvoidingView INSIDE the Modal is the fix.
-            On iOS 'padding' pushes the sheet up; on Android we use
-            a positive keyboardVerticalOffset so the sheet stays visible.
-          */}
           <KeyboardAvoidingView
             style={styles.modalBackdrop}
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}
           >
             <TouchableOpacity
               style={{ flex: 1 }}
@@ -258,12 +326,12 @@ export default function WorkspaceTab() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* ── Join workspace modal ────────────────────────────────────────── */}
+        {/* ── Join workspace modal ── */}
         <Modal
           visible={showJoin}
           transparent
           animationType="fade"
-          onRequestClose={() => setShowJoin(false)}
+          onRequestClose={() => { setShowJoin(false); resetJoinModal(); }}
         >
           <KeyboardAvoidingView
             style={styles.modalBackdrop}
@@ -271,7 +339,7 @@ export default function WorkspaceTab() {
           >
             <TouchableOpacity
               style={{ flex: 1 }}
-              onPress={() => setShowJoin(false)}
+              onPress={() => { setShowJoin(false); resetJoinModal(); }}
               activeOpacity={1}
             />
             <Animated.View entering={SlideInDown.duration(350).springify()} style={styles.sheet}>
@@ -281,7 +349,10 @@ export default function WorkspaceTab() {
                   <Text style={styles.sheetTitle}>Join Workspace</Text>
                   <Text style={styles.sheetSub}>Enter the invite code shared with you.</Text>
                 </View>
-                <TouchableOpacity onPress={() => setShowJoin(false)} style={styles.sheetCloseBtn}>
+                <TouchableOpacity
+                  onPress={() => { setShowJoin(false); resetJoinModal(); }}
+                  style={styles.sheetCloseBtn}
+                >
                   <Ionicons name="close" size={18} color={COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
@@ -291,7 +362,14 @@ export default function WorkspaceTab() {
                 onChangeText={handleJoinCodeChange}
                 placeholder="Enter invite code"
                 placeholderTextColor={COLORS.textMuted}
-                style={[styles.input, styles.inputCode]}
+                style={[
+                  styles.input,
+                  styles.inputCode,
+                  joinError ? {
+                    borderColor: joinErrorColor(joinErrorKind),
+                    backgroundColor: `${joinErrorColor(joinErrorKind)}08`,
+                  } : {},
+                ]}
                 autoCapitalize="none"
                 autoCorrect={false}
                 maxLength={12}
@@ -300,8 +378,30 @@ export default function WorkspaceTab() {
                 onSubmitEditing={handleJoin}
               />
 
+              {/* Part 14: Inline join error with specific message + icon */}
+              {joinError && (
+                <Animated.View
+                  entering={FadeIn.duration(250)}
+                  style={[
+                    styles.joinErrorBanner,
+                    { backgroundColor: `${joinErrorColor(joinErrorKind)}12`,
+                      borderColor:     `${joinErrorColor(joinErrorKind)}35` },
+                  ]}
+                >
+                  <Ionicons
+                    name={joinErrorIcon(joinErrorKind)}
+                    size={16}
+                    color={joinErrorColor(joinErrorKind)}
+                    style={{ flexShrink: 0 }}
+                  />
+                  <Text style={[styles.joinErrorText, { color: joinErrorColor(joinErrorKind) }]}>
+                    {joinError}
+                  </Text>
+                </Animated.View>
+              )}
+
               {/* Workspace preview */}
-              {joinPreview && (
+              {joinPreview && !joinError && (
                 <Animated.View entering={FadeIn.duration(300)} style={styles.joinPreview}>
                   <Ionicons name="checkmark-circle" size={18} color={COLORS.success} />
                   <View style={{ flex: 1 }}>
@@ -336,6 +436,8 @@ export default function WorkspaceTab() {
   );
 }
 
+// ─── EmptyState ───────────────────────────────────────────────────────────────
+
 function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => void }) {
   return (
     <Animated.View entering={FadeInDown.duration(600)} style={styles.emptyWrap}>
@@ -344,7 +446,8 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
       </View>
       <Text style={styles.emptyTitle}>No Workspaces Yet</Text>
       <Text style={styles.emptySub}>
-        Create a workspace to collaborate with teammates on research, share reports, and discuss findings in real-time.
+        Create a workspace to collaborate with teammates on research, share reports,
+        presentations, and academic papers in real-time.
       </Text>
       <TouchableOpacity onPress={onCreate} style={styles.emptyCreateBtn} activeOpacity={0.85}>
         <Ionicons name="add-circle-outline" size={18} color="#FFF" />
@@ -357,6 +460,8 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
     </Animated.View>
   );
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   header: {
@@ -372,7 +477,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: COLORS.border,
   },
-  scroll:        { paddingHorizontal: SPACING.xl, paddingBottom: 120, flexGrow: 1 },
+  scroll:       { paddingHorizontal: SPACING.xl, paddingBottom: 120, flexGrow: 1 },
   sectionLabel: {
     color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
     letterSpacing: 1, textTransform: 'uppercase',
@@ -386,7 +491,6 @@ const styles = StyleSheet.create({
   },
   createCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
 
-  // Loading / error
   loadingWrap: { alignItems: 'center', paddingTop: 80, gap: 12 },
   loadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
   errorWrap:   { alignItems: 'center', paddingTop: 80, gap: 12 },
@@ -397,7 +501,6 @@ const styles = StyleSheet.create({
   },
   retryText: { color: '#FFF', fontWeight: '700' },
 
-  // Empty
   emptyWrap:  { alignItems: 'center', paddingTop: 60, paddingHorizontal: SPACING.xl },
   emptyIcon: {
     width: 80, height: 80, borderRadius: 24,
@@ -421,11 +524,8 @@ const styles = StyleSheet.create({
   },
   emptyJoinBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.base, fontWeight: '600' },
 
-  // Modal shared
   modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
-    justifyContent: 'flex-end',
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end',
   },
   sheet: {
     backgroundColor: COLORS.backgroundCard,
@@ -449,8 +549,7 @@ const styles = StyleSheet.create({
     width: 32, height: 32, borderRadius: 10,
     backgroundColor: COLORS.backgroundElevated,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-    marginLeft: SPACING.md,
+    borderWidth: 1, borderColor: COLORS.border, marginLeft: SPACING.md,
   },
   input: {
     backgroundColor: COLORS.backgroundElevated,
@@ -478,7 +577,14 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
 
-  // Join preview
+  // Part 14: Inline join error banner
+  joinErrorBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
+    borderWidth: 1,
+  },
+  joinErrorText: { fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 },
+
   joinPreview: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 10,
     backgroundColor: `${COLORS.success}12`,

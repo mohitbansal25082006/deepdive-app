@@ -872,3 +872,29 @@ export interface ReactionState {
   isToggling:         boolean;
   error:              string | null;
 }
+
+// ─── Part 14: Workspace Shared Content ────────────────────────────────────────
+
+export type SharedContentType = 'presentation' | 'academic_paper';
+
+export interface SharedWorkspaceContent {
+  id:           string;
+  workspaceId:  string;
+  sharedBy:     string;
+  contentType:  SharedContentType;
+  contentId:    string;
+  title:        string;
+  subtitle?:    string;
+  reportId?:    string;
+  metadata:     Record<string, unknown>;
+  sharedAt:     string;
+  sharerName?:  string;
+  sharerAvatar?: string;
+}
+
+export interface WorkspaceSharingState {
+  items:      SharedWorkspaceContent[];
+  isLoading:  boolean;
+  isSharing:  boolean;
+  error:      string | null;
+}
