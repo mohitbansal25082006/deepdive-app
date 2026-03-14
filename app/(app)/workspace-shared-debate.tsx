@@ -1,11 +1,17 @@
-// app/(app)/debate-detail.tsx
-// Part 16 UPDATE — Added workspace share button + ShareDebateToWorkspaceModal.
+// app/(app)/workspace-shared-debate.tsx
+// Part 16 — Read-only shared debate viewer for workspace members.
 //
-// Changes from Part 9:
-//   • Share-to-workspace icon button added to navigation header (top-right)
-//   • ShareDebateToWorkspaceModal integrated
-//   • useDebateSharedWorkspaces hook shows shared badge count in header
-//   • All existing functionality (3 tabs, export bar) unchanged
+// Accessed from the workspace Shared tab when a member taps "View" on a SharedDebateCard.
+// Uses SECURITY DEFINER RPC so any workspace member can load the debate
+// regardless of whether they own the source debate_sessions row.
+//
+// Features:
+//   • Identical 3-tab layout to debate-detail.tsx (Overview / Perspectives / Moderator)
+//   • Export bar: PDF, Copy, Share (same as debate-detail.tsx ExportBar)
+//   • NO re-generate button — view + export only
+//   • View tracking (fire-and-forget on mount)
+//   • "Shared by X" attribution banner
+//   • Full DebatePerspectiveView + ModeratorSummary reused unchanged
 
 import React, {
   useState,
@@ -28,21 +34,24 @@ import Animated, {
 }                              from 'react-native-reanimated';
 import { SafeAreaView }        from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase }            from '../../src/lib/supabase';
 
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import { DebatePerspectiveView }                   from '../../src/components/debate/DebatePerspectiveView';
 import { ModeratorSummary }                        from '../../src/components/debate/ModeratorSummary';
-import { ShareDebateToWorkspaceModal }             from '../../src/components/workspace/ShareDebateToWorkspaceModal';
-import { useDebateSharedWorkspaces }               from '../../src/hooks/useDebateSharing';
 import {
   exportDebateAsPDF,
   copyDebateSummary,
   shareDebateText,
 }                                                  from '../../src/services/debateExport';
-import type { DebateSession }                      from '../../src/types';
+import {
+  getSharedDebateById,
+  sharedDebateToSession,
+  trackDebateView,
+  trackDebateDownload,
+}                                                  from '../../src/services/debateSharingService';
+import type { SharedDebate, DebateSession }        from '../../src/types';
 
-// ─── Tab config ───────────────────────────────────────────────────────────────
+// ─── Tab config (identical to debate-detail.tsx) ──────────────────────────────
 
 type DebateTab = 'overview' | 'perspectives' | 'moderator';
 
@@ -52,28 +61,11 @@ const TABS: { id: DebateTab; label: string; icon: string }[] = [
   { id: 'moderator',    label: 'Moderator',    icon: 'ribbon-outline' },
 ];
 
-// ─── DB row mapper ────────────────────────────────────────────────────────────
-
-function mapDbRow(row: Record<string, unknown>): DebateSession {
-  return {
-    id:                 row.id                   as string,
-    userId:             row.user_id              as string,
-    topic:              row.topic                as string,
-    question:           row.question             as string,
-    perspectives:       (row.perspectives        as DebateSession['perspectives']) ?? [],
-    moderator:          (row.moderator           as DebateSession['moderator'])    ?? null,
-    status:             row.status               as DebateSession['status'],
-    agentRoles:         (row.agent_roles         as DebateSession['agentRoles'])   ?? [],
-    searchResultsCount: (row.search_results_count as number)                       ?? 0,
-    errorMessage:       row.error_message        as string | undefined,
-    createdAt:          row.created_at           as string,
-    completedAt:        row.completed_at         as string | undefined,
-  };
-}
-
 // ─── Stat pill ────────────────────────────────────────────────────────────────
 
-function StatPill({ icon, label, value, color }: {
+function StatPill({
+  icon, label, value, color,
+}: {
   icon: string; label: string; value: string; color?: string;
 }) {
   return (
@@ -97,11 +89,11 @@ function StatPill({ icon, label, value, color }: {
   );
 }
 
-// ─── Export action bar ────────────────────────────────────────────────────────
+// ─── Export bar ───────────────────────────────────────────────────────────────
 
 type ExportBusy = 'pdf' | 'copy' | 'share' | null;
 
-function ExportBar({ session }: { session: DebateSession }) {
+function ExportBar({ session, sharedId }: { session: DebateSession; sharedId: string }) {
   const [busy,   setBusy]   = useState<ExportBusy>(null);
   const [copied, setCopied] = useState(false);
 
@@ -110,8 +102,9 @@ function ExportBar({ session }: { session: DebateSession }) {
     setBusy('pdf');
     try {
       await exportDebateAsPDF(session);
+      await trackDebateDownload(sharedId);
     } catch (err) {
-      Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not generate PDF. Try again.');
+      Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not generate PDF.');
     } finally {
       setBusy(null);
     }
@@ -137,20 +130,17 @@ function ExportBar({ session }: { session: DebateSession }) {
     try {
       await shareDebateText(session);
     } catch {
-      // user cancelled share sheet
+      // user cancelled
     } finally {
       setBusy(null);
     }
   };
 
-  type ExportOption = {
-    id: ExportBusy; icon: string; label: string; color: string; onPress: () => void;
-  };
-
-  const options: ExportOption[] = [
-    { id: 'pdf',   icon: 'document-text-outline',                              label: 'PDF',             color: COLORS.primary,   onPress: handlePDF   },
-    { id: 'copy',  icon: copied ? 'checkmark-circle-outline' : 'copy-outline', label: copied ? 'Copied!' : 'Copy', color: copied ? COLORS.accent : COLORS.info, onPress: handleCopy },
-    { id: 'share', icon: 'share-outline',                                       label: 'Share',           color: COLORS.secondary, onPress: handleShare },
+  type Option = { id: ExportBusy; icon: string; label: string; color: string; onPress: () => void };
+  const options: Option[] = [
+    { id: 'pdf',   icon: 'document-text-outline',                               label: 'PDF',             color: COLORS.primary,   onPress: handlePDF   },
+    { id: 'copy',  icon: copied ? 'checkmark-circle-outline' : 'copy-outline',  label: copied ? 'Copied!' : 'Copy', color: copied ? COLORS.accent : COLORS.info, onPress: handleCopy },
+    { id: 'share', icon: 'share-outline',                                        label: 'Share',           color: COLORS.secondary, onPress: handleShare },
   ];
 
   return (
@@ -195,7 +185,101 @@ function ExportBar({ session }: { session: DebateSession }) {
   );
 }
 
-// ─── Overview tab ─────────────────────────────────────────────────────────────
+// ─── View-only notice banner ──────────────────────────────────────────────────
+
+function ViewOnlyBanner() {
+  return (
+    <View style={{
+      flexDirection:   'row',
+      alignItems:      'center',
+      gap:             8,
+      backgroundColor: `${COLORS.info}08`,
+      borderRadius:    RADIUS.md,
+      paddingHorizontal: SPACING.md,
+      paddingVertical:   8,
+      marginHorizontal:  SPACING.xl,
+      marginTop:         SPACING.sm,
+      borderWidth:       1,
+      borderColor:       `${COLORS.info}20`,
+    }}>
+      <Ionicons name="eye-outline" size={14} color={COLORS.info} />
+      <Text style={{
+        flex:       1,
+        color:      COLORS.info,
+        fontSize:   FONTS.sizes.xs,
+        lineHeight: 16,
+      }}>
+        Shared debate — view and export only. Re-generation is not available.
+      </Text>
+    </View>
+  );
+}
+
+// ─── Sharer attribution banner ────────────────────────────────────────────────
+
+function SharerBanner({ sharedDebate }: { sharedDebate: SharedDebate }) {
+  const sharedDate = new Date(sharedDebate.sharedAt).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+  });
+
+  return (
+    <Animated.View
+      entering={FadeIn.duration(400)}
+      style={{
+        flexDirection:   'row',
+        alignItems:      'center',
+        gap:             10,
+        backgroundColor: COLORS.backgroundCard,
+        borderRadius:    RADIUS.lg,
+        paddingHorizontal: SPACING.md,
+        paddingVertical:   10,
+        marginHorizontal:  SPACING.xl,
+        marginTop:         SPACING.sm,
+        borderWidth:       1,
+        borderColor:       COLORS.border,
+      }}
+    >
+      <View style={{
+        width:           32,
+        height:          32,
+        borderRadius:    10,
+        backgroundColor: `${COLORS.primary}18`,
+        alignItems:      'center',
+        justifyContent:  'center',
+        flexShrink:      0,
+      }}>
+        <Ionicons name="person-outline" size={14} color={COLORS.primary} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+          Shared by{' '}
+          <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>
+            {sharedDebate.sharerName ?? 'a team member'}
+          </Text>
+          {' '}on {sharedDate}
+        </Text>
+      </View>
+      {sharedDebate.viewCount > 0 && (
+        <View style={{
+          flexDirection:   'row',
+          alignItems:      'center',
+          gap:             4,
+          backgroundColor: `${COLORS.primary}10`,
+          borderRadius:    RADIUS.full,
+          paddingHorizontal: 8,
+          paddingVertical:   3,
+        }}>
+          <Ionicons name="eye-outline" size={11} color={COLORS.primary} />
+          <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>
+            {sharedDebate.viewCount}
+          </Text>
+        </View>
+      )}
+    </Animated.View>
+  );
+}
+
+// ─── Overview tab (same structure as debate-detail.tsx OverviewTab) ───────────
 
 function OverviewTab({ session }: { session: DebateSession }) {
   const forCount     = session.perspectives.filter(
@@ -214,10 +298,10 @@ function OverviewTab({ session }: { session: DebateSession }) {
     <Animated.View entering={FadeInDown.duration(350)}>
       {/* Stats row */}
       <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
-        <StatPill icon="people-outline"            label="Agents"  value={String(session.perspectives.length)}  color={COLORS.primary}   />
-        <StatPill icon="globe-outline"             label="Sources" value={String(session.searchResultsCount)}   color={COLORS.info}      />
-        <StatPill icon="arrow-up-circle-outline"   label="For"     value={String(forCount)}                     color={COLORS.success}   />
-        <StatPill icon="arrow-down-circle-outline" label="Against" value={String(againstCount)}                 color={COLORS.secondary} />
+        <StatPill icon="people-outline"            label="Agents"   value={String(session.perspectives.length)}  color={COLORS.primary}   />
+        <StatPill icon="globe-outline"             label="Sources"  value={String(session.searchResultsCount)}   color={COLORS.info}      />
+        <StatPill icon="arrow-up-circle-outline"   label="For"      value={String(forCount)}                     color={COLORS.success}   />
+        <StatPill icon="arrow-down-circle-outline" label="Against"  value={String(againstCount)}                 color={COLORS.secondary} />
       </View>
 
       {/* Central question */}
@@ -233,12 +317,21 @@ function OverviewTab({ session }: { session: DebateSession }) {
         ...SHADOWS.small,
       }}>
         <Text style={{
-          color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700',
-          letterSpacing: 0.7, textTransform: 'uppercase', marginBottom: SPACING.sm,
+          color:         COLORS.primary,
+          fontSize:      FONTS.sizes.xs,
+          fontWeight:    '700',
+          letterSpacing: 0.7,
+          textTransform: 'uppercase',
+          marginBottom:  SPACING.sm,
         }}>
           Central Question
         </Text>
-        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700', lineHeight: 28 }}>
+        <Text style={{
+          color:      COLORS.textPrimary,
+          fontSize:   FONTS.sizes.lg,
+          fontWeight: '700',
+          lineHeight: 28,
+        }}>
           {session.question}
         </Text>
       </View>
@@ -246,20 +339,27 @@ function OverviewTab({ session }: { session: DebateSession }) {
       {/* Moderator verdict preview */}
       {session.moderator?.balancedVerdict && (
         <View style={{
-          backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl,
-          padding: SPACING.lg, marginBottom: SPACING.md,
-          borderWidth: 1, borderColor: COLORS.border, ...SHADOWS.small,
+          backgroundColor: COLORS.backgroundCard,
+          borderRadius:    RADIUS.xl,
+          padding:         SPACING.lg,
+          marginBottom:    SPACING.md,
+          borderWidth:     1,
+          borderColor:     COLORS.border,
+          ...SHADOWS.small,
         }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
             <Ionicons name="ribbon-outline" size={16} color={COLORS.primary} />
             <Text style={{
-              color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
-              letterSpacing: 0.7, textTransform: 'uppercase',
+              color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
+              fontWeight: '700', letterSpacing: 0.7, textTransform: 'uppercase',
             }}>
               Moderator's Verdict
             </Text>
           </View>
-          <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, lineHeight: 24, fontStyle: 'italic' }}>
+          <Text style={{
+            color: COLORS.textSecondary, fontSize: FONTS.sizes.base,
+            lineHeight: 24, fontStyle: 'italic',
+          }}>
             "{session.moderator.balancedVerdict}"
           </Text>
         </View>
@@ -267,25 +367,43 @@ function OverviewTab({ session }: { session: DebateSession }) {
 
       {/* Agent stance grid */}
       <View style={{
-        backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl,
-        padding: SPACING.lg, marginBottom: SPACING.md,
-        borderWidth: 1, borderColor: COLORS.border, ...SHADOWS.small,
+        backgroundColor: COLORS.backgroundCard,
+        borderRadius:    RADIUS.xl,
+        padding:         SPACING.lg,
+        marginBottom:    SPACING.md,
+        borderWidth:     1,
+        borderColor:     COLORS.border,
+        ...SHADOWS.small,
       }}>
         <Text style={{
-          color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
-          letterSpacing: 0.7, textTransform: 'uppercase', marginBottom: SPACING.md,
+          color:         COLORS.textMuted,
+          fontSize:      FONTS.sizes.xs,
+          fontWeight:    '700',
+          letterSpacing: 0.7,
+          textTransform: 'uppercase',
+          marginBottom:  SPACING.md,
         }}>
           Agent Stances
         </Text>
         {session.perspectives.map((p, i) => (
-          <View key={p.agentRole} style={{
-            flexDirection: 'row', alignItems: 'center', gap: 10,
-            marginBottom: i < session.perspectives.length - 1 ? SPACING.sm : 0,
-          }}>
+          <View
+            key={p.agentRole}
+            style={{
+              flexDirection: 'row',
+              alignItems:    'center',
+              gap:           10,
+              marginBottom:  i < session.perspectives.length - 1 ? SPACING.sm : 0,
+            }}
+          >
             <View style={{
-              width: 32, height: 32, borderRadius: 10,
-              backgroundColor: `${p.color}18`, alignItems: 'center', justifyContent: 'center',
-              borderWidth: 1, borderColor: `${p.color}30`,
+              width:           32,
+              height:          32,
+              borderRadius:    10,
+              backgroundColor: `${p.color}18`,
+              alignItems:      'center',
+              justifyContent:  'center',
+              borderWidth:     1,
+              borderColor:     `${p.color}30`,
             }}>
               <Ionicons name={p.icon as any} size={14} color={p.color} />
             </View>
@@ -297,21 +415,34 @@ function OverviewTab({ session }: { session: DebateSession }) {
                 {p.stanceLabel}
               </Text>
             </View>
+            {/* Confidence mini bar */}
             <View style={{ width: 50, height: 4, borderRadius: 2, backgroundColor: `${p.color}20` }}>
-              <View style={{ width: `${(p.confidence / 10) * 100}%` as any, height: '100%', borderRadius: 2, backgroundColor: p.color }} />
+              <View style={{
+                width:           `${(p.confidence / 10) * 100}%` as any,
+                height:          '100%',
+                borderRadius:    2,
+                backgroundColor: p.color,
+              }} />
             </View>
-            <Text style={{ color: p.color, fontSize: FONTS.sizes.xs, fontWeight: '700', width: 26, textAlign: 'right' }}>
+            <Text style={{
+              color: p.color, fontSize: FONTS.sizes.xs, fontWeight: '700',
+              width: 26, textAlign: 'right',
+            }}>
               {p.confidence}/10
             </Text>
           </View>
         ))}
       </View>
 
+      {/* Timestamp */}
       {completedDate && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: SPACING.sm }}>
+        <View style={{
+          flexDirection: 'row', alignItems: 'center', gap: 6,
+          justifyContent: 'center', marginTop: SPACING.sm,
+        }}>
           <Ionicons name="time-outline" size={13} color={COLORS.textMuted} />
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-            Completed {completedDate}
+            Originally generated {completedDate}
           </Text>
         </View>
       )}
@@ -321,47 +452,43 @@ function OverviewTab({ session }: { session: DebateSession }) {
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
-export default function DebateDetailScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+export default function WorkspaceSharedDebateScreen() {
+  const { workspaceId, sharedId, contentTitle } =
+    useLocalSearchParams<{ workspaceId: string; sharedId: string; contentTitle?: string }>();
 
-  const [session,   setSession]   = useState<DebateSession | null>(null);
-  const [loading,   setLoading]   = useState(true);
-  const [error,     setError]     = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<DebateTab>('overview');
+  const [sharedDebate, setSharedDebate] = useState<SharedDebate | null>(null);
+  const [session,      setSession]      = useState<DebateSession | null>(null);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState<string | null>(null);
+  const [activeTab,    setActiveTab]    = useState<DebateTab>('overview');
 
-  // ── Part 16: workspace share modal state ──────────────────────────────────
-  const [showShareModal, setShowShareModal] = useState(false);
-  const { workspaceIds: sharedToIds, reload: reloadShared } =
-    useDebateSharedWorkspaces(sessionId);
-
-  // ── Load session ──────────────────────────────────────────────────────────
+  // ── Load shared debate ────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!sessionId) {
-      setError('No session ID provided.');
+    if (!workspaceId || !sharedId) {
+      setError('Missing workspace or debate ID.');
       setLoading(false);
       return;
     }
 
     (async () => {
       try {
-        const { data, error: fetchError } = await supabase
-          .from('debate_sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .single();
+        const { data, error: fetchError } = await getSharedDebateById(workspaceId, sharedId);
+        if (fetchError) throw new Error(fetchError);
+        if (!data)      throw new Error('Shared debate not found.');
 
-        if (fetchError) throw fetchError;
-        if (!data) throw new Error('Debate session not found.');
+        setSharedDebate(data);
+        setSession(sharedDebateToSession(data));
 
-        setSession(mapDbRow(data as Record<string, unknown>));
+        // Track view (fire-and-forget)
+        trackDebateView(sharedId);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load debate.');
       } finally {
         setLoading(false);
       }
     })();
-  }, [sessionId]);
+  }, [workspaceId, sharedId]);
 
   // ── Loading state ─────────────────────────────────────────────────────────
 
@@ -371,7 +498,7 @@ export default function DebateDetailScreen() {
         <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={{ color: COLORS.textMuted, marginTop: SPACING.md, fontSize: FONTS.sizes.sm }}>
-            Loading debate...
+            Loading debate…
           </Text>
         </SafeAreaView>
       </LinearGradient>
@@ -380,7 +507,7 @@ export default function DebateDetailScreen() {
 
   // ── Error state ───────────────────────────────────────────────────────────
 
-  if (error || !session) {
+  if (error || !session || !sharedDebate) {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl }}>
@@ -389,7 +516,7 @@ export default function DebateDetailScreen() {
             color: COLORS.textPrimary, fontSize: FONTS.sizes.lg,
             fontWeight: '700', marginTop: SPACING.md, textAlign: 'center',
           }}>
-            {error ?? 'Session not found'}
+            {error ?? 'Debate not found'}
           </Text>
           <TouchableOpacity onPress={() => router.back()} style={{ marginTop: SPACING.lg }}>
             <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>
@@ -432,66 +559,45 @@ export default function DebateDetailScreen() {
               }}
               numberOfLines={1}
             >
-              {session.topic}
+              {contentTitle ?? sharedDebate.topic}
             </Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
               {session.perspectives.length} perspectives · {session.searchResultsCount} sources
             </Text>
           </View>
 
-          {/* ── Part 16: Share to workspace button (UPDATED ICON) ── */}
-          <TouchableOpacity
-            onPress={() => setShowShareModal(true)}
-            style={{
-              width:           38,
-              height:          38,
-              borderRadius:    12,
-              backgroundColor: sharedToIds.length > 0
-                ? `${COLORS.success}18`
-                : COLORS.backgroundCard,
-              alignItems:      'center',
-              justifyContent:  'center',
-              borderWidth:     1,
-              borderColor:     sharedToIds.length > 0
-                ? `${COLORS.success}40`
-                : COLORS.border,
-              position:        'relative',
-            }}
-          >
-            <Ionicons
-              name="people-outline"  // Changed from "share-social-outline" to "people-outline" for two-person icon
-              size={18}
-              color={sharedToIds.length > 0 ? COLORS.success : COLORS.textSecondary}
-            />
-            {/* Badge showing count of workspaces it's shared to */}
-            {sharedToIds.length > 0 && (
-              <View style={{
-                position:        'absolute',
-                top:             -4,
-                right:           -4,
-                width:           16,
-                height:          16,
-                borderRadius:    8,
-                backgroundColor: COLORS.success,
-                alignItems:      'center',
-                justifyContent:  'center',
-              }}>
-                <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '800' }}>
-                  {sharedToIds.length > 9 ? '9+' : sharedToIds.length}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {/* View-only badge in header */}
+          <View style={{
+            flexDirection:   'row',
+            alignItems:      'center',
+            gap:             4,
+            backgroundColor: `${COLORS.info}12`,
+            borderRadius:    RADIUS.full,
+            paddingHorizontal: 8,
+            paddingVertical:   4,
+            borderWidth:     1,
+            borderColor:     `${COLORS.info}25`,
+          }}>
+            <Ionicons name="eye-outline" size={11} color={COLORS.info} />
+            <Text style={{ color: COLORS.info, fontSize: 10, fontWeight: '700' }}>
+              View only
+            </Text>
+          </View>
         </View>
 
-        {/* ── Export action bar ────────────────────────────────────────── */}
-        <ExportBar session={session} />
+        {/* ── Export bar ───────────────────────────────────────────────── */}
+        <ExportBar session={session} sharedId={sharedId} />
+
+        {/* ── Attribution + view-only banners ─────────────────────────── */}
+        <SharerBanner sharedDebate={sharedDebate} />
+        <ViewOnlyBanner />
 
         {/* ── Tab bar ─────────────────────────────────────────────────── */}
         <View style={{
           flexDirection:     'row',
           paddingHorizontal: SPACING.xl,
           paddingVertical:   SPACING.sm,
+          marginTop:         SPACING.sm,
           borderBottomWidth: 1,
           borderBottomColor: COLORS.border,
           backgroundColor:   COLORS.background,
@@ -539,7 +645,9 @@ export default function DebateDetailScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {activeTab === 'overview' && <OverviewTab session={session} />}
+          {activeTab === 'overview' && (
+            <OverviewTab session={session} />
+          )}
 
           {activeTab === 'perspectives' && (
             <Animated.View entering={FadeIn.duration(300)}>
@@ -553,22 +661,6 @@ export default function DebateDetailScreen() {
             </Animated.View>
           )}
         </ScrollView>
-
-        {/* ── Part 16: Share to workspace modal ───────────────────────── */}
-        <ShareDebateToWorkspaceModal
-          visible={showShareModal}
-          debateId={sessionId}
-          topic={session.topic}
-          question={session.question}
-          perspectiveCount={session.perspectives.length}
-          searchResultsCount={session.searchResultsCount}
-          onClose={() => setShowShareModal(false)}
-          onShared={(_workspaceId, workspaceName) => {
-            reloadShared();
-            // Optionally show a toast — the badge update is enough feedback
-            console.log(`[DebateDetail] Shared to workspace: ${workspaceName}`);
-          }}
-        />
 
       </SafeAreaView>
     </LinearGradient>

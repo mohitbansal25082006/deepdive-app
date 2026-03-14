@@ -1,5 +1,5 @@
 // app/(app)/_layout.tsx
-// Part 15: Added workspace-shared-podcast-player route.
+// Part 16: Added workspace-shared-debate route.
 
 import { useEffect }                       from 'react';
 import { Stack, router }                   from 'expo-router';
@@ -69,7 +69,7 @@ export default function AppLayout() {
         ── Part 14: Workspace Shared Content Viewer ──
         Opens presentations and academic papers shared into a workspace.
       */}
-      <Stack.Screen name="workspace-shared-viewer"         options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="workspace-shared-viewer" options={{ animation: 'slide_from_right' }} />
 
       {/*
         ── Part 15: Workspace Shared Podcast Player ──
@@ -79,6 +79,15 @@ export default function AppLayout() {
         Download allowed; re-generation NOT available.
       */}
       <Stack.Screen name="workspace-shared-podcast-player" options={{ animation: 'slide_from_right' }} />
+
+      {/*
+        ── Part 16: Workspace Shared Debate Viewer ──
+        Opens a debate session shared into a workspace.
+        Uses SECURITY DEFINER RPCs so any workspace member can view
+        without owning the source debate_sessions row.
+        PDF/Copy/Share allowed; re-generation NOT available.
+      */}
+      <Stack.Screen name="workspace-shared-debate" options={{ animation: 'slide_from_right' }} />
     </Stack>
   );
 }

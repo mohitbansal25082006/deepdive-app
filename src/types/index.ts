@@ -1,6 +1,7 @@
 // src/types/index.ts
-// Parts 1–15 — All type definitions
+// Parts 1–16 — All type definitions
 // Part 15 adds: SharedPodcast, SharedPodcastState, extended SharedContentType to include 'podcast'
+// Part 16 adds: SharedDebate, SharedDebateState, SharedDebateSummary, extends SharedContentType and WorkspaceActivityAction
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -644,7 +645,8 @@ export type WorkspaceActivityAction =
   | 'member_joined'     | 'member_left'     | 'member_removed'
   | 'member_role_changed' | 'comment_added' | 'comment_resolved'
   | 'ownership_transferred'
-  | 'member_blocked';
+  | 'member_blocked'
+  | 'debate_shared'; // Added from Part 16
 
 // ─── Part 11 WorkspaceSettings ────────────────────────────────────────────────
 
@@ -874,9 +876,9 @@ export interface ReactionState {
 }
 
 // ─── Part 14: Workspace Shared Content ────────────────────────────────────────
-// Part 15: Extended SharedContentType to include 'podcast'
+// Part 15 & 16: Extended SharedContentType to include 'podcast' and 'debate'
 
-export type SharedContentType = 'presentation' | 'academic_paper' | 'podcast';
+export type SharedContentType = 'presentation' | 'academic_paper' | 'podcast' | 'debate';
 
 export interface SharedWorkspaceContent {
   id:           string;
@@ -972,4 +974,71 @@ export interface WorkspaceReportDownload {
   downloadedBy: string;
   downloadedAt: string;
   format:       'pdf' | 'markdown' | 'text';
+}
+
+// ─── Part 16: Workspace Shared Debate ─────────────────────────────────────────
+
+/**
+ * A debate session shared into a workspace.
+ * Full denormalised copy so any workspace member can view/download
+ * without owning the source debate_sessions row.
+ * Re-generation is NOT possible from a shared debate — view + export only.
+ */
+export interface SharedDebate {
+  /** Row ID in shared_debates table */
+  id:                   string;
+  workspaceId:          string;
+  debateId:             string;
+  sharedBy:             string;
+  reportId?:            string;
+
+  // Denormalised debate fields
+  topic:                string;
+  question:             string;
+  agentRoles:           DebateAgentRole[];
+  searchResultsCount:   number;
+
+  // Full debate data (read-only for workspace members)
+  perspectives:         DebatePerspective[];
+  moderator:            DebateModerator | null;
+  debateStatus:         DebateStatus;
+
+  // Analytics
+  viewCount:            number;
+  downloadCount:        number;
+
+  // Timestamps
+  debateCreatedAt?:     string;
+  debateCompletedAt?:   string;
+  sharedAt:             string;
+
+  // Enriched sharer info
+  sharerName?:          string;
+  sharerAvatar?:        string;
+}
+
+export interface SharedDebateState {
+  debates:   SharedDebate[];
+  isLoading: boolean;
+  isSharing: boolean;
+  error:     string | null;
+}
+
+/**
+ * Lightweight summary for SharedContentCard (debate variant).
+ */
+export interface SharedDebateSummary {
+  id:                 string;
+  workspaceId:        string;
+  debateId:           string;
+  topic:              string;
+  question:           string;
+  perspectiveCount:   number;
+  searchResultsCount: number;
+  forCount:           number;
+  againstCount:       number;
+  viewCount:          number;
+  downloadCount:      number;
+  sharedAt:           string;
+  sharerName?:        string;
 }

@@ -1,76 +1,10 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1 through 15 — Single Migration File
+-- Parts 1 through 16 — Single Migration File
 --
--- Includes:
---   Part 1  — Profiles, Auth, Storage, Subscriptions
---   Part 2  — Research Reports, Conversations
---   Part 3  — Saved Topics, Push Tokens, Stats
---   Part 4  — Knowledge Graph, Infographics, Public Reports
---   Part 5  — AI Slide Generator (Presentations)
---   Part 6  — RAG Pipeline (Embeddings, Assistant Conversations)
---   Part 7  — Academic Paper Mode
---   Part 8  — AI Podcast Generator
---   Part 9  — AI Debate Agent
---   Part 10 — Collaborative Workspaces + Patch (workspace report access)
---   Part 11 — Workspace Feature Upgrades (11C patches applied inline):
---             • workspace_activity persistence fix (ON DELETE SET NULL)
---             • comment_reactions table (exclusive: one per user per comment)
---             • pinned_workspace_reports table
---             • workspace_search_index view (enhanced with ILIKE + subtitle)
---             • workspaces.logo_url column
---             • RPCs: toggle_comment_reaction, get_comment_reactions,
---                     toggle_pin_workspace_report, get_pinned_report_ids,
---                     search_workspace (full-text + ILIKE fallback),
---                     get_workspace_activity_feed (returns TABLE with actor snapshot)
---   Part 12 — Enhanced Workspace Features + RLS Recursion Fix
---             • edit_access_requests table (viewer → editor upgrade requests)
---             • get_auth_user_workspace_ids() SECURITY DEFINER helper
---             • Recursion-safe RLS policies for all workspace tables
---             • Member workspace stats and comment summary RPCs
---   Part 13 — Workspace Member Blocking, Logo Upload, Demotion
---             • workspace-logos storage bucket + RLS policies
---             • update_workspace_logo RPC
---             • workspace_blocked_members table
---             • is_blocked_from_workspace helper
---             • block_workspace_member RPC (with non-fatal activity log fallback)
---             • unblock_workspace_member RPC
---             • get_workspace_blocked_members RPC
---             • demote_editor_to_viewer RPC
---             • join_workspace_by_code replacement (returns JSON, blocks check)
---             • count_member_replies_in_workspace helper
---             • edit_access_requests status extended to include 'removed'
---   Part 14 — Shared Workspace Content & Cross-User Access
---             • shared_workspace_content table (presentations/academic papers)
---             • share_content_to_workspace RPC
---             • remove_shared_content RPC
---             • get_workspace_shared_content RPC (with out_ prefix to avoid 42702)
---             • get_user_workspaces_for_sharing RPC
---             • get_shared_presentation_for_workspace RPC (SECURITY DEFINER)
---             • get_shared_academic_paper_for_workspace RPC (SECURITY DEFINER)
---   Part 15 — Podcast Sharing & Workspace Downloads
---             • shared_podcasts table (denormalised podcast sharing)
---             • workspace_report_downloads table (download tracking)
---             • podcast-audio storage bucket (private)
---             • 10 new SECURITY DEFINER RPCs for podcast sharing
---             • shared_workspace_content.content_type extended to include 'podcast'
---
--- Root causes fixed:
---   [A] 42702 "column reference is ambiguous" — RETURNS TABLE columns prefixed with "out_"
---   [B] Other users can't open shared presentations/papers — added SECURITY DEFINER RPCs
---   [C] avatar_url + invite_code added to workspaces (already present; guaranteed)
---   [D] workspace_activity INSERTs wrapped in nested BEGIN/EXCEPTION blocks
---   [E] is_personal removed from join_workspace_by_code (not in schema)
---   [F] blocked_by NOT NULL + ON DELETE SET NULL contradiction resolved
---   [G] SET search_path = public on every SECURITY DEFINER function
---
--- Prerequisites:
---   pgvector must be available (pre-installed on all Supabase projects).
---
--- Safe to re-run: uses IF NOT EXISTS / OR REPLACE / DROP IF EXISTS.
--- Run the entire script in one shot in the Supabase SQL Editor.
+-- Includes ALL features and fixes from Parts 1-16, with
+-- all patches and corrections baked in.
 -- ============================================================
-
 
 -- ============================================================
 -- EXTENSIONS
@@ -81,7 +15,6 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- ============================================================
 -- SHARED UTILITY FUNCTIONS
--- Defined early — referenced by multiple triggers
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
@@ -643,7 +576,7 @@ CREATE TABLE IF NOT EXISTS public.research_reports (
 
 ALTER TABLE public.research_reports ENABLE ROW LEVEL SECURITY;
 
--- Temporary policy replaced after workspace tables are created (Part 12)
+-- Temporary policy replaced after workspace tables are created
 CREATE POLICY "read_own_or_public_reports_temp"
   ON public.research_reports FOR SELECT
   USING (user_id = auth.uid() OR is_public = TRUE);
@@ -826,8 +759,6 @@ CREATE INDEX IF NOT EXISTS idx_assistant_conversations_created_at  ON public.ass
 
 -- ============================================================
 -- PART 10 — COLLABORATIVE WORKSPACES
--- (Part 11C: logo_url added directly to workspaces table)
--- (Part 13:  avatar_url + invite_code guaranteed present)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS public.workspaces (
@@ -844,12 +775,12 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Idempotent column additions for existing databases
+-- Idempotent column additions
 ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS avatar_url  text;
 ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS logo_url    text DEFAULT NULL;
 ALTER TABLE public.workspaces ADD COLUMN IF NOT EXISTS invite_code text;
 
--- Unique index on invite_code (safe if already exists)
+-- Unique index on invite_code
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_invite_code
   ON public.workspaces(invite_code)
   WHERE invite_code IS NOT NULL;
@@ -918,10 +849,6 @@ CREATE TABLE IF NOT EXISTS public.comment_replies (
 
 
 -- ── workspace_activity ────────────────────────────────────────
--- Part 11: ON DELETE SET NULL so activities survive after an actor
--- is deleted or leaves the workspace.
--- Part 13 functions write both entity_type/entity_id (preferred) and
--- resource_type/resource_id (legacy fallback) — both columns kept.
 
 CREATE TABLE IF NOT EXISTS public.workspace_activity (
   id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -936,22 +863,20 @@ CREATE TABLE IF NOT EXISTS public.workspace_activity (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Idempotent: ensure both column sets exist for forward and backward compat
+-- Idempotent column additions
 DO $$
 BEGIN
-  -- entity_type / entity_id (Part 13 preferred naming)
   BEGIN ALTER TABLE public.workspace_activity ADD COLUMN entity_type text;
   EXCEPTION WHEN duplicate_column THEN NULL; END;
   BEGIN ALTER TABLE public.workspace_activity ADD COLUMN entity_id uuid;
   EXCEPTION WHEN duplicate_column THEN NULL; END;
-  -- resource_type / resource_id (Part 10 legacy naming)
   BEGIN ALTER TABLE public.workspace_activity ADD COLUMN resource_type text;
   EXCEPTION WHEN duplicate_column THEN NULL; END;
   BEGIN ALTER TABLE public.workspace_activity ADD COLUMN resource_id text;
   EXCEPTION WHEN duplicate_column THEN NULL; END;
 END $$;
 
--- Part 11: Fix actor persistence — drop NOT NULL and ensure ON DELETE SET NULL
+-- Ensure actor_id is nullable with ON DELETE SET NULL
 DO $$
 BEGIN
   IF EXISTS (
@@ -983,7 +908,6 @@ END $$;
 
 
 -- ── Part 11 — COMMENT REACTIONS TABLE ─────────────────────────
--- One reaction per (comment_id, user_id) — exclusive model.
 
 CREATE TABLE IF NOT EXISTS public.comment_reactions (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1013,7 +937,6 @@ CREATE INDEX IF NOT EXISTS idx_pinned_workspace_reports_workspace ON public.pinn
 
 
 -- ── Part 12 — EDIT ACCESS REQUESTS TABLE ──────────────────────
--- Part 13: status check extended to include 'removed'
 
 CREATE TABLE IF NOT EXISTS public.edit_access_requests (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1029,7 +952,7 @@ CREATE TABLE IF NOT EXISTS public.edit_access_requests (
   UNIQUE (workspace_id, user_id)
 );
 
--- Idempotent: if table already existed without 'removed', update the constraint
+-- Update constraint to include 'removed'
 DO $$
 DECLARE
   v_con text;
@@ -1073,8 +996,6 @@ CREATE TRIGGER edit_access_requests_updated_at
 
 
 -- ── Part 13 — workspace_blocked_members ───────────────────────
--- FIX [D]: blocked_by must allow NULL (ON DELETE SET NULL cannot
--- coexist with NOT NULL — the deleted-user cascade would violate it).
 
 CREATE TABLE IF NOT EXISTS public.workspace_blocked_members (
   id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1086,7 +1007,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_blocked_members (
   UNIQUE(workspace_id, blocked_user_id)
 );
 
--- Idempotent: drop NOT NULL from blocked_by if table already existed with it
+-- Ensure blocked_by is nullable
 DO $$
 BEGIN
   ALTER TABLE public.workspace_blocked_members ALTER COLUMN blocked_by DROP NOT NULL;
@@ -1098,7 +1019,6 @@ CREATE INDEX IF NOT EXISTS idx_blocked_user ON public.workspace_blocked_members(
 
 
 -- ── Part 14 — shared_workspace_content ────────────────────────
--- Stores presentations/academic papers shared to workspaces
 
 CREATE TABLE IF NOT EXISTS public.shared_workspace_content (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1115,23 +1035,16 @@ CREATE TABLE IF NOT EXISTS public.shared_workspace_content (
   UNIQUE(workspace_id, content_type, content_id)
 );
 
--- Ensure content_type includes 'podcast' (Part 15 update)
+-- Ensure content_type includes 'podcast'
 DO $$
 BEGIN
-  -- Drop the old constraint if it exists (without 'podcast')
-  BEGIN
-    ALTER TABLE public.shared_workspace_content
-      DROP CONSTRAINT IF EXISTS shared_workspace_content_content_type_check;
-  EXCEPTION WHEN OTHERS THEN NULL;
-  END;
+  ALTER TABLE public.shared_workspace_content
+    DROP CONSTRAINT IF EXISTS shared_workspace_content_content_type_check;
   
-  -- Add the updated constraint
-  BEGIN
-    ALTER TABLE public.shared_workspace_content
-      ADD CONSTRAINT shared_workspace_content_content_type_check
-      CHECK (content_type IN ('presentation', 'academic_paper', 'podcast'));
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
+  ALTER TABLE public.shared_workspace_content
+    ADD CONSTRAINT shared_workspace_content_content_type_check
+    CHECK (content_type IN ('presentation', 'academic_paper', 'podcast'));
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_swc_workspace_type_date
@@ -1152,7 +1065,6 @@ CREATE TRIGGER on_shared_workspace_content_updated
 
 
 -- ── Part 15 — shared_podcasts TABLE ───────────────────────────
--- Denormalised table for podcasts shared to workspaces
 
 CREATE TABLE IF NOT EXISTS public.shared_podcasts (
   id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1161,7 +1073,6 @@ CREATE TABLE IF NOT EXISTS public.shared_podcasts (
   shared_by           UUID        NOT NULL REFERENCES auth.users(id)               ON DELETE CASCADE,
   report_id           UUID        REFERENCES public.research_reports(id)           ON DELETE SET NULL,
 
-  -- Denormalised fields (members never need to query podcasts table)
   title               TEXT        NOT NULL,
   description         TEXT        NOT NULL DEFAULT '',
   topic               TEXT        NOT NULL DEFAULT '',
@@ -1170,12 +1081,9 @@ CREATE TABLE IF NOT EXISTS public.shared_podcasts (
   duration_seconds    INTEGER     NOT NULL DEFAULT 0,
   word_count          INTEGER     NOT NULL DEFAULT 0,
   completed_segments  INTEGER     NOT NULL DEFAULT 0,
-
-  -- Full script + cloud audio URLs for cross-device playback
   script              JSONB       NOT NULL DEFAULT '{}',
   audio_segment_paths TEXT[]      NOT NULL DEFAULT '{}',
 
-  -- Analytics
   download_count      INTEGER     NOT NULL DEFAULT 0,
   play_count          INTEGER     NOT NULL DEFAULT 0,
 
@@ -1194,7 +1102,6 @@ CREATE INDEX IF NOT EXISTS idx_shared_podcasts_shared_by
 
 
 -- ── Part 15 — workspace_report_downloads TABLE ────────────────
--- Tracks report downloads within workspaces
 
 CREATE TABLE IF NOT EXISTS public.workspace_report_downloads (
   id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1212,7 +1119,43 @@ CREATE INDEX IF NOT EXISTS idx_ws_report_downloads_report
   ON public.workspace_report_downloads (report_id);
 
 
--- ── Part 10 Indexes ───────────────────────────────────────────
+-- ── Part 16 — shared_debates TABLE ────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.shared_debates (
+  id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id         UUID        NOT NULL REFERENCES public.workspaces(id)  ON DELETE CASCADE,
+  debate_id            UUID        NOT NULL,
+  shared_by            UUID        NOT NULL REFERENCES auth.users(id)         ON DELETE CASCADE,
+  report_id            UUID        REFERENCES public.research_reports(id)     ON DELETE SET NULL,
+
+  topic                TEXT        NOT NULL,
+  question             TEXT        NOT NULL DEFAULT '',
+  agent_roles          JSONB       NOT NULL DEFAULT '[]',
+  search_results_count INT         NOT NULL DEFAULT 0,
+
+  perspectives         JSONB       NOT NULL DEFAULT '[]',
+  moderator            JSONB,
+  debate_status        TEXT        NOT NULL DEFAULT 'completed',
+
+  view_count           INT         NOT NULL DEFAULT 0,
+  download_count       INT         NOT NULL DEFAULT 0,
+
+  debate_created_at    TIMESTAMPTZ,
+  debate_completed_at  TIMESTAMPTZ,
+  shared_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  UNIQUE (workspace_id, debate_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_shared_debates_workspace_id
+  ON public.shared_debates (workspace_id);
+CREATE INDEX IF NOT EXISTS idx_shared_debates_shared_by
+  ON public.shared_debates (shared_by);
+CREATE INDEX IF NOT EXISTS idx_shared_debates_debate_id
+  ON public.shared_debates (debate_id);
+
+
+-- ── Part 10 Additional Indexes ─────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner             ON public.workspaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_invite_code_plain ON public.workspaces(invite_code);
@@ -1240,40 +1183,24 @@ CREATE INDEX IF NOT EXISTS idx_shared_content_shared_by       ON public.shared_w
 CREATE INDEX IF NOT EXISTS idx_shared_content_report_id       ON public.shared_workspace_content(report_id) WHERE report_id IS NOT NULL;
 
 
--- ── Part 10 updated_at triggers ──────────────────────────────
+-- ============================================================
+-- RLS ENABLEMENT
+-- ============================================================
 
-DROP TRIGGER IF EXISTS workspaces_updated_at      ON public.workspaces;
-DROP TRIGGER IF EXISTS report_comments_updated_at ON public.report_comments;
-DROP TRIGGER IF EXISTS comment_replies_updated_at ON public.comment_replies;
-
-CREATE TRIGGER workspaces_updated_at
-  BEFORE UPDATE ON public.workspaces
-  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
-CREATE TRIGGER report_comments_updated_at
-  BEFORE UPDATE ON public.report_comments
-  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
-CREATE TRIGGER comment_replies_updated_at
-  BEFORE UPDATE ON public.comment_replies
-  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
-
--- ── Part 10 RLS enablement ────────────────────────────────────
-
-ALTER TABLE public.workspaces         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workspace_members  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workspace_reports  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.report_comments    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.comment_replies    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workspace_activity ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.comment_reactions   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.pinned_workspace_reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.edit_access_requests      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workspace_blocked_members ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.shared_workspace_content  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.shared_podcasts           ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workspace_report_downloads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspaces                      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_members               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_reports               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.report_comments                  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.comment_replies                  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_activity               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.comment_reactions                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.pinned_workspace_reports         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.edit_access_requests             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_blocked_members        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shared_workspace_content         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shared_podcasts                  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_report_downloads       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shared_debates                   ENABLE ROW LEVEL SECURITY;
 
 
 -- ============================================================
@@ -1335,6 +1262,27 @@ GRANT SELECT ON public.workspace_search_index TO authenticated;
 
 
 -- ============================================================
+-- PART 10 — UPDATED_AT TRIGGERS
+-- ============================================================
+
+DROP TRIGGER IF EXISTS workspaces_updated_at      ON public.workspaces;
+DROP TRIGGER IF EXISTS report_comments_updated_at ON public.report_comments;
+DROP TRIGGER IF EXISTS comment_replies_updated_at ON public.comment_replies;
+
+CREATE TRIGGER workspaces_updated_at
+  BEFORE UPDATE ON public.workspaces
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER report_comments_updated_at
+  BEFORE UPDATE ON public.report_comments
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER comment_replies_updated_at
+  BEFORE UPDATE ON public.comment_replies
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+-- ============================================================
 -- PART 12 — RLS RECURSION FIX — SECURITY DEFINER HELPER
 -- ============================================================
 
@@ -1358,7 +1306,6 @@ GRANT  EXECUTE ON FUNCTION public.get_auth_user_workspace_ids() TO authenticated
 -- PART 10 — HELPER FUNCTIONS
 -- ============================================================
 
--- Two-arg version: explicit user_id
 CREATE OR REPLACE FUNCTION public.is_workspace_member(p_workspace_id UUID, p_user_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -1367,7 +1314,6 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
--- Single-arg version: uses auth.uid()
 CREATE OR REPLACE FUNCTION public.is_workspace_member(p_workspace_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -1376,7 +1322,6 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
--- Role helper
 CREATE OR REPLACE FUNCTION public.get_workspace_role(p_workspace_id UUID, p_user_id UUID)
 RETURNS TEXT AS $$
   SELECT role FROM public.workspace_members
@@ -1384,7 +1329,6 @@ RETURNS TEXT AS $$
   LIMIT 1;
 $$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
--- Editor/owner check using auth.uid()
 CREATE OR REPLACE FUNCTION public.is_workspace_editor_or_owner(p_workspace_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -1395,7 +1339,6 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public;
 
--- Part 13: is_blocked_from_workspace
 CREATE OR REPLACE FUNCTION public.is_blocked_from_workspace(
   p_workspace_id uuid,
   p_user_id      uuid DEFAULT auth.uid()
@@ -1413,7 +1356,6 @@ BEGIN
 END;
 $$;
 
--- Part 13: count_member_replies_in_workspace helper
 CREATE OR REPLACE FUNCTION public.count_member_replies_in_workspace(
   p_workspace_id uuid,
   p_user_id      uuid
@@ -1505,7 +1447,7 @@ CREATE POLICY "research_reports_select_shared_workspace"
   );
 
 
--- ── workspace INSERT / UPDATE / DELETE ────────────────────────
+-- ── WORKSPACES INSERT / UPDATE / DELETE ───────────────────────
 
 DROP POLICY IF EXISTS "workspaces_insert" ON public.workspaces;
 DROP POLICY IF EXISTS "workspaces_update" ON public.workspaces;
@@ -1518,7 +1460,9 @@ CREATE POLICY "workspaces_update" ON public.workspaces
 CREATE POLICY "workspaces_delete" ON public.workspaces
   FOR DELETE USING (auth.uid() = owner_id);
 
--- workspace_members
+
+-- ── WORKSPACE_MEMBERS INSERT / UPDATE / DELETE ────────────────
+
 DROP POLICY IF EXISTS "workspace_members_insert" ON public.workspace_members;
 DROP POLICY IF EXISTS "workspace_members_update" ON public.workspace_members;
 DROP POLICY IF EXISTS "workspace_members_delete" ON public.workspace_members;
@@ -1536,7 +1480,9 @@ CREATE POLICY "workspace_members_delete" ON public.workspace_members
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- workspace_reports
+
+-- ── WORKSPACE_REPORTS INSERT / DELETE ─────────────────────────
+
 DROP POLICY IF EXISTS "workspace_reports_insert" ON public.workspace_reports;
 DROP POLICY IF EXISTS "workspace_reports_delete"  ON public.workspace_reports;
 
@@ -1550,7 +1496,9 @@ CREATE POLICY "workspace_reports_delete" ON public.workspace_reports
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- report_comments
+
+-- ── REPORT_COMMENTS INSERT / UPDATE / DELETE ──────────────────
+
 DROP POLICY IF EXISTS "report_comments_insert" ON public.report_comments;
 DROP POLICY IF EXISTS "report_comments_update" ON public.report_comments;
 DROP POLICY IF EXISTS "report_comments_delete" ON public.report_comments;
@@ -1571,7 +1519,9 @@ CREATE POLICY "report_comments_delete" ON public.report_comments
     OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
   );
 
--- comment_replies
+
+-- ── COMMENT_REPLIES INSERT / DELETE ───────────────────────────
+
 DROP POLICY IF EXISTS "comment_replies_insert" ON public.comment_replies;
 DROP POLICY IF EXISTS "comment_replies_delete"  ON public.comment_replies;
 
@@ -1594,13 +1544,15 @@ CREATE POLICY "comment_replies_delete" ON public.comment_replies
     )
   );
 
--- workspace_activity
+
+-- ── WORKSPACE_ACTIVITY INSERT ─────────────────────────────────
+
 DROP POLICY IF EXISTS "workspace_activity_insert" ON public.workspace_activity;
 CREATE POLICY "workspace_activity_insert" ON public.workspace_activity
   FOR INSERT WITH CHECK (public.is_workspace_member(workspace_id, auth.uid()));
 
 
--- ── Part 11 RLS ───────────────────────────────────────────────
+-- ── COMMENT_REACTIONS ─────────────────────────────────────────
 
 DROP POLICY IF EXISTS "comment_reactions_select_member" ON public.comment_reactions;
 DROP POLICY IF EXISTS "comment_reactions_insert_editor" ON public.comment_reactions;
@@ -1633,6 +1585,8 @@ CREATE POLICY "comment_reactions_delete_own"
   USING (user_id = auth.uid());
 
 
+-- ── PINNED WORKSPACE REPORTS ─────────────────────────────────
+
 DROP POLICY IF EXISTS "pinned_reports_select_member" ON public.pinned_workspace_reports;
 DROP POLICY IF EXISTS "pinned_reports_insert_editor" ON public.pinned_workspace_reports;
 DROP POLICY IF EXISTS "pinned_reports_delete_editor" ON public.pinned_workspace_reports;
@@ -1653,7 +1607,7 @@ CREATE POLICY "pinned_reports_delete_editor"
   USING (public.is_workspace_editor_or_owner(workspace_id));
 
 
--- ── Part 12 edit_access_requests RLS ─────────────────────────
+-- ── EDIT ACCESS REQUESTS ─────────────────────────────────────
 
 DROP POLICY IF EXISTS "edit_access_requests_select" ON public.edit_access_requests;
 DROP POLICY IF EXISTS "edit_access_requests_insert" ON public.edit_access_requests;
@@ -1686,7 +1640,7 @@ CREATE POLICY "edit_access_requests_delete"
   );
 
 
--- ── Part 13 workspace_blocked_members RLS ────────────────────
+-- ── WORKSPACE_BLOCKED_MEMBERS ────────────────────────────────
 
 DROP POLICY IF EXISTS "blocked_select_owner" ON public.workspace_blocked_members;
 DROP POLICY IF EXISTS "blocked_insert_owner" ON public.workspace_blocked_members;
@@ -1708,7 +1662,7 @@ CREATE POLICY "blocked_delete_owner"
   USING (public.get_workspace_role(workspace_id, auth.uid()) = 'owner');
 
 
--- ── Part 14 shared_workspace_content RLS ─────────────────────
+-- ── SHARED WORKSPACE CONTENT ─────────────────────────────────
 
 DROP POLICY IF EXISTS "swc_select_member" ON public.shared_workspace_content;
 DROP POLICY IF EXISTS "swc_insert_auth"   ON public.shared_workspace_content;
@@ -1730,7 +1684,7 @@ CREATE POLICY "swc_delete_auth"
   );
 
 
--- ── Part 15 shared_podcasts RLS ──────────────────────────────
+-- ── SHARED PODCASTS ──────────────────────────────────────────
 
 DROP POLICY IF EXISTS "sp_select_member"  ON public.shared_podcasts;
 DROP POLICY IF EXISTS "sp_insert_editor"  ON public.shared_podcasts;
@@ -1774,7 +1728,7 @@ CREATE POLICY "sp_delete_auth"
   );
 
 
--- ── Part 15 workspace_report_downloads RLS ───────────────────
+-- ── WORKSPACE REPORT DOWNLOADS ───────────────────────────────
 
 DROP POLICY IF EXISTS "wrd_select_member" ON public.workspace_report_downloads;
 DROP POLICY IF EXISTS "wrd_insert_member" ON public.workspace_report_downloads;
@@ -1801,6 +1755,50 @@ CREATE POLICY "wrd_insert_member"
   );
 
 
+-- ── SHARED DEBATES ───────────────────────────────────────────
+
+DROP POLICY IF EXISTS "sd_select_member"  ON public.shared_debates;
+DROP POLICY IF EXISTS "sd_insert_editor"  ON public.shared_debates;
+DROP POLICY IF EXISTS "sd_update_counter" ON public.shared_debates;
+DROP POLICY IF EXISTS "sd_delete_auth"    ON public.shared_debates;
+
+CREATE POLICY "sd_select_member"
+  ON public.shared_debates FOR SELECT
+  TO authenticated
+  USING (
+    workspace_id IN (
+      SELECT workspace_id FROM public.workspace_members
+      WHERE user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "sd_insert_editor"
+  ON public.shared_debates FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    shared_by = auth.uid()
+    AND public.get_workspace_role(workspace_id, auth.uid()) IN ('owner', 'editor')
+  );
+
+CREATE POLICY "sd_update_counter"
+  ON public.shared_debates FOR UPDATE
+  TO authenticated
+  USING (
+    workspace_id IN (
+      SELECT workspace_id FROM public.workspace_members
+      WHERE user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "sd_delete_auth"
+  ON public.shared_debates FOR DELETE
+  TO authenticated
+  USING (
+    shared_by = auth.uid()
+    OR public.get_workspace_role(workspace_id, auth.uid()) = 'owner'
+  );
+
+
 -- ============================================================
 -- PART 10 — REALTIME PUBLICATION
 -- ============================================================
@@ -1816,10 +1814,12 @@ DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.shared_workspac
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.comment_reactions;        EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.pinned_workspace_reports; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.edit_access_requests; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.shared_podcasts; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.shared_debates; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 
 -- ============================================================
--- DROP ALL FUNCTIONS BEFORE RECREATING (avoids 42P13 errors)
+-- DROP ALL FUNCTIONS BEFORE RECREATING
 -- ============================================================
 
 DROP FUNCTION IF EXISTS public.get_user_research_stats(uuid);
@@ -1889,6 +1889,18 @@ DROP FUNCTION IF EXISTS public.get_user_podcast_stats(uuid);
 DROP FUNCTION IF EXISTS public.increment_podcast_export_count(uuid);
 DROP FUNCTION IF EXISTS public.get_public_report(text);
 DROP FUNCTION IF EXISTS public.set_report_public(uuid, uuid, boolean);
+
+-- Part 16 functions (clean slate)
+DROP FUNCTION IF EXISTS public.get_user_workspaces_for_sharing(text, text);
+DROP FUNCTION IF EXISTS public.share_debate_to_workspace(uuid, uuid);
+DROP FUNCTION IF EXISTS public.remove_shared_debate(uuid, uuid);
+DROP FUNCTION IF EXISTS public.get_workspace_shared_debates(uuid);
+DROP FUNCTION IF EXISTS public.get_workspace_debate_by_id(uuid, uuid);
+DROP FUNCTION IF EXISTS public.increment_shared_debate_views(uuid);
+DROP FUNCTION IF EXISTS public.increment_shared_debate_downloads(uuid);
+DROP FUNCTION IF EXISTS public.get_workspaces_debate_is_shared_to(uuid);
+DROP FUNCTION IF EXISTS public.get_debate_sharing_workspaces(uuid);
+DROP FUNCTION IF EXISTS public.get_user_workspaces_for_debate_sharing(uuid);
 
 
 -- ============================================================
@@ -2538,7 +2550,6 @@ GRANT EXECUTE ON FUNCTION public.get_workspace_report(UUID, UUID) TO authenticat
 
 -- ============================================================
 -- PART 15 — RPC: get_workspace_report_full
--- Allows any workspace member to download a report they don't own.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_workspace_report_full(
@@ -2603,9 +2614,7 @@ GRANT EXECUTE ON FUNCTION public.create_workspace(TEXT, TEXT, BOOLEAN) TO authen
 
 
 -- ============================================================
--- PART 13 — RPC: join_workspace_by_code (DEFINITIVE VERSION)
--- Returns JSON. Checks blocked list. No is_personal reference.
--- Activity log is non-fatal with entity_type/resource_type fallback.
+-- PART 13 — RPC: join_workspace_by_code
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.join_workspace_by_code(p_invite_code TEXT)
@@ -2636,7 +2645,6 @@ BEGIN
   INSERT INTO public.workspace_members (workspace_id, user_id, role)
   VALUES (v_ws.id, auth.uid(), 'viewer');
 
-  -- Activity log — non-fatal, with column-name fallback
   BEGIN
     INSERT INTO public.workspace_activity
       (workspace_id, user_id, action, entity_type, entity_id)
@@ -2728,7 +2736,6 @@ GRANT EXECUTE ON FUNCTION public.update_workspace_logo(uuid, text) TO authentica
 
 -- ============================================================
 -- PART 13 — RPC: block_workspace_member
--- FIX [B]: workspace_activity INSERT is non-fatal with column-name fallback.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.block_workspace_member(
@@ -2755,12 +2762,10 @@ BEGIN
     RAISE EXCEPTION 'Cannot block a workspace owner';
   END IF;
 
-  -- Remove from workspace
   DELETE FROM public.workspace_members
    WHERE workspace_id = p_workspace_id
      AND user_id      = p_user_id;
 
-  -- Update access requests (non-fatal)
   BEGIN
     UPDATE public.edit_access_requests
        SET status      = 'denied',
@@ -2783,13 +2788,11 @@ BEGIN
     RAISE WARNING 'block_workspace_member: edit_access_requests update skipped — %', SQLERRM;
   END;
 
-  -- Insert into blocked list
   INSERT INTO public.workspace_blocked_members
     (workspace_id, blocked_user_id, blocked_by, reason)
   VALUES (p_workspace_id, p_user_id, auth.uid(), p_reason)
   ON CONFLICT (workspace_id, blocked_user_id) DO NOTHING;
 
-  -- Activity log — non-fatal with column-name fallback
   BEGIN
     INSERT INTO public.workspace_activity
       (workspace_id, user_id, action, entity_type, entity_id, metadata)
@@ -2886,7 +2889,6 @@ GRANT EXECUTE ON FUNCTION public.get_workspace_blocked_members(uuid) TO authenti
 
 -- ============================================================
 -- PART 13 — RPC: demote_editor_to_viewer
--- Activity log is non-fatal with column-name fallback.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.demote_editor_to_viewer(
@@ -2906,7 +2908,6 @@ BEGIN
    WHERE workspace_id = p_workspace_id
      AND user_id      = p_user_id;
 
-  -- Update access request (non-fatal)
   BEGIN
     UPDATE public.edit_access_requests ear
        SET status      = 'removed',
@@ -2925,7 +2926,6 @@ BEGIN
     RAISE WARNING 'demote_editor_to_viewer: edit_access_requests update skipped — %', SQLERRM;
   END;
 
-  -- Activity log — non-fatal with column-name fallback
   BEGIN
     INSERT INTO public.workspace_activity
       (workspace_id, user_id, action, entity_type, entity_id, metadata)
@@ -3795,7 +3795,6 @@ BEGIN
     updated_at = now()
   RETURNING * INTO v_result;
 
-  -- Activity log with fallback
   BEGIN
     INSERT INTO public.workspace_activity
       (workspace_id, user_id, action, entity_type, entity_id, metadata)
@@ -3860,7 +3859,6 @@ GRANT EXECUTE ON FUNCTION public.remove_shared_content(UUID, TEXT, UUID) TO auth
 
 -- ============================================================
 -- PART 14 — RPC: get_workspace_shared_content
--- out_ prefix on all RETURNS TABLE columns to prevent 42702.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_workspace_shared_content(
@@ -3917,8 +3915,7 @@ GRANT EXECUTE ON FUNCTION public.get_workspace_shared_content(UUID, TEXT) TO aut
 
 
 -- ============================================================
--- PART 14 — RPC: get_user_workspaces_for_sharing
--- out_ prefix on all RETURNS TABLE columns to prevent 42702.
+-- PART 14 — RPC: get_user_workspaces_for_sharing (UUID version)
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_user_workspaces_for_sharing(
@@ -3959,8 +3956,6 @@ GRANT EXECUTE ON FUNCTION public.get_user_workspaces_for_sharing(TEXT, UUID) TO 
 
 -- ============================================================
 -- PART 14 — RPC: get_shared_presentation_for_workspace
--- NEW: Lets any workspace member fetch a full presentation row
--- even if they don't own it. Bypasses the presentations RLS.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_shared_presentation_for_workspace(
@@ -3971,7 +3966,6 @@ RETURNS SETOF public.presentations
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
 BEGIN
-  -- Must be a workspace member
   IF NOT EXISTS(
     SELECT 1 FROM public.workspace_members wm
     WHERE wm.workspace_id = p_workspace_id AND wm.user_id = auth.uid()
@@ -3979,7 +3973,6 @@ BEGIN
     RAISE EXCEPTION 'not_member' USING ERRCODE = 'P0005';
   END IF;
 
-  -- Presentation must be shared to this workspace
   IF NOT EXISTS(
     SELECT 1 FROM public.shared_workspace_content swc
     WHERE swc.workspace_id = p_workspace_id
@@ -4001,8 +3994,6 @@ GRANT EXECUTE ON FUNCTION public.get_shared_presentation_for_workspace(UUID, UUI
 
 -- ============================================================
 -- PART 14 — RPC: get_shared_academic_paper_for_workspace
--- NEW: Lets any workspace member fetch a full academic_paper row
--- even if they don't own it. Bypasses academic_papers RLS.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_shared_academic_paper_for_workspace(
@@ -4041,7 +4032,6 @@ GRANT EXECUTE ON FUNCTION public.get_shared_academic_paper_for_workspace(UUID, U
 
 -- ============================================================
 -- PART 15 — RPC: share_podcast_to_workspace
--- Accepts p_audio_paths (cloud URLs) to override local paths.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.share_podcast_to_workspace(
@@ -4070,13 +4060,11 @@ DECLARE
   v_status             TEXT;
   v_audio_paths        TEXT[];
 BEGIN
-  -- Permission check
   v_role := public.get_workspace_role(p_workspace_id, auth.uid());
   IF v_role NOT IN ('owner', 'editor') THEN
     RAISE EXCEPTION 'Only workspace editors and owners can share podcasts.';
   END IF;
 
-  -- Load scalar fields individually (avoids rowtype jsonb cast issues)
   SELECT
     title,
     COALESCE(description, ''),
@@ -4104,8 +4092,6 @@ BEGIN
     RAISE EXCEPTION 'Only completed podcasts can be shared. Status: %', v_status;
   END IF;
 
-  -- Determine audio paths:
-  -- Use caller-supplied cloud URLs when provided; else read from source row.
   IF p_audio_paths IS NOT NULL AND array_length(p_audio_paths, 1) > 0 THEN
     v_audio_paths := p_audio_paths;
   ELSE
@@ -4122,7 +4108,6 @@ BEGIN
     END IF;
   END IF;
 
-  -- Upsert
   INSERT INTO public.shared_podcasts (
     workspace_id, podcast_id, shared_by, report_id,
     title, description, topic,
@@ -4446,7 +4431,508 @@ GRANT EXECUTE ON FUNCTION public.log_workspace_report_download(UUID, UUID, TEXT)
 
 
 -- ============================================================
--- PART 10 — Auto-create personal workspace trigger (opt-in)
+-- PART 16 — RPC: get_user_workspaces_for_sharing (TEXT,TEXT version)
+-- This is the CLEAN SINGLE VERSION with no overloads.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_user_workspaces_for_sharing(
+    p_content_type text,
+    p_content_id   text
+)
+RETURNS TABLE (
+    out_workspace_id    uuid,
+    out_workspace_name  text,
+    out_avatar_url      text,
+    out_user_role       text,
+    out_is_shared       boolean
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_content_type = 'podcast' THEN
+        RETURN QUERY
+        SELECT
+            w.id,
+            w.name,
+            w.avatar_url,
+            wm.role::text,
+            EXISTS (
+                SELECT 1 FROM public.shared_podcasts sp
+                WHERE sp.workspace_id = w.id
+                  AND sp.podcast_id   = p_content_id::uuid
+            )
+        FROM public.workspace_members wm
+        JOIN public.workspaces w ON w.id = wm.workspace_id
+        WHERE wm.user_id    = auth.uid()
+          AND w.is_personal = false
+        ORDER BY w.name;
+
+    ELSIF p_content_type = 'debate' THEN
+        RETURN QUERY
+        SELECT
+            w.id,
+            w.name,
+            w.avatar_url,
+            wm.role::text,
+            EXISTS (
+                SELECT 1 FROM public.shared_debates sd
+                WHERE sd.workspace_id = w.id
+                  AND sd.debate_id    = p_content_id::uuid
+            )
+        FROM public.workspace_members wm
+        JOIN public.workspaces w ON w.id = wm.workspace_id
+        WHERE wm.user_id    = auth.uid()
+          AND w.is_personal = false
+        ORDER BY w.name;
+
+    ELSE
+        RETURN QUERY
+        SELECT
+            w.id,
+            w.name,
+            w.avatar_url,
+            wm.role::text,
+            EXISTS (
+                SELECT 1 FROM public.shared_workspace_content swc
+                WHERE swc.workspace_id = w.id
+                  AND swc.content_type = p_content_type
+                  AND swc.content_id   = p_content_id::uuid
+            )
+        FROM public.workspace_members wm
+        JOIN public.workspaces w ON w.id = wm.workspace_id
+        WHERE wm.user_id    = auth.uid()
+          AND w.is_personal = false
+        ORDER BY w.name;
+    END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_workspaces_for_sharing(text, text) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: share_debate_to_workspace
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.share_debate_to_workspace(
+    p_workspace_id uuid,
+    p_debate_id    uuid
+)
+RETURNS SETOF public.shared_debates
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_user_id    uuid := auth.uid();
+    v_role       text;
+    v_debate     record;
+    v_shared_row public.shared_debates;
+BEGIN
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'not_authenticated';
+    END IF;
+
+    v_role := public.get_workspace_role(p_workspace_id, v_user_id);
+    IF v_role NOT IN ('owner', 'editor') THEN
+        RAISE EXCEPTION 'permission_denied: only owners and editors can share content';
+    END IF;
+
+    SELECT * INTO v_debate
+    FROM public.debate_sessions
+    WHERE id      = p_debate_id
+      AND user_id = v_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'debate_not_found: debate does not exist or you do not own it';
+    END IF;
+
+    IF v_debate.status <> 'completed' THEN
+        RAISE EXCEPTION 'debate_not_complete: only completed debates can be shared';
+    END IF;
+
+    INSERT INTO public.shared_debates (
+        workspace_id,
+        debate_id,
+        shared_by,
+        report_id,
+        topic,
+        question,
+        agent_roles,
+        search_results_count,
+        perspectives,
+        moderator,
+        debate_status,
+        debate_created_at,
+        debate_completed_at,
+        shared_at
+    ) VALUES (
+        p_workspace_id,
+        p_debate_id,
+        v_user_id,
+        NULL,
+        v_debate.topic,
+        COALESCE(v_debate.question, ''),
+        COALESCE(to_jsonb(v_debate.agent_roles), '[]'::jsonb),
+        COALESCE(v_debate.search_results_count, 0),
+        COALESCE(v_debate.perspectives,  '[]'::jsonb),
+        v_debate.moderator,
+        v_debate.status,
+        v_debate.created_at,
+        v_debate.completed_at,
+        NOW()
+    )
+    ON CONFLICT (workspace_id, debate_id) DO UPDATE SET
+        perspectives         = EXCLUDED.perspectives,
+        moderator            = EXCLUDED.moderator,
+        agent_roles          = EXCLUDED.agent_roles,
+        search_results_count = EXCLUDED.search_results_count,
+        shared_at            = NOW()
+    RETURNING * INTO v_shared_row;
+
+    INSERT INTO public.workspace_activity (
+        workspace_id, user_id, action, resource_type, resource_id, metadata
+    ) VALUES (
+        p_workspace_id,
+        v_user_id,
+        'debate_shared',
+        'debate',
+        p_debate_id::text,
+        jsonb_build_object('topic', v_debate.topic, 'debate_id', p_debate_id)
+    );
+
+    RETURN NEXT v_shared_row;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.share_debate_to_workspace(uuid, uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: remove_shared_debate
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.remove_shared_debate(
+    p_workspace_id uuid,
+    p_debate_id    uuid
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_user_id uuid := auth.uid();
+    v_role    text;
+    v_row     public.shared_debates;
+BEGIN
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'not_authenticated';
+    END IF;
+
+    SELECT * INTO v_row
+    FROM public.shared_debates
+    WHERE workspace_id = p_workspace_id
+      AND debate_id    = p_debate_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'shared_debate_not_found';
+    END IF;
+
+    v_role := public.get_workspace_role(p_workspace_id, v_user_id);
+
+    IF v_row.shared_by <> v_user_id AND v_role <> 'owner' THEN
+        RAISE EXCEPTION 'permission_denied: only the sharer or workspace owner can remove this';
+    END IF;
+
+    DELETE FROM public.shared_debates
+    WHERE workspace_id = p_workspace_id
+      AND debate_id    = p_debate_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.remove_shared_debate(uuid, uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: get_workspace_shared_debates
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_workspace_shared_debates(
+    p_workspace_id uuid
+)
+RETURNS TABLE (
+    out_id                   uuid,
+    out_workspace_id         uuid,
+    out_debate_id            uuid,
+    out_shared_by            uuid,
+    out_report_id            uuid,
+    out_topic                text,
+    out_question             text,
+    out_agent_roles          jsonb,
+    out_search_results_count int,
+    out_perspectives         jsonb,
+    out_moderator            jsonb,
+    out_debate_status        text,
+    out_view_count           int,
+    out_download_count       int,
+    out_debate_created_at    timestamptz,
+    out_debate_completed_at  timestamptz,
+    out_shared_at            timestamptz,
+    out_sharer_name          text,
+    out_sharer_avatar        text
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF NOT public.is_workspace_member(p_workspace_id, auth.uid()) THEN
+        RAISE EXCEPTION 'permission_denied';
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        sd.id,
+        sd.workspace_id,
+        sd.debate_id,
+        sd.shared_by,
+        sd.report_id,
+        sd.topic,
+        sd.question,
+        sd.agent_roles,
+        sd.search_results_count,
+        sd.perspectives,
+        sd.moderator,
+        sd.debate_status,
+        sd.view_count,
+        sd.download_count,
+        sd.debate_created_at,
+        sd.debate_completed_at,
+        sd.shared_at,
+        COALESCE(p.full_name, p.username, 'Unknown') AS sharer_name,
+        p.avatar_url                                  AS sharer_avatar
+    FROM public.shared_debates sd
+    LEFT JOIN public.profiles p ON p.id = sd.shared_by
+    WHERE sd.workspace_id = p_workspace_id
+    ORDER BY sd.shared_at DESC;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_workspace_shared_debates(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: get_workspace_debate_by_id
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_workspace_debate_by_id(
+    p_workspace_id uuid,
+    p_shared_id    uuid
+)
+RETURNS TABLE (
+    out_id                   uuid,
+    out_workspace_id         uuid,
+    out_debate_id            uuid,
+    out_shared_by            uuid,
+    out_report_id            uuid,
+    out_topic                text,
+    out_question             text,
+    out_agent_roles          jsonb,
+    out_search_results_count int,
+    out_perspectives         jsonb,
+    out_moderator            jsonb,
+    out_debate_status        text,
+    out_view_count           int,
+    out_download_count       int,
+    out_debate_created_at    timestamptz,
+    out_debate_completed_at  timestamptz,
+    out_shared_at            timestamptz,
+    out_sharer_name          text,
+    out_sharer_avatar        text
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF NOT public.is_workspace_member(p_workspace_id, auth.uid()) THEN
+        RAISE EXCEPTION 'permission_denied';
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        sd.id,
+        sd.workspace_id,
+        sd.debate_id,
+        sd.shared_by,
+        sd.report_id,
+        sd.topic,
+        sd.question,
+        sd.agent_roles,
+        sd.search_results_count,
+        sd.perspectives,
+        sd.moderator,
+        sd.debate_status,
+        sd.view_count,
+        sd.download_count,
+        sd.debate_created_at,
+        sd.debate_completed_at,
+        sd.shared_at,
+        COALESCE(p.full_name, p.username, 'Unknown') AS sharer_name,
+        p.avatar_url                                  AS sharer_avatar
+    FROM public.shared_debates sd
+    LEFT JOIN public.profiles p ON p.id = sd.shared_by
+    WHERE sd.workspace_id = p_workspace_id
+      AND sd.id           = p_shared_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_workspace_debate_by_id(uuid, uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: increment_shared_debate_views
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.increment_shared_debate_views(
+    p_shared_id uuid
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    UPDATE public.shared_debates
+    SET view_count = view_count + 1
+    WHERE id = p_shared_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_shared_debate_views(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: increment_shared_debate_downloads
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.increment_shared_debate_downloads(
+    p_shared_id uuid
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    UPDATE public.shared_debates
+    SET download_count = download_count + 1
+    WHERE id = p_shared_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_shared_debate_downloads(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: get_workspaces_debate_is_shared_to
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_workspaces_debate_is_shared_to(
+    p_debate_id uuid
+)
+RETURNS TABLE (out_workspace_id uuid)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT sd.workspace_id
+    FROM public.shared_debates sd
+    JOIN public.workspace_members wm
+        ON wm.workspace_id = sd.workspace_id
+       AND wm.user_id      = auth.uid()
+    WHERE sd.debate_id = p_debate_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_workspaces_debate_is_shared_to(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: get_debate_sharing_workspaces
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_debate_sharing_workspaces(
+    p_debate_id uuid
+)
+RETURNS TABLE (
+    out_workspace_id    uuid,
+    out_workspace_name  text,
+    out_avatar_url      text,
+    out_user_role       text,
+    out_is_shared       boolean
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        w.id,
+        w.name,
+        w.avatar_url,
+        wm.role::text,
+        EXISTS (
+            SELECT 1 FROM public.shared_debates sd
+            WHERE sd.workspace_id = w.id
+              AND sd.debate_id    = p_debate_id
+        )
+    FROM public.workspace_members wm
+    JOIN public.workspaces w ON w.id = wm.workspace_id
+    WHERE wm.user_id    = auth.uid()
+      AND w.is_personal = false
+    ORDER BY w.name;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_debate_sharing_workspaces(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 16 — RPC: get_user_workspaces_for_debate_sharing (alias)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_user_workspaces_for_debate_sharing(
+    p_debate_id uuid
+)
+RETURNS TABLE (
+    out_workspace_id    uuid,
+    out_workspace_name  text,
+    out_avatar_url      text,
+    out_user_role       text,
+    out_is_shared       boolean
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM public.get_debate_sharing_workspaces(p_debate_id);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_workspaces_for_debate_sharing(uuid) TO authenticated;
+
+
+-- ============================================================
+-- PART 10 — Auto-create personal workspace trigger (optional)
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION public.handle_new_user_workspace()
@@ -4488,6 +4974,7 @@ COMMENT ON TABLE public.workspace_blocked_members IS 'Blocked member list per wo
 COMMENT ON TABLE public.shared_workspace_content IS 'Presentations, academic papers, and podcasts shared to workspaces (Parts 14-15)';
 COMMENT ON TABLE public.shared_podcasts          IS 'Denormalised podcast sharing to workspaces (Part 15)';
 COMMENT ON TABLE public.workspace_report_downloads IS 'Report download tracking within workspaces (Part 15)';
+COMMENT ON TABLE public.shared_debates           IS 'Denormalised debate sharing to workspaces (Part 16)';
 
 COMMENT ON VIEW  public.workspace_search_index   IS 'Unified search index: reports + comments + members (Parts 11, 11C)';
 
@@ -4529,41 +5016,57 @@ COMMENT ON FUNCTION public.increment_shared_podcast_downloads(UUID) IS 'Incremen
 COMMENT ON FUNCTION public.get_workspaces_podcast_is_shared_to(UUID) IS 'List workspaces where a podcast is shared (Part 15).';
 COMMENT ON FUNCTION public.get_workspace_report_full(UUID, UUID)   IS 'Fetch full report for workspace download (Part 15).';
 COMMENT ON FUNCTION public.log_workspace_report_download(UUID, UUID, TEXT) IS 'Log a report download event in workspace (Part 15).';
+COMMENT ON FUNCTION public.get_user_workspaces_for_sharing(text, text) IS 'Clean single-version workspace sharing function (Part 16).';
+COMMENT ON FUNCTION public.share_debate_to_workspace(uuid, uuid)   IS 'Share a debate session to a workspace (Part 16).';
+COMMENT ON FUNCTION public.remove_shared_debate(uuid, uuid)        IS 'Remove a shared debate from a workspace (Part 16).';
+COMMENT ON FUNCTION public.get_workspace_shared_debates(uuid)      IS 'List all debates shared to a workspace (Part 16).';
+COMMENT ON FUNCTION public.get_workspace_debate_by_id(uuid, uuid)  IS 'Fetch a single shared debate by its ID (Part 16).';
+COMMENT ON FUNCTION public.increment_shared_debate_views(uuid)     IS 'Increment view count on a shared debate (Part 16).';
+COMMENT ON FUNCTION public.increment_shared_debate_downloads(uuid) IS 'Increment download count on a shared debate (Part 16).';
+COMMENT ON FUNCTION public.get_workspaces_debate_is_shared_to(uuid) IS 'List workspace IDs where a debate is shared (Part 16).';
+COMMENT ON FUNCTION public.get_debate_sharing_workspaces(uuid)     IS 'List workspaces with sharing status for a debate (Part 16).';
+COMMENT ON FUNCTION public.get_user_workspaces_for_debate_sharing(uuid) IS 'Alias for get_debate_sharing_workspaces (Part 16).';
 
 
 -- ============================================================
 -- POSTGREST SCHEMA CACHE RELOAD
--- Forces PostgREST to pick up all new/replaced functions
--- immediately without waiting for the automatic reload interval.
 -- ============================================================
 
 NOTIFY pgrst, 'reload schema';
 
 
 -- ============================================================
--- Done ✓ All Parts 1-15 installed with all fixes.
---
--- Summary of Part 15 additions:
---   Tables (2):                shared_podcasts, workspace_report_downloads
---   Storage (1):               podcast-audio (private bucket)
---   RPCs (10):                 share_podcast_to_workspace,
---                              get_shared_podcast_for_workspace,
---                              get_workspace_shared_podcasts,
---                              remove_shared_podcast,
---                              increment_shared_podcast_plays,
---                              increment_shared_podcast_downloads,
---                              get_workspaces_podcast_is_shared_to,
---                              get_workspace_report_full,
---                              log_workspace_report_download,
---                              get_workspace_shared_content (updated)
---   Constraint update (1):     shared_workspace_content.content_type now includes 'podcast'
---
--- Verification queries:
---   SELECT * FROM pg_extension WHERE extname IN ('uuid-ossp','vector');
---   SELECT table_name FROM information_schema.tables
---     WHERE table_schema = 'public' ORDER BY table_name;
---   SELECT proname FROM pg_proc
---     WHERE pronamespace = 'public'::regnamespace ORDER BY proname;
---   SELECT viewname FROM pg_views
---     WHERE schemaname = 'public' ORDER BY viewname;
+-- VERIFICATION QUERIES
 -- ============================================================
+
+/*
+-- 1. Check all extensions
+SELECT * FROM pg_extension WHERE extname IN ('uuid-ossp','vector');
+
+-- 2. Check all tables
+SELECT table_name FROM information_schema.tables
+  WHERE table_schema = 'public' ORDER BY table_name;
+
+-- 3. Check all functions (should be 60+)
+SELECT proname, pg_get_function_arguments(oid) AS args
+  FROM pg_proc
+  WHERE pronamespace = 'public'::regnamespace
+  ORDER BY proname;
+
+-- 4. Check RLS policies on shared_debates
+SELECT tablename, policyname, cmd
+  FROM pg_policies
+  WHERE tablename = 'shared_debates'
+  ORDER BY cmd;
+
+-- 5. Verify only ONE get_user_workspaces_for_sharing exists
+SELECT proname, pg_get_function_arguments(oid) AS args
+  FROM pg_proc
+  WHERE proname = 'get_user_workspaces_for_sharing';
+
+-- 6. Check that content_id in shared_workspace_content is UUID
+SELECT column_name, data_type
+  FROM information_schema.columns
+  WHERE table_name  = 'shared_workspace_content'
+    AND column_name = 'content_id';
+*/

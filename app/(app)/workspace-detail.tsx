@@ -1,14 +1,14 @@
 // app/(app)/workspace-detail.tsx
-// Part 15 — Shared tab now includes podcast episodes alongside
-// presentations and academic papers.
+// Part 16 UPDATE — Shared tab now includes AI debate sessions alongside
+// presentations, academic papers, and podcast episodes.
 //
-// Changes from Part 14:
-//  • usePodcastSharing hook wired in
-//  • SharedPodcastCard rendered in Shared tab
-//  • Navigation to workspace-shared-podcast-player for podcast items
-//  • Shared tab stats strip shows podcast count
-//  • handleOpenSharedContent routes podcasts to the new player screen
-//  • Podcast download handlers (MP3, PDF, copy script) wired through
+// Changes from Part 15:
+//   • useDebateSharing hook wired in
+//   • SharedDebateCard rendered in Shared tab (new "Debates" section)
+//   • Navigation to workspace-shared-debate screen for debate items
+//   • Debate export handlers (PDF, Copy, Share text) wired through
+//   • Shared tab stats strip shows debate count
+//   • Total shared count includes debates
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -26,6 +26,7 @@ import { useActivityFeed }    from '../../src/hooks/useActivityFeed';
 import { usePendingAccessRequests }  from '../../src/hooks/useEditAccessRequest';
 import { useWorkspaceSharing }       from '../../src/hooks/useWorkspaceSharing';
 import { usePodcastSharing }         from '../../src/hooks/usePodcastSharing';
+import { useDebateSharing }          from '../../src/hooks/useDebateSharing';
 import { WorkspaceReportCard }       from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem }              from '../../src/components/workspace/ActivityItem';
 import { MemberAvatar }              from '../../src/components/workspace/MemberAvatar';
@@ -36,6 +37,7 @@ import { MemberProfileCard }         from '../../src/components/workspace/Member
 import { EditAccessRequestModal }    from '../../src/components/workspace/EditAccessRequestModal';
 import { SharedContentCard }         from '../../src/components/workspace/SharedContentCard';
 import { SharedPodcastCard }         from '../../src/components/workspace/SharedPodcastCard';
+import { SharedDebateCard }          from '../../src/components/workspace/SharedDebateCard';
 import {
   exportPodcastAsMP3,
   exportPodcastAsPDF,
@@ -43,7 +45,14 @@ import {
 } from '../../src/services/podcastExport';
 import { sharedPodcastToPodcast }    from '../../src/services/podcastSharingService';
 import {
-  WorkspaceReport, MiniProfile, SharedWorkspaceContent, SharedPodcast,
+  exportDebateAsPDF,
+  copyDebateSummary,
+  shareDebateText,
+}                                    from '../../src/services/debateExport';
+import { sharedDebateToSession }     from '../../src/services/debateSharingService';
+import {
+  WorkspaceReport, MiniProfile, SharedWorkspaceContent,
+  SharedPodcast, SharedDebate,
 } from '../../src/types';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
@@ -87,6 +96,8 @@ export default function WorkspaceDetailScreen() {
   const sharing = useWorkspaceSharing(id ?? null);
   // Part 15: podcasts
   const podcastSharing = usePodcastSharing(id ?? null);
+  // Part 16: debates
+  const debateSharing = useDebateSharing(id ?? null);
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
   const [showInvite,    setShowInvite]    = useState(false);
@@ -152,7 +163,7 @@ export default function WorkspaceDetailScreen() {
     setShowProfile(true);
   }, []);
 
-  // ── Open shared content (Part 14: presentations + papers) ─────────────────
+  // ── Open shared content (presentations + papers) ───────────────────────────
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({
       pathname: '/(app)/workspace-shared-viewer' as any,
@@ -165,15 +176,19 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id]);
 
-  // ── Open shared podcast (Part 15) ─────────────────────────────────────────
+  // ── Open shared podcast ────────────────────────────────────────────────────
   const handleOpenSharedPodcast = useCallback((podcast: SharedPodcast) => {
     router.push({
       pathname: '/(app)/workspace-shared-podcast-player' as any,
-      params:   {
-        workspaceId:  id,
-        sharedId:     podcast.id,
-        contentTitle: podcast.title,
-      },
+      params:   { workspaceId: id, sharedId: podcast.id, contentTitle: podcast.title },
+    });
+  }, [id]);
+
+  // ── Open shared debate (Part 16) ───────────────────────────────────────────
+  const handleOpenSharedDebate = useCallback((debate: SharedDebate) => {
+    router.push({
+      pathname: '/(app)/workspace-shared-debate' as any,
+      params:   { workspaceId: id, sharedId: debate.id, contentTitle: debate.topic },
     });
   }, [id]);
 
@@ -183,37 +198,58 @@ export default function WorkspaceDetailScreen() {
     if (error) Alert.alert('Error', error);
   }, [sharing]);
 
-  // ── Remove shared podcast (Part 15) ───────────────────────────────────────
   const handleRemoveSharedPodcast = useCallback(async (podcast: SharedPodcast) => {
     const { error } = await podcastSharing.remove(podcast.podcastId);
     if (error) Alert.alert('Error', error);
   }, [podcastSharing]);
 
-  // ── Podcast export handlers (Part 15) ─────────────────────────────────────
+  // ── Remove shared debate (Part 16) ────────────────────────────────────────
+  const handleRemoveSharedDebate = useCallback(async (debate: SharedDebate) => {
+    const { error } = await debateSharing.remove(debate.debateId);
+    if (error) Alert.alert('Error', error);
+  }, [debateSharing]);
+
+  // ── Podcast export handlers ────────────────────────────────────────────────
   const handleDownloadPodcastMP3 = useCallback(async (podcast: SharedPodcast) => {
-    try {
-      const p = sharedPodcastToPodcast(podcast);
-      await exportPodcastAsMP3(p);
-    } catch (err) {
-      Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export MP3');
-    }
+    try { await exportPodcastAsMP3(sharedPodcastToPodcast(podcast)); }
+    catch (err) { Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed'); }
   }, []);
 
   const handleExportPodcastPDF = useCallback(async (podcast: SharedPodcast) => {
+    try { await exportPodcastAsPDF(sharedPodcastToPodcast(podcast)); }
+    catch (err) { Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed'); }
+  }, []);
+
+  const handleCopyPodcastScript = useCallback(async (podcast: SharedPodcast) => {
+    try { await copyPodcastScriptToClipboard(sharedPodcastToPodcast(podcast)); }
+    catch { Alert.alert('Error', 'Failed to copy script'); }
+  }, []);
+
+  // ── Debate export handlers (Part 16) ──────────────────────────────────────
+  const handleExportDebatePDF = useCallback(async (debate: SharedDebate) => {
     try {
-      const p = sharedPodcastToPodcast(podcast);
-      await exportPodcastAsPDF(p);
+      const session = sharedDebateToSession(debate);
+      await exportDebateAsPDF(session);
     } catch (err) {
       Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export PDF');
     }
   }, []);
 
-  const handleCopyPodcastScript = useCallback(async (podcast: SharedPodcast) => {
+  const handleCopyDebateText = useCallback(async (debate: SharedDebate) => {
     try {
-      const p = sharedPodcastToPodcast(podcast);
-      await copyPodcastScriptToClipboard(p);
-    } catch (err) {
-      Alert.alert('Error', 'Failed to copy script');
+      const session = sharedDebateToSession(debate);
+      await copyDebateSummary(session);
+    } catch {
+      Alert.alert('Error', 'Failed to copy debate text');
+    }
+  }, []);
+
+  const handleShareDebateText = useCallback(async (debate: SharedDebate) => {
+    try {
+      const session = sharedDebateToSession(debate);
+      await shareDebateText(session);
+    } catch {
+      // user cancelled
     }
   }, []);
 
@@ -225,8 +261,7 @@ export default function WorkspaceDetailScreen() {
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text:  'Leave',
-          style: 'destructive',
+          text: 'Leave', style: 'destructive',
           onPress: async () => {
             if (!id) return;
             const { error } = await leaveWorkspace(id);
@@ -273,7 +308,8 @@ export default function WorkspaceDetailScreen() {
   const presentationCount = sharing.presentations.length;
   const paperCount        = sharing.papers.length;
   const podcastCount      = podcastSharing.podcasts.length;
-  const totalSharedCount  = presentationCount + paperCount + podcastCount;
+  const debateCount       = debateSharing.debates.length;
+  const totalSharedCount  = presentationCount + paperCount + podcastCount + debateCount;
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -330,10 +366,10 @@ export default function WorkspaceDetailScreen() {
         {/* ── Stats strip ── */}
         {workspace && (
           <Animated.View entering={FadeIn.duration(500).delay(100)} style={styles.statsStrip}>
-            <StatChip icon="people-outline"        value={members.length}       label="Members"  />
-            <StatChip icon="document-text-outline" value={reports.length}       label="Reports"  />
-            <StatChip icon="share-social-outline"  value={totalSharedCount}     label="Shared"   />
-            <StatChip icon="pulse-outline"         value={activities.length}    label="Activity" />
+            <StatChip icon="people-outline"        value={members.length}    label="Members"  />
+            <StatChip icon="document-text-outline" value={reports.length}    label="Reports"  />
+            <StatChip icon="share-social-outline"  value={totalSharedCount}  label="Shared"   />
+            <StatChip icon="pulse-outline"         value={activities.length} label="Activity" />
             {isEditor && pendingCount > 0 && (
               <TouchableOpacity onPress={() => setShowRequests(true)} activeOpacity={0.8}>
                 <View style={[statChipStyles.chip, { backgroundColor: `${COLORS.warning}15` }]}>
@@ -350,7 +386,7 @@ export default function WorkspaceDetailScreen() {
         <View style={styles.tabBar}>
           {TABS.map((tab) => {
             const isActive = activeTab === tab.id;
-            const badge = tab.id === 'shared' && totalSharedCount > 0 ? totalSharedCount : null;
+            const badge    = tab.id === 'shared' && totalSharedCount > 0 ? totalSharedCount : null;
             return (
               <TouchableOpacity
                 key={tab.id}
@@ -365,9 +401,7 @@ export default function WorkspaceDetailScreen() {
                     </View>
                   )}
                 </View>
-                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                  {tab.label}
-                </Text>
+                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{tab.label}</Text>
               </TouchableOpacity>
             );
           })}
@@ -385,6 +419,7 @@ export default function WorkspaceDetailScreen() {
                 loadPinnedIds();
                 sharing.load();
                 podcastSharing.load();
+                debateSharing.load();
               }}
               tintColor={COLORS.primary}
             />
@@ -459,7 +494,7 @@ export default function WorkspaceDetailScreen() {
             </>
           )}
 
-          {/* ── SHARED TAB (Part 14 + Part 15) ── */}
+          {/* ── SHARED TAB (Parts 14 + 15 + 16) ── */}
           {activeTab === 'shared' && (
             <>
               {/* Section header */}
@@ -470,7 +505,7 @@ export default function WorkspaceDetailScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.sharedHeaderTitle}>Shared Content</Text>
                   <Text style={styles.sharedHeaderSub}>
-                    Presentations, papers and podcast episodes shared by team members
+                    Presentations, papers, podcasts and debate sessions shared by team members
                   </Text>
                 </View>
               </Animated.View>
@@ -478,25 +513,22 @@ export default function WorkspaceDetailScreen() {
               {/* Filter summary chips */}
               {totalSharedCount > 0 && (
                 <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
-                  <FilterChip label={`All (${totalSharedCount})`}     icon="apps-outline"           active />
-                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`} icon="easel-outline" />}
-                  {paperCount > 0 && <FilterChip label={`Papers (${paperCount})`}   icon="school-outline" />}
-                  {podcastCount > 0 && <FilterChip label={`Podcasts (${podcastCount})`} icon="mic-outline" />}
+                  <FilterChip label={`All (${totalSharedCount})`}         icon="apps-outline"    active />
+                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`}   icon="easel-outline"   />}
+                  {paperCount        > 0 && <FilterChip label={`Papers (${paperCount})`}          icon="school-outline"  />}
+                  {podcastCount      > 0 && <FilterChip label={`Podcasts (${podcastCount})`}      icon="mic-outline"     />}
+                  {debateCount       > 0 && <FilterChip label={`Debates (${debateCount})`}        icon="people-outline"  />}
                 </Animated.View>
               )}
 
               {/* Presentations */}
               {sharing.presentations.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-                  <ContentSectionHeader label="Presentations" count={sharing.presentations.length} colors={['#6C63FF', '#8B5CF6']} />
+                  <ContentSectionHeader label="Presentations"   count={sharing.presentations.length} colors={['#6C63FF', '#8B5CF6']} />
                   {sharing.presentations.map((item, i) => (
                     <SharedContentCard
-                      key={item.id}
-                      item={item}
-                      index={i}
-                      userRole={userRole}
-                      onOpen={handleOpenSharedContent}
-                      onRemove={handleRemoveSharedContent}
+                      key={item.id} item={item} index={i} userRole={userRole}
+                      onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent}
                     />
                   ))}
                 </Animated.View>
@@ -508,12 +540,8 @@ export default function WorkspaceDetailScreen() {
                   <ContentSectionHeader label="Academic Papers" count={sharing.papers.length} colors={['#10B981', '#059669']} badgeColor={COLORS.success} />
                   {sharing.papers.map((item, i) => (
                     <SharedContentCard
-                      key={item.id}
-                      item={item}
-                      index={i}
-                      userRole={userRole}
-                      onOpen={handleOpenSharedContent}
-                      onRemove={handleRemoveSharedContent}
+                      key={item.id} item={item} index={i} userRole={userRole}
+                      onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent}
                     />
                   ))}
                 </Animated.View>
@@ -525,10 +553,7 @@ export default function WorkspaceDetailScreen() {
                   <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length} colors={['#FF6584', '#FF8FA3']} badgeColor="#FF6584" />
                   {podcastSharing.podcasts.map((podcast, i) => (
                     <SharedPodcastCard
-                      key={podcast.id}
-                      item={podcast}
-                      index={i}
-                      userRole={userRole}
+                      key={podcast.id} item={podcast} index={i} userRole={userRole}
                       onPlay={handleOpenSharedPodcast}
                       onRemove={handleRemoveSharedPodcast}
                       onDownloadMP3={handleDownloadPodcastMP3}
@@ -539,8 +564,28 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
+              {/* Debates (Part 16) */}
+              {debateSharing.debates.length > 0 && (
+                <Animated.View entering={FadeInDown.duration(400).delay(220)}>
+                  <ContentSectionHeader label="AI Debates" count={debateSharing.debates.length} colors={['#6C63FF', '#9B59FF']} badgeColor={COLORS.primary} />
+                  {debateSharing.debates.map((debate, i) => (
+                    <SharedDebateCard
+                      key={debate.id} item={debate} index={i} userRole={userRole}
+                      onView={handleOpenSharedDebate}
+                      onRemove={handleRemoveSharedDebate}
+                      onExportPDF={handleExportDebatePDF}
+                      onCopyText={handleCopyDebateText}
+                      onShareText={handleShareDebateText}
+                    />
+                  ))}
+                </Animated.View>
+              )}
+
               {/* Empty state */}
-              {totalSharedCount === 0 && !sharing.isLoading && !podcastSharing.isLoading && (
+              {totalSharedCount === 0 &&
+                !sharing.isLoading &&
+                !podcastSharing.isLoading &&
+                !debateSharing.isLoading && (
                 <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
                   <View style={styles.sharedEmptyIcon}>
                     <Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} />
@@ -548,14 +593,14 @@ export default function WorkspaceDetailScreen() {
                   <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
                   <Text style={styles.emptyDesc}>
                     {isEditor
-                      ? 'Share presentations, academic papers, and podcast episodes from your reports into this workspace.'
+                      ? 'Share presentations, academic papers, podcast episodes, and debate sessions from your reports into this workspace.'
                       : 'No content has been shared to this workspace yet.'}
                   </Text>
                   {isEditor && (
                     <View style={styles.sharedEmptyHint}>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
                       <Text style={styles.sharedEmptyHintText}>
-                        Open a report → generate content → tap the share icon to share here
+                        Open a report or debate → tap the share icon to share here
                       </Text>
                     </View>
                   )}
@@ -630,27 +675,21 @@ export default function WorkspaceDetailScreen() {
         {/* ── Modals ── */}
         {workspace && (
           <InviteModal
-            workspace={workspace}
-            visible={showInvite}
-            isOwner={isOwner}
+            workspace={workspace} visible={showInvite} isOwner={isOwner}
             onClose={() => setShowInvite(false)}
             onCodeUpdated={() => update({ name: workspace.name })}
           />
         )}
         {id && (
           <AddToWorkspaceSheet
-            workspaceId={id}
-            existingReportIds={existingReportIds}
-            visible={showAddReport}
-            onClose={() => setShowAddReport(false)}
+            workspaceId={id} existingReportIds={existingReportIds}
+            visible={showAddReport} onClose={() => setShowAddReport(false)}
             onAdded={(reportId) => addReport?.(reportId)}
           />
         )}
         {id && (
           <WorkspaceSearchModal
-            visible={showSearch}
-            workspaceId={id}
-            userRole={userRole}
+            visible={showSearch} workspaceId={id} userRole={userRole}
             onClose={() => setShowSearch(false)}
             onOpenReport={openReport}
             onOpenMemberProfile={handleOpenMemberProfile}
@@ -658,22 +697,16 @@ export default function WorkspaceDetailScreen() {
         )}
         {id && (
           <MemberProfileCard
-            visible={showProfile}
-            member={profileMember}
-            workspaceId={id}
+            visible={showProfile} member={profileMember} workspaceId={id}
             onClose={() => { setShowProfile(false); setProfileMember(null); }}
             onNavigateToReport={openReport}
             onNavigateToComment={(reportId, _commentId) => openReport(reportId)}
           />
         )}
         <EditAccessRequestModal
-          mode="owner"
-          visible={showRequests}
-          requests={pendingRequests}
-          isActioning={isActioning}
-          onApprove={handleApproveRequest}
-          onDeny={handleDenyRequest}
-          onClose={() => setShowRequests(false)}
+          mode="owner" visible={showRequests} requests={pendingRequests}
+          isActioning={isActioning} onApprove={handleApproveRequest}
+          onDeny={handleDenyRequest} onClose={() => setShowRequests(false)}
         />
       </SafeAreaView>
     </LinearGradient>
@@ -692,24 +725,13 @@ function FilterChip({ label, icon, active }: { label: string; icon: string; acti
 }
 
 function ContentSectionHeader({
-  label,
-  count,
-  colors,
-  badgeColor = COLORS.primary,
-}: {
-  label:       string;
-  count:       number;
-  colors:      [string, string];
-  badgeColor?: string;
-}) {
+  label, count, colors, badgeColor = COLORS.primary,
+}: { label: string; count: number; colors: [string, string]; badgeColor?: string }) {
   return (
     <View style={styles.contentSectionHeader}>
       <LinearGradient colors={colors} style={styles.contentSectionDot} />
       <Text style={styles.contentSectionTitle}>{label}</Text>
-      <View style={[styles.contentSectionBadge, {
-        backgroundColor: `${badgeColor}20`,
-        borderColor:     `${badgeColor}35`,
-      }]}>
+      <View style={[styles.contentSectionBadge, { backgroundColor: `${badgeColor}20`, borderColor: `${badgeColor}35` }]}>
         <Text style={[styles.contentSectionBadgeText, { color: badgeColor }]}>{count}</Text>
       </View>
     </View>
@@ -792,8 +814,8 @@ const styles = StyleSheet.create({
   contentSectionHeader:    { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.sm },
   contentSectionDot:       { width: 14, height: 14, borderRadius: 4, flexShrink: 0 },
   contentSectionTitle:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', flex: 1 },
-  contentSectionBadge:     { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.primary}30` },
-  contentSectionBadgeText: { color: COLORS.primary, fontSize: 10, fontWeight: '700' },
+  contentSectionBadge:     { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1 },
+  contentSectionBadgeText: { fontSize: 10, fontWeight: '700' },
 
   sharedEmptyIcon: { width: 72, height: 72, borderRadius: 20, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
   sharedEmptyHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.primary}20`, marginTop: 4, maxWidth: 280 },
