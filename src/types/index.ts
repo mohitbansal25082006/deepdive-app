@@ -1,10 +1,12 @@
 // src/types/index.ts
-// Parts 1–18 — All type definitions
+// Parts 1–21 — All type definitions
 // Part 18 adds:
 //   • Extended WorkspaceActivityAction with new actions
 //   • WorkspaceNotificationPreferences
 //   • MemberSharedStats + MemberSharedItem
 //   • mentions field referenced in chat.ts
+// Part 21 adds:
+//   • Streaming report section callbacks to OrchestratorCallbacks
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -286,10 +288,20 @@ export interface ConversationMessage {
 // ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 export interface OrchestratorCallbacks {
-  onStepUpdate: (steps: AgentStep[]) => void;
-  onStepDetail: (agent: AgentName, detail: string) => void;
-  onComplete:   (report: ResearchReport) => void;
-  onError:      (message: string) => void;
+  onStepUpdate:  (steps: AgentStep[]) => void;
+  onStepDetail:  (agent: AgentName, detail: string) => void;
+  onComplete:    (report: ResearchReport) => void;
+  onError:       (message: string) => void;
+
+  // ── Part 21: Streaming report section callbacks ──────────────────────────
+  /** Called when a new section starts being written */
+  onSectionStart?:    (sectionIndex: number, sectionTitle: string) => void;
+  /** Called for each text token within the current section */
+  onSectionToken?:    (sectionIndex: number, token: string) => void;
+  /** Called when a section finishes — full section object included */
+  onSectionComplete?: (sectionIndex: number, section: import('./index').ReportSection) => void;
+  /** Called when the executive summary has been generated */
+  onSummaryReady?:    (summary: string) => void;
 }
 
 // ─── Part 3: Stats & Subscription ────────────────────────────────────────────

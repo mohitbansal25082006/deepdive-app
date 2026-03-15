@@ -1,9 +1,10 @@
 // src/services/researchOrchestrator.ts
-// Part 7: Added step 7 — Academic Paper Agent (runs only when input.mode === 'academic')
-// FIX: AcademicAgentOutput.sections is Omit<AcademicSection,'id'>[] but
-//      AcademicPaper.sections / the DB column require AcademicSection[].
-//      hydrateSections() inside academicPaperAgent already adds ids before
-//      returning so we cast with `as AcademicSection[]` at the call sites.
+// Part 21 — Updated:
+//   • OrchestratorCallbacks now includes streaming section callbacks
+//     (onSectionStart, onSectionToken, onSectionComplete, onSummaryReady)
+//   • Step 5 (reporter) uses runStreamingReportAgent instead of runReportAgent
+//   • recordResearchCompletion() called after every completed pipeline to
+//     update home-screen personalization affinity scores
 
 import { supabase } from '../lib/supabase';
 import {
@@ -15,64 +16,66 @@ import {
   ResearchMode,
   AcademicPaper,
   AcademicSection,
+  ReportSection,
 } from '../types';
-import { runPlannerAgent }        from './agents/plannerAgent';
-import { runAnalysisAgent }       from './agents/analysisAgent';
-import { runFactCheckerAgent }    from './agents/factCheckAgent';
-import { runReportAgent }         from './agents/reportAgent';
-import { runKnowledgeGraphAgent } from './agents/knowledgeGraphAgent';
-import { runInfographicAgent }    from './agents/infographicAgent';
-import { runAcademicPaperAgent }  from './agents/academicPaperAgent';
-import { serpSearchBatch }        from './serpApiClient';
-import { extractSourceImages }    from './imageExtractor';
-import { notifyReportComplete }   from '../lib/notifications';
+import { runPlannerAgent }          from './agents/plannerAgent';
+import { runAnalysisAgent }         from './agents/analysisAgent';
+import { runFactCheckerAgent }      from './agents/factCheckAgent';
+import { runKnowledgeGraphAgent }   from './agents/knowledgeGraphAgent';
+import { runInfographicAgent }      from './agents/infographicAgent';
+import { runAcademicPaperAgent }    from './agents/academicPaperAgent';
+import { runStreamingReportAgent, StreamingReportOutput }  from './agents/streamingReportAgent';
+import { serpSearchBatch }          from './serpApiClient';
+import { extractSourceImages }      from './imageExtractor';
+import { notifyReportComplete }     from '../lib/notifications';
+import { recordResearchCompletion } from './homePersonalizationService';
 
 // ─── Agent step templates ─────────────────────────────────────────────────────
 
 const BASE_STEPS: AgentStep[] = [
   {
-    agent: 'planner',
-    label: 'Research Planner',
+    agent:       'planner',
+    label:       'Research Planner',
     description: 'Analyzing query and creating research strategy',
-    status: 'pending',
+    status:      'pending',
   },
   {
-    agent: 'searcher',
-    label: 'Web Search Agent',
+    agent:       'searcher',
+    label:       'Web Search Agent',
     description: 'Searching the web for current information',
-    status: 'pending',
+    status:      'pending',
   },
   {
-    agent: 'analyst',
-    label: 'Analysis Agent',
+    agent:       'analyst',
+    label:       'Analysis Agent',
     description: 'Extracting insights from search data',
-    status: 'pending',
+    status:      'pending',
   },
   {
-    agent: 'factchecker',
-    label: 'Fact Checker Agent',
+    agent:       'factchecker',
+    label:       'Fact Checker Agent',
     description: 'Verifying claims and scoring source reliability',
-    status: 'pending',
+    status:      'pending',
   },
   {
-    agent: 'reporter',
-    label: 'Report Generator',
-    description: 'Writing comprehensive research report',
-    status: 'pending',
+    agent:       'reporter',
+    label:       'Report Generator',
+    description: 'Writing comprehensive research report — sections stream live',
+    status:      'pending',
   },
   {
-    agent: 'visualizer',
-    label: 'Visual Intelligence',
+    agent:       'visualizer',
+    label:       'Visual Intelligence',
     description: 'Generating knowledge graph & infographics',
-    status: 'pending',
+    status:      'pending',
   },
 ];
 
 const ACADEMIC_STEP: AgentStep = {
-  agent: 'academic',
-  label: 'Academic Paper Agent',
+  agent:       'academic',
+  label:       'Academic Paper Agent',
   description: 'Writing structured academic research paper',
-  status: 'pending',
+  status:      'pending',
 };
 
 function buildSteps(mode: ResearchMode = 'standard'): AgentStep[] {
@@ -88,8 +91,8 @@ function cloneSteps(steps: AgentStep[]): AgentStep[] {
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 
 export async function runResearchPipeline(
-  userId: string,
-  input:  ResearchInput,
+  userId:    string,
+  input:     ResearchInput,
   callbacks: OrchestratorCallbacks,
 ): Promise<void> {
   const mode  = input.mode ?? 'standard';
@@ -221,11 +224,63 @@ export async function runResearchPipeline(
     setStepDone('factchecker');
     await updateStatus('generating');
 
-    // ── STEP 5 — REPORT GENERATION ──────────────────────────────────────────
+    // ── STEP 5 — STREAMING REPORT GENERATION ────────────────────────────────
 
     setStepRunning('reporter');
-    callbacks.onStepDetail('reporter', 'Writing comprehensive research report…');
-    const reportOutput = await runReportAgent(input, plan, analysis, factCheck, searchBatches);
+    callbacks.onStepDetail('reporter', 'Starting live report generation — sections will appear as they are written…');
+
+    // Collect sections as they stream in
+    const streamedSections: ReportSection[] = [];
+    // Use definite assignment — TypeScript can't see the closure assignment,
+    // so we declare with the explicit type and assert after the Promise resolves.
+    let reportOutput!: StreamingReportOutput;
+
+    await new Promise<void>((resolve, reject) => {
+      runStreamingReportAgent(
+        input,
+        plan,
+        analysis,
+        factCheck,
+        searchBatches,
+        {
+          onSectionStart: (index, title) => {
+            callbacks.onStepDetail(
+              'reporter',
+              `Writing section ${index + 1}/6: "${title}"…`,
+            );
+            // Forward to hook so UI can render live
+            callbacks.onSectionStart?.(index, title);
+          },
+
+          onSectionToken: (index, token) => {
+            callbacks.onSectionToken?.(index, token);
+          },
+
+          onSectionComplete: (index, section) => {
+            streamedSections[index] = section;
+            callbacks.onSectionComplete?.(index, section);
+            callbacks.onStepDetail(
+              'reporter',
+              `✓ Section ${index + 1}/6 complete · ${streamedSections.filter(Boolean).length * 100 / 6 | 0}% done`,
+            );
+          },
+
+          onSummaryReady: (summary) => {
+            callbacks.onSummaryReady?.(summary);
+          },
+
+          onComplete: (output) => {
+            reportOutput = output;
+            resolve();
+          },
+
+          onError: (err) => {
+            reject(err);
+          },
+        },
+      ).catch(reject);
+    });
+
     callbacks.onStepDetail(
       'reporter',
       `${reportOutput.sections.length} sections · ${reportOutput.citations.length} citations`,
@@ -254,7 +309,7 @@ export async function runResearchPipeline(
       executiveSummary: reportOutput.executiveSummary,
       sections:         reportOutput.sections,
       keyFindings:      reportOutput.keyFindings,
-      futurePredictions:reportOutput.futurePredictions,
+      futurePredictions: reportOutput.futurePredictions,
       citations:        reportOutput.citations,
       statistics:       reportOutput.statistics,
       searchQueries:    plan.searchQueries,
@@ -323,10 +378,6 @@ export async function runResearchPipeline(
           `${paperOutput.sections.length} sections · ~${wordCount.toLocaleString()} words · ~${pageEstimate} pages`,
         );
 
-        // FIX: paperOutput.sections is Omit<AcademicSection,'id'>[] per the
-        // AcademicAgentOutput type, but hydrateSections() inside the agent
-        // already adds an `id` to every section before returning.
-        // We cast to AcademicSection[] here — the runtime value is correct.
         const sectionsWithIds = paperOutput.sections as AcademicSection[];
 
         const { data: paperRow, error: paperInsertError } = await supabase
@@ -338,7 +389,7 @@ export async function runResearchPipeline(
             running_head:   paperOutput.runningHead,
             abstract:       paperOutput.abstract,
             keywords:       paperOutput.keywords,
-            sections:       sectionsWithIds,   // ← cast applied here
+            sections:       sectionsWithIds,
             citations:      paperCitations,
             citation_style: 'apa',
             word_count:     wordCount,
@@ -360,7 +411,7 @@ export async function runResearchPipeline(
             runningHead:   paperOutput.runningHead,
             abstract:      paperOutput.abstract,
             keywords:      paperOutput.keywords,
-            sections:      sectionsWithIds,   // ← cast applied here
+            sections:      sectionsWithIds,
             citations:     paperCitations,
             citationStyle: 'apa',
             wordCount,
@@ -377,8 +428,6 @@ export async function runResearchPipeline(
 
         setStepDone('academic');
       } catch (academicError) {
-        // Non-fatal: log and mark step failed but don't throw — the standard
-        // report is complete and usable.
         const academicMsg =
           academicError instanceof Error ? academicError.message : 'Unknown error';
         console.error('[Orchestrator] Academic Paper Agent error:', academicError);
@@ -434,6 +483,12 @@ export async function runResearchPipeline(
       academicPaperId: academicPaper?.id,
       completedAt:     new Date().toISOString(),
     };
+
+    // ── Part 21: Update home-screen personalization affinity ────────────────
+    // Non-fatal — runs in background after report is saved
+    recordResearchCompletion(userId, finalReport).catch(err => {
+      console.warn('[Orchestrator] Personalization update error:', err);
+    });
 
     await notifyReportComplete(reportId, reportOutput.title);
     callbacks.onComplete(finalReport);

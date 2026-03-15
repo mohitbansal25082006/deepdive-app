@@ -1,21 +1,35 @@
 // app/(app)/(tabs)/home.tsx
-// Part 3 update: adds voice research input + offline cache indicator
+// Part 21 — Updated: static SUGGESTED_TOPICS replaced with AI-personalized
+// suggestions from usePersonalization hook.
+//
+// Personalization tiers (shown with different badge colors):
+//   • 'affinity'  → purple "Your Interest" badge
+//   • 'recent'    → blue "Recently Researched" badge + time-ago
+//   • 'followup'  → amber "Follow-up Angle" badge + italic explanation
+//   • 'trending'  → green "Trending" badge
+//
+// First load: shows 6 static fallback topics instantly.
+// After fetch: smoothly replaces with personalized list.
+// A shimmer skeleton is shown while loading if the list is still empty.
 
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
-  Keyboard, Alert, Vibration,
+  Keyboard, Alert, Vibration, RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons }       from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeInDown,
-  useAnimatedStyle, useSharedValue, withSpring, withRepeat, withSequence, withTiming,
+  useAnimatedStyle, useSharedValue,
+  withSpring, withRepeat, withSequence, withTiming,
 } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import { useAuth } from '../../../src/context/AuthContext';
-import { Avatar } from '../../../src/components/common/Avatar';
+import { SafeAreaView }   from 'react-native-safe-area-context';
+import { router }         from 'expo-router';
+import { useAuth }        from '../../../src/context/AuthContext';
+import { Avatar }         from '../../../src/components/common/Avatar';
+import { PersonalizedSuggestionCard } from '../../../src/components/home/PersonalizedSuggestionCard';
+import { usePersonalization }         from '../../../src/hooks/usePersonalization';
 import {
   startRecording, stopRecording, cancelRecording,
   transcribeAudio, formatDuration,
@@ -23,55 +37,58 @@ import {
 import { getCachedReportsList } from '../../../src/lib/offlineCache';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
 
-const SUGGESTED_TOPICS = [
-  { label: 'Future of AI in Healthcare', icon: 'medical', gradient: ['#6C63FF', '#8B5CF6'] as const, tag: 'Healthcare' },
-  { label: 'Quantum Computing Startups 2025', icon: 'flash', gradient: ['#FF6584', '#FF8E53'] as const, tag: 'Technology' },
-  { label: 'Electric Vehicle Market Trends', icon: 'car-sport', gradient: ['#43E97B', '#38F9D7'] as const, tag: 'Automotive' },
-  { label: 'Generative AI Impact on Jobs', icon: 'people', gradient: ['#F093FB', '#F5576C'] as const, tag: 'AI & Work' },
-  { label: 'Climate Tech Investment 2025', icon: 'leaf', gradient: ['#4FACFE', '#00F2FE'] as const, tag: 'Climate' },
-  { label: 'Space Economy & Commercial Launch', icon: 'rocket', gradient: ['#FA709A', '#FEE140'] as const, tag: 'Space' },
-];
-
 const DEPTH_INFO = [
   { key: 'quick', label: 'Quick', desc: '2–3 min', icon: 'flash-outline' },
-  { key: 'deep', label: 'Deep', desc: '5–7 min', icon: 'analytics-outline' },
-  { key: 'expert', label: 'Expert', desc: '10–12 min', icon: 'trophy-outline' },
+  { key: 'deep',  label: 'Deep',  desc: '5–7 min', icon: 'analytics-outline' },
+  { key: 'expert',label: 'Expert',desc: '10–12 min',icon: 'trophy-outline' },
 ];
+
+// Source section header labels
+const SOURCE_HEADER: Record<string, string> = {
+  affinity: '⭐  Your Interests',
+  recent:   '🕐  Recently Researched',
+  followup: '💡  AI Follow-up Angles',
+  trending: '🔥  Trending Topics',
+};
 
 export default function HomeScreen() {
   const { profile } = useAuth();
-  const [query, setQuery] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingMs, setRecordingMs] = useState(0);
+  const [query,        setQuery]        = useState('');
+  const [isRecording,  setIsRecording]  = useState(false);
+  const [recordingMs,  setRecordingMs]  = useState(0);
   const [transcribing, setTranscribing] = useState(false);
-  const [cachedCount, setCachedCount] = useState(0);
+  const [cachedCount,  setCachedCount]  = useState(0);
+
   const firstName = profile?.full_name?.split(' ')[0] || 'Researcher';
 
+  // ── Personalization ──────────────────────────────────────────────────────
+  const {
+    suggestions,
+    isLoading:     suggestionsLoading,
+    isPersonalized,
+    refresh:       refreshSuggestions,
+  } = usePersonalization();
+
   const inputScale = useSharedValue(1);
-  const micScale = useSharedValue(1);
-  const micPulse = useSharedValue(1);
+  const micPulse   = useSharedValue(1);
 
   useEffect(() => {
-    getCachedReportsList().then((list) => setCachedCount(list.length));
+    getCachedReportsList().then(list => setCachedCount(list.length));
   }, []);
 
   useEffect(() => {
     if (isRecording) {
       micPulse.value = withRepeat(
         withSequence(withTiming(1.2, { duration: 600 }), withTiming(1.0, { duration: 600 })),
-        -1, false
+        -1, false,
       );
     } else {
       micPulse.value = withTiming(1);
     }
   }, [isRecording]);
 
-  const inputStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: inputScale.value }],
-  }));
-  const micStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: micPulse.value }],
-  }));
+  const inputStyle = useAnimatedStyle(() => ({ transform: [{ scale: inputScale.value }] }));
+  const micStyle   = useAnimatedStyle(() => ({ transform: [{ scale: micPulse.value }] }));
 
   const handleSearch = (searchQuery?: string) => {
     const q = searchQuery ?? query;
@@ -83,7 +100,6 @@ export default function HomeScreen() {
   const handleVoicePress = async () => {
     if (transcribing) return;
     if (isRecording) {
-      // Stop and transcribe
       setIsRecording(false);
       setRecordingMs(0);
       setTranscribing(true);
@@ -91,19 +107,15 @@ export default function HomeScreen() {
         const uri = await stopRecording();
         if (uri) {
           const text = await transcribeAudio(uri);
-          if (text) {
-            setQuery(text);
-            Vibration.vibrate(50);
-          }
+          if (text) { setQuery(text); Vibration.vibrate(50); }
         }
-      } catch (err) {
+      } catch {
         Alert.alert('Transcription Error', 'Could not transcribe audio. Please type your query.');
       } finally {
         setTranscribing(false);
       }
     } else {
-      // Start recording
-      const started = await startRecording((ms) => setRecordingMs(ms));
+      const started = await startRecording(ms => setRecordingMs(ms));
       if (started) {
         setIsRecording(true);
         Vibration.vibrate(50);
@@ -126,6 +138,51 @@ export default function HomeScreen() {
     return 'Good evening,';
   };
 
+  // ── Group suggestions by source for section headers ───────────────────
+  const groupedSuggestions = React.useMemo(() => {
+    const groups: { source: string; items: typeof suggestions }[] = [];
+    const seen = new Set<string>();
+    // Desired order
+    const order = ['affinity', 'followup', 'recent', 'trending'];
+    order.forEach(source => {
+      const items = suggestions.filter(s => s.source === source);
+      if (items.length > 0) {
+        groups.push({ source, items });
+        items.forEach(s => seen.add(s.id));
+      }
+    });
+    // Catch any unexpected sources
+    const remaining = suggestions.filter(s => !seen.has(s.id));
+    if (remaining.length > 0) {
+      groups.push({ source: 'trending', items: remaining });
+    }
+    return groups;
+  }, [suggestions]);
+
+  // ── Skeleton rows for loading state ───────────────────────────────────
+  const SkeletonRow = ({ delay }: { delay: number }) => (
+    <Animated.View
+      entering={FadeInDown.duration(400).delay(delay)}
+      style={{
+        backgroundColor: COLORS.backgroundCard,
+        borderRadius:    RADIUS.lg,
+        padding:         SPACING.md,
+        marginBottom:    SPACING.sm,
+        flexDirection:   'row',
+        alignItems:      'center',
+        borderWidth:     1,
+        borderColor:     COLORS.border,
+        gap:              14,
+      }}
+    >
+      <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: COLORS.backgroundElevated }} />
+      <View style={{ flex: 1, gap: 8 }}>
+        <View style={{ height: 12, borderRadius: 6, backgroundColor: COLORS.backgroundElevated, width: '75%' }} />
+        <View style={{ height: 10, borderRadius: 5, backgroundColor: COLORS.backgroundElevated, width: '45%' }} />
+      </View>
+    </Animated.View>
+  );
+
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
@@ -133,11 +190,24 @@ export default function HomeScreen() {
           contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 120 }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={suggestionsLoading}
+              onRefresh={refreshSuggestions}
+              tintColor={COLORS.primary}
+              colors={[COLORS.primary]}
+            />
+          }
         >
-          {/* Header */}
+          {/* ── Header ───────────────────────────────────────────────────── */}
           <Animated.View
             entering={FadeIn.duration(600)}
-            style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.xl }}
+            style={{
+              flexDirection:   'row',
+              justifyContent:  'space-between',
+              alignItems:      'center',
+              marginBottom:    SPACING.xl,
+            }}
           >
             <View>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>{getGreeting()}</Text>
@@ -150,10 +220,11 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   onPress={() => router.push('/(app)/(tabs)/history' as any)}
                   style={{
-                    backgroundColor: `${COLORS.info}15`,
-                    borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5,
-                    borderWidth: 1, borderColor: `${COLORS.info}30`,
-                    flexDirection: 'row', alignItems: 'center', gap: 4,
+                    backgroundColor:   `${COLORS.info}15`,
+                    borderRadius:      RADIUS.full,
+                    paddingHorizontal: 10, paddingVertical: 5,
+                    borderWidth:       1, borderColor: `${COLORS.info}30`,
+                    flexDirection:     'row', alignItems: 'center', gap: 4,
                   }}
                 >
                   <Ionicons name="cloud-offline-outline" size={14} color={COLORS.info} />
@@ -162,23 +233,42 @@ export default function HomeScreen() {
                   </Text>
                 </TouchableOpacity>
               )}
+              {/* Personalization indicator */}
+              {isPersonalized && (
+                <View style={{
+                  backgroundColor:   `${COLORS.primary}15`,
+                  borderRadius:      RADIUS.full,
+                  paddingHorizontal: 10, paddingVertical: 5,
+                  borderWidth:       1, borderColor: `${COLORS.primary}30`,
+                  flexDirection:     'row', alignItems: 'center', gap: 4,
+                }}>
+                  <Ionicons name="sparkles" size={12} color={COLORS.primary} />
+                  <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                    Personalized
+                  </Text>
+                </View>
+              )}
               <Avatar url={profile?.avatar_url} name={profile?.full_name} size={44} />
             </View>
           </Animated.View>
 
-          {/* Hero search card */}
+          {/* ── Hero Search Card ──────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(600).delay(100)}>
             <LinearGradient
               colors={['#1A1A35', '#12122A']}
               style={{
                 borderRadius: RADIUS.xl, padding: SPACING.lg,
-                marginBottom: SPACING.xl, borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                marginBottom: SPACING.xl,
+                borderWidth:  1, borderColor: `${COLORS.primary}30`,
               }}
             >
               <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm }}>
                 <LinearGradient
                   colors={COLORS.gradientPrimary}
-                  style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}
+                  style={{
+                    width: 32, height: 32, borderRadius: 10,
+                    alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm,
+                  }}
                 >
                   <Ionicons name="sparkles" size={16} color="#FFF" />
                 </LinearGradient>
@@ -188,7 +278,7 @@ export default function HomeScreen() {
               </View>
 
               <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginBottom: SPACING.md, lineHeight: 20 }}>
-                Ask anything. Our multi-agent system searches, analyses, fact-checks, and generates a comprehensive report.
+                Ask anything. Our multi-agent system searches, analyses, fact-checks, and streams your report live as it's written.
               </Text>
 
               {/* Voice recording indicator */}
@@ -197,9 +287,10 @@ export default function HomeScreen() {
                   entering={FadeIn.duration(300)}
                   style={{
                     backgroundColor: `${COLORS.error}15`,
-                    borderRadius: RADIUS.lg, padding: SPACING.sm,
-                    marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                    borderWidth: 1, borderColor: `${COLORS.error}30`,
+                    borderRadius:    RADIUS.lg, padding: SPACING.sm,
+                    marginBottom:    SPACING.sm,
+                    flexDirection:   'row', alignItems: 'center', justifyContent: 'space-between',
+                    borderWidth:     1, borderColor: `${COLORS.error}30`,
                   }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -217,8 +308,8 @@ export default function HomeScreen() {
               {transcribing && (
                 <View style={{
                   backgroundColor: `${COLORS.primary}15`,
-                  borderRadius: RADIUS.lg, padding: SPACING.sm, marginBottom: SPACING.sm,
-                  flexDirection: 'row', alignItems: 'center', gap: 8,
+                  borderRadius:    RADIUS.lg, padding: SPACING.sm, marginBottom: SPACING.sm,
+                  flexDirection:   'row', alignItems: 'center', gap: 8,
                 }}>
                   <Ionicons name="mic" size={14} color={COLORS.primary} />
                   <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm }}>Transcribing audio...</Text>
@@ -228,10 +319,11 @@ export default function HomeScreen() {
               {/* Search input row */}
               <Animated.View style={[inputStyle, { marginBottom: SPACING.sm }]}>
                 <View style={{
-                  backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
-                  flexDirection: 'row', alignItems: 'center',
+                  backgroundColor:   COLORS.backgroundElevated,
+                  borderRadius:      RADIUS.lg,
+                  flexDirection:     'row', alignItems: 'center',
                   paddingHorizontal: SPACING.md, paddingVertical: 12,
-                  borderWidth: 1, borderColor: COLORS.border,
+                  borderWidth:       1, borderColor: COLORS.border,
                 }}>
                   <Ionicons name="search" size={20} color={COLORS.textMuted} />
                   <TextInput
@@ -251,10 +343,9 @@ export default function HomeScreen() {
                     <TouchableOpacity
                       onPress={handleVoicePress}
                       style={{
-                        width: 34, height: 34, borderRadius: 17,
+                        width:           34, height: 34, borderRadius: 17,
                         backgroundColor: isRecording ? COLORS.error : `${COLORS.primary}20`,
-                        alignItems: 'center', justifyContent: 'center',
-                        marginLeft: 6,
+                        alignItems:      'center', justifyContent: 'center', marginLeft: 6,
                       }}
                     >
                       <Ionicons
@@ -272,18 +363,26 @@ export default function HomeScreen() {
                 </View>
               </Animated.View>
 
-              {/* Mic hint text */}
+              {/* Mic hint */}
               {!isRecording && !transcribing && (
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginBottom: SPACING.sm }}>
-                  🎙️ Tap the mic to speak your research query
+                  🎙️ Tap the mic to speak  ·  Reports stream live as they're written
                 </Text>
               )}
 
-              <TouchableOpacity onPress={() => handleSearch()} disabled={!query.trim() || isRecording} activeOpacity={0.85}>
+              <TouchableOpacity
+                onPress={() => handleSearch()}
+                disabled={!query.trim() || isRecording}
+                activeOpacity={0.85}
+              >
                 <LinearGradient
                   colors={query.trim() && !isRecording ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={{ borderRadius: RADIUS.lg, paddingVertical: 14, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
+                  style={{
+                    borderRadius:   RADIUS.lg, paddingVertical: 14,
+                    alignItems:     'center', flexDirection: 'row',
+                    justifyContent: 'center', gap: 8,
+                  }}
                 >
                   <Ionicons name="telescope" size={18} color="#FFF" />
                   <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
@@ -294,16 +393,21 @@ export default function HomeScreen() {
             </LinearGradient>
           </Animated.View>
 
-          {/* Depth preview */}
+          {/* ── Depth Preview ─────────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(600).delay(200)}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>
+            <Text style={{
+              color:         COLORS.textMuted, fontSize: FONTS.sizes.xs,
+              fontWeight:    '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md,
+            }}>
               Research Depth Options
             </Text>
             <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.xl }}>
-              {DEPTH_INFO.map((d) => (
+              {DEPTH_INFO.map(d => (
                 <View key={d.key} style={{
-                  flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
-                  padding: SPACING.sm, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border,
+                  flex:            1,
+                  backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
+                  padding:         SPACING.sm, alignItems: 'center',
+                  borderWidth:     1, borderColor: COLORS.border,
                 }}>
                   <Ionicons name={d.icon as any} size={20} color={COLORS.primary} />
                   <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginTop: 4 }}>{d.label}</Text>
@@ -313,35 +417,107 @@ export default function HomeScreen() {
             </View>
           </Animated.View>
 
-          {/* Suggested topics */}
+          {/* ── Personalized Suggestions ──────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(600).delay(300)}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>
-              Trending Topics
-            </Text>
-            {SUGGESTED_TOPICS.map((topic) => (
+
+            {/* Section header */}
+            <View style={{
+              flexDirection:   'row', alignItems: 'center',
+              justifyContent:  'space-between', marginBottom: SPACING.md,
+            }}>
+              <Text style={{
+                color:         COLORS.textMuted, fontSize: FONTS.sizes.xs,
+                fontWeight:    '600', letterSpacing: 1, textTransform: 'uppercase',
+              }}>
+                {isPersonalized ? '✦  Curated For You' : '🔥  Trending Topics'}
+              </Text>
               <TouchableOpacity
-                key={topic.label}
-                onPress={() => handleSearch(topic.label)}
+                onPress={refreshSuggestions}
                 style={{
-                  backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md,
-                  marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'center',
-                  borderWidth: 1, borderColor: COLORS.border,
+                  flexDirection:     'row', alignItems: 'center', gap: 4,
+                  backgroundColor:   `${COLORS.primary}12`,
+                  borderRadius:      RADIUS.full,
+                  paddingHorizontal: 10, paddingVertical: 4,
+                  borderWidth:       1, borderColor: `${COLORS.primary}25`,
                 }}
-                activeOpacity={0.75}
               >
-                <LinearGradient
-                  colors={topic.gradient}
-                  style={{ width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginRight: 14 }}
-                >
-                  <Ionicons name={topic.icon as any} size={20} color="#FFF" />
-                </LinearGradient>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '500' }}>{topic.label}</Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{topic.tag}</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                <Ionicons name="refresh-outline" size={12} color={COLORS.primary} />
+                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Refresh</Text>
               </TouchableOpacity>
-            ))}
+            </View>
+
+            {/* Personalization hint */}
+            {isPersonalized && (
+              <Animated.View
+                entering={FadeIn.duration(400)}
+                style={{
+                  backgroundColor:   `${COLORS.primary}08`,
+                  borderRadius:      RADIUS.lg,
+                  padding:           SPACING.sm,
+                  marginBottom:      SPACING.md,
+                  flexDirection:     'row',
+                  alignItems:        'center',
+                  gap:                8,
+                  borderWidth:       1,
+                  borderColor:       `${COLORS.primary}15`,
+                }}
+              >
+                <Ionicons name="sparkles" size={13} color={COLORS.primary} />
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1 }}>
+                  Based on your research history, interests, and trending topics across all users.
+                </Text>
+              </Animated.View>
+            )}
+
+            {/* Loading skeleton */}
+            {suggestionsLoading && suggestions.length === 0 && (
+              <>
+                {[0, 60, 120, 180].map(delay => (
+                  <SkeletonRow key={delay} delay={delay} />
+                ))}
+              </>
+            )}
+
+            {/* Grouped personalized suggestions */}
+            {!suggestionsLoading || suggestions.length > 0 ? (
+              isPersonalized && groupedSuggestions.length > 1 ? (
+                // Show grouped with section headers when personalized
+                groupedSuggestions.map((group, gi) => (
+                  <View key={group.source + gi}>
+                    {gi > 0 && (
+                      <Text style={{
+                        color:         COLORS.textMuted,
+                        fontSize:      FONTS.sizes.xs,
+                        fontWeight:    '600',
+                        letterSpacing: 0.8,
+                        textTransform: 'uppercase',
+                        marginBottom:  SPACING.sm,
+                        marginTop:     SPACING.md,
+                      }}>
+                        {SOURCE_HEADER[group.source] ?? group.source}
+                      </Text>
+                    )}
+                    {group.items.map(suggestion => (
+                      <PersonalizedSuggestionCard
+                        key={suggestion.id}
+                        suggestion={suggestion}
+                        onPress={handleSearch}
+                      />
+                    ))}
+                  </View>
+                ))
+              ) : (
+                // Flat list (trending only / not yet personalized)
+                suggestions.map(suggestion => (
+                  <PersonalizedSuggestionCard
+                    key={suggestion.id}
+                    suggestion={suggestion}
+                    onPress={handleSearch}
+                  />
+                ))
+              )
+            ) : null}
+
           </Animated.View>
         </ScrollView>
       </SafeAreaView>
