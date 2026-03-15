@@ -1,8 +1,8 @@
 -- ============================================================
 -- DeepDive AI — Complete Database Schema
--- Parts 1 through 17 — Single Migration File
+-- Parts 1 through 18 — Single Migration File
 --
--- Includes ALL features and fixes from Parts 1-17, with
+-- Includes ALL features and fixes from Parts 1-18, with
 -- all patches and corrections baked in.
 -- ============================================================
 
@@ -32,6 +32,22 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION public.set_wnp_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$;
 
 
 -- ============================================================
@@ -158,126 +174,105 @@ CREATE POLICY "wl_delete_auth"
 
 
 -- ============================================================
--- PART 15 — STORAGE (podcast-audio bucket)
--- Private bucket for podcast audio files
+-- PART 15/18 — STORAGE (podcast-audio bucket)
+-- Private bucket for podcast audio files (104 MB limit)
 -- ============================================================
 
-DO $$
-BEGIN
-  INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-  VALUES (
-    'podcast-audio',
-    'podcast-audio',
-    false,
-    52428800,
-    ARRAY['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/mp4']
-  )
-  ON CONFLICT (id) DO NOTHING;
-EXCEPTION WHEN OTHERS THEN
-  NULL;
-END;
-$$;
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('podcast-audio', 'podcast-audio', false, 104857600)
+ON CONFLICT (id) DO UPDATE SET
+  public          = false,
+  file_size_limit = 104857600;
 
-DROP POLICY IF EXISTS "pa_select_member" ON storage.objects;
-DROP POLICY IF EXISTS "pa_insert_owner"  ON storage.objects;
-DROP POLICY IF EXISTS "pa_delete_owner"  ON storage.objects;
+DROP POLICY IF EXISTS "pa_select_member"  ON storage.objects;
+DROP POLICY IF EXISTS "pa_insert_owner"   ON storage.objects;
+DROP POLICY IF EXISTS "pa_delete_owner"   ON storage.objects;
+DROP POLICY IF EXISTS "pa_select_auth"    ON storage.objects;
+DROP POLICY IF EXISTS "pa_insert_auth"    ON storage.objects;
+DROP POLICY IF EXISTS "pa_update_auth"    ON storage.objects;
+DROP POLICY IF EXISTS "pa_delete_auth"    ON storage.objects;
 
-CREATE POLICY "pa_select_member"
-  ON storage.objects FOR SELECT
-  TO authenticated
+CREATE POLICY "pa_select_auth"
+  ON storage.objects FOR SELECT TO authenticated
   USING (bucket_id = 'podcast-audio' AND auth.uid() IS NOT NULL);
 
-CREATE POLICY "pa_insert_owner"
-  ON storage.objects FOR INSERT
-  TO authenticated
+CREATE POLICY "pa_insert_auth"
+  ON storage.objects FOR INSERT TO authenticated
   WITH CHECK (bucket_id = 'podcast-audio' AND auth.uid() IS NOT NULL);
 
-CREATE POLICY "pa_delete_owner"
-  ON storage.objects FOR DELETE
-  TO authenticated
+CREATE POLICY "pa_update_auth"
+  ON storage.objects FOR UPDATE TO authenticated
+  USING  (bucket_id = 'podcast-audio' AND auth.uid() IS NOT NULL)
+  WITH CHECK (bucket_id = 'podcast-audio' AND auth.uid() IS NOT NULL);
+
+CREATE POLICY "pa_delete_auth"
+  ON storage.objects FOR DELETE TO authenticated
   USING (bucket_id = 'podcast-audio' AND auth.uid() IS NOT NULL);
 
 
 -- ============================================================
--- PART 17 — STORAGE (chat-attachments bucket)
--- Private bucket for chat attachments (50 MB/file)
+-- PART 17/18 — STORAGE (chat-attachments bucket)
+-- Private bucket for chat attachments (200 MB limit)
 -- ============================================================
 
-INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES (
-    'chat-attachments',
-    'chat-attachments',
-    false,
-    52428800,  -- 50 MB
-    ARRAY[
-        'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
-        'image/webp', 'image/heic', 'image/heif',
-        'application/pdf',
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'application/vnd.ms-powerpoint',
-        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'text/plain', 'text/csv',
-        'application/zip', 'application/x-zip-compressed',
-        'video/mp4', 'video/quicktime',
-        'audio/mpeg', 'audio/mp4'
-    ]
-)
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('chat-attachments', 'chat-attachments', false, 209715200)
 ON CONFLICT (id) DO UPDATE SET
-    file_size_limit    = EXCLUDED.file_size_limit,
-    allowed_mime_types = EXCLUDED.allowed_mime_types;
+  public          = false,
+  file_size_limit = 209715200;
 
--- Storage RLS policies for chat-attachments
 DROP POLICY IF EXISTS "chat_attach_select_member"       ON storage.objects;
 DROP POLICY IF EXISTS "chat_attach_insert_member"       ON storage.objects;
 DROP POLICY IF EXISTS "chat_attach_update_own"          ON storage.objects;
 DROP POLICY IF EXISTS "chat_attach_delete_own_or_owner" ON storage.objects;
 
 CREATE POLICY "chat_attach_select_member"
-    ON storage.objects FOR SELECT TO authenticated
-    USING (
-        bucket_id = 'chat-attachments'
-        AND EXISTS (
-            SELECT 1 FROM public.workspace_members wm
-            WHERE wm.user_id       = auth.uid()
-              AND wm.role          IN ('owner', 'editor')
-              AND wm.workspace_id::text = split_part(name, '/', 1)
-        )
-    );
+  ON storage.objects FOR SELECT TO authenticated
+  USING (
+    bucket_id = 'chat-attachments'
+    AND EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.user_id     = auth.uid()
+        AND wm.role        IN ('owner', 'editor')
+        AND wm.workspace_id::text = split_part(name, '/', 1)
+    )
+  );
 
 CREATE POLICY "chat_attach_insert_member"
-    ON storage.objects FOR INSERT TO authenticated
-    WITH CHECK (
-        bucket_id = 'chat-attachments'
-        AND EXISTS (
-            SELECT 1 FROM public.workspace_members wm
-            WHERE wm.user_id       = auth.uid()
-              AND wm.role          IN ('owner', 'editor')
-              AND wm.workspace_id::text = split_part(name, '/', 1)
-        )
-    );
+  ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id = 'chat-attachments'
+    AND EXISTS (
+      SELECT 1 FROM public.workspace_members wm
+      WHERE wm.user_id     = auth.uid()
+        AND wm.role        IN ('owner', 'editor')
+        AND wm.workspace_id::text = split_part(name, '/', 1)
+    )
+  );
 
 CREATE POLICY "chat_attach_update_own"
-    ON storage.objects FOR UPDATE TO authenticated
-    USING (
-        bucket_id = 'chat-attachments'
-        AND auth.uid()::text = split_part(name, '/', 2)
-    );
+  ON storage.objects FOR UPDATE TO authenticated
+  USING (
+    bucket_id = 'chat-attachments'
+    AND auth.uid()::text = split_part(name, '/', 2)
+  )
+  WITH CHECK (
+    bucket_id = 'chat-attachments'
+    AND auth.uid()::text = split_part(name, '/', 2)
+  );
 
 CREATE POLICY "chat_attach_delete_own_or_owner"
-    ON storage.objects FOR DELETE TO authenticated
-    USING (
-        bucket_id = 'chat-attachments'
-        AND (
-            auth.uid()::text = split_part(name, '/', 2)
-            OR public.get_workspace_role(
-                   split_part(name, '/', 1)::uuid,
-                   auth.uid()
-               ) = 'owner'
-        )
-    );
+  ON storage.objects FOR DELETE TO authenticated
+  USING (
+    bucket_id = 'chat-attachments'
+    AND (
+      auth.uid()::text = split_part(name, '/', 2)
+      OR public.get_workspace_role(
+           split_part(name, '/', 1)::uuid,
+           auth.uid()
+         ) = 'owner'
+    )
+  );
 
 
 -- ============================================================
@@ -479,7 +474,7 @@ CREATE INDEX IF NOT EXISTS academic_papers_generated_at_idx ON public.academic_p
 DROP TRIGGER IF EXISTS on_academic_papers_updated ON public.academic_papers;
 CREATE TRIGGER on_academic_papers_updated
   BEFORE UPDATE ON public.academic_papers
-  FOR EACH ROW EXECUTE PROCEDURE public.handle_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 
 -- ============================================================
@@ -1276,6 +1271,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_chat_messages (
                     CHECK (content_type IN ('text', 'image', 'file', 'system')),
     reply_to_id     UUID        REFERENCES public.workspace_chat_messages(id) ON DELETE SET NULL,
     attachments     JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    mentions        UUID[]      DEFAULT '{}',
     is_edited       BOOLEAN     NOT NULL DEFAULT FALSE,
     edited_at       TIMESTAMPTZ,
     is_deleted      BOOLEAN     NOT NULL DEFAULT FALSE,
@@ -1306,6 +1302,9 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_user
 CREATE INDEX IF NOT EXISTS idx_chat_messages_reply
     ON public.workspace_chat_messages(reply_to_id)
     WHERE reply_to_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_mentions
+    ON public.workspace_chat_messages USING GIN (mentions);
 
 -- Full-text search (only on non-deleted rows)
 CREATE INDEX IF NOT EXISTS idx_chat_messages_fts
@@ -1366,6 +1365,62 @@ CREATE TABLE IF NOT EXISTS public.chat_pinned_messages (
 
 CREATE INDEX IF NOT EXISTS idx_pinned_messages_workspace
     ON public.chat_pinned_messages(workspace_id, pinned_at DESC);
+
+
+-- ============================================================
+-- PART 18 — WORKSPACE NOTIFICATION PREFERENCES
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.workspace_notification_preferences (
+  id                       UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id                  UUID        REFERENCES auth.users(id)        ON DELETE CASCADE NOT NULL,
+  workspace_id             UUID        REFERENCES public.workspaces(id) ON DELETE CASCADE NOT NULL,
+  notify_on_mention        BOOLEAN     DEFAULT TRUE  NOT NULL,
+  notify_on_chat_message   BOOLEAN     DEFAULT FALSE NOT NULL,
+  notify_on_report_added   BOOLEAN     DEFAULT TRUE  NOT NULL,
+  notify_on_comment        BOOLEAN     DEFAULT TRUE  NOT NULL,
+  notify_on_member_join    BOOLEAN     DEFAULT FALSE NOT NULL,
+  notify_on_shared_content BOOLEAN     DEFAULT TRUE  NOT NULL,
+  created_at               TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  updated_at               TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  UNIQUE (user_id, workspace_id)
+);
+
+ALTER TABLE public.workspace_notification_preferences
+  ENABLE ROW LEVEL SECURITY;
+
+-- auto-update updated_at
+DROP TRIGGER IF EXISTS wnp_updated_at ON public.workspace_notification_preferences;
+CREATE TRIGGER wnp_updated_at
+  BEFORE UPDATE ON public.workspace_notification_preferences
+  FOR EACH ROW EXECUTE FUNCTION public.set_wnp_updated_at();
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_wnp_user_workspace
+  ON public.workspace_notification_preferences (user_id, workspace_id);
+
+-- RLS policies
+DROP POLICY IF EXISTS "wnp_select_own" ON public.workspace_notification_preferences;
+DROP POLICY IF EXISTS "wnp_insert_own" ON public.workspace_notification_preferences;
+DROP POLICY IF EXISTS "wnp_update_own" ON public.workspace_notification_preferences;
+DROP POLICY IF EXISTS "wnp_delete_own" ON public.workspace_notification_preferences;
+
+CREATE POLICY "wnp_select_own"
+  ON public.workspace_notification_preferences FOR SELECT
+  TO authenticated USING (user_id = auth.uid());
+
+CREATE POLICY "wnp_insert_own"
+  ON public.workspace_notification_preferences FOR INSERT
+  TO authenticated WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "wnp_update_own"
+  ON public.workspace_notification_preferences FOR UPDATE
+  TO authenticated
+  USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "wnp_delete_own"
+  ON public.workspace_notification_preferences FOR DELETE
+  TO authenticated USING (user_id = auth.uid());
 
 
 -- ============================================================
@@ -2222,6 +2277,7 @@ DROP FUNCTION IF EXISTS public.get_user_workspaces_for_debate_sharing(uuid);
 -- Part 17 functions
 DROP FUNCTION IF EXISTS public.is_chat_member(uuid);
 DROP FUNCTION IF EXISTS public.send_chat_message(uuid, text, text, uuid, jsonb);
+DROP FUNCTION IF EXISTS public.send_chat_message(uuid, text, text, uuid, jsonb, uuid[]);
 DROP FUNCTION IF EXISTS public.get_chat_messages(uuid, int, uuid);
 DROP FUNCTION IF EXISTS public.edit_chat_message(uuid, text);
 DROP FUNCTION IF EXISTS public.delete_chat_message(uuid);
@@ -2234,6 +2290,28 @@ DROP FUNCTION IF EXISTS public.get_pinned_chat_messages(uuid);
 DROP FUNCTION IF EXISTS public.search_chat_messages(uuid, text, int);
 DROP FUNCTION IF EXISTS public.get_chat_members(uuid);
 DROP FUNCTION IF EXISTS public.get_user_chat_stats(uuid);
+
+-- Part 18 functions
+DROP FUNCTION IF EXISTS public.get_or_create_workspace_notification_prefs(uuid);
+DROP FUNCTION IF EXISTS public.update_workspace_notification_prefs(uuid, boolean, boolean, boolean, boolean, boolean, boolean);
+DROP FUNCTION IF EXISTS public.get_member_shared_content_stats(uuid, uuid);
+DROP FUNCTION IF EXISTS public.get_member_shared_items(uuid, uuid, int);
+
+-- Catch-all: drop any remaining overload by name
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT oid::regprocedure AS sig
+    FROM   pg_proc
+    WHERE  proname        = 'send_chat_message'
+      AND  pronamespace   = 'public'::regnamespace
+  LOOP
+    EXECUTE 'DROP FUNCTION IF EXISTS ' || r.sig || ' CASCADE';
+  END LOOP;
+END;
+$$;
 
 
 -- ============================================================
@@ -5267,82 +5345,119 @@ GRANT EXECUTE ON FUNCTION public.get_user_workspaces_for_debate_sharing(uuid) TO
 -- PART 17 — CHAT RPC FUNCTIONS
 -- ============================================================
 
--- send_chat_message
+-- send_chat_message (fixed version with scalar reply variables)
 CREATE OR REPLACE FUNCTION public.send_chat_message(
-    p_workspace_id  UUID,
-    p_content       TEXT,
-    p_content_type  TEXT  DEFAULT 'text',
-    p_reply_to_id   UUID  DEFAULT NULL,
-    p_attachments   JSONB DEFAULT '[]'::jsonb
+  p_workspace_id UUID,
+  p_content      TEXT,
+  p_content_type TEXT    DEFAULT 'text',
+  p_reply_to_id  UUID    DEFAULT NULL,
+  p_attachments  JSONB   DEFAULT '[]',
+  p_mentions     UUID[]  DEFAULT '{}'
 )
-RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
 DECLARE
-    v_user_id UUID := auth.uid();
-    v_msg_id  UUID;
-    v_result  JSONB;
-    v_attach  JSONB;
-    v_content TEXT;
+  v_user_id          UUID;
+  v_msg_id           UUID;
+
+  -- Scalar reply-preview variables (never uninitialized — default NULL)
+  v_reply_content    TEXT := NULL;
+  v_reply_user_id    UUID := NULL;
+  v_reply_author     TEXT := NULL;
+
+  -- Author profile
+  v_author_id        UUID;
+  v_author_username  TEXT;
+  v_author_fullname  TEXT;
+  v_author_avatar    TEXT;
 BEGIN
-    IF NOT public.is_chat_member(p_workspace_id) THEN
-        RAISE EXCEPTION 'not_chat_member: Only editors and owners can use workspace chat';
-    END IF;
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
 
-    v_attach := COALESCE(
-        CASE
-            WHEN p_attachments IS NULL                    THEN '[]'::jsonb
-            WHEN jsonb_typeof(p_attachments) = 'array'   THEN p_attachments
-            WHEN jsonb_typeof(p_attachments) = 'string'  THEN (p_attachments #>> '{}')::jsonb
-            ELSE '[]'::jsonb
-        END,
-        '[]'::jsonb
-    );
+  IF NOT public.is_chat_member(p_workspace_id) THEN
+    RAISE EXCEPTION 'Access denied';
+  END IF;
 
-    v_content := COALESCE(p_content, '');
-    IF char_length(v_content) = 0 AND jsonb_array_length(v_attach) = 0 THEN
-        RAISE EXCEPTION 'empty_message: Message must have content or at least one attachment';
-    END IF;
+  -- Insert message
+  INSERT INTO public.workspace_chat_messages (
+    workspace_id,  user_id,     content,      content_type,
+    reply_to_id,   attachments, mentions
+  ) VALUES (
+    p_workspace_id, v_user_id,  p_content,    p_content_type,
+    p_reply_to_id,
+    COALESCE(p_attachments, '[]'::jsonb),
+    COALESCE(p_mentions,    '{}'::uuid[])
+  )
+  RETURNING id INTO v_msg_id;
 
-    INSERT INTO public.workspace_chat_messages (
-        workspace_id, user_id, content, content_type, reply_to_id, attachments
-    )
-    VALUES (
-        p_workspace_id, v_user_id, v_content,
-        COALESCE(p_content_type, 'text'),
-        p_reply_to_id, v_attach
-    )
-    RETURNING id INTO v_msg_id;
-
-    SELECT jsonb_build_object(
-        'id',           m.id,
-        'workspaceId',  m.workspace_id,
-        'userId',       m.user_id,
-        'content',      m.content,
-        'contentType',  m.content_type,
-        'replyToId',    m.reply_to_id,
-        'attachments',  COALESCE(m.attachments, '[]'::jsonb),
-        'isEdited',     m.is_edited,
-        'isDeleted',    m.is_deleted,
-        'isPinned',     false,
-        'reactions',    '[]'::jsonb,
-        'createdAt',    m.created_at,
-        'updatedAt',    m.updated_at,
-        'author', jsonb_build_object(
-            'id',        p.id,
-            'username',  p.username,
-            'fullName',  p.full_name,
-            'avatarUrl', p.avatar_url
-        )
-    )
-    INTO v_result
+  -- Fetch reply preview only when reply_to_id was provided
+  IF p_reply_to_id IS NOT NULL THEN
+    SELECT
+      m.content,
+      m.user_id,
+      COALESCE(pr.full_name, pr.username)
+    INTO
+      v_reply_content,
+      v_reply_user_id,
+      v_reply_author
     FROM public.workspace_chat_messages m
-    LEFT JOIN public.profiles p ON p.id = m.user_id
-    WHERE m.id = v_msg_id;
+    LEFT JOIN public.profiles pr ON pr.id = m.user_id
+    WHERE m.id = p_reply_to_id;
+    -- FOUND check not needed — scalars stay NULL if parent was deleted
+  END IF;
 
-    RETURN v_result;
+  -- Fetch author profile
+  SELECT id, username, full_name, avatar_url
+  INTO   v_author_id, v_author_username, v_author_fullname, v_author_avatar
+  FROM   public.profiles
+  WHERE  id = v_user_id;
+
+  -- Return full message JSONB
+  RETURN (
+    SELECT jsonb_build_object(
+      'id',           m.id,
+      'workspace_id', m.workspace_id,
+      'user_id',      m.user_id,
+      'content',      m.content,
+      'content_type', m.content_type,
+      'reply_to_id',  m.reply_to_id,
+      'reply_to',     CASE
+                        WHEN p_reply_to_id IS NOT NULL
+                        THEN jsonb_build_object(
+                          'id',          p_reply_to_id,
+                          'content',     COALESCE(v_reply_content,        ''),
+                          'user_id',     COALESCE(v_reply_user_id::text,   ''),
+                          'author_name', v_reply_author
+                        )
+                        ELSE NULL
+                      END,
+      'attachments',  m.attachments,
+      'mentions',     m.mentions,
+      'is_edited',    FALSE,
+      'is_deleted',   FALSE,
+      'is_pinned',    FALSE,
+      'reactions',    '[]'::JSONB,
+      'author',       jsonb_build_object(
+                        'id',         v_author_id,
+                        'username',   v_author_username,
+                        'full_name',  v_author_fullname,
+                        'avatar_url', v_author_avatar
+                      ),
+      'created_at',   m.created_at,
+      'updated_at',   m.updated_at
+    )
+    FROM public.workspace_chat_messages m
+    WHERE m.id = v_msg_id
+  );
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.send_chat_message(UUID, TEXT, TEXT, UUID, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.send_chat_message(UUID, TEXT, TEXT, UUID, JSONB, UUID[]) TO authenticated;
 
 
 -- get_chat_messages
@@ -5777,6 +5892,236 @@ GRANT EXECUTE ON FUNCTION public.get_user_chat_stats(UUID) TO authenticated;
 
 
 -- ============================================================
+-- PART 18 — ADDITIONAL RPC FUNCTIONS
+-- ============================================================
+
+-- get_or_create_workspace_notification_prefs
+CREATE OR REPLACE FUNCTION public.get_or_create_workspace_notification_prefs(
+  p_workspace_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user UUID;
+  v_row  public.workspace_notification_preferences%ROWTYPE;
+BEGIN
+  v_user := auth.uid();
+  IF v_user IS NULL THEN RETURN NULL; END IF;
+
+  INSERT INTO public.workspace_notification_preferences (user_id, workspace_id)
+  VALUES (v_user, p_workspace_id)
+  ON CONFLICT (user_id, workspace_id) DO NOTHING;
+
+  SELECT * INTO v_row
+  FROM public.workspace_notification_preferences
+  WHERE user_id = v_user AND workspace_id = p_workspace_id;
+
+  RETURN to_jsonb(v_row);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_or_create_workspace_notification_prefs(UUID) TO authenticated;
+
+
+-- update_workspace_notification_prefs
+CREATE OR REPLACE FUNCTION public.update_workspace_notification_prefs(
+  p_workspace_id             UUID,
+  p_notify_on_mention        BOOLEAN DEFAULT NULL,
+  p_notify_on_chat_message   BOOLEAN DEFAULT NULL,
+  p_notify_on_report_added   BOOLEAN DEFAULT NULL,
+  p_notify_on_comment        BOOLEAN DEFAULT NULL,
+  p_notify_on_member_join    BOOLEAN DEFAULT NULL,
+  p_notify_on_shared_content BOOLEAN DEFAULT NULL
+) RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user UUID;
+BEGIN
+  v_user := auth.uid();
+  IF v_user IS NULL THEN RETURN; END IF;
+
+  INSERT INTO public.workspace_notification_preferences (
+    user_id, workspace_id,
+    notify_on_mention, notify_on_chat_message,
+    notify_on_report_added, notify_on_comment,
+    notify_on_member_join, notify_on_shared_content
+  ) VALUES (
+    v_user, p_workspace_id,
+    COALESCE(p_notify_on_mention,        TRUE),
+    COALESCE(p_notify_on_chat_message,   FALSE),
+    COALESCE(p_notify_on_report_added,   TRUE),
+    COALESCE(p_notify_on_comment,        TRUE),
+    COALESCE(p_notify_on_member_join,    FALSE),
+    COALESCE(p_notify_on_shared_content, TRUE)
+  )
+  ON CONFLICT (user_id, workspace_id) DO UPDATE SET
+    notify_on_mention        = COALESCE(
+                                 p_notify_on_mention,
+                                 workspace_notification_preferences.notify_on_mention),
+    notify_on_chat_message   = COALESCE(
+                                 p_notify_on_chat_message,
+                                 workspace_notification_preferences.notify_on_chat_message),
+    notify_on_report_added   = COALESCE(
+                                 p_notify_on_report_added,
+                                 workspace_notification_preferences.notify_on_report_added),
+    notify_on_comment        = COALESCE(
+                                 p_notify_on_comment,
+                                 workspace_notification_preferences.notify_on_comment),
+    notify_on_member_join    = COALESCE(
+                                 p_notify_on_member_join,
+                                 workspace_notification_preferences.notify_on_member_join),
+    notify_on_shared_content = COALESCE(
+                                 p_notify_on_shared_content,
+                                 workspace_notification_preferences.notify_on_shared_content),
+    updated_at               = NOW();
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.update_workspace_notification_prefs(UUID, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN) TO authenticated;
+
+
+-- get_member_shared_content_stats
+CREATE OR REPLACE FUNCTION public.get_member_shared_content_stats(
+  p_user_id      UUID,
+  p_workspace_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_caller UUID;
+  v_pres   BIGINT := 0;
+  v_papers BIGINT := 0;
+  v_pods   BIGINT := 0;
+  v_deb    BIGINT := 0;
+BEGIN
+  v_caller := auth.uid();
+  -- Require caller to be a workspace member
+  IF NOT EXISTS (
+    SELECT 1 FROM public.workspace_members
+    WHERE workspace_id = p_workspace_id AND user_id = v_caller
+  ) THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT COUNT(*) INTO v_pres
+  FROM public.shared_workspace_content
+  WHERE workspace_id = p_workspace_id
+    AND shared_by    = p_user_id
+    AND content_type = 'presentation';
+
+  SELECT COUNT(*) INTO v_papers
+  FROM public.shared_workspace_content
+  WHERE workspace_id = p_workspace_id
+    AND shared_by    = p_user_id
+    AND content_type = 'academic_paper';
+
+  SELECT COUNT(*) INTO v_pods
+  FROM public.shared_podcasts
+  WHERE workspace_id = p_workspace_id AND shared_by = p_user_id;
+
+  SELECT COUNT(*) INTO v_deb
+  FROM public.shared_debates
+  WHERE workspace_id = p_workspace_id AND shared_by = p_user_id;
+
+  RETURN jsonb_build_object(
+    'presentations', v_pres,
+    'papers',        v_papers,
+    'podcasts',      v_pods,
+    'debates',       v_deb
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_member_shared_content_stats(UUID, UUID) TO authenticated;
+
+
+-- get_member_shared_items
+CREATE OR REPLACE FUNCTION public.get_member_shared_items(
+  p_user_id      UUID,
+  p_workspace_id UUID,
+  p_limit        INT DEFAULT 10
+) RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_caller UUID;
+BEGIN
+  v_caller := auth.uid();
+  IF NOT EXISTS (
+    SELECT 1 FROM public.workspace_members
+    WHERE workspace_id = p_workspace_id AND user_id = v_caller
+  ) THEN
+    RETURN '[]'::JSONB;
+  END IF;
+
+  RETURN (
+    SELECT COALESCE(
+      jsonb_agg(item ORDER BY (item->>'shared_at') DESC),
+      '[]'::JSONB
+    )
+    FROM (
+      -- Presentations + Academic papers (from shared_workspace_content)
+      SELECT jsonb_build_object(
+        'id',           swc.id,
+        'content_type', swc.content_type,
+        'title',        swc.title,
+        'subtitle',     swc.subtitle,
+        'content_id',   swc.content_id,
+        'report_id',    swc.report_id,
+        'shared_at',    swc.shared_at
+      ) AS item
+      FROM public.shared_workspace_content swc
+      WHERE swc.workspace_id = p_workspace_id
+        AND swc.shared_by    = p_user_id
+
+      UNION ALL
+
+      -- Podcasts
+      SELECT jsonb_build_object(
+        'id',           sp.id,
+        'content_type', 'podcast',
+        'title',        sp.title,
+        'subtitle',     sp.description,
+        'content_id',   sp.podcast_id,
+        'report_id',    sp.report_id,
+        'shared_at',    sp.shared_at
+      )
+      FROM public.shared_podcasts sp
+      WHERE sp.workspace_id = p_workspace_id
+        AND sp.shared_by    = p_user_id
+
+      UNION ALL
+
+      -- Debates
+      SELECT jsonb_build_object(
+        'id',           sd.id,
+        'content_type', 'debate',
+        'title',        sd.topic,
+        'subtitle',     sd.question,
+        'content_id',   sd.debate_id,
+        'report_id',    NULL,
+        'shared_at',    sd.shared_at
+      )
+      FROM public.shared_debates sd
+      WHERE sd.workspace_id = p_workspace_id
+        AND sd.shared_by    = p_user_id
+
+      ORDER BY item->>'shared_at' DESC
+      LIMIT p_limit
+    ) sub
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_member_shared_items(UUID, UUID, INT) TO authenticated;
+
+
+-- ============================================================
 -- PART 10 — Auto-create personal workspace trigger (optional)
 -- ============================================================
 
@@ -5820,15 +6165,16 @@ COMMENT ON TABLE public.shared_workspace_content IS 'Presentations, academic pap
 COMMENT ON TABLE public.shared_podcasts          IS 'Denormalised podcast sharing to workspaces (Part 15)';
 COMMENT ON TABLE public.workspace_report_downloads IS 'Report download tracking within workspaces (Part 15)';
 COMMENT ON TABLE public.shared_debates           IS 'Denormalised debate sharing to workspaces (Part 16)';
-COMMENT ON TABLE public.workspace_chat_messages  IS 'Workspace chat messages with soft delete (Part 17)';
+COMMENT ON TABLE public.workspace_chat_messages  IS 'Workspace chat messages with soft delete and mentions (Part 17)';
 COMMENT ON TABLE public.chat_message_reactions   IS 'Emoji reactions on chat messages (Part 17)';
 COMMENT ON TABLE public.chat_read_receipts       IS 'Per-user read watermark for workspace chat (Part 17)';
 COMMENT ON TABLE public.chat_pinned_messages     IS 'Pinned messages in workspace chat (Part 17)';
+COMMENT ON TABLE public.workspace_notification_preferences IS 'User notification preferences per workspace (Part 18)';
 
 COMMENT ON VIEW  public.workspace_search_index   IS 'Unified search index: reports + comments + members (Parts 11, 11C)';
 
 COMMENT ON FUNCTION public.is_chat_member(UUID)  IS 'Returns true if auth.uid() is editor or owner of the workspace (Part 17)';
-COMMENT ON FUNCTION public.send_chat_message(UUID, TEXT, TEXT, UUID, JSONB) IS 'Send a message to workspace chat (Part 17)';
+COMMENT ON FUNCTION public.send_chat_message(UUID, TEXT, TEXT, UUID, JSONB, UUID[]) IS 'Send a message to workspace chat with mentions (Part 17/18)';
 COMMENT ON FUNCTION public.get_chat_messages(UUID, INT, UUID) IS 'Cursor-paginated fetch of chat messages (Part 17)';
 COMMENT ON FUNCTION public.edit_chat_message(UUID, TEXT) IS 'Edit own message content (Part 17)';
 COMMENT ON FUNCTION public.delete_chat_message(UUID) IS 'Soft delete a message (owner or workspace owner) (Part 17)';
@@ -5841,6 +6187,11 @@ COMMENT ON FUNCTION public.get_pinned_chat_messages(UUID) IS 'List pinned messag
 COMMENT ON FUNCTION public.search_chat_messages(UUID, TEXT, INT) IS 'Full-text search across chat messages (Part 17)';
 COMMENT ON FUNCTION public.get_chat_members(UUID) IS 'List members who can participate in chat (editors/owners) (Part 17)';
 COMMENT ON FUNCTION public.get_user_chat_stats(UUID) IS 'Chat analytics for a user (Part 17)';
+
+COMMENT ON FUNCTION public.get_or_create_workspace_notification_prefs(UUID) IS 'Get or create notification preferences for a workspace (Part 18)';
+COMMENT ON FUNCTION public.update_workspace_notification_prefs(UUID, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN) IS 'Update notification preferences for a workspace (Part 18)';
+COMMENT ON FUNCTION public.get_member_shared_content_stats(UUID, UUID) IS 'Get sharing stats for a workspace member (Part 18)';
+COMMENT ON FUNCTION public.get_member_shared_items(UUID, UUID, INT) IS 'Get paginated shared items for a workspace member (Part 18)';
 
 
 -- ============================================================
