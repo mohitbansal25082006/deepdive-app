@@ -1,15 +1,10 @@
 // src/services/podcastOrchestrator.ts
-// Part 8 — Orchestrates the full AI Podcast generation pipeline:
-//
-//   STEP 1 → Script Agent  (GPT-4o dialogue generation)
-//   STEP 2 → DB Insert     (persist podcast row in 'generating_audio' state)
-//   STEP 3 → TTS Batch     (OpenAI TTS, 3 concurrent segments)
-//   STEP 4 → DB Finalize   (update row with paths + completion timestamp)
-//
-// Non-fatal failures:
-//   • Individual TTS segments may fail — the podcast is still marked 'completed'
-//     as long as at least 50% of segments were generated.
-//   • If the script agent fails, the pipeline aborts immediately (fatal).
+// Part 19 — Updated:
+//   • SerpAPI web search now runs BEFORE script generation as a dedicated step
+//   • Script agent receives fresh search results for grounding
+//   • Progress callbacks updated with "Searching web..." step
+//   • mapRowToPodcast updated to restore targetDurationMinutes from DB
+//   • Duration fix: uses accurate TTS_WPM from script agent
 
 import { supabase }                    from '../lib/supabase';
 import {
@@ -20,10 +15,13 @@ import {
   PodcastTurn,
   PodcastGenerationCallbacks,
 }                                       from '../types';
-import { runPodcastScriptAgent }        from './agents/podcastScriptAgent';
+import {
+  runPodcastScriptAgent,
+  estimateTTSDurationMs,
+  type VoicePresetStyle,
+}                                       from './agents/podcastScriptAgent';
 import {
   generateAllTurnAudio,
-  estimateSegmentDurationMs,
   getSegmentPath,
   deletePodcastAudio,
 }                                       from './podcastTTSService';
@@ -31,9 +29,11 @@ import {
 // ─── Input ────────────────────────────────────────────────────────────────────
 
 export interface PodcastInput {
-  topic:   string;
-  /** Optional — if provided, script agent uses its facts, stats, and findings */
-  report?: ResearchReport | null;
+  topic:        string;
+  /** If provided, script agent uses its verified facts and statistics */
+  report?:      ResearchReport | null;
+  /** Voice preset style — passed through to script agent */
+  presetStyle?: VoicePresetStyle;
 }
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
@@ -50,8 +50,7 @@ export async function runPodcastPipeline(
   const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!openaiKey?.trim()) {
     callbacks.onError(
-      'OpenAI API key is missing.\n\n' +
-      'Add EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart with: npx expo start --clear'
+      'OpenAI API key is missing.\n\nAdd EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart with: npx expo start --clear'
     );
     return;
   }
@@ -63,28 +62,47 @@ export async function runPodcastPipeline(
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 1 — SCRIPT GENERATION
+  // STEP 1 — WEB SEARCH (if SerpAPI key is present)
   // ─────────────────────────────────────────────────────────────────────────
 
-  callbacks.onProgress('Writing podcast script with AI...');
+  const serpKey = process.env.EXPO_PUBLIC_SERPAPI_KEY;
+  const hasSerpKey = !!(serpKey && serpKey.trim() && serpKey !== 'your_serpapi_key_here');
+
+  if (hasSerpKey) {
+    callbacks.onProgress(`🔍 Searching the web for latest "${input.topic}" data...`);
+  } else {
+    callbacks.onProgress('Writing podcast script with AI...');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // STEP 2 — SCRIPT GENERATION
+  // ─────────────────────────────────────────────────────────────────────────
 
   let script: PodcastScript;
   let title: string;
   let description: string;
+  let webSearchUsed = false;
 
   try {
     const result = await runPodcastScriptAgent({
-      topic:  input.topic,
-      report: input.report ?? null,
+      topic:       input.topic,
+      report:      input.report ?? null,
       config,
+      presetStyle: input.presetStyle,
     });
-    script      = result.script;
-    title       = result.title;
-    description = result.description;
+
+    script       = result.script;
+    title        = result.title;
+    description  = result.description;
+    webSearchUsed = result.webSearchUsed;
+
+    const searchNote = webSearchUsed
+      ? ` · web-grounded`
+      : '';
 
     callbacks.onScriptGenerated(script);
     callbacks.onProgress(
-      `Script ready — ${script.turns.length} turns, ~${script.estimatedDurationMinutes} min`
+      `Script ready — ${script.turns.length} turns · ~${script.estimatedDurationMinutes} min${searchNote}`
     );
 
   } catch (err) {
@@ -94,25 +112,26 @@ export async function runPodcastPipeline(
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 2 — CREATE DATABASE ROW
+  // STEP 3 — CREATE DATABASE ROW
   // ─────────────────────────────────────────────────────────────────────────
 
   const { data: podcastRow, error: insertError } = await supabase
     .from('podcasts')
     .insert({
-      user_id:           userId,
-      report_id:         input.report?.id ?? null,
+      user_id:             userId,
+      report_id:           input.report?.id ?? null,
       title,
       description,
-      topic:             input.topic,
+      topic:               input.topic,
       script,
-      host_voice:        config.hostVoice,
-      guest_voice:       config.guestVoice,
-      host_name:         config.hostName,
-      guest_name:        config.guestName,
-      status:            'generating_audio',
-      segment_count:     script.turns.length,
-      word_count:        script.totalWords,
+      host_voice:          config.hostVoice,
+      guest_voice:         config.guestVoice,
+      host_name:           config.hostName,
+      guest_name:          config.guestName,
+      target_duration_minutes: config.targetDurationMinutes,
+      status:              'generating_audio',
+      segment_count:       script.turns.length,
+      word_count:          script.totalWords,
       audio_segment_paths: [],
     })
     .select()
@@ -127,10 +146,10 @@ export async function runPodcastPipeline(
   const podcastId = podcastRow.id as string;
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 3 — TTS AUDIO GENERATION
+  // STEP 4 — TTS AUDIO GENERATION
   // ─────────────────────────────────────────────────────────────────────────
 
-  callbacks.onProgress(`Generating audio: 0/${script.turns.length} segments...`);
+  callbacks.onProgress(`Generating audio: 0/${script.turns.length} voice segments...`);
 
   let audioPaths: string[];
 
@@ -144,25 +163,23 @@ export async function runPodcastPipeline(
         onSegmentComplete: (segmentIndex, totalSegments, audioPath, succeeded) => {
           callbacks.onSegmentGenerated(segmentIndex, totalSegments, audioPath);
           callbacks.onProgress(
-            `Generating audio: ${segmentIndex + 1}/${totalSegments} segments`
+            `Generating audio: ${segmentIndex + 1}/${totalSegments} voice segments`
           );
         },
         onProgress: (message) => callbacks.onProgress(message),
       }
     );
   } catch (err) {
-    // Unexpected batch-level failure — mark DB row as failed and abort
     const msg = err instanceof Error ? err.message : 'Audio generation failed';
     await supabase
       .from('podcasts')
       .update({ status: 'failed', error_message: msg })
       .eq('id', podcastId);
-
     callbacks.onError(`Audio generation failed: ${msg}`);
     return;
   }
 
-  // Check if we have enough segments to be useful (≥ 50%)
+  // Check minimum viability (≥ 50% segments generated)
   const successCount = audioPaths.filter(Boolean).length;
   if (successCount < Math.ceil(script.turns.length * 0.5)) {
     await supabase
@@ -180,14 +197,15 @@ export async function runPodcastPipeline(
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 4 — FINALIZE
+  // STEP 5 — FINALIZE
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Hydrate turns with final audio paths and estimated durations
+  // Hydrate turns with final audio paths and accurate TTS durations
   const turnsWithAudio: PodcastTurn[] = script.turns.map((turn, i) => ({
     ...turn,
     audioPath:  audioPaths[i] ?? '',
-    durationMs: estimateSegmentDurationMs(turn.text),
+    // Use the accurate TTS estimator from script agent
+    durationMs: estimateTTSDurationMs(turn.text),
   }));
 
   const totalDurationMs = turnsWithAudio.reduce(
@@ -214,10 +232,10 @@ export async function runPodcastPipeline(
 
   if (updateError) {
     console.warn('[PodcastOrchestrator] Failed to persist final state:', updateError.message);
-    // Don't abort — the audio is generated and the in-memory podcast is valid
+    // Non-fatal — audio is generated, in-memory podcast is valid
   }
 
-  // Build the in-memory Podcast object returned to the UI
+  // Build the Podcast object returned to the UI
   const finalPodcast: Podcast = {
     id:                podcastId,
     userId,
@@ -244,7 +262,7 @@ export async function runPodcastPipeline(
 
 /**
  * Transform a raw Supabase `podcasts` row into the typed Podcast interface.
- * Used by usePodcastHistory and usePodcastPlayer when loading from DB.
+ * Part 19: restores targetDurationMinutes from DB column when available.
  */
 export function mapRowToPodcast(row: Record<string, any>): Podcast {
   const config: PodcastConfig = {
@@ -252,7 +270,11 @@ export function mapRowToPodcast(row: Record<string, any>): Podcast {
     guestVoice:            row.guest_voice ?? 'nova',
     hostName:              row.host_name   ?? 'Alex',
     guestName:             row.guest_name  ?? 'Sam',
-    targetDurationMinutes: 10,
+    // Part 19: use stored target duration — falls back to script estimate
+    targetDurationMinutes:
+      row.target_duration_minutes ??
+      row.script?.estimatedDurationMinutes ??
+      10,
   };
 
   return {
@@ -267,10 +289,10 @@ export function mapRowToPodcast(row: Record<string, any>): Podcast {
     status:            row.status,
     completedSegments: row.completed_segments ?? 0,
     durationSeconds:   row.duration_seconds   ?? 0,
-    wordCount:         row.word_count          ?? 0,
+    wordCount:         row.word_count         ?? 0,
     audioSegmentPaths: row.audio_segment_paths ?? [],
     errorMessage:      row.error_message ?? undefined,
-    exportCount:       row.export_count ?? 0,
+    exportCount:       row.export_count  ?? 0,
     createdAt:         row.created_at,
     completedAt:       row.completed_at ?? undefined,
   };

@@ -1,12 +1,10 @@
 // src/hooks/usePodcast.ts
-// Part 8 — Manages all state for AI Podcast generation.
-//
-// Exposes:
-//   generateFromReport(report, config?) — generate podcast from an existing research report
-//   generateFromTopic(topic, config?)   — generate podcast from a plain text topic
-//   reset()                             — clear state / cancel pending updates
-//
-// State shape: PodcastGenerationState (see types/index.ts)
+// Part 19 — Updated:
+//   • generateFromReport properly passes the full report to the pipeline
+//   • 6 voice presets (was 3): Casual, Expert Interview, Tech Podcast,
+//     Narrative Storyteller, Structured Debate, News Analysis
+//   • presetStyle passed through to script agent for tone-aware writing
+//   • DEFAULT_PODCAST_CONFIG updated to saner defaults
 
 import { useState, useCallback, useRef }  from 'react';
 import {
@@ -17,8 +15,9 @@ import {
   PodcastGenerationState,
   PodcastVoice,
 }                                          from '../types';
-import { runPodcastPipeline }             from '../services/podcastOrchestrator';
-import { useAuth }                        from '../context/AuthContext';
+import { runPodcastPipeline, type PodcastInput } from '../services/podcastOrchestrator';
+import type { VoicePresetStyle }           from '../services/agents/podcastScriptAgent';
+import { useAuth }                         from '../context/AuthContext';
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -40,55 +39,103 @@ const INITIAL_STATE: PodcastGenerationState = {
   error:              null,
 };
 
-// ─── Voice preset definitions ─────────────────────────────────────────────────
-// Exported so the UI can render the preset selector without importing a
-// separate constants file.
+// ─── Voice Preset Definition ──────────────────────────────────────────────────
 
 export interface PodcastVoicePresetDef {
-  id:          string;
-  name:        string;
-  description: string;
-  hostVoice:   PodcastVoice;
-  guestVoice:  PodcastVoice;
-  hostName:    string;
-  guestName:   string;
-  icon:        string;
-  accentColor: string;
+  id:           string;
+  name:         string;
+  description:  string;
+  hostVoice:    PodcastVoice;
+  guestVoice:   PodcastVoice;
+  hostName:     string;
+  guestName:    string;
+  icon:         string;
+  accentColor:  string;
+  presetStyle:  VoicePresetStyle;
+  /** Example topics this style works best for */
+  bestFor:      string;
 }
+
+// ─── 6 Voice Presets ──────────────────────────────────────────────────────────
 
 export const PODCAST_VOICE_PRESETS: PodcastVoicePresetDef[] = [
   {
     id:          'casual',
-    name:        'Casual Conversation',
-    description: 'Friendly, relaxed two-person discussion',
+    name:        'Casual Chat',
+    description: 'Two friends having a relaxed, engaging conversation',
     hostVoice:   'alloy',
     guestVoice:  'nova',
     hostName:    'Alex',
     guestName:   'Sam',
     icon:        'chatbubbles-outline',
     accentColor: '#6C63FF',
+    presetStyle: 'casual',
+    bestFor:     'General topics, science, culture',
   },
   {
     id:          'expert',
     name:        'Expert Interview',
-    description: 'Professional deep-dive with an authority',
+    description: 'Professional deep-dive with an authority figure',
     hostVoice:   'onyx',
     guestVoice:  'shimmer',
     hostName:    'Marcus',
     guestName:   'Dr. Chen',
     icon:        'mic-outline',
     accentColor: '#FF6584',
+    presetStyle: 'expert',
+    bestFor:     'Research, academia, professional topics',
   },
   {
     id:          'tech',
     name:        'Tech Podcast',
-    description: 'Technology-focused analysis & commentary',
+    description: 'Technical analysis and commentary on technology',
     hostVoice:   'echo',
     guestVoice:  'fable',
     hostName:    'Jordan',
     guestName:   'Dr. Riley',
     icon:        'hardware-chip-outline',
     accentColor: '#43E97B',
+    presetStyle: 'tech',
+    bestFor:     'AI, software, engineering, startups',
+  },
+  {
+    id:          'narrative',
+    name:        'Story Mode',
+    description: 'Documentary-style storytelling with an insider perspective',
+    hostVoice:   'nova',
+    guestVoice:  'alloy',
+    hostName:    'Maya',
+    guestName:   'James',
+    icon:        'book-outline',
+    accentColor: '#FFA726',
+    presetStyle: 'narrative',
+    bestFor:     'History, case studies, investigative topics',
+  },
+  {
+    id:          'debate',
+    name:        'Debate Format',
+    description: 'Structured exploration of multiple sides of a complex issue',
+    hostVoice:   'shimmer',
+    guestVoice:  'onyx',
+    hostName:    'Taylor',
+    guestName:   'Morgan',
+    icon:        'git-branch-outline',
+    accentColor: '#29B6F6',
+    presetStyle: 'debate',
+    bestFor:     'Policy, ethics, controversial topics',
+  },
+  {
+    id:          'news',
+    name:        'News Analysis',
+    description: 'Breaking down current events with expert commentary',
+    hostVoice:   'alloy',
+    guestVoice:  'echo',
+    hostName:    'Dana',
+    guestName:   'Prof. Williams',
+    icon:        'newspaper-outline',
+    accentColor: '#EC4899',
+    presetStyle: 'news',
+    bestFor:     'Current events, market news, global affairs',
   },
 ];
 
@@ -110,9 +157,10 @@ export function usePodcast() {
 
   const generate = useCallback(
     async (
-      topic:   string,
-      config:  Partial<PodcastConfig>,
-      report?: ResearchReport | null
+      topic:       string,
+      config:      Partial<PodcastConfig>,
+      presetStyle: VoicePresetStyle = 'casual',
+      report?:     ResearchReport | null
     ) => {
       if (!user) {
         setState(prev => ({
@@ -136,12 +184,17 @@ export function usePodcast() {
         progressMessage:    'Writing podcast script...',
       });
 
+      const podcastInput: PodcastInput = {
+        topic,
+        report:      report ?? null,
+        presetStyle,
+      };
+
       await runPodcastPipeline(
         user.id,
-        { topic, report: report ?? null },
+        podcastInput,
         mergedConfig,
         {
-          // ── Script generated ────────────────────────────────────────────
           onScriptGenerated: (script: PodcastScript) => {
             patch({
               isGeneratingScript: false,
@@ -149,12 +202,11 @@ export function usePodcast() {
               scriptGenerated:    true,
               audioProgress:      { completed: 0, total: script.turns.length },
               progressMessage:
-                `Script ready · ${script.turns.length} segments · ` +
+                `Script ready · ${script.turns.length} turns · ` +
                 `~${script.estimatedDurationMinutes} min`,
             });
           },
 
-          // ── Segment audio generated ────────────────────────────────────
           onSegmentGenerated: (
             segmentIndex:  number,
             totalSegments: number,
@@ -168,12 +220,10 @@ export function usePodcast() {
             });
           },
 
-          // ── Arbitrary progress message ─────────────────────────────────
           onProgress: (message: string) => {
             patch({ progressMessage: message });
           },
 
-          // ── Pipeline complete ──────────────────────────────────────────
           onComplete: (podcast: Podcast) => {
             patch({
               podcast,
@@ -183,7 +233,6 @@ export function usePodcast() {
             });
           },
 
-          // ── Pipeline error ─────────────────────────────────────────────
           onError: (message: string) => {
             patch({
               isGeneratingScript: false,
@@ -200,17 +249,31 @@ export function usePodcast() {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  /** Generate a podcast grounded in an existing research report */
+  /**
+   * Generate a podcast grounded in an existing research report.
+   * The script agent will weave the report's verified facts and statistics
+   * throughout the dialogue, producing a highly grounded episode.
+   */
   const generateFromReport = useCallback(
-    (report: ResearchReport, config: Partial<PodcastConfig> = {}) =>
-      generate(report.query, config, report),
+    (
+      report:      ResearchReport,
+      config:      Partial<PodcastConfig> = {},
+      presetStyle: VoicePresetStyle = 'casual'
+    ) => generate(report.query, config, presetStyle, report),
     [generate]
   );
 
-  /** Generate a podcast from a plain topic string (no report context) */
+  /**
+   * Generate a podcast from a plain topic string.
+   * The script agent will use SerpAPI web search to ground the dialogue
+   * in current real-world data.
+   */
   const generateFromTopic = useCallback(
-    (topic: string, config: Partial<PodcastConfig> = {}) =>
-      generate(topic, config, null),
+    (
+      topic:       string,
+      config:      Partial<PodcastConfig> = {},
+      presetStyle: VoicePresetStyle = 'casual'
+    ) => generate(topic, config, presetStyle, null),
     [generate]
   );
 
