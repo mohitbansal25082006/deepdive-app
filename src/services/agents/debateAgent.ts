@@ -1,13 +1,15 @@
 // src/services/agents/debateAgent.ts
-// Part 9 — AI Debate Agent
-// FIX: Confidence score was always 8 because the prompt used 8 as an inline
-//      example value and the model copied it literally. Fixed by:
-//      1. Removing the hardcoded example from the JSON template
-//      2. Adding an explicit scoring rubric the model must follow
-//      3. Validating the parsed value is actually in 1-10 range
+// Part 20 — Updated: injects imported research report context into each agent
+// prompt so debates are grounded in verified facts + web search for latest info.
+//
+// Changes from Part 9:
+//   • runDebateAgent now accepts optional DebateReportContext
+//   • buildReportContextBlock() injects report findings/stats into prompts
+//   • Search queries are enriched using report's key themes when available
+//   • Confidence rubric unchanged — still honest evidence-based scoring
 
-import { chatCompletionJSON } from '../openaiClient';
-import { serpSearchBatch }    from '../serpApiClient';
+import { chatCompletionJSON }     from '../openaiClient';
+import { serpSearchBatch }        from '../serpApiClient';
 import {
   DebateAgentRole,
   DebatePerspective,
@@ -15,6 +17,20 @@ import {
   DebateStanceType,
   Citation,
 } from '../../types';
+
+// Import the new Part 20 type — merge this into src/types/index.ts
+export interface DebateReportContext {
+  reportId:         string;
+  reportTitle:      string;
+  reportQuery:      string;
+  executiveSummary: string;
+  keyFindings:      string[];
+  statistics:       Array<{ value: string; context: string; source: string }>;
+  keyThemes:        string[];
+  citations:        Array<{ title: string; url: string; snippet: string }>;
+  sourcesCount:     number;
+  reliabilityScore: number;
+}
 
 // ─── Role definitions ─────────────────────────────────────────────────────────
 
@@ -83,9 +99,7 @@ export const ROLE_DEFINITIONS: Record<DebateAgentRole, RoleDefinition> = {
   },
 };
 
-// ─── Confidence rubric (used verbatim in the prompt) ──────────────────────────
-// This is the key fix — giving the model a clear rubric prevents it from
-// defaulting to a memorised "typical" value like 8.
+// ─── Confidence rubric ────────────────────────────────────────────────────────
 
 const CONFIDENCE_RUBRIC = `
 CONFIDENCE SCORING RUBRIC — you MUST apply this honestly to the evidence you found:
@@ -102,13 +116,76 @@ If the evidence is mixed, score 5-6. Only score 8+ when the evidence genuinely w
 Your role's inherent optimism/skepticism should NOT inflate or deflate this score —
 it measures evidence quality, not your conviction.`.trim();
 
+// ─── Part 20: Build report context block ─────────────────────────────────────
+// Formats the imported research report into a structured prompt section
+// that agents use as a verified knowledge base alongside web search.
+
+function buildReportContextBlock(ctx: DebateReportContext): string {
+  const lines: string[] = [
+    '═══════════════════════════════════════════════════════════════',
+    '📄 IMPORTED RESEARCH REPORT — Use this as a verified knowledge base.',
+    '   You MUST reference specific data from this report in your arguments.',
+    '═══════════════════════════════════════════════════════════════',
+    '',
+    `Report Title: "${ctx.reportTitle}"`,
+    `Original Query: "${ctx.reportQuery}"`,
+    `Sources: ${ctx.sourcesCount} verified sources | Reliability: ${Math.round(ctx.reliabilityScore * 100)}%`,
+    '',
+    '── Executive Summary ──────────────────────────────────────────',
+    ctx.executiveSummary || '(not available)',
+    '',
+  ];
+
+  if (ctx.keyFindings.length > 0) {
+    lines.push('── Key Findings ───────────────────────────────────────────────');
+    ctx.keyFindings.forEach((f, i) => lines.push(`  ${i + 1}. ${f}`));
+    lines.push('');
+  }
+
+  if (ctx.statistics.length > 0) {
+    lines.push('── Statistics & Data Points ───────────────────────────────────');
+    ctx.statistics.forEach(s => {
+      lines.push(`  • ${s.value} — ${s.context}`);
+      if (s.source) lines.push(`    Source: ${s.source}`);
+    });
+    lines.push('');
+  }
+
+  if (ctx.keyThemes.length > 0) {
+    lines.push(`── Key Themes: ${ctx.keyThemes.join(', ')}`);
+    lines.push('');
+  }
+
+  if (ctx.citations.length > 0) {
+    lines.push('── Report Citations (use these in your arguments) ─────────────');
+    ctx.citations.slice(0, 8).forEach((c, i) => {
+      lines.push(`  [R${i + 1}] ${c.title}`);
+      if (c.snippet) lines.push(`       "${c.snippet.slice(0, 150)}"`);
+      if (c.url)     lines.push(`       URL: ${c.url}`);
+    });
+    lines.push('');
+  }
+
+  lines.push('═══════════════════════════════════════════════════════════════');
+  lines.push('');
+  return lines.join('\n');
+}
+
 // ─── Search query generation ──────────────────────────────────────────────────
+// Part 20: enriches queries with report themes when a report is available
 
 async function generateSearchQueries(
-  topic:   string,
-  role:    DebateAgentRole,
-  roleDef: RoleDefinition,
+  topic:         string,
+  role:          DebateAgentRole,
+  roleDef:       RoleDefinition,
+  reportContext: DebateReportContext | null,
 ): Promise<string[]> {
+  // Build a hint about what the report already covers so web search
+  // adds NEW information rather than duplicating report content.
+  const reportHint = reportContext
+    ? `\nNote: We already have a research report covering: ${reportContext.keyThemes.slice(0, 4).join(', ')}. Your web searches should find RECENT updates (2024-2025) and angles NOT already in the report.`
+    : '';
+
   try {
     const result = await chatCompletionJSON<{ queries: string[] }>(
       [
@@ -121,6 +198,7 @@ async function generateSearchQueries(
           content: `Topic for debate: "${topic}"
 Agent role: ${roleDef.label} — ${roleDef.tagline}
 Search focus areas: ${roleDef.searchKeywords.join(', ')}
+${reportHint}
 
 Generate exactly 4 specific, diverse web search queries to find the best recent evidence supporting the ${roleDef.label}'s analytical perspective on this topic.
 
@@ -129,6 +207,7 @@ Rules:
 - Include "2024" or "2025" in at least 2 queries for recency
 - Be specific — no vague single-word queries
 - Queries should surface evidence relevant to this role's specific lens
+- Do NOT duplicate what a research report would already cover
 
 Return ONLY valid JSON: {"queries": ["query 1", "query 2", "query 3", "query 4"]}`,
         },
@@ -161,57 +240,66 @@ interface DebatePerspectiveRaw {
   stanceType:   DebateStanceType;
   summary:      string;
   arguments: {
-    point:     string;
-    evidence:  string;
+    point:      string;
+    evidence:   string;
     sourceUrl?: string;
-    strength:  'strong' | 'moderate' | 'weak';
+    strength:   'strong' | 'moderate' | 'weak';
   }[];
   keyQuote:   string;
-  // FIX: typed as number, not a literal — forces the model to compute it
   confidence: number;
 }
 
 async function generatePerspective(
-  topic:         string,
-  question:      string,
-  roleDef:       RoleDefinition,
-  searchContext: string,
+  topic:             string,
+  question:          string,
+  roleDef:           RoleDefinition,
+  searchContext:     string,
   searchResultCount: number,
+  reportContext:     DebateReportContext | null,
 ): Promise<DebatePerspectiveRaw> {
-  // FIX: build an evidence-quality hint based on how many results we got
   const evidenceQualityHint =
     searchResultCount === 0
-      ? 'NOTE: No search results were returned. Your confidence score should reflect this (likely 2-4).'
+      ? 'NOTE: No web search results returned. Use the research report data above. Your confidence score should reflect limited external verification (likely 4-6).'
       : searchResultCount < 5
-      ? 'NOTE: Limited search results available. Calibrate confidence accordingly (likely 3-6).'
-      : 'Search results are available above. Calibrate confidence based on their quality and consistency.';
+      ? 'NOTE: Limited web search results available. Supplement with the research report data above. Calibrate confidence accordingly (likely 4-6).'
+      : 'Both the research report AND fresh web search results are available above. Calibrate confidence based on consistency between them.';
 
-  const userPrompt = `DEBATE TOPIC: "${topic}"
+  // Part 20: prepend report context block if available
+  const reportBlock = reportContext
+    ? buildReportContextBlock(reportContext)
+    : '';
+
+  // Part 20: add instruction to reference report when available
+  const reportInstruction = reportContext
+    ? `\nIMPORTANT: You have an imported research report above with verified findings and statistics. You MUST:\n  1. Reference specific data points from the report (cite as "per the research report" or use the report's citation URLs)\n  2. Combine report data with new web search findings to create the strongest possible argument\n  3. If web search CONTRADICTS the report, acknowledge the discrepancy honestly\n`
+    : '';
+
+  const userPrompt = `${reportBlock}DEBATE TOPIC: "${topic}"
 CENTRAL QUESTION: "${question}"
 
-REAL-TIME SEARCH EVIDENCE (use this to ground your arguments in current facts):
-${searchContext || '(No search results available — base response on general knowledge and be explicit about uncertainty)'}
+REAL-TIME WEB SEARCH EVIDENCE (latest information — use alongside the report above):
+${searchContext || '(No web search results — rely on research report data above)'}
 
 ─────────────────────────────────────────────
 
 You are playing: ${roleDef.label} (${roleDef.tagline})
-
+${reportInstruction}
 ${evidenceQualityHint}
 
 ${CONFIDENCE_RUBRIC}
 
-Analyse the evidence above through your unique lens and form a well-argued, evidence-backed perspective.
+Analyse ALL evidence above (both the research report AND web search) through your unique lens and form a well-argued, evidence-backed perspective.
 
 Return ONLY valid JSON with NO markdown fences:
 {
   "stanceLabel": "Your clear, memorable one-line position on this specific question (< 20 words)",
   "stanceType": "strongly_for" or "for" or "neutral" or "against" or "strongly_against",
-  "summary": "Three substantial paragraphs separated by newlines. Paragraph 1: Your overall position and why. Paragraph 2: Key evidence from the search results supporting your view — cite specific data, numbers, and sources by name. Paragraph 3: Implications and what this means going forward. Be specific throughout.",
+  "summary": "Three substantial paragraphs separated by newlines. Paragraph 1: Your overall position and why. Paragraph 2: Key evidence — cite specific data, numbers, and sources from BOTH the research report and web results. Paragraph 3: Implications and what this means going forward. Be specific throughout.",
   "arguments": [
     {
       "point": "Argument headline — punchy and clear (< 15 words)",
-      "evidence": "2-3 sentences of detailed evidence with specific data points or examples from the search results",
-      "sourceUrl": "exact URL from search results only if this argument directly uses that source — omit field entirely if not applicable",
+      "evidence": "2-3 sentences of detailed evidence with specific data points — cite report findings OR web sources by name",
+      "sourceUrl": "exact URL from report citations or web search only if this argument directly uses that source — omit if not applicable",
       "strength": "strong"
     },
     {
@@ -230,60 +318,61 @@ Return ONLY valid JSON with NO markdown fences:
       "strength": "moderate"
     }
   ],
-  "keyQuote": "Your single most powerful, memorable, quotable statement — the one sentence that captures your view perfectly.",
-  "confidence": <INTEGER 1-10 — apply the rubric above honestly based on evidence quality>
+  "keyQuote": "Your single most powerful, memorable, quotable statement that captures your view perfectly.",
+  "confidence": <INTEGER 1-10 — apply the rubric above honestly based on combined evidence quality>
 }
 
-IMPORTANT: The confidence field must be an integer you have genuinely computed using the rubric. Do NOT default to 7 or 8. If evidence is weak, score 3-4. If mixed, score 5-6. If strong, score 7-9.`;
+IMPORTANT: The confidence field must be an integer you have genuinely computed using the rubric. If report + web evidence align strongly, score higher. If they conflict or evidence is sparse, score lower.`;
 
   return chatCompletionJSON<DebatePerspectiveRaw>(
     [
       { role: 'system', content: roleDef.systemPrompt },
       { role: 'user',   content: userPrompt },
     ],
-    { temperature: 0.65, maxTokens: 2400 },
+    { temperature: 0.65, maxTokens: 2600 },
   );
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function runDebateAgent(
-  topic:      string,
-  question:   string,
-  role:       DebateAgentRole,
-  onProgress?: (detail: string) => void,
+  topic:         string,
+  question:      string,
+  role:          DebateAgentRole,
+  onProgress?:   (detail: string) => void,
+  reportContext: DebateReportContext | null = null,  // Part 20: new param
 ): Promise<DebatePerspective> {
   const roleDef = ROLE_DEFINITIONS[role];
 
   // ── Step 1: Generate search queries ──────────────────────────────────────
 
   onProgress?.(`${roleDef.label}: Planning research queries...`);
-  const searchQueries = await generateSearchQueries(topic, role, roleDef);
+  const searchQueries = await generateSearchQueries(topic, role, roleDef, reportContext);
 
   // ── Step 2: Web search ────────────────────────────────────────────────────
 
-  onProgress?.(`${roleDef.label}: Searching for evidence...`);
+  onProgress?.(`${roleDef.label}: Searching for latest evidence...`);
   const searchBatches = await serpSearchBatch(searchQueries);
   const allResults = searchBatches.flatMap(b =>
     Array.isArray(b?.results) ? b.results : [],
   );
 
-  // Build rich search context for the LLM
   const searchContext = allResults
     .slice(0, 14)
     .map((r, i) =>
       [
-        `[Source ${i + 1}]`,
-        r.title   ? `Title: ${r.title}`   : '',
+        `[Web Source ${i + 1}]`,
+        r.title   ? `Title: ${r.title}`     : '',
         r.snippet ? `Excerpt: ${r.snippet}` : '',
-        r.date    ? `Date: ${r.date}`     : '',
-        r.url     ? `URL: ${r.url}`       : '',
+        r.date    ? `Date: ${r.date}`       : '',
+        r.url     ? `URL: ${r.url}`         : '',
       ]
         .filter(Boolean)
         .join('\n'),
     )
     .join('\n\n');
 
+  // Build citations from web results
   const sourcesUsed: Citation[] = allResults.slice(0, 7).map((r, i) => ({
     id:      `${role}-src-${i}`,
     title:   r.title   ?? 'Untitled',
@@ -292,6 +381,19 @@ export async function runDebateAgent(
     date:    r.date,
     snippet: (r.snippet ?? '').slice(0, 200),
   }));
+
+  // Part 20: also include report citations as sources
+  if (reportContext) {
+    reportContext.citations.slice(0, 4).forEach((c, i) => {
+      sourcesUsed.push({
+        id:      `${role}-rep-${i}`,
+        title:   c.title,
+        url:     c.url,
+        source:  'Research Report',
+        snippet: c.snippet,
+      });
+    });
+  }
 
   // ── Step 3: Generate perspective ──────────────────────────────────────────
 
@@ -302,9 +404,10 @@ export async function runDebateAgent(
     roleDef,
     searchContext,
     allResults.length,
+    reportContext,
   );
 
-  // ── Step 4: Hydrate, validate, and clamp confidence ───────────────────────
+  // ── Step 4: Hydrate, validate, clamp confidence ───────────────────────────
 
   const hydratedArguments: DebateArgument[] = (raw.arguments ?? [])
     .slice(0, 4)
@@ -322,7 +425,6 @@ export async function runDebateAgent(
     'strongly_for', 'for', 'neutral', 'against', 'strongly_against',
   ];
 
-  // FIX: parse as number, clamp strictly to 1-10, reject non-numeric
   const rawConfidence = raw.confidence;
   const parsedConfidence = typeof rawConfidence === 'number'
     ? rawConfidence
@@ -330,11 +432,11 @@ export async function runDebateAgent(
     ? parseFloat(rawConfidence as string)
     : NaN;
 
-  // If the model still returned something invalid, derive a fallback from
-  // evidence quality rather than defaulting to 8
-  const confidenceFallback = allResults.length === 0 ? 3
-    : allResults.length < 4                           ? 4
-    : 6; // genuine "we have data but nothing exceptional" default
+  // Part 20: if report context is present, baseline fallback is slightly higher
+  // because we at least have report data even if web search was sparse
+  const confidenceFallback = reportContext
+    ? (allResults.length === 0 ? 5 : allResults.length < 4 ? 6 : 7)
+    : (allResults.length === 0 ? 3 : allResults.length < 4 ? 4 : 6);
 
   const confidence = Number.isFinite(parsedConfidence)
     ? Math.min(10, Math.max(1, Math.round(parsedConfidence)))
@@ -344,7 +446,7 @@ export async function runDebateAgent(
     agentRole:       role,
     agentName:       roleDef.label,
     tagline:         roleDef.tagline,
-    stanceLabel:     raw.stanceLabel   ?? `${roleDef.label}'s view on ${topic}`,
+    stanceLabel:     raw.stanceLabel ?? `${roleDef.label}'s view on ${topic}`,
     stanceType:      validStanceTypes.includes(raw.stanceType)
       ? raw.stanceType
       : 'neutral',

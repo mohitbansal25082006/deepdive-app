@@ -1066,3 +1066,58 @@ export interface MemberSharedItem {
 // ─── Part 18: File filter for chat ───────────────────────────────────────────
 
 export type ChatFileFilterType = 'all' | 'images' | 'videos' | 'audio' | 'documents';
+
+// ─── Part 20: Debate Report Import & Voice Input ──────────────────────────────
+
+/**
+ * A lightweight summary of a research report used in the debate report picker.
+ * This avoids loading all report data when only metadata is needed.
+ */
+export interface DebateReportSummary {
+  id:               string;
+  title:            string;
+  query:            string;
+  depth:            string;
+  sectionsCount:    number;
+  sourcesCount:     number;
+  reliabilityScore: number;
+  keyFindings:      string[];
+  createdAt:        string;
+}
+
+/**
+ * Context extracted from an imported research report to ground debate agents.
+ * Passed into the debate orchestrator and injected into each agent prompt.
+ */
+export interface DebateReportContext {
+  reportId:        string;
+  reportTitle:     string;
+  reportQuery:     string;
+  executiveSummary: string;
+  keyFindings:     string[];
+  statistics:      Array<{ value: string; context: string; source: string }>;
+  keyThemes:       string[];
+  citations:       Array<{ title: string; url: string; snippet: string }>;
+  sourcesCount:    number;
+  reliabilityScore: number;
+}
+
+/**
+ * Extended DebateConfig that includes optional report context for Part 20.
+ * Fully backwards-compatible — reportContext is optional.
+ */
+export interface DebateConfigV2 {
+  agentRoles?:    DebateAgentRole[];
+  reportContext?: DebateReportContext | null;
+}
+
+/**
+ * Voice recording state for the debate voice input feature.
+ */
+export interface DebateVoiceState {
+  isRecording:      boolean;
+  isTranscribing:   boolean;
+  permissionGranted: boolean;
+  durationMs:       number;
+  error:            string | null;
+}

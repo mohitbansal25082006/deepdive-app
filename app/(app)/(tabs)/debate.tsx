@@ -1,18 +1,19 @@
 // app/(app)/(tabs)/debate.tsx
-// Part 9 — AI Debate Agent tab screen.
+// Part 20 — Full update: adds voice input + research report import to the
+// Debate tab. All Part 9 functionality preserved and extended.
 //
-// Layout:
-//   Header with avatar
-//   ── Active generation: DebateProgressIndicator
-//   ── Error banner
-//   ── Create form (always visible when not generating)
-//   ── Past debates history list
-//   ── Empty state
+// New in Part 20:
+//   1. Voice input — mic button beside topic field, Whisper transcription
+//   2. Report import — bottom sheet to pick any completed research report
+//   3. ImportedReportChip — shows attached report below topic input
+//   4. Debate agents now receive report context for grounded arguments
+//   5. Updated useDebate hook call passes DebateConfigV2
 
 import React, {
   useState,
   useEffect,
   useCallback,
+  useRef,
 }                                   from 'react';
 import {
   View,
@@ -24,6 +25,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Keyboard,
 }                                   from 'react-native';
 import { LinearGradient }           from 'expo-linear-gradient';
 import { Ionicons }                 from '@expo/vector-icons';
@@ -37,7 +39,12 @@ import { router }                   from 'expo-router';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../../src/constants/theme';
 import { useDebate }                               from '../../../src/hooks/useDebate';
 import { useDebateHistory }                        from '../../../src/hooks/useDebateHistory';
+import { useDebateVoice }                          from '../../../src/hooks/useDebateVoice';
+import { useDebateReportImport }                   from '../../../src/hooks/useDebateReportImport';
 import { DebateProgressIndicator }                 from '../../../src/components/debate/DebateProgressIndicator';
+import { ReportImportSheet }                       from '../../../src/components/debate/ReportImportSheet';
+import { ImportedReportChip }                      from '../../../src/components/debate/ImportedReportChip';
+import { VoiceInputButton }                        from '../../../src/components/debate/VoiceInputButton';
 import { Avatar }                                  from '../../../src/components/common/Avatar';
 import { useAuth }                                 from '../../../src/context/AuthContext';
 import type { DebateSession }                      from '../../../src/types';
@@ -82,8 +89,7 @@ function DebateHistoryCard({
     p => p.stanceType === 'against' || p.stanceType === 'strongly_against',
   ).length;
 
-  const createdDate = new Date(session.createdAt);
-  const dateLabel = createdDate.toLocaleDateString('en-US', {
+  const dateLabel = new Date(session.createdAt).toLocaleDateString('en-US', {
     month: 'short',
     day:   'numeric',
   });
@@ -103,14 +109,11 @@ function DebateHistoryCard({
           ...SHADOWS.small,
         }}
       >
-        {/* Top color strip using agent colors */}
+        {/* Top color strip */}
         {isCompleted && agentColors.length > 0 && (
           <View style={{ flexDirection: 'row', height: 3 }}>
             {agentColors.map((color, i) => (
-              <View
-                key={i}
-                style={{ flex: 1, backgroundColor: color }}
-              />
+              <View key={i} style={{ flex: 1, backgroundColor: color }} />
             ))}
           </View>
         )}
@@ -136,8 +139,8 @@ function DebateHistoryCard({
             }}>
               <Ionicons
                 name={
-                  isFailed       ? 'alert-circle-outline' :
-                  isCompleted    ? 'people-outline'       :
+                  isFailed    ? 'alert-circle-outline' :
+                  isCompleted ? 'people-outline'       :
                   'hourglass-outline'
                 }
                 size={18}
@@ -172,17 +175,12 @@ function DebateHistoryCard({
               )}
             </View>
 
-            {/* Delete button */}
             <TouchableOpacity
               onPress={onDelete}
               hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
               style={{ padding: 4 }}
             >
-              <Ionicons
-                name="trash-outline"
-                size={16}
-                color={COLORS.textMuted}
-              />
+              <Ionicons name="trash-outline" size={16} color={COLORS.textMuted} />
             </TouchableOpacity>
           </View>
 
@@ -194,7 +192,7 @@ function DebateHistoryCard({
               gap:            SPACING.sm,
               marginBottom:   SPACING.sm,
             }}>
-              <View style={{ flexDirection: 'row', gap: -4 }}>
+              <View style={{ flexDirection: 'row' }}>
                 {agentColors.slice(0, 6).map((color, i) => (
                   <View
                     key={i}
@@ -220,38 +218,30 @@ function DebateHistoryCard({
                   </View>
                 ))}
               </View>
-              <Text style={{
-                color:    COLORS.textMuted,
-                fontSize: FONTS.sizes.xs,
-              }}>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
                 {session.perspectives?.length ?? 0} agents debated
               </Text>
             </View>
           )}
 
           {/* Stats row */}
-          <View style={{
-            flexDirection:  'row',
-            alignItems:     'center',
-            gap:            SPACING.md,
-          }}>
-            {/* For / Against chips */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
             {isCompleted && (
               <>
                 {stanceForCount > 0 && (
                   <View style={{
-                    flexDirection:   'row',
-                    alignItems:      'center',
-                    gap:             4,
-                    backgroundColor: `${COLORS.success}12`,
-                    borderRadius:    RADIUS.full,
+                    flexDirection:     'row',
+                    alignItems:        'center',
+                    gap:               4,
+                    backgroundColor:   `${COLORS.success}12`,
+                    borderRadius:      RADIUS.full,
                     paddingHorizontal: 8,
                     paddingVertical:   3,
                   }}>
                     <Ionicons name="arrow-up" size={10} color={COLORS.success} />
                     <Text style={{
-                      color:     COLORS.success,
-                      fontSize:  FONTS.sizes.xs,
+                      color:      COLORS.success,
+                      fontSize:   FONTS.sizes.xs,
                       fontWeight: '700',
                     }}>
                       {stanceForCount} For
@@ -260,18 +250,18 @@ function DebateHistoryCard({
                 )}
                 {stanceAgainstCount > 0 && (
                   <View style={{
-                    flexDirection:   'row',
-                    alignItems:      'center',
-                    gap:             4,
-                    backgroundColor: `${COLORS.secondary}12`,
-                    borderRadius:    RADIUS.full,
+                    flexDirection:     'row',
+                    alignItems:        'center',
+                    gap:               4,
+                    backgroundColor:   `${COLORS.secondary}12`,
+                    borderRadius:      RADIUS.full,
                     paddingHorizontal: 8,
                     paddingVertical:   3,
                   }}>
                     <Ionicons name="arrow-down" size={10} color={COLORS.secondary} />
                     <Text style={{
-                      color:     COLORS.secondary,
-                      fontSize:  FONTS.sizes.xs,
+                      color:      COLORS.secondary,
+                      fontSize:   FONTS.sizes.xs,
                       fontWeight: '700',
                     }}>
                       {stanceAgainstCount} Against
@@ -281,20 +271,19 @@ function DebateHistoryCard({
               </>
             )}
 
-            {/* Status badge */}
             <View style={{
               backgroundColor:
-                isCompleted ? `${COLORS.success}12`  :
-                isFailed    ? `${COLORS.error}12`    :
+                isCompleted ? `${COLORS.success}12` :
+                isFailed    ? `${COLORS.error}12`   :
                 `${COLORS.warning}12`,
-              borderRadius:    RADIUS.full,
+              borderRadius:      RADIUS.full,
               paddingHorizontal: 8,
               paddingVertical:   3,
             }}>
               <Text style={{
                 color:
-                  isCompleted ? COLORS.success  :
-                  isFailed    ? COLORS.error     :
+                  isCompleted ? COLORS.success :
+                  isFailed    ? COLORS.error    :
                   COLORS.warning,
                 fontSize:   FONTS.sizes.xs,
                 fontWeight: '700',
@@ -333,8 +322,8 @@ function SuggestedTopicChip({
       onPress={onPress}
       activeOpacity={0.8}
       style={{
-        backgroundColor: COLORS.backgroundCard,
-        borderRadius:    RADIUS.lg,
+        backgroundColor:   COLORS.backgroundCard,
+        borderRadius:      RADIUS.lg,
         paddingHorizontal: 12,
         paddingVertical:   8,
         borderWidth:       1,
@@ -349,9 +338,9 @@ function SuggestedTopicChip({
       <Ionicons name="bulb-outline" size={13} color={COLORS.primary} />
       <Text
         style={{
-          color:     COLORS.textSecondary,
-          fontSize:  FONTS.sizes.xs,
-          maxWidth:  200,
+          color:    COLORS.textSecondary,
+          fontSize: FONTS.sizes.xs,
+          maxWidth: 200,
         }}
         numberOfLines={1}
       >
@@ -367,12 +356,12 @@ export default function DebateScreen() {
   const { profile } = useAuth();
 
   const {
-    state: genState,
+    state:       genState,
     isGenerating,
     progressPercent,
     phase,
     startDebate,
-    reset: resetDebate,
+    reset:       resetDebate,
   } = useDebate();
 
   const {
@@ -385,15 +374,48 @@ export default function DebateScreen() {
     deleteDebate,
   } = useDebateHistory();
 
+  // ── Part 20: Voice input ──────────────────────────────────────────────────
+
+  const { voiceState, startVoice, stopVoice, cancelVoice, clearError: clearVoiceError } =
+    useDebateVoice({
+      onTranscribed: (text) => {
+        setTopic(text);
+        // Dismiss keyboard after transcription fills the input
+        Keyboard.dismiss();
+      },
+    });
+
+  // ── Part 20: Report import ────────────────────────────────────────────────
+
+  const {
+    importedReport,
+    reportContext,
+    handleReportSelected,
+    clearReport,
+    hasReport,
+  } = useDebateReportImport();
+
   // ── Form state ────────────────────────────────────────────────────────────
 
-  const [topic, setTopic] = useState('');
+  const [topic,              setTopic]              = useState('');
+  const [showReportSheet,    setShowReportSheet]     = useState(false);
+
+  const topicInputRef = useRef<TextInput>(null);
 
   // ── Auto-refresh history after generation completes ───────────────────────
 
   useEffect(() => {
     if (phase === 'done') refresh();
   }, [phase]);
+
+  // ── Dismiss voice error after 4 seconds ──────────────────────────────────
+
+  useEffect(() => {
+    if (voiceState.error) {
+      const t = setTimeout(clearVoiceError, 4000);
+      return () => clearTimeout(t);
+    }
+  }, [voiceState.error]);
 
   // ── Start debate ──────────────────────────────────────────────────────────
 
@@ -407,10 +429,13 @@ export default function DebateScreen() {
       Alert.alert('Too Short', 'Please enter a more specific debate topic (at least 10 characters).');
       return;
     }
-    startDebate(trimmed);
-  }, [topic, startDebate]);
+    Keyboard.dismiss();
 
-  // ── Cancel ────────────────────────────────────────────────────────────────
+    // Part 20: pass reportContext via config
+    startDebate(trimmed, { reportContext: reportContext ?? null });
+  }, [topic, reportContext, startDebate]);
+
+  // ── Cancel generation ─────────────────────────────────────────────────────
 
   const handleCancel = useCallback(() => {
     Alert.alert(
@@ -423,22 +448,31 @@ export default function DebateScreen() {
     );
   }, [resetDebate]);
 
-  // ── Delete with confirmation ──────────────────────────────────────────────
+  // ── Delete debate with confirmation ──────────────────────────────────────
 
   const handleDelete = useCallback((sessionId: string, sessionTopic: string) => {
     Alert.alert(
       'Delete Debate',
       `Delete "${sessionTopic.slice(0, 50)}..."?`,
       [
-        { text: 'Cancel',  style: 'cancel' },
-        { text: 'Delete',  style: 'destructive', onPress: () => deleteDebate(sessionId) },
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => deleteDebate(sessionId) },
       ],
     );
   }, [deleteDebate]);
 
+  // ── Voice mic button press ────────────────────────────────────────────────
+
+  const handleVoicePress = useCallback(() => {
+    if (voiceState.isRecording) {
+      stopVoice();
+    } else if (!voiceState.isTranscribing) {
+      startVoice();
+    }
+  }, [voiceState.isRecording, voiceState.isTranscribing, startVoice, stopVoice]);
+
   // ── Derived ───────────────────────────────────────────────────────────────
 
-  // Fix: Removed 'searching' from the condition since it's not in the phase type
   const showProgress = phase === 'debating' || phase === 'moderating';
   const showForm     = !isGenerating;
   const showBanner   = phase === 'done' && genState.session !== null;
@@ -546,7 +580,10 @@ export default function DebateScreen() {
                         {genState.session.topic}
                       </Text>
                     </View>
-                    <TouchableOpacity onPress={resetDebate} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                    <TouchableOpacity
+                      onPress={resetDebate}
+                      hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                    >
                       <Ionicons name="close-circle-outline" size={20} color={COLORS.textMuted} />
                     </TouchableOpacity>
                   </View>
@@ -578,11 +615,7 @@ export default function DebateScreen() {
                     }}
                   >
                     <Ionicons name="people-outline" size={18} color="#FFF" />
-                    <Text style={{
-                      color:      '#FFF',
-                      fontSize:   FONTS.sizes.sm,
-                      fontWeight: '700',
-                    }}>
+                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
                       View Full Debate
                     </Text>
                   </TouchableOpacity>
@@ -638,27 +671,59 @@ export default function DebateScreen() {
               </Animated.View>
             )}
 
+            {/* ── Voice error banner ─────────────────────────────────────── */}
+            {voiceState.error && (
+              <Animated.View
+                entering={FadeIn.duration(300)}
+                style={{
+                  backgroundColor: `${COLORS.warning}10`,
+                  borderRadius:    RADIUS.lg,
+                  padding:         SPACING.sm,
+                  marginBottom:    SPACING.md,
+                  borderWidth:     1,
+                  borderColor:     `${COLORS.warning}30`,
+                  flexDirection:   'row',
+                  alignItems:      'center',
+                  gap:             8,
+                }}
+              >
+                <Ionicons name="mic-off-outline" size={16} color={COLORS.warning} />
+                <Text style={{
+                  flex:       1,
+                  color:      COLORS.warning,
+                  fontSize:   FONTS.sizes.xs,
+                }}>
+                  {voiceState.error}
+                </Text>
+                <TouchableOpacity onPress={clearVoiceError}>
+                  <Ionicons name="close" size={16} color={COLORS.warning} />
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
             {/* ── Create form ────────────────────────────────────────────── */}
             {showForm && (
               <Animated.View entering={FadeInDown.duration(400).delay(100)}>
 
                 <Text style={{
-                  color:          COLORS.textSecondary,
-                  fontSize:       FONTS.sizes.sm,
-                  fontWeight:     '600',
-                  letterSpacing:  0.8,
-                  textTransform:  'uppercase',
-                  marginBottom:   SPACING.sm,
+                  color:         COLORS.textSecondary,
+                  fontSize:      FONTS.sizes.sm,
+                  fontWeight:    '600',
+                  letterSpacing: 0.8,
+                  textTransform: 'uppercase',
+                  marginBottom:  SPACING.sm,
                 }}>
                   New Debate
                 </Text>
 
-                {/* Topic input */}
+                {/* ── Topic input with voice button ────────────────────── */}
                 <View style={{
                   backgroundColor: COLORS.backgroundCard,
                   borderRadius:    RADIUS.lg,
                   borderWidth:     1,
-                  borderColor:     COLORS.border,
+                  borderColor:     voiceState.isRecording
+                    ? `${COLORS.error}60`
+                    : COLORS.border,
                   marginBottom:    SPACING.md,
                 }}>
                   <View style={{
@@ -667,19 +732,24 @@ export default function DebateScreen() {
                     padding:       SPACING.md,
                     gap:           10,
                   }}>
+                    {/* Left mic icon (static, decorative) */}
                     <Ionicons
-                      name="mic-outline"
+                      name="chatbubbles-outline"
                       size={20}
                       color={COLORS.primary}
                       style={{ marginTop: 2 }}
                     />
+
+                    {/* Text input */}
                     <TextInput
+                      ref={topicInputRef}
                       value={topic}
                       onChangeText={setTopic}
                       placeholder="E.g. Will AI replace programmers? Should social media be regulated?"
                       placeholderTextColor={COLORS.textMuted}
                       multiline
                       numberOfLines={3}
+                      editable={!voiceState.isRecording && !voiceState.isTranscribing}
                       style={{
                         flex:              1,
                         color:             COLORS.textPrimary,
@@ -689,10 +759,70 @@ export default function DebateScreen() {
                         textAlignVertical: 'top',
                       }}
                     />
+
+                    {/* Voice input button — right side */}
+                    <VoiceInputButton
+                      voiceState={voiceState}
+                      onStart={handleVoicePress}
+                      onStop={handleVoicePress}
+                      style={{ marginTop: 2 }}
+                    />
                   </View>
+
+                  {/* Recording hint bar */}
+                  {voiceState.isRecording && (
+                    <View style={{
+                      flexDirection:     'row',
+                      alignItems:        'center',
+                      gap:               8,
+                      paddingHorizontal: SPACING.md,
+                      paddingBottom:     SPACING.sm,
+                    }}>
+                      <View style={{
+                        width:           8,
+                        height:          8,
+                        borderRadius:    4,
+                        backgroundColor: COLORS.error,
+                      }} />
+                      <Text style={{
+                        color:     COLORS.error,
+                        fontSize:  FONTS.sizes.xs,
+                        fontWeight: '600',
+                      }}>
+                        Listening… tap stop when done
+                      </Text>
+                    </View>
+                  )}
+
+                  {voiceState.isTranscribing && (
+                    <View style={{
+                      flexDirection:     'row',
+                      alignItems:        'center',
+                      gap:               8,
+                      paddingHorizontal: SPACING.md,
+                      paddingBottom:     SPACING.sm,
+                    }}>
+                      <Text style={{
+                        color:    COLORS.warning,
+                        fontSize: FONTS.sizes.xs,
+                      }}>
+                        Transcribing your voice…
+                      </Text>
+                    </View>
+                  )}
                 </View>
 
-                {/* Agent preview row */}
+                {/* ── Part 20: Imported report chip ────────────────────── */}
+                {hasReport && importedReport && (
+                  <ImportedReportChip
+                    reportTitle={importedReport.title}
+                    sectionsCount={importedReport.sections.length}
+                    sourcesCount={importedReport.sourcesCount}
+                    onRemove={clearReport}
+                  />
+                )}
+
+                {/* ── Part 20: Report import + Agent preview row ─────── */}
                 <View style={{
                   backgroundColor: COLORS.backgroundCard,
                   borderRadius:    RADIUS.lg,
@@ -701,6 +831,68 @@ export default function DebateScreen() {
                   borderWidth:     1,
                   borderColor:     COLORS.border,
                 }}>
+                  {/* Import report button row */}
+                  <TouchableOpacity
+                    onPress={() => setShowReportSheet(true)}
+                    activeOpacity={0.8}
+                    style={{
+                      flexDirection:   'row',
+                      alignItems:      'center',
+                      gap:             10,
+                      paddingBottom:   SPACING.sm,
+                      marginBottom:    SPACING.sm,
+                      borderBottomWidth: 1,
+                      borderBottomColor: COLORS.border,
+                    }}
+                  >
+                    <View style={{
+                      width:           34,
+                      height:          34,
+                      borderRadius:    10,
+                      backgroundColor: hasReport
+                        ? `${COLORS.success}15`
+                        : `${COLORS.primary}15`,
+                      alignItems:      'center',
+                      justifyContent:  'center',
+                      borderWidth:     1,
+                      borderColor:     hasReport
+                        ? `${COLORS.success}25`
+                        : `${COLORS.primary}25`,
+                    }}>
+                      <Ionicons
+                        name={hasReport ? 'document-text' : 'add-circle-outline'}
+                        size={17}
+                        color={hasReport ? COLORS.success : COLORS.primary}
+                      />
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={{
+                        color:      hasReport ? COLORS.success : COLORS.textPrimary,
+                        fontSize:   FONTS.sizes.sm,
+                        fontWeight: '700',
+                      }}>
+                        {hasReport ? 'Report Attached ✓' : 'Import Research Report'}
+                      </Text>
+                      <Text style={{
+                        color:    COLORS.textMuted,
+                        fontSize: FONTS.sizes.xs,
+                        marginTop: 1,
+                      }}>
+                        {hasReport
+                          ? 'Agents will use verified facts from your report'
+                          : 'Ground debate in your existing research data'}
+                      </Text>
+                    </View>
+
+                    <Ionicons
+                      name="chevron-forward"
+                      size={16}
+                      color={COLORS.textMuted}
+                    />
+                  </TouchableOpacity>
+
+                  {/* Agent preview chips */}
                   <Text style={{
                     color:         COLORS.textMuted,
                     fontSize:      FONTS.sizes.xs,
@@ -710,34 +902,35 @@ export default function DebateScreen() {
                     marginBottom:  SPACING.sm,
                   }}>
                     6 AI Agents Will Debate
+                    {hasReport ? ' (+ Report Context)' : ' (+ Web Search)'}
                   </Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm }}>
                     {[
-                      { label: 'Optimist',    icon: 'sunny-outline',              color: '#43E97B' },
-                      { label: 'Skeptic',     icon: 'alert-circle-outline',       color: '#FF6584' },
-                      { label: 'Economist',   icon: 'trending-up-outline',        color: '#FFD700' },
-                      { label: 'Technologist',icon: 'hardware-chip-outline',      color: '#29B6F6' },
-                      { label: 'Ethicist',    icon: 'shield-checkmark-outline',   color: '#C084FC' },
-                      { label: 'Futurist',    icon: 'telescope-outline',          color: '#FF8E53' },
+                      { label: 'Optimist',     icon: 'sunny-outline',            color: '#43E97B' },
+                      { label: 'Skeptic',      icon: 'alert-circle-outline',     color: '#FF6584' },
+                      { label: 'Economist',    icon: 'trending-up-outline',      color: '#FFD700' },
+                      { label: 'Technologist', icon: 'hardware-chip-outline',    color: '#29B6F6' },
+                      { label: 'Ethicist',     icon: 'shield-checkmark-outline', color: '#C084FC' },
+                      { label: 'Futurist',     icon: 'telescope-outline',        color: '#FF8E53' },
                     ].map(agent => (
                       <View
                         key={agent.label}
                         style={{
-                          flexDirection:   'row',
-                          alignItems:      'center',
-                          gap:             5,
-                          backgroundColor: `${agent.color}12`,
-                          borderRadius:    RADIUS.full,
+                          flexDirection:     'row',
+                          alignItems:        'center',
+                          gap:               5,
+                          backgroundColor:   `${agent.color}12`,
+                          borderRadius:      RADIUS.full,
                           paddingHorizontal: 10,
                           paddingVertical:   5,
-                          borderWidth:     1,
-                          borderColor:     `${agent.color}25`,
+                          borderWidth:       1,
+                          borderColor:       `${agent.color}25`,
                         }}
                       >
                         <Ionicons name={agent.icon as any} size={12} color={agent.color} />
                         <Text style={{
-                          color:     agent.color,
-                          fontSize:  FONTS.sizes.xs,
+                          color:      agent.color,
+                          fontSize:   FONTS.sizes.xs,
                           fontWeight: '600',
                         }}>
                           {agent.label}
@@ -747,7 +940,7 @@ export default function DebateScreen() {
                   </View>
                 </View>
 
-                {/* Suggested topics */}
+                {/* ── Suggested topics ──────────────────────────────────── */}
                 <Text style={{
                   color:         COLORS.textMuted,
                   fontSize:      FONTS.sizes.xs,
@@ -773,7 +966,7 @@ export default function DebateScreen() {
                   ))}
                 </View>
 
-                {/* Launch button */}
+                {/* ── Launch button ─────────────────────────────────────── */}
                 <TouchableOpacity
                   onPress={handleStart}
                   activeOpacity={0.85}
@@ -795,7 +988,7 @@ export default function DebateScreen() {
                       fontSize:   FONTS.sizes.md,
                       fontWeight: '700',
                     }}>
-                      Start Debate
+                      {hasReport ? 'Start Debate (with Report)' : 'Start Debate'}
                     </Text>
                   </LinearGradient>
                 </TouchableOpacity>
@@ -807,17 +1000,16 @@ export default function DebateScreen() {
             {(debates.length > 0 || loading) && (
               <View style={{ marginTop: SPACING.xl }}>
                 <Text style={{
-                  color:          COLORS.textSecondary,
-                  fontSize:       FONTS.sizes.sm,
-                  fontWeight:     '600',
-                  letterSpacing:  0.8,
-                  textTransform:  'uppercase',
-                  marginBottom:   SPACING.sm,
+                  color:         COLORS.textSecondary,
+                  fontSize:      FONTS.sizes.sm,
+                  fontWeight:    '600',
+                  letterSpacing: 0.8,
+                  textTransform: 'uppercase',
+                  marginBottom:  SPACING.sm,
                 }}>
                   Past Debates
                 </Text>
 
-                {/* Loading skeletons */}
                 {loading && debates.length === 0 &&
                   [0, 1, 2].map(i => (
                     <View key={i} style={{
@@ -881,13 +1073,22 @@ export default function DebateScreen() {
                   marginTop:  SPACING.sm,
                   lineHeight: 20,
                 }}>
-                  Enter a topic above and tap{'\n'}"Start Debate"
+                  Enter a topic above or tap the mic{'\n'}to speak your debate question
                 </Text>
               </Animated.View>
             )}
 
           </ScrollView>
         </KeyboardAvoidingView>
+
+        {/* ── Part 20: Report import bottom sheet ───────────────────────── */}
+        <ReportImportSheet
+          visible={showReportSheet}
+          onClose={() => setShowReportSheet(false)}
+          onSelectReport={handleReportSelected}
+          selectedReportId={importedReport?.id ?? null}
+        />
+
       </SafeAreaView>
     </LinearGradient>
   );

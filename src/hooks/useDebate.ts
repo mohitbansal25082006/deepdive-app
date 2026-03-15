@@ -1,14 +1,11 @@
 // src/hooks/useDebate.ts
-// Part 9 — Manages all state for AI Debate generation.
+// Part 20 — Updated to accept DebateConfigV2 so the debate tab can pass
+// reportContext from an imported research report into the pipeline.
 //
-// Exposed API:
-//   startDebate(topic, config?) — launch the full debate pipeline
-//   reset()                     — clear all state
-//
-// Derived values (computed, not stored):
-//   isGenerating      — true while any phase is active
-//   progressPercent   — 0-100 overall progress estimate
-//   phase             — 'idle' | 'searching' | 'debating' | 'moderating' | 'done' | 'error'
+// Changes from Part 9:
+//   • startDebate(topic, config?) now accepts DebateConfigV2
+//   • Config is forwarded to runDebatePipeline unchanged
+//   • All state management logic is identical to Part 9
 
 import { useState, useCallback, useRef } from 'react';
 import {
@@ -17,10 +14,9 @@ import {
   DebateAgentProgressItem,
   DebatePerspective,
   DebateAgentRole,
-  DebateConfig,
 } from '../types';
-import { runDebatePipeline } from '../services/debateOrchestrator';
-import { useAuth }           from '../context/AuthContext';
+import { runDebatePipeline, DebateConfigV2 } from '../services/debateOrchestrator';
+import { useAuth }                           from '../context/AuthContext';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -56,9 +52,10 @@ export function useDebate() {
   }, []);
 
   // ── Core launcher ─────────────────────────────────────────────────────────
+  // Part 20: config is now DebateConfigV2 (supports optional reportContext)
 
   const startDebate = useCallback(
-    async (topic: string, config: DebateConfig = {}) => {
+    async (topic: string, config: DebateConfigV2 = {}) => {
       if (!user) {
         setState(prev => ({
           ...prev,
@@ -77,7 +74,9 @@ export function useDebate() {
         isSearching:     true,
         isDebating:      true,
         totalAgents:     roles.length,
-        progressMessage: 'Analysing debate topic...',
+        progressMessage: config.reportContext
+          ? `Analysing topic with report context from "${config.reportContext.reportTitle}"...`
+          : 'Analysing debate topic...',
         agentProgress:   [],
       });
 
@@ -95,7 +94,6 @@ export function useDebate() {
 
         onAgentComplete: (_role: DebateAgentRole, _perspective: DebatePerspective) => {
           // Progress already updated via onAgentProgressUpdate.
-          // Here we could trigger partial UI reveals if desired.
         },
 
         // ── Status message updates ──────────────────────────────────────────
@@ -157,12 +155,8 @@ export function useDebate() {
   const isGenerating =
     state.isSearching || state.isDebating || state.isModerating;
 
-  // Progress estimate:
-  //   0–85 % based on agent completions
-  //   85–95 % while moderating
-  //   100 % when done
   const progressPercent = (() => {
-    if (state.session) return 100;
+    if (state.session)      return 100;
     if (state.isModerating) return 90;
     if (state.totalAgents > 0) {
       return Math.min(
@@ -174,10 +168,10 @@ export function useDebate() {
   })();
 
   const phase: 'idle' | 'searching' | 'debating' | 'moderating' | 'done' | 'error' =
-    state.error                                ? 'error'      :
-    state.session                              ? 'done'       :
-    state.isModerating                         ? 'moderating' :
-    state.isDebating || state.isSearching      ? 'debating'   :
+    state.error                               ? 'error'      :
+    state.session                             ? 'done'       :
+    state.isModerating                        ? 'moderating' :
+    state.isDebating || state.isSearching     ? 'debating'   :
     'idle';
 
   return {
