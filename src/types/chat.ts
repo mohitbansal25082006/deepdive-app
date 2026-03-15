@@ -1,7 +1,6 @@
 // src/types/chat.ts
 // Part 17 — Workspace Chat System types
-// Import and re-export from index.ts as needed
-// These are additions only — nothing from previous parts is modified.
+// Part 18 — Added `mentions` field to ChatMessage
 
 import { MiniProfile } from './index';
 
@@ -38,6 +37,12 @@ export interface ChatMessage {
   replyToId:    string | null;
   replyTo?:     ChatReplyPreview | null;
   attachments:  ChatAttachment[];
+  /**
+   * Part 18: array of user IDs @mentioned in this message.
+   * Populated by parsing @username tokens at send time.
+   * Used to fire mention notifications server-side.
+   */
+  mentions:     string[];
   isEdited:     boolean;
   isDeleted:    boolean;
   isPinned:     boolean;
@@ -116,4 +121,27 @@ export interface UserChatStats {
   workspacesActive:   number;
   reactionsGiven:     number;
   messagesPinned:     number;
+}
+
+// ─── Part 18: Mention detection helpers ──────────────────────────────────────
+
+/**
+ * A parsed mention token found in message text.
+ * position: character index of the @ sign.
+ */
+export interface ParsedMention {
+  userId:   string;
+  username: string;
+  position: number;
+  length:   number;
+}
+
+/**
+ * Live state while the user is typing a @mention query.
+ */
+export interface ActiveMentionQuery {
+  /** The text after @ that the user is currently typing */
+  query:       string;
+  /** Character position of the @ sign in the input */
+  atPosition:  number;
 }

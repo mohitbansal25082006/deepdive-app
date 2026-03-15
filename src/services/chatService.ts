@@ -1,68 +1,39 @@
 // src/services/chatService.ts
-// Part 17 — Workspace Chat Service (FIXED)
-//
-// Root cause of "attRaw.map is not a function":
-//   • Supabase RPCs return JSON with snake_case keys
-//     (workspace_id, user_id, is_edited, reply_to_id, created_at …)
-//   • The old mapMessage() looked for camelCase keys — all came back undefined
-//   • null/undefined attachments/reactions then crashed on .map()
-//
-// Fix applied:
-//   1. get() helper reads BOTH snake_case AND camelCase — works for RPC
-//      responses and realtime payloads that are already mapped.
-//   2. safeArray() always returns [] instead of crashing on null/undefined.
-//   3. All RPC JSONB responses are parsed defensively (string | array | object).
+// Part 17 — Workspace Chat Service
+// Part 18 — sendChatMessage now accepts and forwards p_mentions (uuid[])
 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import {
-  ChatMessage,
-  ChatMember,
-  ChatPinnedMessage,
-  ChatAttachment,
-  ChatMessageReactionSummary,
-  ChatReplyPreview,
-  TypingPayload,
+  ChatMessage, ChatMember, ChatPinnedMessage,
+  ChatAttachment, ChatMessageReactionSummary,
+  ChatReplyPreview, TypingPayload,
 } from '../types/chat';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Read a field by snake_case key first, camelCase fallback. */
-function get<T>(
-  raw: Record<string, unknown>,
-  snake: string,
-  camel: string,
-): T {
+function get<T>(raw: Record<string, unknown>, snake: string, camel: string): T {
   const v = raw[snake] !== undefined ? raw[snake] : raw[camel];
   return v as T;
 }
 
-/** Always return a typed array — never crashes on null / undefined. */
 function safeArray<T>(v: unknown): T[] {
   if (Array.isArray(v)) return v as T[];
   return [];
 }
 
-/** Parse JSONB that Supabase may return as string, array, or object. */
 function parseJsonb(data: unknown): Record<string, unknown>[] {
   if (!data) return [];
-  if (typeof data === 'string') {
-    try { return JSON.parse(data) as Record<string, unknown>[]; } catch { return []; }
-  }
+  if (typeof data === 'string') { try { return JSON.parse(data); } catch { return []; } }
   if (Array.isArray(data)) return data as Record<string, unknown>[];
   if (typeof data === 'object') return [data as Record<string, unknown>];
   return [];
 }
 
-/** Parse a single JSONB object returned from an RPC. */
 function parseJsonbObject(data: unknown): Record<string, unknown> {
   if (!data) return {};
-  if (typeof data === 'string') {
-    try { return JSON.parse(data) as Record<string, unknown>; } catch { return {}; }
-  }
-  if (typeof data === 'object' && !Array.isArray(data)) {
-    return data as Record<string, unknown>;
-  }
+  if (typeof data === 'string') { try { return JSON.parse(data); } catch { return {}; } }
+  if (typeof data === 'object' && !Array.isArray(data)) return data as Record<string, unknown>;
   return {};
 }
 
@@ -70,13 +41,13 @@ function parseJsonbObject(data: unknown): Record<string, unknown> {
 
 export function mapMessage(raw: Record<string, unknown>): ChatMessage {
   const authorRaw = (raw.author ?? null) as Record<string, unknown> | null;
+  const replyRaw  = (raw.reply_to ?? raw.replyTo ?? null) as Record<string, unknown> | null;
+  const reactRaw  = safeArray<Record<string, unknown>>(raw.reactions);
+  const attRaw    = safeArray<Record<string, unknown>>(raw.attachments);
 
-  // reply_to comes back as a nested JSON object in the RPC
-  const replyRaw = (raw.reply_to ?? raw.replyTo ?? null) as Record<string, unknown> | null;
-
-  // Null-safe arrays
-  const reactRaw = safeArray<Record<string, unknown>>(raw.reactions);
-  const attRaw   = safeArray<Record<string, unknown>>(raw.attachments);
+  // Part 18: mentions
+  const mentionsRaw = safeArray<unknown>(raw.mentions);
+  const mentions: string[] = mentionsRaw.filter(m => typeof m === 'string') as string[];
 
   return {
     id:          get<string>(raw, 'id', 'id') ?? '',
@@ -99,6 +70,8 @@ export function mapMessage(raw: Record<string, unknown>): ChatMessage {
       type: get<string>(a, 'type', 'type') ?? '',
       size: get<number | undefined>(a, 'size', 'size') ?? undefined,
     } satisfies ChatAttachment)),
+
+    mentions, // Part 18
 
     isEdited:  !!(get<boolean>(raw, 'is_edited',  'isEdited')  ?? false),
     isDeleted: !!(get<boolean>(raw, 'is_deleted', 'isDeleted') ?? false),
@@ -143,15 +116,15 @@ function mapPinned(raw: Record<string, unknown>): ChatPinnedMessage {
     pinnedAt:  get<string>(raw, 'pinned_at',  'pinnedAt')  ?? '',
     pinnedBy:  get<string | null>(raw, 'pinned_by', 'pinnedBy') ?? null,
     author: authorRaw ? {
-      id:        get<string>(authorRaw, 'id',          'id')        ?? '',
-      username:  get<string | null>(authorRaw, 'username',  'username')  ?? null,
-      fullName:  get<string | null>(authorRaw, 'full_name', 'fullName')  ?? null,
-      avatarUrl: get<string | null>(authorRaw, 'avatar_url','avatarUrl') ?? null,
+      id:        get<string>(authorRaw, 'id',           'id')        ?? '',
+      username:  get<string | null>(authorRaw, 'username',   'username')  ?? null,
+      fullName:  get<string | null>(authorRaw, 'full_name',  'fullName')  ?? null,
+      avatarUrl: get<string | null>(authorRaw, 'avatar_url', 'avatarUrl') ?? null,
     } : null,
   };
 }
 
-// ─── Fetch messages (cursor-based pagination) ─────────────────────────────────
+// ─── Fetch messages ────────────────────────────────────────────────────────────
 
 export async function fetchChatMessages(
   workspaceId: string,
@@ -161,27 +134,20 @@ export async function fetchChatMessages(
   try {
     const { data, error } = await supabase.rpc('get_chat_messages', {
       p_workspace_id: workspaceId,
-      p_limit:        limit + 1,   // +1 to detect hasMore
+      p_limit:        limit + 1,
       p_before_id:    beforeId ?? null,
     });
-
     if (error) throw error;
-
     const rows    = parseJsonb(data);
     const hasMore = rows.length > limit;
-    const msgs    = rows.slice(0, limit).map(mapMessage);
-
-    return { data: msgs, error: null, hasMore };
+    return { data: rows.slice(0, limit).map(mapMessage), error: null, hasMore };
   } catch (err) {
-    return {
-      data:    [],
-      error:   err instanceof Error ? err.message : 'Failed to load messages',
-      hasMore: false,
-    };
+    return { data: [], error: err instanceof Error ? err.message : 'Failed to load messages', hasMore: false };
   }
 }
 
 // ─── Send message ─────────────────────────────────────────────────────────────
+// Part 18: added mentions?: string[]
 
 export async function sendChatMessage(
   workspaceId:  string,
@@ -189,16 +155,15 @@ export async function sendChatMessage(
   contentType:  ChatMessage['contentType'] = 'text',
   replyToId?:   string,
   attachments?: ChatAttachment[],
+  mentions?:    string[],           // ← Part 18
 ): Promise<{ data: ChatMessage | null; error: string | null }> {
   try {
-    // CRITICAL FIX: p_attachments is a JSONB Postgres parameter.
-    // Supabase JS / PostgREST requires JSONB params to be a native JS
-    // array/object — NEVER a JSON.stringify() string.
-    // A pre-stringified string makes Postgres receive a JSON string
-    // literal instead of a JSONB array, causing a type error or silent
-    // failure. Pass the raw array directly so PostgREST serialises it.
     const attachmentsPayload: ChatAttachment[] =
       (attachments && attachments.length > 0) ? attachments : [];
+
+    // Pass mentions as a native array — PostgREST maps string[] → uuid[] automatically
+    const mentionsPayload: string[] =
+      (mentions && mentions.length > 0) ? mentions : [];
 
     const { data, error } = await supabase.rpc('send_chat_message', {
       p_workspace_id: workspaceId,
@@ -206,6 +171,7 @@ export async function sendChatMessage(
       p_content_type: contentType,
       p_reply_to_id:  replyToId ?? null,
       p_attachments:  attachmentsPayload,
+      p_mentions:     mentionsPayload,    // ← Part 18
     });
 
     if (error) {
@@ -217,24 +183,15 @@ export async function sendChatMessage(
     return { data: mapMessage(raw), error: null };
   } catch (err) {
     console.error('[sendChatMessage] caught:', err);
-    return {
-      data:  null,
-      error: err instanceof Error ? err.message : 'Failed to send message',
-    };
+    return { data: null, error: err instanceof Error ? err.message : 'Failed to send message' };
   }
 }
 
-// ─── Edit message ─────────────────────────────────────────────────────────────
+// ─── Edit ─────────────────────────────────────────────────────────────────────
 
-export async function editChatMessage(
-  messageId:  string,
-  newContent: string,
-): Promise<{ error: string | null }> {
+export async function editChatMessage(messageId: string, newContent: string): Promise<{ error: string | null }> {
   try {
-    const { error } = await supabase.rpc('edit_chat_message', {
-      p_message_id:  messageId,
-      p_new_content: newContent,
-    });
+    const { error } = await supabase.rpc('edit_chat_message', { p_message_id: messageId, p_new_content: newContent });
     if (error) throw error;
     return { error: null };
   } catch (err) {
@@ -242,15 +199,11 @@ export async function editChatMessage(
   }
 }
 
-// ─── Delete message ───────────────────────────────────────────────────────────
+// ─── Delete ───────────────────────────────────────────────────────────────────
 
-export async function deleteChatMessage(
-  messageId: string,
-): Promise<{ error: string | null }> {
+export async function deleteChatMessage(messageId: string): Promise<{ error: string | null }> {
   try {
-    const { error } = await supabase.rpc('delete_chat_message', {
-      p_message_id: messageId,
-    });
+    const { error } = await supabase.rpc('delete_chat_message', { p_message_id: messageId });
     if (error) throw error;
     return { error: null };
   } catch (err) {
@@ -258,147 +211,80 @@ export async function deleteChatMessage(
   }
 }
 
-// ─── Toggle reaction ──────────────────────────────────────────────────────────
+// ─── Reaction ─────────────────────────────────────────────────────────────────
 
-export async function toggleChatReaction(
-  messageId: string,
-  emoji:     string,
-): Promise<{ added: boolean; error: string | null }> {
+export async function toggleChatReaction(messageId: string, emoji: string): Promise<{ added: boolean; error: string | null }> {
   try {
-    const { data, error } = await supabase.rpc('toggle_chat_reaction', {
-      p_message_id: messageId,
-      p_emoji:      emoji,
-    });
+    const { data, error } = await supabase.rpc('toggle_chat_reaction', { p_message_id: messageId, p_emoji: emoji });
     if (error) throw error;
-    const result = parseJsonbObject(data);
-    return { added: !!(result.added), error: null };
+    return { added: !!(parseJsonbObject(data).added), error: null };
   } catch (err) {
-    return {
-      added: false,
-      error: err instanceof Error ? err.message : 'Failed to toggle reaction',
-    };
+    return { added: false, error: err instanceof Error ? err.message : 'Failed to toggle reaction' };
   }
 }
 
-// ─── Mark read ────────────────────────────────────────────────────────────────
+// ─── Read receipts ────────────────────────────────────────────────────────────
 
-export async function markMessagesRead(
-  workspaceId: string,
-  messageId:   string,
-): Promise<void> {
+export async function markMessagesRead(workspaceId: string, messageId: string): Promise<void> {
   try {
-    await supabase.rpc('mark_messages_read', {
-      p_workspace_id: workspaceId,
-      p_message_id:   messageId,
-    });
-  } catch {
-    // Non-fatal
-  }
+    await supabase.rpc('mark_messages_read', { p_workspace_id: workspaceId, p_message_id: messageId });
+  } catch { /* non-fatal */ }
 }
 
-// ─── Unread count ─────────────────────────────────────────────────────────────
-
-export async function getChatUnreadCount(
-  workspaceId: string,
-): Promise<number> {
+export async function getChatUnreadCount(workspaceId: string): Promise<number> {
   try {
-    const { data } = await supabase.rpc('get_chat_unread_count', {
-      p_workspace_id: workspaceId,
-    });
+    const { data } = await supabase.rpc('get_chat_unread_count', { p_workspace_id: workspaceId });
     return typeof data === 'number' ? data : 0;
-  } catch {
-    return 0;
-  }
+  } catch { return 0; }
 }
 
 // ─── Pin / unpin ──────────────────────────────────────────────────────────────
 
-export async function pinChatMessage(
-  messageId: string,
-): Promise<{ error: string | null }> {
+export async function pinChatMessage(messageId: string): Promise<{ error: string | null }> {
   try {
     const { error } = await supabase.rpc('pin_chat_message', { p_message_id: messageId });
     if (error) throw error;
     return { error: null };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'Failed to pin message' };
-  }
+  } catch (err) { return { error: err instanceof Error ? err.message : 'Failed to pin' }; }
 }
 
-export async function unpinChatMessage(
-  messageId: string,
-): Promise<{ error: string | null }> {
+export async function unpinChatMessage(messageId: string): Promise<{ error: string | null }> {
   try {
     const { error } = await supabase.rpc('unpin_chat_message', { p_message_id: messageId });
     if (error) throw error;
     return { error: null };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'Failed to unpin message' };
-  }
+  } catch (err) { return { error: err instanceof Error ? err.message : 'Failed to unpin' }; }
 }
 
-// ─── Pinned messages ──────────────────────────────────────────────────────────
-
-export async function getPinnedChatMessages(
-  workspaceId: string,
-): Promise<{ data: ChatPinnedMessage[]; error: string | null }> {
+export async function getPinnedChatMessages(workspaceId: string): Promise<{ data: ChatPinnedMessage[]; error: string | null }> {
   try {
-    const { data, error } = await supabase.rpc('get_pinned_chat_messages', {
-      p_workspace_id: workspaceId,
-    });
+    const { data, error } = await supabase.rpc('get_pinned_chat_messages', { p_workspace_id: workspaceId });
     if (error) throw error;
     return { data: parseJsonb(data).map(mapPinned), error: null };
-  } catch (err) {
-    return {
-      data:  [],
-      error: err instanceof Error ? err.message : 'Failed to load pinned messages',
-    };
-  }
+  } catch (err) { return { data: [], error: err instanceof Error ? err.message : 'Failed to load pinned' }; }
 }
 
-// ─── Search messages ──────────────────────────────────────────────────────────
+// ─── Search ───────────────────────────────────────────────────────────────────
 
-export async function searchChatMessages(
-  workspaceId: string,
-  query:       string,
-  limit = 20,
-): Promise<{ data: ChatMessage[]; error: string | null }> {
+export async function searchChatMessages(workspaceId: string, query: string, limit = 20): Promise<{ data: ChatMessage[]; error: string | null }> {
   try {
-    const { data, error } = await supabase.rpc('search_chat_messages', {
-      p_workspace_id: workspaceId,
-      p_query:        query,
-      p_limit:        limit,
-    });
+    const { data, error } = await supabase.rpc('search_chat_messages', { p_workspace_id: workspaceId, p_query: query, p_limit: limit });
     if (error) throw error;
     return { data: parseJsonb(data).map(mapMessage), error: null };
-  } catch (err) {
-    return {
-      data:  [],
-      error: err instanceof Error ? err.message : 'Failed to search messages',
-    };
-  }
+  } catch (err) { return { data: [], error: err instanceof Error ? err.message : 'Failed to search' }; }
 }
 
-// ─── Chat members ─────────────────────────────────────────────────────────────
+// ─── Members ──────────────────────────────────────────────────────────────────
 
-export async function getChatMembers(
-  workspaceId: string,
-): Promise<{ data: ChatMember[]; error: string | null }> {
+export async function getChatMembers(workspaceId: string): Promise<{ data: ChatMember[]; error: string | null }> {
   try {
-    const { data, error } = await supabase.rpc('get_chat_members', {
-      p_workspace_id: workspaceId,
-    });
+    const { data, error } = await supabase.rpc('get_chat_members', { p_workspace_id: workspaceId });
     if (error) throw error;
     return { data: parseJsonb(data).map(mapMember), error: null };
-  } catch (err) {
-    return {
-      data:  [],
-      error: err instanceof Error ? err.message : 'Failed to load chat members',
-    };
-  }
+  } catch (err) { return { data: [], error: err instanceof Error ? err.message : 'Failed to load members' }; }
 }
 
-// ─── Realtime: Postgres Changes ───────────────────────────────────────────────
+// ─── Realtime ─────────────────────────────────────────────────────────────────
 
 export interface ChatRealtimeCallbacks {
   onInsert: (msg: ChatMessage) => void;
@@ -406,129 +292,56 @@ export interface ChatRealtimeCallbacks {
   onDelete: (id: string) => void;
 }
 
-export function subscribeToChatMessages(
-  workspaceId: string,
-  callbacks:   ChatRealtimeCallbacks,
-): () => void {
+export function subscribeToChatMessages(workspaceId: string, callbacks: ChatRealtimeCallbacks): () => void {
   const channel = supabase
     .channel(`chat:${workspaceId}:messages`)
-    .on(
-      'postgres_changes',
-      {
-        event:  'INSERT',
-        schema: 'public',
-        table:  'workspace_chat_messages',
-        filter: `workspace_id=eq.${workspaceId}`,
-      },
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'workspace_chat_messages', filter: `workspace_id=eq.${workspaceId}` },
       async (payload) => {
         const newRow = payload.new as Record<string, unknown>;
         const insertedId = newRow.id as string;
-
-        // Try to get the enriched version (author, reactions, is_pinned)
         try {
           const { data: recent } = await fetchChatMessages(workspaceId, 10);
           const found = recent.find(m => m.id === insertedId);
-          if (found) {
-            callbacks.onInsert(found);
-            return;
-          }
-        } catch { /* fall through to raw */ }
-
-        // Fallback: construct from raw Postgres payload
-        callbacks.onInsert(mapMessage({
-          ...newRow,
-          reactions:   [],
-          attachments: [],
-          is_pinned:   false,
-        }));
-      },
-    )
-    .on(
-      'postgres_changes',
-      {
-        event:  'UPDATE',
-        schema: 'public',
-        table:  'workspace_chat_messages',
-        filter: `workspace_id=eq.${workspaceId}`,
-      },
+          if (found) { callbacks.onInsert(found); return; }
+        } catch { /* fall through */ }
+        callbacks.onInsert(mapMessage({ ...newRow, reactions: [], attachments: [], mentions: [], is_pinned: false }));
+      })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'workspace_chat_messages', filter: `workspace_id=eq.${workspaceId}` },
       (payload) => {
         const row = payload.new as Record<string, unknown>;
         const isDeleted = !!(row.is_deleted);
-        callbacks.onUpdate({
-          id:        row.id as string,
-          content:   isDeleted ? '[Message deleted]' : (row.content as string),
-          isEdited:  !!(row.is_edited),
-          isDeleted,
-          updatedAt: row.updated_at as string,
-        });
-      },
-    )
+        callbacks.onUpdate({ id: row.id as string, content: isDeleted ? '[Message deleted]' : (row.content as string), isEdited: !!(row.is_edited), isDeleted, updatedAt: row.updated_at as string });
+      })
     .subscribe();
-
   return () => { supabase.removeChannel(channel); };
 }
 
-// ─── Realtime: typing indicator (Broadcast) ──────────────────────────────────
+// ─── Typing ───────────────────────────────────────────────────────────────────
 
 let _typingChannel: RealtimeChannel | null = null;
 
-export function subscribeToTyping(
-  workspaceId: string,
-  onTyping: (payload: TypingPayload) => void,
-): () => void {
-  if (_typingChannel) {
-    supabase.removeChannel(_typingChannel);
-    _typingChannel = null;
-  }
-
+export function subscribeToTyping(workspaceId: string, onTyping: (payload: TypingPayload) => void): () => void {
+  if (_typingChannel) { supabase.removeChannel(_typingChannel); _typingChannel = null; }
   _typingChannel = supabase
     .channel(`chat:${workspaceId}:typing`)
-    .on('broadcast', { event: 'typing' }, ({ payload }: { payload: TypingPayload }) => {
-      onTyping(payload);
-    })
+    .on('broadcast', { event: 'typing' }, ({ payload }: { payload: TypingPayload }) => onTyping(payload))
     .subscribe();
-
-  return () => {
-    if (_typingChannel) {
-      supabase.removeChannel(_typingChannel);
-      _typingChannel = null;
-    }
-  };
+  return () => { if (_typingChannel) { supabase.removeChannel(_typingChannel); _typingChannel = null; } };
 }
-
-// ─── Typing broadcast (throttled) ────────────────────────────────────────────
 
 let _lastTypingSent = 0;
 const TYPING_THROTTLE_MS = 2500;
 
 export async function broadcastTyping(
   workspaceId: string,
-  user: {
-    userId:    string;
-    username:  string | null;
-    fullName:  string | null;
-    avatarUrl: string | null;
-  },
+  user: { userId: string; username: string | null; fullName: string | null; avatarUrl: string | null },
   isTyping: boolean,
 ): Promise<void> {
   const now = Date.now();
   if (isTyping && now - _lastTypingSent < TYPING_THROTTLE_MS) return;
   _lastTypingSent = isTyping ? now : 0;
-
   try {
     const ch = supabase.channel(`chat:${workspaceId}:typing`);
-    await ch.send({
-      type:    'broadcast',
-      event:   'typing',
-      payload: {
-        userId:    user.userId,
-        username:  user.username,
-        fullName:  user.fullName,
-        avatarUrl: user.avatarUrl,
-        isTyping,
-      } satisfies TypingPayload,
-    });
-  } catch {
-    // Non-fatal
-  }
+    await ch.send({ type: 'broadcast', event: 'typing', payload: { ...user, isTyping } satisfies TypingPayload });
+  } catch { /* non-fatal */ }
 }

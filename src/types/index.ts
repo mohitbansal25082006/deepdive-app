@@ -1,7 +1,10 @@
 // src/types/index.ts
-// Parts 1–16 — All type definitions
-// Part 15 adds: SharedPodcast, SharedPodcastState, extended SharedContentType to include 'podcast'
-// Part 16 adds: SharedDebate, SharedDebateState, SharedDebateSummary, extends SharedContentType and WorkspaceActivityAction
+// Parts 1–18 — All type definitions
+// Part 18 adds:
+//   • Extended WorkspaceActivityAction with new actions
+//   • WorkspaceNotificationPreferences
+//   • MemberSharedStats + MemberSharedItem
+//   • mentions field referenced in chat.ts
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
@@ -639,14 +642,26 @@ export interface DebateOrchestratorCallbacks {
 
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
+// Part 18: Extended with new activity actions
 export type WorkspaceActivityAction =
-  | 'workspace_created' | 'workspace_updated'
-  | 'report_added'      | 'report_removed'
-  | 'member_joined'     | 'member_left'     | 'member_removed'
-  | 'member_role_changed' | 'comment_added' | 'comment_resolved'
+  | 'workspace_created'     | 'workspace_updated'
+  | 'report_added'          | 'report_removed'
+  | 'member_joined'         | 'member_left'       | 'member_removed'
+  | 'member_role_changed'   | 'comment_added'     | 'comment_resolved'
   | 'ownership_transferred'
   | 'member_blocked'
-  | 'debate_shared'; // Added from Part 16
+  | 'debate_shared'
+  // Part 18 additions ─────────────────────────────────────────
+  | 'presentation_shared'
+  | 'academic_paper_shared'
+  | 'podcast_shared'
+  | 'chat_mention'
+  | 'report_pinned'
+  | 'report_unpinned'
+  | 'comment_reply_added'
+  | 'access_request_sent'
+  | 'access_request_approved'
+  | 'access_request_denied';
 
 // ─── Part 11 WorkspaceSettings ────────────────────────────────────────────────
 
@@ -876,7 +891,6 @@ export interface ReactionState {
 }
 
 // ─── Part 14: Workspace Shared Content ────────────────────────────────────────
-// Part 15 & 16: Extended SharedContentType to include 'podcast' and 'debate'
 
 export type SharedContentType = 'presentation' | 'academic_paper' | 'podcast' | 'debate';
 
@@ -904,20 +918,12 @@ export interface WorkspaceSharingState {
 
 // ─── Part 15: Shared Podcast ──────────────────────────────────────────────────
 
-/**
- * A podcast episode shared into a workspace.
- * Stores a full denormalised copy of the podcast data (script, audio paths)
- * so any workspace member can play or download it without owning the source row.
- */
 export interface SharedPodcast {
-  /** Row ID in shared_podcasts table */
   id:                 string;
   workspaceId:        string;
   podcastId:          string;
   sharedBy:           string;
   reportId?:          string;
-
-  // Denormalised podcast fields
   title:              string;
   description:        string;
   topic:              string;
@@ -926,15 +932,10 @@ export interface SharedPodcast {
   durationSeconds:    number;
   wordCount:          number;
   completedSegments:  number;
-
-  // Full playable data
   script:             PodcastScript;
   audioSegmentPaths:  string[];
-
-  // Analytics
   downloadCount:      number;
   playCount:          number;
-
   sharedAt:           string;
   sharerName?:        string;
   sharerAvatar?:      string;
@@ -947,10 +948,6 @@ export interface SharedPodcastState {
   error:      string | null;
 }
 
-/**
- * Lightweight summary shown in SharedContentCard for podcasts.
- * Derived from SharedPodcast.
- */
 export interface SharedPodcastSummary {
   id:              string;
   workspaceId:     string;
@@ -978,41 +975,24 @@ export interface WorkspaceReportDownload {
 
 // ─── Part 16: Workspace Shared Debate ─────────────────────────────────────────
 
-/**
- * A debate session shared into a workspace.
- * Full denormalised copy so any workspace member can view/download
- * without owning the source debate_sessions row.
- * Re-generation is NOT possible from a shared debate — view + export only.
- */
 export interface SharedDebate {
-  /** Row ID in shared_debates table */
   id:                   string;
   workspaceId:          string;
   debateId:             string;
   sharedBy:             string;
   reportId?:            string;
-
-  // Denormalised debate fields
   topic:                string;
   question:             string;
   agentRoles:           DebateAgentRole[];
   searchResultsCount:   number;
-
-  // Full debate data (read-only for workspace members)
   perspectives:         DebatePerspective[];
   moderator:            DebateModerator | null;
   debateStatus:         DebateStatus;
-
-  // Analytics
   viewCount:            number;
   downloadCount:        number;
-
-  // Timestamps
   debateCreatedAt?:     string;
   debateCompletedAt?:   string;
   sharedAt:             string;
-
-  // Enriched sharer info
   sharerName?:          string;
   sharerAvatar?:        string;
 }
@@ -1024,9 +1004,6 @@ export interface SharedDebateState {
   error:     string | null;
 }
 
-/**
- * Lightweight summary for SharedContentCard (debate variant).
- */
 export interface SharedDebateSummary {
   id:                 string;
   workspaceId:        string;
@@ -1042,3 +1019,50 @@ export interface SharedDebateSummary {
   sharedAt:           string;
   sharerName?:        string;
 }
+
+// ─── Part 18: Workspace Notification Preferences ──────────────────────────────
+
+export interface WorkspaceNotificationPreferences {
+  id:                    string;
+  userId:                string;
+  workspaceId:           string;
+  /** Notify when mentioned with @ in chat */
+  notifyOnMention:       boolean;
+  /** Notify on every new chat message (noisy — off by default) */
+  notifyOnChatMessage:   boolean;
+  /** Notify when a report is added to the workspace */
+  notifyOnReportAdded:   boolean;
+  /** Notify when a comment is added to a workspace report */
+  notifyOnComment:       boolean;
+  /** Notify when a new member joins */
+  notifyOnMemberJoin:    boolean;
+  /** Notify when a presentation / paper / podcast / debate is shared */
+  notifyOnSharedContent: boolean;
+  createdAt:             string;
+  updatedAt:             string;
+}
+
+// ─── Part 18: Member Shared Content (for MemberProfileCard) ──────────────────
+
+/** Counts of different shared content types by a member in a workspace. */
+export interface MemberSharedStats {
+  presentations: number;
+  papers:        number;
+  podcasts:      number;
+  debates:       number;
+}
+
+/** A single shared-content item navigable from MemberProfileCard. */
+export interface MemberSharedItem {
+  id:          string;
+  contentType: SharedContentType | 'debate';
+  title:       string;
+  subtitle?:   string;
+  contentId:   string;
+  reportId?:   string;
+  sharedAt:    string;
+}
+
+// ─── Part 18: File filter for chat ───────────────────────────────────────────
+
+export type ChatFileFilterType = 'all' | 'images' | 'videos' | 'audio' | 'documents';
