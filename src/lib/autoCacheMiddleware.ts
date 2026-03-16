@@ -1,12 +1,11 @@
 // src/lib/autoCacheMiddleware.ts
-// Part 22 — Auto-cache middleware.
+// Part 23 — Updated.
 //
-// This module exposes one function per content type that is called
-// automatically when content generation completes (from hooks).
-// It checks the autoCache setting and calls cacheStorage if enabled.
-//
-// Each function is intentionally non-throwing — a cache failure should
-// never break the main feature flow.
+// CHANGES from Part 22:
+//   • autoCachePodcast() — if settings.cacheAudio is true, also downloads
+//     audio segments after caching the JSON data.
+//   • Uses markPodcastAudioCached() to update the cache entry size.
+//   • All other functions unchanged.
 
 import { isAutoCacheEnabled } from './cacheSettings';
 import {
@@ -15,8 +14,16 @@ import {
   cacheDebate,
   cacheAcademicPaper,
   cachePresentation,
+  markPodcastAudioCached,
 } from './cacheStorage';
-import type { ResearchReport, Podcast, DebateSession, AcademicPaper, GeneratedPresentation } from '../types';
+import { loadSettings } from './cacheStorage';
+import type {
+  ResearchReport,
+  Podcast,
+  DebateSession,
+  AcademicPaper,
+  GeneratedPresentation,
+} from '../types';
 
 // ─── Report ───────────────────────────────────────────────────────────────────
 
@@ -40,9 +47,40 @@ export async function autoCachePodcast(podcast: Podcast): Promise<void> {
     const enabled = await isAutoCacheEnabled();
     if (!enabled) return;
     if (podcast.status !== 'completed') return;
+
+    // Always cache the JSON data (script + metadata)
     await cachePodcast(podcast as any);
+
+    // Part 23: optionally also download audio segments
+    const settings = await loadSettings();
+    if (settings.cacheAudio) {
+      // Fire async — don't block the completion callback
+      _downloadAudioAsync(podcast);
+    }
   } catch (err) {
     console.warn('[AutoCache] podcast cache error:', err);
+  }
+}
+
+/**
+ * Internal: download audio for a podcast in the background.
+ * Never throws — failures are silently swallowed.
+ */
+async function _downloadAudioAsync(podcast: Podcast): Promise<void> {
+  try {
+    const { downloadPodcastAudio } = await import('./podcastAudioCache');
+    const settings = await loadSettings();
+    const success  = await downloadPodcastAudio(podcast, undefined, settings.expiryDays);
+    if (success) {
+      // Get total bytes downloaded and update the cache entry
+      const { getPodcastAudioEntry } = await import('./podcastAudioCache');
+      const audioEntry = await getPodcastAudioEntry(podcast.id);
+      if (audioEntry) {
+        await markPodcastAudioCached(podcast.id, audioEntry.totalBytes);
+      }
+    }
+  } catch (err) {
+    console.warn('[AutoCache] podcast audio download error:', err);
   }
 }
 
