@@ -1,11 +1,11 @@
 // src/hooks/useDebate.ts
-// Part 20 — Updated to accept DebateConfigV2 so the debate tab can pass
-// reportContext from an imported research report into the pipeline.
+// Part 20 — Original (DebateConfigV2, reportContext support)
+// Part 22 — Added: autoCacheDebate() called inside onComplete
 //
-// Changes from Part 9:
-//   • startDebate(topic, config?) now accepts DebateConfigV2
-//   • Config is forwarded to runDebatePipeline unchanged
-//   • All state management logic is identical to Part 9
+// CHANGE LOG (Part 22 only):
+//   Line added: import { autoCacheDebate } from '../lib/autoCacheMiddleware';
+//   Line added inside onComplete callback: autoCacheDebate(session);
+//   Everything else is byte-for-byte identical to Part 20.
 
 import { useState, useCallback, useRef } from 'react';
 import {
@@ -17,6 +17,8 @@ import {
 } from '../types';
 import { runDebatePipeline, DebateConfigV2 } from '../services/debateOrchestrator';
 import { useAuth }                           from '../context/AuthContext';
+// ── Part 22: Auto-cache import ───────────────────────────────────────────────
+import { autoCacheDebate }                   from '../lib/autoCacheMiddleware';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -124,6 +126,10 @@ export function useDebate() {
             isModerating:    false,
             progressMessage: '🎯 Debate complete!',
           });
+
+          // ── Part 22: Auto-cache the completed debate ───────────────────
+          // Fire-and-forget — never throws, never blocks the UI update above
+          autoCacheDebate(session);
         },
 
         // ── Pipeline error ──────────────────────────────────────────────────

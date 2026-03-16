@@ -1,10 +1,11 @@
 // src/hooks/usePodcast.ts
-// Part 19 — Updated:
-//   • generateFromReport properly passes the full report to the pipeline
-//   • 6 voice presets (was 3): Casual, Expert Interview, Tech Podcast,
-//     Narrative Storyteller, Structured Debate, News Analysis
-//   • presetStyle passed through to script agent for tone-aware writing
-//   • DEFAULT_PODCAST_CONFIG updated to saner defaults
+// Part 19 — Original (6 voice presets, report import, voice input)
+// Part 22 — Added: autoCachePodcast() called on onComplete
+//
+// CHANGE LOG (Part 22 only):
+//   Line added: import { autoCachePodcast } from '../lib/autoCacheMiddleware';
+//   Line added inside onComplete callback: autoCachePodcast(podcast);
+//   Everything else is identical to Part 19.
 
 import { useState, useCallback, useRef }  from 'react';
 import {
@@ -18,6 +19,8 @@ import {
 import { runPodcastPipeline, type PodcastInput } from '../services/podcastOrchestrator';
 import type { VoicePresetStyle }           from '../services/agents/podcastScriptAgent';
 import { useAuth }                         from '../context/AuthContext';
+// ── Part 22: Auto-cache import ───────────────────────────────────────────────
+import { autoCachePodcast }                from '../lib/autoCacheMiddleware';
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -231,6 +234,10 @@ export function usePodcast() {
               isGeneratingAudio:  false,
               progressMessage:    '🎙 Podcast ready!',
             });
+
+            // ── Part 22: Auto-cache the completed podcast ──────────────
+            // Fire-and-forget — never throws, never blocks UI
+            autoCachePodcast(podcast);
           },
 
           onError: (message: string) => {

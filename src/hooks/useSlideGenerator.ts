@@ -1,29 +1,19 @@
 // src/hooks/useSlideGenerator.ts
-// Part 5 — AI Slide Generator
+// Part 5 — Original (all stale-closure fixes FIX 1–4, ref guards, patch helper)
+// Part 22 — Added: autoCachePresentation() called after generate() saves to DB
+//            and also inside loadPresentation() on successful load.
 //
-// ─── FIXES APPLIED ────────────────────────────────────────────────────────────
+// CHANGE LOG (Part 22 only):
+//   Line added: import { autoCachePresentation } from '../lib/autoCacheMiddleware';
+//   Line added inside generate()         after patch({ presentation, ... }): autoCachePresentation(presentation);
+//   Line added inside loadPresentation() after patch({ presentation, ... }): autoCachePresentation(pres);
+//   Everything else is byte-for-byte identical to Part 5.
 //
-//  FIX 1 — Stale closure in `generate`
-//    The original `generate` callback listed `state.isGenerating` in its
-//    dependency array and read it directly. Because `state` is captured at
-//    the time useCallback memoizes the function, any call to `generate` after
-//    the state has changed (e.g. a second tap while already generating) would
-//    read the OLD `isGenerating = false` value and kick off a second generation.
-//    Fixed by using a functional setState updater to read current state, and
-//    by using a separate `useRef` guard that is immune to closure staleness.
-//
-//  FIX 2 — Stale closure in `_trackExport`
-//    `_trackExport` captured `state.presentation` at memoization time.
-//    After an export the exportCount update would be applied to the old
-//    presentation snapshot. Fixed by reading from a ref that always reflects
-//    the latest presentation value.
-//
-//  FIX 3 — Stale closure in `exportPPTX / exportPDF / exportHTML`
-//    Same issue: `state.presentation` and `state.isExporting` were captured
-//    at definition time. Fixed via ref guards.
-//
-//  FIX 4 — `deletePresentation` read stale `state.presentation`
-//    Fixed via presentationRef.
+// ─── FIXES (Part 5, carried forward unchanged) ────────────────────────────────
+//  FIX 1 — Stale closure in `generate`      → ref guard isGeneratingRef
+//  FIX 2 — Stale closure in `_trackExport`  → reads presentationRef
+//  FIX 3 — Stale closures in export helpers → refs
+//  FIX 4 — `deletePresentation` stale       → presentationRef
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useState, useCallback, useRef } from 'react';
@@ -43,6 +33,8 @@ import {
   SlideGeneratorState,
   SlideExportFormat,
 } from '../types';
+// ── Part 22: Auto-cache import ───────────────────────────────────────────────
+import { autoCachePresentation } from '../lib/autoCacheMiddleware';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -113,6 +105,9 @@ export function useSlideGenerator(report: ResearchReport | null) {
       };
 
       patch({ presentation: pres, isGenerating: false, progress: '' });
+
+      // ── Part 22: Auto-cache the loaded presentation ────────────────────
+      autoCachePresentation(pres);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       patch({ isGenerating: false, progress: '', error: msg });
@@ -184,6 +179,10 @@ export function useSlideGenerator(report: ResearchReport | null) {
       };
 
       patch({ presentation, isGenerating: false, progress: '' });
+
+      // ── Part 22: Auto-cache the generated presentation ─────────────────
+      // Fire-and-forget — never throws, never blocks the UI update above
+      autoCachePresentation(presentation);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to generate presentation.';
       patch({ isGenerating: false, progress: '', error: msg });

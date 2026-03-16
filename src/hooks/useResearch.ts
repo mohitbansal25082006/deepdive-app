@@ -1,13 +1,11 @@
 // src/hooks/useResearch.ts
-// Part 21 — Updated: adds streaming report generation support.
+// Part 21 — Original (streaming report generation, streaming sections/tokens)
+// Part 22 — Added: autoCacheReport() called inside onComplete
 //
-// New state:
-//   streamingSections  — partial sections as they arrive token-by-token
-//   streamingPhase     — 'agents' | 'streaming_report' | 'done'
-//   streamingSectionIndex — which section (0-5) is currently being written
-//   streamingSectionTitle — title of the currently-streaming section
-//
-// The hook stays fully backwards-compatible: all existing consumers work unchanged.
+// CHANGE LOG (Part 22 only):
+//   Line added: import { autoCacheReport } from '../lib/autoCacheMiddleware';
+//   Line added inside onComplete callback: autoCacheReport(completedReport);
+//   Everything else is byte-for-byte identical to Part 21.
 
 import { useState, useCallback, useRef } from 'react';
 import {
@@ -19,6 +17,8 @@ import {
 } from '../types';
 import { runResearchPipeline } from '../services/researchOrchestrator';
 import { useAuth }             from '../context/AuthContext';
+// ── Part 22: Auto-cache import ───────────────────────────────────────────────
+import { autoCacheReport }     from '../lib/autoCacheMiddleware';
 
 export type ResearchPhase =
   | 'idle'
@@ -152,6 +152,10 @@ export function useResearch() {
           setReport(completedReport);
           setStreamingPhase('done');
           setPhase('completed');
+
+          // ── Part 22: Auto-cache the completed report ───────────────────
+          // Fire-and-forget — never throws, never blocks the UI update above
+          autoCacheReport(completedReport);
         },
 
         onError: (message: string) => {

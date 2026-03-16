@@ -1,10 +1,14 @@
 // src/hooks/useAcademicPaper.ts
-// Part 7 — AI Academic Paper Mode
-// FIX: sections type error — AcademicAgentOutput.sections is
-//      Omit<AcademicSection,'id'>[] but AcademicPaper.sections requires
-//      AcademicSection[]. The academicPaperAgent already runs hydrateSections()
-//      which adds ids before returning, so the cast below is always safe.
-//      We assert `as AcademicSection[]` after confirming the agent's contract.
+// Part 7 — Original (full academic paper generation, sections fix, load/generate/export)
+// Part 22 — Added: autoCacheAcademicPaper() called after generate() saves to DB
+//            and also after loadPaper() / loadByReportId() succeeds.
+//
+// CHANGE LOG (Part 22 only):
+//   Line added: import { autoCacheAcademicPaper } from '../lib/autoCacheMiddleware';
+//   Line added inside generate()     after setPaper(newPaper):  autoCacheAcademicPaper(newPaper);
+//   Line added inside loadPaper()    after setPaper(loaded):    autoCacheAcademicPaper(loaded);
+//   Line added inside loadByReportId after setPaper(loaded):    autoCacheAcademicPaper(loaded);
+//   Everything else is byte-for-byte identical to Part 7.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Alert, Share } from 'react-native';
@@ -18,6 +22,8 @@ import {
   AcademicSection,
 } from '../types';
 import { exportAcademicPaperAsPDF } from '../services/academicPdfExport';
+// ── Part 22: Auto-cache import ───────────────────────────────────────────────
+import { autoCacheAcademicPaper }   from '../lib/autoCacheMiddleware';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -150,6 +156,9 @@ export function useAcademicPaper(report: ResearchReport | null) {
         setCitationStyle(loaded.citationStyle);
         const first = loaded.sections.find(s => s.type !== 'abstract');
         if (first) setActiveSectionId(first.id);
+
+        // ── Part 22: Auto-cache the loaded paper ───────────────────────
+        autoCacheAcademicPaper(loaded);
       }
     } catch (err) {
       if (isMounted.current) setError('Unexpected error loading paper.');
@@ -191,6 +200,9 @@ export function useAcademicPaper(report: ResearchReport | null) {
         setCitationStyle(loaded.citationStyle);
         const first = loaded.sections.find(s => s.type !== 'abstract');
         if (first) setActiveSectionId(first.id);
+
+        // ── Part 22: Auto-cache the loaded paper ───────────────────────
+        autoCacheAcademicPaper(loaded);
       }
     } catch (err) {
       console.error('[useAcademicPaper] loadByReportId error:', err);
@@ -320,6 +332,10 @@ export function useAcademicPaper(report: ResearchReport | null) {
         const first = newPaper.sections.find(s => s.type !== 'abstract');
         if (first) setActiveSectionId(first.id);
         setProgress('');
+
+        // ── Part 22: Auto-cache the newly generated paper ──────────────
+        // Fire-and-forget — never throws, never blocks state updates above
+        autoCacheAcademicPaper(newPaper);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
