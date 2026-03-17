@@ -2,7 +2,7 @@
   "expo": {
     "name": "DeepDive AI",
     "slug": "deepdive-app",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "deepdiveai",
@@ -16,10 +16,18 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.deepdive.ai",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries.",
+        "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries and video meetings.",
         "NSSpeechRecognitionUsageDescription": "DeepDive AI uses speech recognition to convert your spoken research queries to text.",
         "NSPhotoLibraryUsageDescription": "DeepDive AI needs access to your photos to attach images to chat messages.",
-        "NSCameraUsageDescription": "DeepDive AI needs access to your camera to take photos for chat messages."
+        "NSCameraUsageDescription": "DeepDive AI needs access to your camera for video meetings and profile photos.",
+        "NSLocalNetworkUsageDescription": "DeepDive AI uses local network for WebRTC video calling in meetings.",
+        "UIBackgroundModes": [
+          "audio",
+          "voip"
+        ],
+        "NSBonjourServices": [
+          "_webrtc._tcp"
+        ]
       },
       "associatedDomains": [
         "applinks:deepdive.app"
@@ -35,15 +43,23 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.deepdive.ai",
       "permissions": [
-        "RECORD_AUDIO",
-        "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE",
-        "POST_NOTIFICATIONS",
-        "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.FOREGROUND_SERVICE_CAMERA",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.RECORD_AUDIO"
       ],
       "intentFilters": [
         {
@@ -89,7 +105,7 @@
         "expo-image-picker",
         {
           "photosPermission": "DeepDive AI needs access to your photos to set your profile picture and attach images to chat messages.",
-          "cameraPermission": "DeepDive AI needs access to your camera to take photos for your profile and chat messages.",
+          "cameraPermission": "DeepDive AI needs access to your camera for video meetings and profile photos.",
           "microphonePermission": false
         }
       ],
@@ -97,7 +113,7 @@
       [
         "expo-av",
         {
-          "microphonePermission": "DeepDive AI uses your microphone for voice research queries."
+          "microphonePermission": "DeepDive AI uses your microphone for voice research queries and video meetings."
         }
       ],
       [
@@ -114,7 +130,12 @@
         "expo-build-properties",
         {
           "android": {
-            "usesCleartextTraffic": false
+            "usesCleartextTraffic": false,
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35
+          },
+          "ios": {
+            "deploymentTarget": "15.1"
           }
         }
       ]
@@ -124,7 +145,11 @@
     },
     "extra": {
       "publicReportBaseUrl": "https://deepdive.app/report",
-      "appDeepLinkScheme": "deepdiveai://report"
+      "appDeepLinkScheme": "deepdiveai://report",
+      "router": {},
+      "eas": {
+        "projectId": "bb6c037c-6cf6-4a1f-8e75-8554c439928a"
+      }
     }
   }
 }
