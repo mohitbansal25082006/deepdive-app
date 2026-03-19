@@ -1,6 +1,5 @@
 // app/(app)/_layout.tsx
-// Part 24 — UPDATED: Registered credits-store screen.
-// All other Stack.Screen entries are preserved from Part 22 exactly.
+// Part 24 — UPDATED: Registered credits-store + transaction-history screens.
 
 import { useEffect, useRef }            from 'react';
 import { View, Animated }               from 'react-native';
@@ -95,12 +94,20 @@ export default function AppLayout() {
           {/* ── Part 17: Chat ── */}
           <Stack.Screen name="workspace-chat" options={{ animation: 'slide_from_right' }} />
 
-          {/* ── Part 24: Credits Store ─────────────────────────────────── */}
+          {/* ── Part 24: Credits Store ── */}
           <Stack.Screen
             name="credits-store"
             options={{
               animation:    'slide_from_bottom',
               presentation: 'modal',
+            }}
+          />
+
+          {/* ── Part 24: Transaction History ── */}
+          <Stack.Screen
+            name="transaction-history"
+            options={{
+              animation: 'slide_from_right',
             }}
           />
         </Stack>
