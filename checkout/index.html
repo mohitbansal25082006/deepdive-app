@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>DeepDive AI — Checkout</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0A0A1A; --card: #12122A; --border: #1E1E3A;
+      --primary: #6C63FF; --success: #10B981; --error: #EF4444;
+      --text: #E8E8F0; --muted: #6B6B8A; --radius: 16px;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; display: flex;
+      align-items: center; justify-content: center; padding: 24px 16px;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 32px 24px;
+      max-width: 440px; width: 100%; text-align: center;
+    }
+    .logo {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, #6C63FF, #8B5CF6);
+      border-radius: 20px; margin-bottom: 20px;
+    }
+    .logo svg { width: 32px; height: 32px; fill: #fff; }
+    h1 { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
+    .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+    .summary {
+      background: rgba(108,99,255,.08); border: 1px solid rgba(108,99,255,.2);
+      border-radius: 12px; padding: 18px; margin-bottom: 20px; text-align: left;
+    }
+    .row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+    .row:last-child { margin-bottom: 0; }
+    .lbl { color: var(--muted); font-size: 13px; }
+    .val { font-size: 14px; font-weight: 700; }
+    .val.accent { color: var(--primary); font-size: 18px; }
+    .val.lg     { font-size: 20px; }
+    .divider    { height: 1px; background: var(--border); margin: 10px 0; }
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 16px; border: none; border-radius: 12px;
+      font-size: 16px; font-weight: 800; cursor: pointer;
+      margin-bottom: 10px; transition: opacity .15s, transform .1s;
+    }
+    .btn:active  { transform: scale(.98); opacity: .85; }
+    .btn-primary { background: linear-gradient(135deg,#6C63FF,#8B5CF6); color:#fff; }
+    .btn-outline { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+
+    .state { display: none; }
+    .state.active { display: block; }
+
+    .spinner {
+      width: 44px; height: 44px;
+      border: 3px solid rgba(108,99,255,.2); border-top-color: var(--primary);
+      border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .icon {
+      width: 84px; height: 84px; border-radius: 26px;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 18px; font-size: 40px;
+    }
+    .icon.ok  { background: rgba(16,185,129,.12); border: 2px solid rgba(16,185,129,.25); }
+    .icon.err { background: rgba(239, 68, 68, .12); border: 2px solid rgba(239,68,68,.25); }
+
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.3);
+      border-radius: 100px; padding: 7px 18px;
+      font-size: 15px; font-weight: 800; color: #10B981; margin-bottom: 20px;
+    }
+    .info-card {
+      background: rgba(16,185,129,.05); border: 1px solid rgba(16,185,129,.15);
+      border-radius: 12px; padding: 14px; margin-bottom: 22px; text-align: left;
+    }
+    .ir { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .ir:last-child { margin-bottom: 0; }
+    .il { color: var(--muted); font-size: 12px; }
+    .iv { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-all; max-width: 200px; text-align: right; }
+    .iv.g { color: #10B981; font-size: 15px; }
+
+    /* Return notice — no button, just a styled info box */
+    .return-notice {
+      background: rgba(16,185,129,.06);
+      border: 1px solid rgba(16,185,129,.2);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-align: left;
+    }
+    .return-notice .notice-icon {
+      font-size: 24px;
+      flex-shrink: 0;
+    }
+    .return-notice .notice-text {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+    .return-notice .notice-sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 3px;
+    }
+
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 20px; }
+    .trust {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      color: var(--muted); font-size: 12px; margin-top: 18px;
+    }
+    .trust svg { width: 14px; height: 14px; fill: var(--muted); }
+    .powered { margin-top: 12px; color: var(--muted); font-size: 11px; }
+    .powered strong { color: #5469d4; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+  </div>
+
+  <!-- READY -->
+  <div id="s-ready" class="state active">
+    <h1>Complete Your Purchase</h1>
+    <p class="sub">Secure payment powered by Razorpay</p>
+    <div class="summary">
+      <div class="row"><span class="lbl">Pack</span>    <span class="val"       id="r-pack">—</span></div>
+      <div class="row"><span class="lbl">Credits</span> <span class="val accent" id="r-credits">—</span></div>
+      <div class="divider"></div>
+      <div class="row"><span class="lbl">Total</span>   <span class="val lg"    id="r-price">—</span></div>
+    </div>
+    <div class="trust">
+      <svg viewBox="0 0 24 24"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
+      Bank-grade SSL · UPI / Cards / Netbanking
+    </div>
+    <div class="powered">Powered by <strong>Razorpay</strong></div>
+  </div>
+
+  <!-- PROCESSING -->
+  <div id="s-proc" class="state">
+    <div class="spinner"></div>
+    <h1>Opening Razorpay...</h1>
+    <p class="hint">Complete your payment in the Razorpay window.</p>
+  </div>
+
+  <!-- SUCCESS — no button, just a message telling user to go back to app -->
+  <div id="s-ok" class="state">
+    <div class="icon ok">✓</div>
+    <h1 style="color:#10B981; margin-bottom:8px;">Payment Successful!</h1>
+    <p class="sub">Your payment has been confirmed by Razorpay.</p>
+
+    <div class="chip">⚡ <span id="ok-credits">—</span></div>
+
+    <div class="info-card">
+      <div class="ir"><span class="il">Pack</span>          <span class="iv"   id="ok-pack">—</span></div>
+      <div class="ir"><span class="il">Credits Added</span> <span class="iv g" id="ok-cr">—</span></div>
+      <div class="ir"><span class="il">Payment ID</span>    <span class="iv"   id="ok-pid" style="font-size:11px;">—</span></div>
+    </div>
+
+    <!-- NO BUTTON — just a notice telling the user to close/return to the app -->
+    <div class="return-notice">
+      <div class="notice-icon">↩</div>
+      <div>
+        <div class="notice-text">You can now return to the app</div>
+        <div class="notice-sub">Close this window or press the back button to go back to DeepDive AI. Your credits will appear automatically.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FAILED -->
+  <div id="s-fail" class="state">
+    <div class="icon err">✗</div>
+    <h1 style="margin-bottom:10px;">Payment Cancelled</h1>
+    <p class="hint">No charges were made. You can try again.</p>
+    <button class="btn btn-primary" onclick="openRazorpay()">Try Again</button>
+    <button class="btn btn-outline" onclick="window.close()">Return to App</button>
+  </div>
+</div>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  var p = new URLSearchParams(window.location.search);
+  var cfg = {
+    orderId:  p.get('order_id')     || '',
+    keyId:    p.get('key_id')       || '',
+    amount:   parseInt(p.get('amount') || '0', 10),
+    currency: p.get('currency')     || 'INR',
+    desc:     p.get('description')  || 'Credit Pack',
+    credits:  parseInt(p.get('credits') || '0', 10),
+    pack:     p.get('pack_name')    || 'Credit Pack',
+    email:    p.get('email')        || '',
+    name:     p.get('contact_name') || 'Researcher',
+  };
+
+  function fmt(paise) {
+    return '₹' + (paise/100).toLocaleString('en-IN');
+  }
+  function show(id) {
+    ['s-ready','s-proc','s-ok','s-fail'].forEach(function(s){
+      document.getElementById(s).classList.remove('active');
+    });
+    document.getElementById(id).classList.add('active');
+  }
+  function set(id, v) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = v;
+  }
+
+  function openRazorpay() {
+    show('s-proc');
+    var options = {
+      key:         cfg.keyId,
+      amount:      cfg.amount,
+      currency:    cfg.currency,
+      name:        'DeepDive AI',
+      description: cfg.desc,
+      order_id:    cfg.orderId,
+      prefill:     { email: cfg.email, name: cfg.name },
+      theme:       { color: '#6C63FF' },
+      modal: {
+        ondismiss: function() { show('s-fail'); },
+        escape: false,
+      },
+      handler: function(resp) {
+        // Payment captured — show success screen with no button
+        set('ok-credits', cfg.credits + ' credits added to your account');
+        set('ok-pack',    cfg.pack);
+        set('ok-cr',      '+' + cfg.credits + ' credits');
+        set('ok-pid',     resp.razorpay_payment_id || '');
+        show('s-ok');
+        // No auto-close, no deep link — user just closes the browser manually
+        // The app polls razorpay-check-order after openBrowserAsync resolves
+      },
+    };
+
+    try {
+      var rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', function() { show('s-fail'); });
+      setTimeout(function() { rzp.open(); }, 500);
+    } catch(e) {
+      console.error(e);
+      show('s-fail');
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    set('r-pack',    cfg.pack);
+    set('r-credits', cfg.credits + ' credits');
+    set('r-price',   fmt(cfg.amount));
+    if (!cfg.orderId || !cfg.keyId) return;
+    openRazorpay();
+  });
+</script>
+</body>
+</html>
