@@ -1,16 +1,6 @@
 // app/(app)/(tabs)/home.tsx
-// Part 21 — Updated: static SUGGESTED_TOPICS replaced with AI-personalized
-// suggestions from usePersonalization hook.
-//
-// Personalization tiers (shown with different badge colors):
-//   • 'affinity'  → purple "Your Interest" badge
-//   • 'recent'    → blue "Recently Researched" badge + time-ago
-//   • 'followup'  → amber "Follow-up Angle" badge + italic explanation
-//   • 'trending'  → green "Trending" badge
-//
-// First load: shows 6 static fallback topics instantly.
-// After fetch: smoothly replaces with personalized list.
-// A shimmer skeleton is shown while loading if the list is still empty.
+// Part 26 — UPDATED: Added Knowledge Base entry point card below the search hero.
+// All previous functionality (voice, personalization, depth cards) preserved exactly.
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -43,7 +33,6 @@ const DEPTH_INFO = [
   { key: 'expert',label: 'Expert',desc: '10–12 min',icon: 'trophy-outline' },
 ];
 
-// Source section header labels
 const SOURCE_HEADER: Record<string, string> = {
   affinity: '⭐  Your Interests',
   recent:   '🕐  Recently Researched',
@@ -61,7 +50,6 @@ export default function HomeScreen() {
 
   const firstName = profile?.full_name?.split(' ')[0] || 'Researcher';
 
-  // ── Personalization ──────────────────────────────────────────────────────
   const {
     suggestions,
     isLoading:     suggestionsLoading,
@@ -138,11 +126,9 @@ export default function HomeScreen() {
     return 'Good evening,';
   };
 
-  // ── Group suggestions by source for section headers ───────────────────
   const groupedSuggestions = React.useMemo(() => {
     const groups: { source: string; items: typeof suggestions }[] = [];
     const seen = new Set<string>();
-    // Desired order
     const order = ['affinity', 'followup', 'recent', 'trending'];
     order.forEach(source => {
       const items = suggestions.filter(s => s.source === source);
@@ -151,15 +137,11 @@ export default function HomeScreen() {
         items.forEach(s => seen.add(s.id));
       }
     });
-    // Catch any unexpected sources
     const remaining = suggestions.filter(s => !seen.has(s.id));
-    if (remaining.length > 0) {
-      groups.push({ source: 'trending', items: remaining });
-    }
+    if (remaining.length > 0) groups.push({ source: 'trending', items: remaining });
     return groups;
   }, [suggestions]);
 
-  // ── Skeleton rows for loading state ───────────────────────────────────
   const SkeletonRow = ({ delay }: { delay: number }) => (
     <Animated.View
       entering={FadeInDown.duration(400).delay(delay)}
@@ -233,7 +215,6 @@ export default function HomeScreen() {
                   </Text>
                 </TouchableOpacity>
               )}
-              {/* Personalization indicator */}
               {isPersonalized && (
                 <View style={{
                   backgroundColor:   `${COLORS.primary}15`,
@@ -258,7 +239,7 @@ export default function HomeScreen() {
               colors={['#1A1A35', '#12122A']}
               style={{
                 borderRadius: RADIUS.xl, padding: SPACING.lg,
-                marginBottom: SPACING.xl,
+                marginBottom: SPACING.md,
                 borderWidth:  1, borderColor: `${COLORS.primary}30`,
               }}
             >
@@ -281,7 +262,6 @@ export default function HomeScreen() {
                 Ask anything. Our multi-agent system searches, analyses, fact-checks, and streams your report live as it's written.
               </Text>
 
-              {/* Voice recording indicator */}
               {isRecording && (
                 <Animated.View
                   entering={FadeIn.duration(300)}
@@ -316,7 +296,6 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* Search input row */}
               <Animated.View style={[inputStyle, { marginBottom: SPACING.sm }]}>
                 <View style={{
                   backgroundColor:   COLORS.backgroundElevated,
@@ -338,7 +317,6 @@ export default function HomeScreen() {
                     style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginLeft: 10 }}
                     editable={!isRecording && !transcribing}
                   />
-                  {/* Voice button */}
                   <Animated.View style={micStyle}>
                     <TouchableOpacity
                       onPress={handleVoicePress}
@@ -363,7 +341,6 @@ export default function HomeScreen() {
                 </View>
               </Animated.View>
 
-              {/* Mic hint */}
               {!isRecording && !transcribing && (
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginBottom: SPACING.sm }}>
                   🎙️ Tap the mic to speak  ·  Reports stream live as they're written
@@ -393,6 +370,112 @@ export default function HomeScreen() {
             </LinearGradient>
           </Animated.View>
 
+          {/* ── Knowledge Base Entry Card (Part 26) ───────────────────────── */}
+          <Animated.View entering={FadeInDown.duration(600).delay(150)}>
+            <TouchableOpacity
+              onPress={() => router.push('/(app)/knowledge-base' as any)}
+              activeOpacity={0.88}
+              style={{ marginBottom: SPACING.xl }}
+            >
+              <LinearGradient
+                colors={['#1A1235', '#0F1528']}
+                style={{
+                  borderRadius: RADIUS.xl,
+                  borderWidth:  1,
+                  borderColor:  `${COLORS.primary}35`,
+                  overflow:     'hidden',
+                }}
+              >
+                {/* Top gradient accent */}
+                <LinearGradient
+                  colors={[COLORS.primary + '40', 'transparent']}
+                  style={{
+                    position: 'absolute', top: 0, left: 0, right: 0, height: 2,
+                  }}
+                />
+
+                <View style={{
+                  flexDirection: 'row',
+                  alignItems:    'center',
+                  padding:       SPACING.md,
+                  gap:           SPACING.md,
+                }}>
+                  {/* Icon */}
+                  <LinearGradient
+                    colors={['#6C63FF', '#8B5CF6']}
+                    style={{
+                      width: 52, height: 52, borderRadius: 15,
+                      alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Ionicons name="library" size={26} color="#FFF" />
+                  </LinearGradient>
+
+                  {/* Text */}
+                  <View style={{ flex: 1, gap: 4 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={{
+                        color:      COLORS.textPrimary,
+                        fontSize:   FONTS.sizes.base,
+                        fontWeight: '800',
+                      }}>
+                        Knowledge Base
+                      </Text>
+                      <View style={{
+                        backgroundColor: COLORS.primary + '20',
+                        borderRadius:    RADIUS.full,
+                        paddingHorizontal: 7, paddingVertical: 2,
+                        borderWidth:     1, borderColor: COLORS.primary + '35',
+                      }}>
+                        <Text style={{
+                          color: COLORS.primary, fontSize: 9, fontWeight: '700',
+                        }}>
+                          NEW
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={{
+                      color:     COLORS.textMuted,
+                      fontSize:  FONTS.sizes.xs,
+                      lineHeight: 17,
+                    }}>
+                      Ask questions across all your research reports simultaneously.
+                      Your personal AI second brain.
+                    </Text>
+
+                    {/* Feature chips */}
+                    <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                      {['Cross-report search', 'AI synthesis', 'Source attribution'].map(tag => (
+                        <View key={tag} style={{
+                          backgroundColor:   COLORS.primary + '12',
+                          borderRadius:      RADIUS.full,
+                          paddingHorizontal: 7, paddingVertical: 2,
+                          borderWidth:       1, borderColor: COLORS.primary + '25',
+                        }}>
+                          <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '600' }}>
+                            {tag}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+
+                  {/* Arrow */}
+                  <View style={{
+                    width:          32, height: 32, borderRadius: 16,
+                    backgroundColor: COLORS.primary + '15',
+                    alignItems:      'center', justifyContent: 'center',
+                    borderWidth:     1, borderColor: COLORS.primary + '25',
+                    flexShrink:      0,
+                  }}>
+                    <Ionicons name="arrow-forward" size={15} color={COLORS.primary} />
+                  </View>
+                </View>
+              </LinearGradient>
+            </TouchableOpacity>
+          </Animated.View>
+
           {/* ── Depth Preview ─────────────────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(600).delay(200)}>
             <Text style={{
@@ -419,8 +502,6 @@ export default function HomeScreen() {
 
           {/* ── Personalized Suggestions ──────────────────────────────────── */}
           <Animated.View entering={FadeInDown.duration(600).delay(300)}>
-
-            {/* Section header */}
             <View style={{
               flexDirection:   'row', alignItems: 'center',
               justifyContent:  'space-between', marginBottom: SPACING.md,
@@ -446,7 +527,6 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Personalization hint */}
             {isPersonalized && (
               <Animated.View
                 entering={FadeIn.duration(400)}
@@ -469,7 +549,6 @@ export default function HomeScreen() {
               </Animated.View>
             )}
 
-            {/* Loading skeleton */}
             {suggestionsLoading && suggestions.length === 0 && (
               <>
                 {[0, 60, 120, 180].map(delay => (
@@ -478,10 +557,8 @@ export default function HomeScreen() {
               </>
             )}
 
-            {/* Grouped personalized suggestions */}
-            {!suggestionsLoading || suggestions.length > 0 ? (
+            {(!suggestionsLoading || suggestions.length > 0) ? (
               isPersonalized && groupedSuggestions.length > 1 ? (
-                // Show grouped with section headers when personalized
                 groupedSuggestions.map((group, gi) => (
                   <View key={group.source + gi}>
                     {gi > 0 && (
@@ -507,7 +584,6 @@ export default function HomeScreen() {
                   </View>
                 ))
               ) : (
-                // Flat list (trending only / not yet personalized)
                 suggestions.map(suggestion => (
                   <PersonalizedSuggestionCard
                     key={suggestion.id}
@@ -517,7 +593,6 @@ export default function HomeScreen() {
                 ))
               )
             ) : null}
-
           </Animated.View>
         </ScrollView>
       </SafeAreaView>

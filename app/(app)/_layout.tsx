@@ -1,5 +1,6 @@
 // app/(app)/_layout.tsx
-// Part 24 — UPDATED: Registered credits-store + transaction-history screens.
+// Part 26 — UPDATED: Registered knowledge-base screen.
+// All previous screens preserved exactly.
 
 import { useEffect, useRef }            from 'react';
 import { View, Animated }               from 'react-native';
@@ -106,6 +107,14 @@ export default function AppLayout() {
           {/* ── Part 24: Transaction History ── */}
           <Stack.Screen
             name="transaction-history"
+            options={{
+              animation: 'slide_from_right',
+            }}
+          />
+
+          {/* ── Part 26: Personal Knowledge Base ── */}
+          <Stack.Screen
+            name="knowledge-base"
             options={{
               animation: 'slide_from_right',
             }}
