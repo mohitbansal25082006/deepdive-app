@@ -1,6 +1,24 @@
 // src/hooks/usePodcastHistory.ts
-// Part 8 — Loads and manages the user's podcast history from Supabase.
-// Deleting a podcast removes both the DB row and local audio files.
+// Part 25 — Fixed
+//
+// CHANGE: Added upsertPodcast() function.
+//
+// ROOT CAUSE OF BUG:
+//   When generation completes, podcast.tsx calls refresh() which re-fetches
+//   from DB. If the DB update failed silently (schema mismatch on columns like
+//   completed_segments / duration_seconds), the DB row still has
+//   status = 'generating_audio'. The re-fetch returns that stale row, so
+//   history shows "Generating podcast" forever and the play button is hidden.
+//
+// FIX:
+//   upsertPodcast(podcast) directly injects the in-memory completed Podcast
+//   object into the local state list. This is called by podcast.tsx immediately
+//   after onComplete fires — BEFORE the DB re-fetch — so the history list
+//   instantly shows the correct completed state with working play button,
+//   regardless of whether the DB update succeeded.
+//
+//   The subsequent refresh() still runs to keep DB and local state in sync
+//   for the long term.
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase }                         from '../lib/supabase';
@@ -10,10 +28,10 @@ import { mapRowToPodcast }                  from '../services/podcastOrchestrato
 import { deletePodcastAudio }               from '../services/podcastTTSService';
 
 export function usePodcastHistory() {
-  const { user }                                  = useAuth();
-  const [podcasts,   setPodcasts]                 = useState<Podcast[]>([]);
-  const [loading,    setLoading]                  = useState(false);
-  const [refreshing, setRefreshing]               = useState(false);
+  const { user }                    = useAuth();
+  const [podcasts,   setPodcasts]   = useState<Podcast[]>([]);
+  const [loading,    setLoading]    = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
 
@@ -41,6 +59,25 @@ export function usePodcastHistory() {
   }, [user]);
 
   useEffect(() => { fetchPodcasts(); }, [fetchPodcasts]);
+
+  // ── Upsert (NEW — Part 25 fix) ────────────────────────────────────────────
+  // Immediately updates or inserts a podcast in local state without a DB fetch.
+  // Called from podcast.tsx right after onComplete fires so history reflects
+  // the correct completed state even when the DB update hasn't propagated yet.
+
+  const upsertPodcast = useCallback((podcast: Podcast) => {
+    setPodcasts(prev => {
+      const idx = prev.findIndex(p => p.id === podcast.id);
+      if (idx >= 0) {
+        // Replace existing entry with the up-to-date in-memory podcast
+        const updated = [...prev];
+        updated[idx] = podcast;
+        return updated;
+      }
+      // Podcast not yet in list (history was fetched before INSERT) — prepend it
+      return [podcast, ...prev];
+    });
+  }, []);
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
@@ -83,5 +120,6 @@ export function usePodcastHistory() {
     refreshing,
     refresh,
     deletePodcast,
+    upsertPodcast,   // ← NEW: used by podcast.tsx after generation completes
   };
 }

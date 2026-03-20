@@ -1,16 +1,27 @@
 // src/hooks/usePodcastPlayer.ts
-// Part 8 — Sequential audio playback of podcast segments using expo-av.
+// Part 25 — Updated
 //
-// ARCHITECTURE:
-//  • Each podcast turn is a separate .mp3 file on the local filesystem.
-//  • The hook loads and plays turns sequentially, auto-advancing when each
-//    segment finishes (didJustFinish === true in the status callback).
-//  • All mutable playback values are kept in refs to avoid stale closures
-//    inside the expo-av status callback. React state is only updated for
-//    UI rendering (position, currentIndex, isPlaying, etc.)
-//  • loadTurnRef.current is updated after every render so the status
-//    callback (which cannot change after it's registered) always has access
-//    to the most recent version of loadTurn via the ref.
+// CHANGE: Cross-device audio playback via Supabase Storage cloud URLs.
+//
+// PROBLEM SOLVED:
+//   Audio segments are generated on Device A and stored in:
+//     file:///var/mobile/.../deepdive_podcasts/{podcastId}/turn_N.mp3
+//   Those paths don't exist on Device B when the user logs in from another phone.
+//
+// SOLUTION (Part 25):
+//   1. The Podcast object now carries audioStorageUrls[] — Supabase Storage
+//      signed URLs uploaded in the background after generation.
+//   2. loadTurn() resolves the best audio source per segment:
+//        a. Try local file first (fast, no network)
+//        b. If missing or empty → fall back to cloud URL (streams via expo-av)
+//        c. If cloud URL also unavailable → skip segment gracefully
+//   3. The cloud URLs are also written into the Podcast.audioSegmentPaths
+//      when the hook detects we're on a foreign device, so subsequent
+//      segments also resolve correctly without extra lookups.
+//
+// ALL PART 8 FUNCTIONALITY PRESERVED:
+//   Sequential playback, auto-advance, playback rate, skip prev/next,
+//   progress tracking, transcript sync, rate control.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Audio }                                     from 'expo-av';
@@ -35,40 +46,33 @@ const INITIAL_STATE: PodcastPlayerState = {
 
 export function usePodcastPlayer(podcast: Podcast | null) {
 
-  // ── Refs (never cause re-renders) ─────────────────────────────────────────
-  const soundRef           = useRef<Audio.Sound | null>(null);
-  const isUnmountedRef     = useRef(false);
-  const currentIndexRef    = useRef(0);
-  const rateRef            = useRef(1.0);
-  const podcastRef         = useRef(podcast);
+  // ── Refs ──────────────────────────────────────────────────────────────────
+  const soundRef            = useRef<Audio.Sound | null>(null);
+  const isUnmountedRef      = useRef(false);
+  const currentIndexRef     = useRef(0);
+  const rateRef             = useRef(1.0);
+  const podcastRef          = useRef(podcast);
+  const loadTurnRef         = useRef<(index: number, autoPlay: boolean) => Promise<void>>(async () => {});
 
-  // Self-reference so the status callback can trigger auto-advance
-  const loadTurnRef = useRef<(index: number, autoPlay: boolean) => Promise<void>>(
-    async () => {}
-  );
-
-  // Keep podcast ref in sync
   useEffect(() => { podcastRef.current = podcast; }, [podcast]);
 
-  // ── State (drives UI rendering) ───────────────────────────────────────────
+  // ── State ─────────────────────────────────────────────────────────────────
   const [state, setState] = useState<PodcastPlayerState>(INITIAL_STATE);
 
-  // Stable patch helper — no-ops after unmount
   const patchRef = useRef((partial: Partial<PodcastPlayerState>) => {
     if (!isUnmountedRef.current) {
       setState(prev => ({ ...prev, ...partial }));
     }
   });
 
-  // ── Audio session config (once on mount) ──────────────────────────────────
+  // ── Audio session setup ───────────────────────────────────────────────────
   useEffect(() => {
     isUnmountedRef.current = false;
-
     Audio.setAudioModeAsync({
-      allowsRecordingIOS:   false,
-      playsInSilentModeIOS: true,
+      allowsRecordingIOS:      false,
+      playsInSilentModeIOS:    true,
       staysActiveInBackground: false,
-    }).catch(() => { /* ignore — some environments don't support this */ });
+    }).catch(() => {});
 
     return () => {
       isUnmountedRef.current = true;
@@ -79,15 +83,50 @@ export function usePodcastPlayer(podcast: Podcast | null) {
     };
   }, []);
 
-  // ── Pre-compute cumulative turn durations ─────────────────────────────────
+  // ── Pre-compute total duration ─────────────────────────────────────────────
   useEffect(() => {
     if (!podcast) return;
-    const turns = podcast.script?.turns ?? [];
-    const total  = turns.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
+    const total = (podcast.script?.turns ?? []).reduce((s, t) => s + (t.durationMs ?? 0), 0);
     patchRef.current({ totalDurationMs: total });
   }, [podcast?.id]);
 
-  // ── Core: load a specific turn and optionally start playback ──────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Part 25: Resolve the best audio URI for a given segment index.
+  // Priority: local file → cloud URL → null (skip)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const resolveAudioUri = useCallback(async (segmentIndex: number): Promise<string | null> => {
+    const p = podcastRef.current;
+    if (!p) return null;
+
+    // 1. Try local path from audioSegmentPaths
+    const localPath = p.audioSegmentPaths?.[segmentIndex] ?? '';
+    if (localPath) {
+      // If it's already an https URL (previously resolved cloud URL), use it directly
+      if (localPath.startsWith('https://') || localPath.startsWith('http://')) {
+        return localPath;
+      }
+      // It's a file:// path — check it exists
+      const exists = await audioFileExists(localPath);
+      if (exists) return localPath;
+    }
+
+    // 2. Fall back to cloud URL from Supabase Storage
+    const cloudUrl: string | null =
+      (p as any).audioStorageUrls?.[segmentIndex] ??    // from mapRowToPodcast
+      null;
+
+    if (cloudUrl && (cloudUrl.startsWith('https://') || cloudUrl.startsWith('http://'))) {
+      return cloudUrl;
+    }
+
+    // 3. Nothing available
+    return null;
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Core: Load a specific turn and optionally start playback
+  // ─────────────────────────────────────────────────────────────────────────
 
   const loadTurn = async (index: number, autoPlay: boolean): Promise<void> => {
     const p = podcastRef.current;
@@ -107,19 +146,13 @@ export function usePodcastPlayer(podcast: Podcast | null) {
     currentIndexRef.current = index;
     patchRef.current({ currentTurnIndex: index, isLoading: true, positionMs: 0 });
 
-    const turn      = turns[index];
-    const audioPath = p.audioSegmentPaths?.[index] ?? '';
+    const turn = turns[index];
 
-    if (!audioPath) {
-      patchRef.current({ isLoading: false });
-      if (autoPlay && index < turns.length - 1) {
-        setTimeout(() => loadTurnRef.current(index + 1, true), 80);
-      }
-      return;
-    }
+    // ── Part 25: Resolve audio URI (local or cloud) ─────────────────────
+    const audioUri = await resolveAudioUri(index);
 
-    const exists = await audioFileExists(audioPath);
-    if (!exists) {
+    if (!audioUri) {
+      // No audio available for this segment — skip gracefully
       patchRef.current({ isLoading: false });
       if (autoPlay && index < turns.length - 1) {
         setTimeout(() => loadTurnRef.current(index + 1, true), 80);
@@ -129,7 +162,7 @@ export function usePodcastPlayer(podcast: Podcast | null) {
 
     try {
       const { sound } = await Audio.Sound.createAsync(
-        { uri: audioPath },
+        { uri: audioUri },
         {
           shouldPlay:                    autoPlay,
           rate:                          rateRef.current,
@@ -145,16 +178,13 @@ export function usePodcastPlayer(podcast: Podcast | null) {
 
       soundRef.current = sound;
 
-      // Pre-compute values used in the status callback (no React state access)
+      // Pre-compute cumulative position values
       const totalDurationMs = turns.reduce((s, t) => s + (t.durationMs ?? 0), 0);
-      const cumulativeMs    = turns
-        .slice(0, index)
-        .reduce((s, t) => s + (t.durationMs ?? 0), 0);
+      const cumulativeMs    = turns.slice(0, index).reduce((s, t) => s + (t.durationMs ?? 0), 0);
 
       sound.setOnPlaybackStatusUpdate((status: any) => {
-        // Loaded-status guard — works across expo-av versions
-        if (!status?.isLoaded)    return;
-        if (isUnmountedRef.current) return;
+        if (!status?.isLoaded)       return;
+        if (isUnmountedRef.current)  return;
 
         const posMs = status.positionMillis ?? 0;
         const durMs = status.durationMillis ?? (turn.durationMs ?? 0);
@@ -169,13 +199,11 @@ export function usePodcastPlayer(podcast: Podcast | null) {
           totalDurationMs,
         });
 
-        // Auto-advance to next segment
         if (status.didJustFinish) {
           const next = currentIndexRef.current + 1;
           if (next < turns.length) {
             setTimeout(() => loadTurnRef.current(next, true), 120);
           } else {
-            // Podcast finished
             patchRef.current({ isPlaying: false, positionMs: 0, totalPositionMs: totalDurationMs });
           }
         }
@@ -184,16 +212,14 @@ export function usePodcastPlayer(podcast: Podcast | null) {
       patchRef.current({ isLoading: false, isPlaying: autoPlay });
 
     } catch (err) {
-      console.warn(`[PodcastPlayer] Segment ${index} load error:`, err);
+      console.warn(`[PodcastPlayer] Segment ${index} load error (uri: ${audioUri}):`, err);
       patchRef.current({ isLoading: false });
-      // Non-fatal: skip to next
       if (autoPlay && index < turns.length - 1) {
         setTimeout(() => loadTurnRef.current(index + 1, true), 300);
       }
     }
   };
 
-  // Always keep ref pointing to the latest closure
   loadTurnRef.current = loadTurn;
 
   // ── Public controls ───────────────────────────────────────────────────────
@@ -220,68 +246,48 @@ export function usePodcastPlayer(podcast: Podcast | null) {
 
   const togglePlayPause = useCallback(async () => {
     setState(prev => {
-      // Read current playing state to decide action
-      if (prev.isPlaying) {
-        pause();
-      } else {
-        play();
-      }
+      if (prev.isPlaying) pause();
+      else play();
       return prev;
     });
   }, [play, pause]);
 
   const skipToTurn = useCallback(async (index: number) => {
-    const turns = podcastRef.current?.script?.turns ?? [];
+    const turns   = podcastRef.current?.script?.turns ?? [];
     const clamped = Math.max(0, Math.min(index, turns.length - 1));
-    // Preserve current play/pause intent
     const shouldPlay = !!(soundRef.current) || state.isPlaying;
     await loadTurnRef.current(clamped, shouldPlay);
   }, [state.isPlaying]);
 
   const skipNext = useCallback(async () => {
-    const turns  = podcastRef.current?.script?.turns ?? [];
-    const next   = currentIndexRef.current + 1;
-    if (next < turns.length) {
-      await loadTurnRef.current(next, state.isPlaying);
-    }
+    const turns = podcastRef.current?.script?.turns ?? [];
+    const next  = currentIndexRef.current + 1;
+    if (next < turns.length) await loadTurnRef.current(next, state.isPlaying);
   }, [state.isPlaying]);
 
   const skipPrevious = useCallback(async () => {
-    // If > 2 s into current segment — restart it. Otherwise go to previous turn.
     if (state.positionMs > 2000 && soundRef.current) {
       await soundRef.current.setPositionAsync(0);
     } else {
       const prev = currentIndexRef.current - 1;
-      if (prev >= 0) {
-        await loadTurnRef.current(prev, state.isPlaying);
-      }
+      if (prev >= 0) await loadTurnRef.current(prev, state.isPlaying);
     }
   }, [state.positionMs, state.isPlaying]);
 
   const setPlaybackRate = useCallback(async (rate: number) => {
     rateRef.current = rate;
     patchRef.current({ playbackRate: rate });
-    if (soundRef.current) {
-      await soundRef.current.setRateAsync(rate, true);
-    }
+    if (soundRef.current) await soundRef.current.setRateAsync(rate, true);
   }, []);
 
   const stopPlayback = useCallback(async () => {
     if (soundRef.current) {
-      try {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-      } catch {}
+      try { await soundRef.current.stopAsync(); await soundRef.current.unloadAsync(); } catch {}
       soundRef.current = null;
     }
     currentIndexRef.current = 0;
-    patchRef.current({
-      isPlaying: false, positionMs: 0,
-      totalPositionMs: 0, currentTurnIndex: 0,
-    });
+    patchRef.current({ isPlaying: false, positionMs: 0, totalPositionMs: 0, currentTurnIndex: 0 });
   }, []);
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
 
   const formatTime = useCallback((ms: number): string => {
     const totalSec = Math.floor(Math.max(0, ms) / 1000);

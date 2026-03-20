@@ -1,40 +1,35 @@
 // src/types/index.ts
-// Parts 1–21 — All type definitions
-// Part 18 adds:
-//   • Extended WorkspaceActivityAction with new actions
-//   • WorkspaceNotificationPreferences
-//   • MemberSharedStats + MemberSharedItem
-//   • mentions field referenced in chat.ts
-// Part 21 adds:
-//   • Streaming report section callbacks to OrchestratorCallbacks
+// DeepDive AI — Complete Type Definitions
+// Parts 1–25 — All types in one file
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
 
 export interface Profile {
-  id: string;
-  username: string | null;
-  full_name: string | null;
-  avatar_url: string | null;
-  bio: string | null;
-  occupation: string | null;
-  interests: string[] | null;
-  profile_completed: boolean;
-  created_at: string;
-  updated_at: string;
+  id:                  string;
+  username:            string | null;
+  full_name:           string | null;
+  avatar_url:          string | null;
+  bio:                 string | null;
+  occupation:          string | null;
+  interests:           string[] | null;
+  profile_completed:   boolean;
+  created_at:          string;
+  updated_at:          string;
 }
 
 export interface AuthUser {
-  id: string;
-  email: string | null;
+  id:         string;
+  email:      string | null;
   created_at: string;
 }
 
 export interface OnboardingSlide {
-  id: string;
-  title: string;
-  subtitle: string;
-  description: string;
-  icon: string;
+  id:             string;
+  title:          string;
+  subtitle:       string;
+  description:    string;
+  icon:           string;
   gradientColors: readonly [string, string];
 }
 
@@ -79,17 +74,91 @@ export interface ResearchPlan {
   keyEntities:    string[];
 }
 
+// ─── Part 25: Source Trust Scoring ───────────────────────────────────────────
+
+export type SourceBias =
+  | 'left'
+  | 'center-left'
+  | 'center'
+  | 'center-right'
+  | 'right'
+  | 'financial'
+  | 'technical'
+  | 'academic'
+  | 'government'
+  | 'unknown';
+
+/** Tier 1 = Authoritative · Tier 2 = Credible · Tier 3 = General · Tier 4 = Unverified */
+export type SourceTrustTier = 1 | 2 | 3 | 4;
+
+export interface SourceTrustScore {
+  /** 0–10 overall credibility */
+  credibilityScore: number;
+  /** Political / editorial stance */
+  bias:             SourceBias;
+  /** Numeric tier (1 = best) */
+  tier:             SourceTrustTier;
+  /** Human-readable tier label */
+  tierLabel:        string;
+  /** Estimated domain authority 0–100 */
+  domainAuthority:  number;
+  /** True when domain is in curated database */
+  isVerified:       boolean;
+  /** Descriptive tags e.g. ['academic', 'peer-reviewed'] */
+  tags:             string[];
+}
+
+// ─── Part 25: Depth-Aware Search Configuration ───────────────────────────────
+
+export interface DepthSearchConfig {
+  resultsPerQuery: number;
+  maxQueries:      number;
+  followUpQueries: number;
+  newsQueries:     number;
+  minSources:      number;
+  maxSources:      number;
+}
+
+export const DEPTH_SEARCH_CONFIG: Record<ResearchDepth, DepthSearchConfig> = {
+  quick: {
+    resultsPerQuery: 8,
+    maxQueries:      4,
+    followUpQueries: 0,
+    newsQueries:     0,
+    minSources:      20,
+    maxSources:      40,
+  },
+  deep: {
+    resultsPerQuery: 12,
+    maxQueries:      8,
+    followUpQueries: 3,
+    newsQueries:     2,
+    minSources:      60,
+    maxSources:      130,
+  },
+  expert: {
+    resultsPerQuery: 15,
+    maxQueries:      12,
+    followUpQueries: 5,
+    newsQueries:     4,
+    minSources:      120,
+    maxSources:      260,
+  },
+};
+
 // ─── Web Search Results ───────────────────────────────────────────────────────
 
 export interface SearchResult {
-  title:      string;
-  url:        string;
-  snippet:    string;
-  date?:      string;
-  source?:    string;
-  position:   number;
-  thumbnail?: string;
-  imageUrl?:  string;
+  title:       string;
+  url:         string;
+  snippet:     string;
+  date?:       string;
+  source?:     string;
+  position:    number;
+  thumbnail?:  string;
+  imageUrl?:   string;
+  /** Part 25: attached by sourceTrustScorer after each search */
+  trustScore?: SourceTrustScore;
 }
 
 export interface SearchBatch {
@@ -141,12 +210,14 @@ export interface FactCheckOutput {
 // ─── Report (final output) ────────────────────────────────────────────────────
 
 export interface Citation {
-  id:       string;
-  title:    string;
-  url:      string;
-  source:   string;
-  date?:    string;
-  snippet:  string;
+  id:          string;
+  title:       string;
+  url:         string;
+  source:      string;
+  date?:       string;
+  snippet:     string;
+  /** Part 25: trust score for this citation source */
+  trustScore?: SourceTrustScore;
 }
 
 export interface ReportSection {
@@ -293,14 +364,10 @@ export interface OrchestratorCallbacks {
   onComplete:    (report: ResearchReport) => void;
   onError:       (message: string) => void;
 
-  // ── Part 21: Streaming report section callbacks ──────────────────────────
-  /** Called when a new section starts being written */
+  // Part 21: Streaming report section callbacks
   onSectionStart?:    (sectionIndex: number, sectionTitle: string) => void;
-  /** Called for each text token within the current section */
   onSectionToken?:    (sectionIndex: number, token: string) => void;
-  /** Called when a section finishes — full section object included */
-  onSectionComplete?: (sectionIndex: number, section: import('./index').ReportSection) => void;
-  /** Called when the executive summary has been generated */
+  onSectionComplete?: (sectionIndex: number, section: ReportSection) => void;
   onSummaryReady?:    (summary: string) => void;
 }
 
@@ -334,12 +401,12 @@ export interface UserSubscription {
 }
 
 export interface SavedTopic {
-  id:              string;
-  userId:          string;
-  topic:           string;
-  lastCheckedAt:   string;
-  notifyOnUpdate:  boolean;
-  createdAt:       string;
+  id:             string;
+  userId:         string;
+  topic:          string;
+  lastCheckedAt:  string;
+  notifyOnUpdate: boolean;
+  createdAt:      string;
 }
 
 export type CitationFormat = 'apa' | 'mla' | 'chicago';
@@ -360,55 +427,65 @@ export type SlideLayout =
 export interface SlideStatItem { value: string; label: string; color?: string; }
 
 export interface PresentationSlide {
-  id:               string;
-  slideNumber:      number;
-  layout:           SlideLayout;
-  title:            string;
-  subtitle?:        string;
-  body?:            string;
-  bullets?:         string[];
-  stats?:           SlideStatItem[];
-  quote?:           string;
+  id:                string;
+  slideNumber:       number;
+  layout:            SlideLayout;
+  title:             string;
+  subtitle?:         string;
+  body?:             string;
+  bullets?:          string[];
+  stats?:            SlideStatItem[];
+  quote?:            string;
   quoteAttribution?: string;
-  sectionTag?:      string;
-  badgeText?:       string;
-  speakerNotes?:    string;
-  accentColor?:     string;
-  icon?:            string;
+  sectionTag?:       string;
+  badgeText?:        string;
+  speakerNotes?:     string;
+  accentColor?:      string;
+  icon?:             string;
 }
 
 export type PresentationTheme = 'dark' | 'light' | 'corporate' | 'vibrant';
 
 export interface PresentationThemeTokens {
-  background: string; surface: string; primary: string;
-  textPrimary: string; textSecondary: string; textMuted: string; border: string;
+  background:    string;
+  surface:       string;
+  primary:       string;
+  textPrimary:   string;
+  textSecondary: string;
+  textMuted:     string;
+  border:        string;
   pptx: {
-    background: string; surface: string; primary: string;
-    textPrimary: string; textSecondary: string; textMuted: string; border: string;
+    background:    string;
+    surface:       string;
+    primary:       string;
+    textPrimary:   string;
+    textSecondary: string;
+    textMuted:     string;
+    border:        string;
   };
 }
 
 export interface GeneratedPresentation {
-  id:           string;
-  reportId:     string;
-  userId:       string;
-  title:        string;
-  subtitle:     string;
-  theme:        PresentationTheme;
-  themeTokens:  PresentationThemeTokens;
-  slides:       PresentationSlide[];
-  totalSlides:  number;
-  generatedAt:  string;
-  exportCount:  number;
+  id:          string;
+  reportId:    string;
+  userId:      string;
+  title:       string;
+  subtitle:    string;
+  theme:       PresentationTheme;
+  themeTokens: PresentationThemeTokens;
+  slides:      PresentationSlide[];
+  totalSlides: number;
+  generatedAt: string;
+  exportCount: number;
 }
 
 export interface SlideGeneratorState {
-  presentation:  GeneratedPresentation | null;
-  isGenerating:  boolean;
-  isExporting:   boolean;
-  exportFormat:  SlideExportFormat | null;
-  progress:      string;
-  error:         string | null;
+  presentation: GeneratedPresentation | null;
+  isGenerating: boolean;
+  isExporting:  boolean;
+  exportFormat: SlideExportFormat | null;
+  progress:     string;
+  error:        string | null;
 }
 
 export type SlideExportFormat = 'pptx' | 'pdf' | 'html';
@@ -426,14 +503,18 @@ export type AssistantMode =
   | 'questions' | 'summarize' | 'factcheck';
 
 export interface RetrievedChunkInfo {
-  chunkId: string; chunkType: string; similarity: number;
+  chunkId:    string;
+  chunkType:  string;
+  similarity: number;
 }
 
 export interface AssistantMessage {
-  id: string; reportId: string; userId: string;
-  role: 'user' | 'assistant';
-  content: string;
-  mode: AssistantMode;
+  id:                  string;
+  reportId:            string;
+  userId:              string;
+  role:                'user' | 'assistant';
+  content:             string;
+  mode:                AssistantMode;
   retrievedChunks?:    RetrievedChunkInfo[];
   suggestedFollowUps?: string[];
   isRAGPowered?:       boolean;
@@ -442,14 +523,14 @@ export interface AssistantMessage {
 }
 
 export interface AssistantAgentResponse {
-  content:               string;
-  mode:                  AssistantMode;
-  detectedMode:          AssistantMode;
-  appliedMode:           AssistantMode;
-  suggestedFollowUps:    string[];
-  usedRAG:               boolean;
-  retrievedChunkCount:   number;
-  confidence:            'high' | 'medium' | 'low';
+  content:             string;
+  mode:                AssistantMode;
+  detectedMode:        AssistantMode;
+  appliedMode:         AssistantMode;
+  suggestedFollowUps:  string[];
+  usedRAG:             boolean;
+  retrievedChunkCount: number;
+  confidence:          'high' | 'medium' | 'low';
 }
 
 export interface AssistantState {
@@ -463,9 +544,9 @@ export interface AssistantState {
 }
 
 export interface ReportEmbeddingStats {
-  totalChunks:  number;
-  chunkTypes:   Record<string, number>;
-  embeddedAt:   string | null;
+  totalChunks: number;
+  chunkTypes:  Record<string, number>;
+  embeddedAt:  string | null;
 }
 
 // ─── Part 7: AI Academic Paper Mode ──────────────────────────────────────────
@@ -476,7 +557,11 @@ export type AcademicSectionType =
   | 'abstract' | 'introduction' | 'literature_review'
   | 'methodology' | 'findings' | 'conclusion' | 'references';
 
-export interface AcademicSubsection { id: string; title: string; content: string; }
+export interface AcademicSubsection {
+  id:      string;
+  title:   string;
+  content: string;
+}
 
 export interface AcademicSection {
   id:           string;
@@ -488,21 +573,29 @@ export interface AcademicSection {
 }
 
 export interface AcademicPaper {
-  id: string; reportId: string; userId: string;
-  title: string; runningHead: string; abstract: string; keywords: string[];
-  sections:       AcademicSection[];
-  citations:      Citation[];
-  citationStyle:  AcademicCitationStyle;
-  wordCount:      number;
-  pageEstimate:   number;
-  institution?:   string;
-  generatedAt:    string;
-  exportCount:    number;
+  id:            string;
+  reportId:      string;
+  userId:        string;
+  title:         string;
+  runningHead:   string;
+  abstract:      string;
+  keywords:      string[];
+  sections:      AcademicSection[];
+  citations:     Citation[];
+  citationStyle: AcademicCitationStyle;
+  wordCount:     number;
+  pageEstimate:  number;
+  institution?:  string;
+  generatedAt:   string;
+  exportCount:   number;
 }
 
 export interface AcademicAgentOutput {
-  title: string; runningHead: string; abstract: string; keywords: string[];
-  sections: Omit<AcademicSection, 'id'>[];
+  title:       string;
+  runningHead: string;
+  abstract:    string;
+  keywords:    string[];
+  sections:    Omit<AcademicSection, 'id'>[];
 }
 
 export interface AcademicPaperState {
@@ -516,11 +609,11 @@ export interface AcademicPaperState {
 }
 
 export interface AcademicPaperMeta {
-  wordCount:    number;
-  pageEstimate: number;
-  sectionCount: number;
-  citationCount:number;
-  generatedAt:  string;
+  wordCount:     number;
+  pageEstimate:  number;
+  sectionCount:  number;
+  citationCount: number;
+  generatedAt:   string;
 }
 
 // ─── Part 8: AI Podcast Generator ────────────────────────────────────────────
@@ -529,56 +622,93 @@ export type PodcastVoice  = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shim
 export type PodcastStatus = 'pending' | 'generating_script' | 'generating_audio' | 'completed' | 'failed';
 
 export interface PodcastTurn {
-  id: string; segmentIndex: number;
-  speaker: 'host' | 'guest'; speakerName: string;
-  text: string; audioPath?: string; durationMs?: number;
+  id:            string;
+  segmentIndex:  number;
+  speaker:       'host' | 'guest';
+  speakerName:   string;
+  text:          string;
+  audioPath?:    string;
+  durationMs?:   number;
 }
 
 export interface PodcastScript {
-  turns: PodcastTurn[]; totalWords: number; estimatedDurationMinutes: number;
+  turns:                     PodcastTurn[];
+  totalWords:                number;
+  estimatedDurationMinutes:  number;
 }
 
 export interface PodcastConfig {
-  hostVoice: PodcastVoice; guestVoice: PodcastVoice;
-  hostName: string; guestName: string; targetDurationMinutes: number;
+  hostVoice:              PodcastVoice;
+  guestVoice:             PodcastVoice;
+  hostName:               string;
+  guestName:              string;
+  targetDurationMinutes:  number;
 }
 
 export interface PodcastVoicePreset {
-  id: string; name: string; description: string;
-  hostVoice: PodcastVoice; guestVoice: PodcastVoice;
-  hostName: string; guestName: string; icon: string; accentColor: string;
+  id:           string;
+  name:         string;
+  description:  string;
+  hostVoice:    PodcastVoice;
+  guestVoice:   PodcastVoice;
+  hostName:     string;
+  guestName:    string;
+  icon:         string;
+  accentColor:  string;
 }
 
 export interface Podcast {
-  id: string; userId: string; reportId?: string;
-  title: string; description: string; topic: string;
-  script: PodcastScript; config: PodcastConfig;
-  status: PodcastStatus;
-  completedSegments: number; durationSeconds: number; wordCount: number;
-  audioSegmentPaths: string[]; errorMessage?: string;
-  exportCount: number; createdAt: string; completedAt?: string;
+  id:                 string;
+  userId:             string;
+  reportId?:          string;
+  title:              string;
+  description:        string;
+  topic:              string;
+  script:             PodcastScript;
+  config:             PodcastConfig;
+  status:             PodcastStatus;
+  completedSegments:  number;
+  durationSeconds:    number;
+  wordCount:          number;
+  audioSegmentPaths:  string[];
+  errorMessage?:      string;
+  exportCount:        number;
+  createdAt:          string;
+  completedAt?:       string;
+  /** Part 25: Supabase Storage signed URLs (same length as audioSegmentPaths) */
+  audioStorageUrls?:  (string | null)[];
+  /** Part 25: true when all segments have been uploaded to cloud */
+  audioAllUploaded?:  boolean;
 }
 
 export interface PodcastGenerationState {
-  podcast: Podcast | null;
-  isGeneratingScript: boolean; isGeneratingAudio: boolean; scriptGenerated: boolean;
-  audioProgress: { completed: number; total: number };
-  progressMessage: string; error: string | null;
+  podcast:             Podcast | null;
+  isGeneratingScript:  boolean;
+  isGeneratingAudio:   boolean;
+  scriptGenerated:     boolean;
+  audioProgress:       { completed: number; total: number };
+  progressMessage:     string;
+  error:               string | null;
 }
 
 export interface PodcastPlayerState {
-  isPlaying: boolean; currentTurnIndex: number;
-  positionMs: number; segmentDurationMs: number;
-  totalPositionMs: number; totalDurationMs: number;
-  isLoading: boolean; isBuffering: boolean; playbackRate: number;
+  isPlaying:         boolean;
+  currentTurnIndex:  number;
+  positionMs:        number;
+  segmentDurationMs: number;
+  totalPositionMs:   number;
+  totalDurationMs:   number;
+  isLoading:         boolean;
+  isBuffering:       boolean;
+  playbackRate:      number;
 }
 
 export interface PodcastGenerationCallbacks {
-  onScriptGenerated:    (script: PodcastScript) => void;
-  onSegmentGenerated:   (segmentIndex: number, totalSegments: number, audioPath: string) => void;
-  onComplete:           (podcast: Podcast) => void;
-  onError:              (message: string) => void;
-  onProgress:           (message: string) => void;
+  onScriptGenerated:  (script: PodcastScript) => void;
+  onSegmentGenerated: (segmentIndex: number, totalSegments: number, audioPath: string) => void;
+  onComplete:         (podcast: Podcast) => void;
+  onError:            (message: string) => void;
+  onProgress:         (message: string) => void;
 }
 
 // ─── Part 9: AI Debate Agent ──────────────────────────────────────────────────
@@ -594,50 +724,75 @@ export type DebateStanceType =
   | 'strongly_for' | 'for' | 'neutral' | 'against' | 'strongly_against';
 
 export interface DebateArgument {
-  id: string; point: string; evidence: string;
-  sourceUrl?: string; strength: 'strong' | 'moderate' | 'weak';
+  id:          string;
+  point:       string;
+  evidence:    string;
+  sourceUrl?:  string;
+  strength:    'strong' | 'moderate' | 'weak';
 }
 
 export interface DebatePerspective {
-  agentRole: DebateAgentRole; agentName: string; tagline: string;
-  stanceLabel: string; stanceType: DebateStanceType;
-  summary: string; arguments: DebateArgument[];
-  keyQuote: string; confidence: number;
-  searchedQueries: string[]; sourcesUsed: Citation[];
-  color: string; icon: string;
+  agentRole:       DebateAgentRole;
+  agentName:       string;
+  tagline:         string;
+  stanceLabel:     string;
+  stanceType:      DebateStanceType;
+  summary:         string;
+  arguments:       DebateArgument[];
+  keyQuote:        string;
+  confidence:      number;
+  searchedQueries: string[];
+  sourcesUsed:     Citation[];
+  color:           string;
+  icon:            string;
 }
 
 export interface DebateModerator {
-  summary: string; argumentsFor: string[]; argumentsAgainst: string[];
-  neutralConclusion: string; consensusPoints: string[];
-  keyTensions: string[]; balancedVerdict: string;
+  summary:          string;
+  argumentsFor:     string[];
+  argumentsAgainst: string[];
+  neutralConclusion:string;
+  consensusPoints:  string[];
+  keyTensions:      string[];
+  balancedVerdict:  string;
 }
 
 export interface DebateSession {
-  id: string; userId: string; topic: string; question: string;
-  perspectives:       DebatePerspective[];
-  moderator:          DebateModerator | null;
-  status:             DebateStatus;
-  agentRoles:         DebateAgentRole[];
-  searchResultsCount: number;
-  errorMessage?:      string;
-  createdAt:          string;
-  completedAt?:       string;
+  id:                   string;
+  userId:               string;
+  topic:                string;
+  question:             string;
+  perspectives:         DebatePerspective[];
+  moderator:            DebateModerator | null;
+  status:               DebateStatus;
+  agentRoles:           DebateAgentRole[];
+  searchResultsCount:   number;
+  errorMessage?:        string;
+  createdAt:            string;
+  completedAt?:         string;
 }
 
 export interface DebateAgentProgressItem {
-  role: DebateAgentRole; label: string;
-  status: 'pending' | 'searching' | 'thinking' | 'completed' | 'failed';
-  detail?: string; color: string; icon: string;
-  startedAt?: number; completedAt?: number;
+  role:         DebateAgentRole;
+  label:        string;
+  status:       'pending' | 'searching' | 'thinking' | 'completed' | 'failed';
+  detail?:      string;
+  color:        string;
+  icon:         string;
+  startedAt?:   number;
+  completedAt?: number;
 }
 
 export interface DebateGenerationState {
-  session:        DebateSession | null;
-  agentProgress:  DebateAgentProgressItem[];
-  isSearching:    boolean; isDebating: boolean; isModerating: boolean;
-  completedAgents: number; totalAgents: number;
-  progressMessage: string; error: string | null;
+  session:          DebateSession | null;
+  agentProgress:    DebateAgentProgressItem[];
+  isSearching:      boolean;
+  isDebating:       boolean;
+  isModerating:     boolean;
+  completedAgents:  number;
+  totalAgents:      number;
+  progressMessage:  string;
+  error:            string | null;
 }
 
 export interface DebateConfig { agentRoles?: DebateAgentRole[]; }
@@ -656,14 +811,13 @@ export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
 // Part 18: Extended with new activity actions
 export type WorkspaceActivityAction =
-  | 'workspace_created'     | 'workspace_updated'
-  | 'report_added'          | 'report_removed'
-  | 'member_joined'         | 'member_left'       | 'member_removed'
-  | 'member_role_changed'   | 'comment_added'     | 'comment_resolved'
+  | 'workspace_created'       | 'workspace_updated'
+  | 'report_added'            | 'report_removed'
+  | 'member_joined'           | 'member_left'         | 'member_removed'
+  | 'member_role_changed'     | 'comment_added'       | 'comment_resolved'
   | 'ownership_transferred'
   | 'member_blocked'
   | 'debate_shared'
-  // Part 18 additions ─────────────────────────────────────────
   | 'presentation_shared'
   | 'academic_paper_shared'
   | 'podcast_shared'
@@ -675,21 +829,25 @@ export type WorkspaceActivityAction =
   | 'access_request_approved'
   | 'access_request_denied';
 
-// ─── Part 11 WorkspaceSettings ────────────────────────────────────────────────
+// ─── Part 11: Workspace Settings & Accent Colors ──────────────────────────────
 
 export type WorkspaceAccentColor =
   | 'purple' | 'blue' | 'green' | 'orange' | 'pink' | 'cyan';
 
 export const WORKSPACE_ACCENT_COLORS: Record<WorkspaceAccentColor, string> = {
-  purple: '#6C63FF', blue: '#3B82F6', green: '#10B981',
-  orange: '#F59E0B', pink: '#EC4899', cyan:  '#06B6D4',
+  purple: '#6C63FF',
+  blue:   '#3B82F6',
+  green:  '#10B981',
+  orange: '#F59E0B',
+  pink:   '#EC4899',
+  cyan:   '#06B6D4',
 };
 
 export interface WorkspaceSettings {
-  notifyOnNewReport?:  boolean;
-  notifyOnComment?:    boolean;
-  notifyOnMention?:    boolean;
-  accentColor?:        WorkspaceAccentColor;
+  notifyOnNewReport?: boolean;
+  notifyOnComment?:   boolean;
+  notifyOnMention?:   boolean;
+  accentColor?:       WorkspaceAccentColor;
 }
 
 export interface Workspace {
@@ -767,14 +925,14 @@ export interface CommentReply {
 }
 
 export interface WorkspaceActivity {
-  id:           string;
-  workspaceId:  string;
-  userId:       string | null;
-  action:       WorkspaceActivityAction;
-  resourceType: string | null;
-  resourceId:   string | null;
-  metadata:     Record<string, unknown>;
-  createdAt:    string;
+  id:            string;
+  workspaceId:   string;
+  userId:        string | null;
+  action:        WorkspaceActivityAction;
+  resourceType:  string | null;
+  resourceId:    string | null;
+  metadata:      Record<string, unknown>;
+  createdAt:     string;
   actorProfile?: MiniProfile;
 }
 
@@ -818,14 +976,14 @@ export interface AvatarOption      { url: string; style: AvatarStyle; seed: stri
 // ─── Part 11: Workspace Search ────────────────────────────────────────────────
 
 export interface WorkspaceSearchResult {
-  type:        'report' | 'comment' | 'member';
-  id:          string;
-  title:       string;
-  subtitle:    string;
-  reportId?:   string;
+  type:         'report' | 'comment' | 'member';
+  id:           string;
+  title:        string;
+  subtitle:     string;
+  reportId?:    string;
   workspaceId?: string;
-  avatarUrl?:  string;
-  createdAt?:  string;
+  avatarUrl?:   string;
+  createdAt?:   string;
 }
 
 export interface WorkspaceSearchState {
@@ -857,7 +1015,7 @@ export interface BlockedMember {
   profile?:      MiniProfile;
 }
 
-// ─── State shapes ─────────────────────────────────────────────────────────────
+// ─── State Shapes ─────────────────────────────────────────────────────────────
 
 export interface WorkspaceListState {
   workspaces: Workspace[];
@@ -866,22 +1024,22 @@ export interface WorkspaceListState {
 }
 
 export interface WorkspaceDetailState {
-  workspace:   Workspace | null;
-  members:     WorkspaceMember[];
-  reports:     WorkspaceReport[];
-  userRole:    WorkspaceRole | null;
-  isLoading:   boolean;
+  workspace:    Workspace | null;
+  members:      WorkspaceMember[];
+  reports:      WorkspaceReport[];
+  userRole:     WorkspaceRole | null;
+  isLoading:    boolean;
   isRefreshing: boolean;
-  error:       string | null;
+  error:        string | null;
 }
 
 export interface CommentState {
-  comments:     ReportComment[];
+  comments:      ReportComment[];
   sectionCounts: Record<string, number>;
-  isLoading:    boolean;
-  isSending:    boolean;
-  isReplying:   boolean;
-  error:        string | null;
+  isLoading:     boolean;
+  isSending:     boolean;
+  isReplying:    boolean;
+  error:         string | null;
 }
 
 export interface PresenceState {
@@ -907,57 +1065,57 @@ export interface ReactionState {
 export type SharedContentType = 'presentation' | 'academic_paper' | 'podcast' | 'debate';
 
 export interface SharedWorkspaceContent {
-  id:           string;
-  workspaceId:  string;
-  sharedBy:     string;
-  contentType:  SharedContentType;
-  contentId:    string;
-  title:        string;
-  subtitle?:    string;
-  reportId?:    string;
-  metadata:     Record<string, unknown>;
-  sharedAt:     string;
-  sharerName?:  string;
+  id:            string;
+  workspaceId:   string;
+  sharedBy:      string;
+  contentType:   SharedContentType;
+  contentId:     string;
+  title:         string;
+  subtitle?:     string;
+  reportId?:     string;
+  metadata:      Record<string, unknown>;
+  sharedAt:      string;
+  sharerName?:   string;
   sharerAvatar?: string;
 }
 
 export interface WorkspaceSharingState {
-  items:      SharedWorkspaceContent[];
-  isLoading:  boolean;
-  isSharing:  boolean;
-  error:      string | null;
+  items:     SharedWorkspaceContent[];
+  isLoading: boolean;
+  isSharing: boolean;
+  error:     string | null;
 }
 
 // ─── Part 15: Shared Podcast ──────────────────────────────────────────────────
 
 export interface SharedPodcast {
-  id:                 string;
-  workspaceId:        string;
-  podcastId:          string;
-  sharedBy:           string;
-  reportId?:          string;
-  title:              string;
-  description:        string;
-  topic:              string;
-  hostName:           string;
-  guestName:          string;
-  durationSeconds:    number;
-  wordCount:          number;
-  completedSegments:  number;
-  script:             PodcastScript;
-  audioSegmentPaths:  string[];
-  downloadCount:      number;
-  playCount:          number;
-  sharedAt:           string;
-  sharerName?:        string;
-  sharerAvatar?:      string;
+  id:                string;
+  workspaceId:       string;
+  podcastId:         string;
+  sharedBy:          string;
+  reportId?:         string;
+  title:             string;
+  description:       string;
+  topic:             string;
+  hostName:          string;
+  guestName:         string;
+  durationSeconds:   number;
+  wordCount:         number;
+  completedSegments: number;
+  script:            PodcastScript;
+  audioSegmentPaths: string[];
+  downloadCount:     number;
+  playCount:         number;
+  sharedAt:          string;
+  sharerName?:       string;
+  sharerAvatar?:     string;
 }
 
 export interface SharedPodcastState {
-  podcasts:   SharedPodcast[];
-  isLoading:  boolean;
-  isSharing:  boolean;
-  error:      string | null;
+  podcasts:  SharedPodcast[];
+  isLoading: boolean;
+  isSharing: boolean;
+  error:     string | null;
 }
 
 export interface SharedPodcastSummary {
@@ -988,25 +1146,25 @@ export interface WorkspaceReportDownload {
 // ─── Part 16: Workspace Shared Debate ─────────────────────────────────────────
 
 export interface SharedDebate {
-  id:                   string;
-  workspaceId:          string;
-  debateId:             string;
-  sharedBy:             string;
-  reportId?:            string;
-  topic:                string;
-  question:             string;
-  agentRoles:           DebateAgentRole[];
-  searchResultsCount:   number;
-  perspectives:         DebatePerspective[];
-  moderator:            DebateModerator | null;
-  debateStatus:         DebateStatus;
-  viewCount:            number;
-  downloadCount:        number;
-  debateCreatedAt?:     string;
-  debateCompletedAt?:   string;
-  sharedAt:             string;
-  sharerName?:          string;
-  sharerAvatar?:        string;
+  id:                  string;
+  workspaceId:         string;
+  debateId:            string;
+  sharedBy:            string;
+  reportId?:           string;
+  topic:               string;
+  question:            string;
+  agentRoles:          DebateAgentRole[];
+  searchResultsCount:  number;
+  perspectives:        DebatePerspective[];
+  moderator:           DebateModerator | null;
+  debateStatus:        DebateStatus;
+  viewCount:           number;
+  downloadCount:       number;
+  debateCreatedAt?:    string;
+  debateCompletedAt?:  string;
+  sharedAt:            string;
+  sharerName?:         string;
+  sharerAvatar?:       string;
 }
 
 export interface SharedDebateState {
@@ -1038,17 +1196,11 @@ export interface WorkspaceNotificationPreferences {
   id:                    string;
   userId:                string;
   workspaceId:           string;
-  /** Notify when mentioned with @ in chat */
   notifyOnMention:       boolean;
-  /** Notify on every new chat message (noisy — off by default) */
   notifyOnChatMessage:   boolean;
-  /** Notify when a report is added to the workspace */
   notifyOnReportAdded:   boolean;
-  /** Notify when a comment is added to a workspace report */
   notifyOnComment:       boolean;
-  /** Notify when a new member joins */
   notifyOnMemberJoin:    boolean;
-  /** Notify when a presentation / paper / podcast / debate is shared */
   notifyOnSharedContent: boolean;
   createdAt:             string;
   updatedAt:             string;
@@ -1056,7 +1208,6 @@ export interface WorkspaceNotificationPreferences {
 
 // ─── Part 18: Member Shared Content (for MemberProfileCard) ──────────────────
 
-/** Counts of different shared content types by a member in a workspace. */
 export interface MemberSharedStats {
   presentations: number;
   papers:        number;
@@ -1064,7 +1215,6 @@ export interface MemberSharedStats {
   debates:       number;
 }
 
-/** A single shared-content item navigable from MemberProfileCard. */
 export interface MemberSharedItem {
   id:          string;
   contentType: SharedContentType | 'debate';
@@ -1081,10 +1231,6 @@ export type ChatFileFilterType = 'all' | 'images' | 'videos' | 'audio' | 'docume
 
 // ─── Part 20: Debate Report Import & Voice Input ──────────────────────────────
 
-/**
- * A lightweight summary of a research report used in the debate report picker.
- * This avoids loading all report data when only metadata is needed.
- */
 export interface DebateReportSummary {
   id:               string;
   title:            string;
@@ -1097,39 +1243,40 @@ export interface DebateReportSummary {
   createdAt:        string;
 }
 
-/**
- * Context extracted from an imported research report to ground debate agents.
- * Passed into the debate orchestrator and injected into each agent prompt.
- */
 export interface DebateReportContext {
-  reportId:        string;
-  reportTitle:     string;
-  reportQuery:     string;
+  reportId:         string;
+  reportTitle:      string;
+  reportQuery:      string;
   executiveSummary: string;
-  keyFindings:     string[];
-  statistics:      Array<{ value: string; context: string; source: string }>;
-  keyThemes:       string[];
-  citations:       Array<{ title: string; url: string; snippet: string }>;
-  sourcesCount:    number;
+  keyFindings:      string[];
+  statistics:       Array<{ value: string; context: string; source: string }>;
+  keyThemes:        string[];
+  citations:        Array<{ title: string; url: string; snippet: string }>;
+  sourcesCount:     number;
   reliabilityScore: number;
 }
 
-/**
- * Extended DebateConfig that includes optional report context for Part 20.
- * Fully backwards-compatible — reportContext is optional.
- */
 export interface DebateConfigV2 {
   agentRoles?:    DebateAgentRole[];
   reportContext?: DebateReportContext | null;
 }
 
-/**
- * Voice recording state for the debate voice input feature.
- */
 export interface DebateVoiceState {
-  isRecording:      boolean;
-  isTranscribing:   boolean;
+  isRecording:       boolean;
+  isTranscribing:    boolean;
   permissionGranted: boolean;
-  durationMs:       number;
-  error:            string | null;
+  durationMs:        number;
+  error:             string | null;
+}
+
+// ─── Part 25: Podcast Cloud Audio Sync ───────────────────────────────────────
+
+export interface PodcastAudioCloudSync {
+  podcastId:        string;
+  /** Supabase Storage signed URLs indexed same as audioSegmentPaths. null = failed. */
+  cloudUrls:        (string | null)[];
+  uploadedAt:       string;
+  allUploaded:      boolean;
+  uploadedSegments: number;
+  totalSegments:    number;
 }

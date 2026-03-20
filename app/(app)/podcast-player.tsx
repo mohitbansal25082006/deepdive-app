@@ -1,44 +1,31 @@
 // app/(app)/podcast-player.tsx
-// Part 15 — Added "Share to Workspace" button in header + SharePodcastToWorkspaceModal.
-// The share button opens a workspace picker modal so the user can push
-// a completed episode into any workspace they own/edit.
+// Part 25 — Updated
 //
-// All other functionality (playback, transcript, export share sheet) unchanged.
+// CHANGE: Cross-device cloud audio indicator.
+//   When audio is being streamed from Supabase Storage (not local file),
+//   a subtle "☁ Cloud Audio" badge appears in the player card header.
+//   This reassures the user that audio is working even on a new device.
+//
+// ALL PART 15 FUNCTIONALITY PRESERVED:
+//   Playback controls, transcript, export sheet, workspace share modal.
 
-import React, {
-  useEffect,
-  useState,
-  useRef,
-  useCallback,
-}                                       from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  FlatList,
-  ActivityIndicator,
-  Modal,
-  Alert,
-  Dimensions,
-}                                       from 'react-native';
+  View, Text, TouchableOpacity, FlatList,
+  ActivityIndicator, Modal, Alert, Dimensions,
+} from 'react-native';
 import { LinearGradient }               from 'expo-linear-gradient';
 import { Ionicons }                     from '@expo/vector-icons';
 import { BlurView }                     from 'expo-blur';
 import Animated, {
-  FadeIn,
-  FadeInDown,
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
+  FadeIn, FadeInDown, useSharedValue, useAnimatedStyle, withTiming,
 }                                       from 'react-native-reanimated';
 import { SafeAreaView }                 from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase }                     from '../../src/lib/supabase';
 import { mapRowToPodcast }              from '../../src/services/podcastOrchestrator';
 import {
-  exportPodcastAsMP3,
-  exportPodcastAsPDF,
-  copyPodcastScriptToClipboard,
+  exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
 }                                       from '../../src/services/podcastExport';
 import { usePodcastPlayer }             from '../../src/hooks/usePodcastPlayer';
 import { WaveformVisualizer }           from '../../src/components/podcast/WaveformVisualizer';
@@ -51,21 +38,11 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 // ─── Export Share Sheet ───────────────────────────────────────────────────────
 
-function ExportShareSheet({
-  podcast,
-  visible,
-  onClose,
-}: {
-  podcast: Podcast | null;
-  visible: boolean;
-  onClose: () => void;
-}) {
-  const [busy,   setBusy]   = useState<string | null>(null);
+function ExportShareSheet({ podcast, visible, onClose }: { podcast: Podcast | null; visible: boolean; onClose: () => void }) {
+  const [busy, setBusy]     = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    if (visible) { setBusy(null); setCopied(false); }
-  }, [visible]);
+  useEffect(() => { if (visible) { setBusy(null); setCopied(false); } }, [visible]);
 
   const handleMP3 = async () => {
     if (!podcast || busy) return;
@@ -96,11 +73,10 @@ function ExportShareSheet({
 
   if (!podcast) return null;
 
-  type Option = { id: string; icon: string; label: string; sublabel: string; color: string; onPress: () => void; disabled: boolean; };
-  const options: Option[] = [
-    { id: 'mp3',  icon: 'musical-notes-outline',  label: 'Share as MP3',      sublabel: 'Export full episode audio file',  color: COLORS.primary,   onPress: handleMP3,  disabled: !(podcast.audioSegmentPaths?.filter(Boolean).length) },
-    { id: 'pdf',  icon: 'document-text-outline',  label: 'Export PDF Script', sublabel: 'Styled transcript with all turns', color: COLORS.secondary, onPress: handlePDF,  disabled: false },
-    { id: 'copy', icon: copied ? 'checkmark-circle-outline' : 'copy-outline', label: copied ? 'Copied to Clipboard!' : 'Copy Script', sublabel: 'Plain text transcript', color: COLORS.accent, onPress: handleCopy, disabled: false },
+  const options = [
+    { id: 'mp3',  icon: 'musical-notes-outline', label: 'Share as MP3',      sublabel: 'Export full episode audio file',   color: COLORS.primary,   onPress: handleMP3,  disabled: !(podcast.audioSegmentPaths?.filter(Boolean).length) },
+    { id: 'pdf',  icon: 'document-text-outline', label: 'Export PDF Script', sublabel: 'Styled transcript with all turns',  color: COLORS.secondary, onPress: handlePDF,  disabled: false },
+    { id: 'copy', icon: copied ? 'checkmark-circle-outline' : 'copy-outline', label: copied ? 'Copied!' : 'Copy Script', sublabel: 'Plain text transcript', color: COLORS.accent, onPress: handleCopy, disabled: false },
   ];
 
   return (
@@ -120,7 +96,7 @@ function ExportShareSheet({
                 {busy === opt.id ? <ActivityIndicator size="small" color={opt.color} /> : <Ionicons name={opt.icon as any} size={20} color={opt.color} />}
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={{ color: opt.id === 'copy' && copied ? COLORS.accent : COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>{opt.label}</Text>
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>{opt.label}</Text>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{opt.sublabel}</Text>
               </View>
               {!busy && !opt.disabled && <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />}
@@ -137,15 +113,15 @@ function ExportShareSheet({
 
 // ─── Speaker Avatar ───────────────────────────────────────────────────────────
 
-function SpeakerAvatar({ name, isActive, color }: { name: string; isActive: boolean; color: string; }) {
+function SpeakerAvatar({ name, isActive, color }: { name: string; isActive: boolean; color: string }) {
   const scale  = useSharedValue(isActive ? 1 : 0.88);
   const border = useSharedValue(isActive ? 1.5 : 0);
   useEffect(() => {
     scale.value  = withTiming(isActive ? 1.0 : 0.88, { duration: 300 });
     border.value = withTiming(isActive ? 1.5 : 0,    { duration: 300 });
   }, [isActive]);
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }], borderWidth: border.value }));
-  const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const animStyle   = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }], borderWidth: border.value }));
+  const initials    = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
   return (
     <Animated.View style={[{ width: isActive ? 64 : 52, height: isActive ? 64 : 52, borderRadius: isActive ? 20 : 16, backgroundColor: `${color}20`, alignItems: 'center', justifyContent: 'center', borderColor: color }, animStyle]}>
       <Text style={{ color: isActive ? color : COLORS.textMuted, fontSize: isActive ? FONTS.sizes.lg : FONTS.sizes.md, fontWeight: '800' }}>{initials}</Text>
@@ -209,8 +185,6 @@ export default function PodcastPlayerScreen() {
   const [loadingPodcast, setLoadingPodcast] = useState(true);
   const [loadError,      setLoadError]      = useState<string | null>(null);
   const [hasStarted,     setHasStarted]     = useState(false);
-
-  // Part 15: export share sheet + workspace share modal
   const [exportSheetVisible, setExportSheetVisible] = useState(false);
   const [wsShareVisible,     setWsShareVisible]     = useState(false);
   const [sharedToast,        setSharedToast]        = useState<string | null>(null);
@@ -265,6 +239,16 @@ export default function PodcastPlayerScreen() {
     setTimeout(() => setSharedToast(null), 3000);
   }, []);
 
+  // Part 25: detect if we're playing from cloud (no local file)
+  const isPlayingFromCloud = (() => {
+    if (!podcast) return false;
+    const idx       = playerState.currentTurnIndex;
+    const localPath = podcast.audioSegmentPaths?.[idx] ?? '';
+    const isLocal   = localPath && !localPath.startsWith('http');
+    const hasCloud  = !!(podcast as any).audioStorageUrls?.[idx];
+    return !isLocal && hasCloud;
+  })();
+
   if (loadingPodcast) {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -311,12 +295,11 @@ export default function PodcastPlayerScreen() {
           </View>
 
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            {/* Part 15: Share to workspace */}
+            {/* Share to workspace */}
             <TouchableOpacity onPress={() => setWsShareVisible(true)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
               style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${'#FF6584'}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${'#FF6584'}30` }}>
               <Ionicons name="people-outline" size={18} color="#FF6584" />
             </TouchableOpacity>
-
             {/* Export share sheet */}
             <TouchableOpacity onPress={() => setExportSheetVisible(true)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
               style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
@@ -325,15 +308,9 @@ export default function PodcastPlayerScreen() {
           </View>
         </Animated.View>
 
-        {/* ── Shared-to-workspace toast ── */}
+        {/* Shared toast */}
         {sharedToast && (
-          <Animated.View entering={FadeIn.duration(300)} style={{
-            marginHorizontal: SPACING.xl, marginBottom: SPACING.sm,
-            backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.lg,
-            paddingHorizontal: SPACING.md, paddingVertical: 8,
-            flexDirection: 'row', alignItems: 'center', gap: 8,
-            borderWidth: 1, borderColor: `${COLORS.success}30`,
-          }}>
+          <Animated.View entering={FadeIn.duration(300)} style={{ marginHorizontal: SPACING.xl, marginBottom: SPACING.sm, backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: `${COLORS.success}30` }}>
             <Ionicons name="checkmark-circle" size={16} color={COLORS.success} />
             <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>{sharedToast}</Text>
           </Animated.View>
@@ -342,14 +319,23 @@ export default function PodcastPlayerScreen() {
         {/* ── Player Card ── */}
         <Animated.View entering={FadeInDown.duration(500).delay(50)} style={{ paddingHorizontal: SPACING.xl, marginBottom: SPACING.md }}>
           <LinearGradient colors={['#1A1A35', '#0F0F28']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25`, alignItems: 'center' }}>
+
+            {/* Part 25: Cloud audio indicator */}
+            {isPlayingFromCloud && (
+              <Animated.View entering={FadeIn.duration(400)} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: `${COLORS.info}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.info}25` }}>
+                <Ionicons name="cloud-outline" size={11} color={COLORS.info} />
+                <Text style={{ color: COLORS.info, fontSize: 10, fontWeight: '700' }}>Streaming from cloud</Text>
+              </Animated.View>
+            )}
+
             <View style={{ marginBottom: SPACING.lg }}>
               <WaveformVisualizer isPlaying={playerState.isPlaying} color={isHost ? hostColor : guestColor} barWidth={6} barGap={4} maxHeight={48} />
             </View>
 
             <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', gap: SPACING.lg, marginBottom: SPACING.sm }}>
               <View style={{ alignItems: 'center', gap: 4 }}>
-                <SpeakerAvatar name={podcast.config.hostName} isActive={currentTurn?.speaker === 'host'} color={hostColor} />
-                <Text style={{ color: currentTurn?.speaker === 'host' ? hostColor : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{podcast.config.hostName}</Text>
+                <SpeakerAvatar name={podcast.config.hostName}  isActive={currentTurn?.speaker === 'host'}  color={hostColor} />
+                <Text style={{ color: currentTurn?.speaker === 'host'  ? hostColor  : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{podcast.config.hostName}</Text>
                 <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>HOST</Text>
               </View>
               <View style={{ alignItems: 'center', gap: 4 }}>
@@ -397,25 +383,29 @@ export default function PodcastPlayerScreen() {
         <Animated.View entering={FadeInDown.duration(500).delay(150)} style={{ flex: 1, paddingHorizontal: SPACING.xl }}>
           <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.xs }}>Transcript</Text>
           <View style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', maxHeight: SCREEN_HEIGHT * 0.45 }}>
-            <FlatList ref={transcriptRef} data={turns} keyExtractor={item => item.id}
+            <FlatList
+              ref={transcriptRef}
+              data={turns}
+              keyExtractor={item => item.id}
               contentContainerStyle={{ padding: SPACING.md, paddingBottom: SPACING.xl }}
-              showsVerticalScrollIndicator onScrollToIndexFailed={() => {}}
+              showsVerticalScrollIndicator
+              onScrollToIndexFailed={() => {}}
               renderItem={({ item, index }) => (
-                <TranscriptRow turn={item} isActive={index === playerState.currentTurnIndex}
+                <TranscriptRow
+                  turn={item} isActive={index === playerState.currentTurnIndex}
                   hostName={podcast.config.hostName} guestName={podcast.config.guestName}
-                  onPress={() => skipToTurn(index)} />
-              )} />
+                  onPress={() => skipToTurn(index)}
+                />
+              )}
+            />
           </View>
         </Animated.View>
 
         <View style={{ height: SPACING.md }} />
-
       </SafeAreaView>
 
-      {/* ── Export Share Sheet ── */}
       <ExportShareSheet podcast={podcast} visible={exportSheetVisible} onClose={() => setExportSheetVisible(false)} />
 
-      {/* ── Part 15: Share to Workspace Modal ── */}
       {podcast && (
         <SharePodcastToWorkspaceModal
           visible={wsShareVisible}
