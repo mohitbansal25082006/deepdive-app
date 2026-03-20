@@ -136,9 +136,18 @@ BEGIN
   END LOOP;
 END $$;
 
-ALTER TABLE public.referral_redemptions
-  ADD CONSTRAINT IF NOT EXISTS referral_redemptions_referred_code_unique
-  UNIQUE (referred_id, referral_code);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.referral_redemptions'::regclass
+      AND conname  = 'referral_redemptions_referred_code_unique'
+  ) THEN
+    ALTER TABLE public.referral_redemptions
+      ADD CONSTRAINT referral_redemptions_referred_code_unique
+      UNIQUE (referred_id, referral_code);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_redemptions_referrer ON public.referral_redemptions(referrer_id);
 CREATE INDEX IF NOT EXISTS idx_redemptions_referred  ON public.referral_redemptions(referred_id);
