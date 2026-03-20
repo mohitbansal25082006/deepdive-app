@@ -16,11 +16,19 @@
 //   which triggers a re-render of this component. But if the effect ran
 //   synchronously, the navigator stack wasn't ready to accept navigation.
 //   The same setTimeout fix solves this too.
+//
+// Part 27 — Added onboarding gate:
+//   After auth + profile resolve, checkOnboardingStatus() is called.
+//   It reads AsyncStorage first (instant, no DB call) for existing users.
+//   New users whose row has onboarding_completed = false are routed to
+//   /(app)/onboarding-flow. Existing users pass through immediately.
+//   The onboarding check is non-fatal — any error falls through to home.
 
 import { useEffect, useRef } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import { useAuth } from '../src/context/AuthContext';
+import { checkOnboardingStatus } from '../src/services/onboardingService';
 import { COLORS } from '../src/constants/theme';
 
 export default function Index() {
@@ -43,17 +51,37 @@ export default function Index() {
     if (session && profileLoading) return;
 
     // Defer navigation to next tick so the navigator stack is fully mounted
-    navTimer.current = setTimeout(() => {
+    navTimer.current = setTimeout(async () => {
       if (!session) {
-        // No user → onboarding
+        // No user → onboarding splash
         router.replace('/(auth)/onboarding');
-      } else if (!profile?.profile_completed) {
+        return;
+      }
+
+      if (!profile?.profile_completed) {
         // Logged in but profile setup not done
         router.replace('/(app)/profile-setup');
-      } else {
-        // Fully ready → home
-        router.replace('/(app)/(tabs)/home');
+        return;
       }
+
+      // ── Part 27: onboarding gate ──────────────────────────────────────
+      // Reads AsyncStorage cache first — zero latency for existing users.
+      // Existing users seeded by schema_part27.sql have
+      // onboarding_completed = true and skip this branch entirely.
+      try {
+        const status = await checkOnboardingStatus(session.user.id);
+        if (!status.onboardingCompleted) {
+          router.replace('/(app)/onboarding-flow' as any);
+          return;
+        }
+      } catch (err) {
+        // Non-fatal: if the check fails, proceed to home so the user is
+        // never stuck on the loading spinner.
+        console.warn('[Index] Onboarding check failed, proceeding to home:', err);
+      }
+
+      // Fully ready → home
+      router.replace('/(app)/(tabs)/home');
     }, 0);
 
     return () => {
