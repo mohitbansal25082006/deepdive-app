@@ -1,35 +1,38 @@
 // app/(app)/slide-preview.tsx
-// Part 24 — UPDATED: Credit gate (10 credits) added before generating slides.
-// All Part 14 functionality preserved (themes, PPTX/PDF/HTML export, share to workspace).
+// Part 28 — FIX 3: Preview refreshes after returning from editor.
+// useFocusEffect fetches the latest slides/editor_data directly from Supabase
+// and passes them via a `refreshKey` so SlidePreviewPanel re-mounts with
+// fresh data every time the screen regains focus.
+// ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, Pressable, ActivityIndicator, Alert, Dimensions,
-}                                 from 'react-native';
-import { LinearGradient }         from 'expo-linear-gradient';
-import { Ionicons }               from '@expo/vector-icons';
+  View, Text, Pressable, ActivityIndicator, Alert, Dimensions,
+}                                  from 'react-native';
+import { LinearGradient }          from 'expo-linear-gradient';
+import { Ionicons }                from '@expo/vector-icons';
 import Animated, {
-  FadeInDown,
-  useSharedValue, useAnimatedStyle,
+  FadeInDown, useSharedValue, useAnimatedStyle,
   withRepeat, withSequence, withTiming, Easing,
-}                                 from 'react-native-reanimated';
+}                                  from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams }    from 'expo-router';
-import { supabase }               from '../../src/lib/supabase';
-import { SlidePreviewPanel }      from '../../src/components/research/SlidePreviewPanel';
-import { LoadingOverlay }         from '../../src/components/common/LoadingOverlay';
-import { ShareToWorkspaceModal }  from '../../src/components/workspace/ShareToWorkspaceModal';
-import { useSlideGenerator }      from '../../src/hooks/useSlideGenerator';
-// ── Part 24: Credit gate ─────────────────────────────────────────────────────
-import { CreditBalance }            from '../../src/components/credits/CreditBalance';
-import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
-import { useCreditGate }            from '../../src/hooks/useCreditGate';
-import { FEATURE_COSTS }            from '../../src/constants/credits';
-// ────────────────────────────────────────────────────────────────────────────
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { supabase }                from '../../src/lib/supabase';
+import { SlidePreviewPanel }       from '../../src/components/research/SlidePreviewPanel';
+import { LoadingOverlay }          from '../../src/components/common/LoadingOverlay';
+import { ShareToWorkspaceModal }   from '../../src/components/workspace/ShareToWorkspaceModal';
+import { useSlideGenerator }       from '../../src/hooks/useSlideGenerator';
+import { CreditBalance }           from '../../src/components/credits/CreditBalance';
+import { InsufficientCreditsModal }from '../../src/components/credits/InsufficientCreditsModal';
+import { useCreditGate }           from '../../src/hooks/useCreditGate';
+import { FEATURE_COSTS }           from '../../src/constants/credits';
+import { getThemeTokens }          from '../../src/services/pptxExport';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import type { ResearchReport, PresentationTheme }  from '../../src/types';
+import type { ResearchReport, PresentationTheme, GeneratedPresentation } from '../../src/types';
 
 const { width: SCREEN_W } = Dimensions.get('window');
+
+// ─── Theme options ────────────────────────────────────────────────────────────
 
 interface ThemeOption {
   id:      PresentationTheme;
@@ -51,59 +54,40 @@ const THEME_OPTIONS: ThemeOption[] = [
 
 function GeneratingView({ progress }: { progress: string }) {
   const pulse = useSharedValue(1);
-
   useEffect(() => {
     pulse.value = withRepeat(
       withSequence(
         withTiming(1.08, { duration: 800, easing: Easing.out(Easing.ease) }),
         withTiming(1.0,  { duration: 800, easing: Easing.in(Easing.ease) }),
-      ),
-      -1, false,
+      ), -1, false,
     );
   }, []);
-
   const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
 
   const steps = [
     { label: 'Reading report content',    icon: 'document-text-outline' },
-    { label: 'Designing slide structure', icon: 'grid-outline'          },
-    { label: 'Writing slide content',     icon: 'pencil-outline'        },
+    { label: 'Designing slide structure', icon: 'grid-outline' },
+    { label: 'Writing slide content',     icon: 'pencil-outline' },
     { label: 'Applying theme & styling',  icon: 'color-palette-outline' },
-    { label: 'Saving presentation',       icon: 'cloud-upload-outline'  },
+    { label: 'Saving presentation',       icon: 'cloud-upload-outline' },
   ];
 
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.lg }}>
       <Animated.View style={[animStyle, { marginBottom: SPACING.xl }]}>
-        <LinearGradient
-          colors={['#6C63FF', '#8B5CF6']}
-          style={{ width: 88, height: 88, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...SHADOWS.large }}
-        >
+        <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 88, height: 88, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...SHADOWS.large }}>
           <Ionicons name="easel-outline" size={40} color="#FFF" />
         </LinearGradient>
       </Animated.View>
-
-      <Animated.Text
-        entering={FadeInDown.duration(300)}
-        style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm, textAlign: 'center' }}
-      >
+      <Animated.Text entering={FadeInDown.duration(300)} style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm, textAlign: 'center' }}>
         Generating Slides
       </Animated.Text>
-
-      <Animated.Text
-        entering={FadeInDown.duration(300).delay(60)}
-        style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING['2xl'], textAlign: 'center', minHeight: 20 }}
-      >
+      <Animated.Text entering={FadeInDown.duration(300).delay(60)} style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING['2xl'], textAlign: 'center', minHeight: 20 }}>
         {progress}
       </Animated.Text>
-
       <Animated.View entering={FadeInDown.duration(400).delay(120)} style={{ width: '100%', gap: SPACING.sm }}>
         {steps.map((step, i) => (
-          <View key={i} style={{
-            flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
-            backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
-            padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border,
-          }}>
+          <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border }}>
             <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <Ionicons name={step.icon as any} size={16} color={COLORS.primary} />
             </View>
@@ -116,53 +100,112 @@ function GeneratingView({ progress }: { progress: string }) {
   );
 }
 
-// ─── Main Screen ──────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function SlidePreviewScreen() {
-  const { reportId, presentationId: paramPresentationId } = useLocalSearchParams<{
-    reportId: string;
-    presentationId?: string;
-  }>();
+  const { reportId, presentationId: paramPresentationId } =
+    useLocalSearchParams<{ reportId: string; presentationId?: string }>();
   const insets = useSafeAreaInsets();
 
-  const [report,        setReport]        = useState<ResearchReport | null>(null);
-  const [loadingReport, setLoadingReport] = useState(true);
-  const [selectedTheme, setSelectedTheme] = useState<PresentationTheme>('dark');
-  const [screenPhase,   setScreenPhase]   = useState<'setup' | 'generating' | 'preview'>('setup');
-  const [showShareModal,setShowShareModal]= useState(false);
+  const [report,         setReport]         = useState<ResearchReport | null>(null);
+  const [loadingReport,  setLoadingReport]  = useState(true);
+  const [selectedTheme,  setSelectedTheme]  = useState<PresentationTheme>('dark');
+  const [screenPhase,    setScreenPhase]    = useState<'setup' | 'generating' | 'preview'>('setup');
+  const [showShareModal, setShowShareModal] = useState(false);
+
+  // ── FIX 3: refreshKey forces SlidePreviewPanel to re-mount with new data ──
+  const [refreshKey,     setRefreshKey]     = useState(0);
+  // freshPresentation holds data fetched directly from Supabase on focus-return
+  const [freshPresentation, setFreshPresentation] = useState<GeneratedPresentation | null>(null);
+  const hasMountedRef = useRef(false);
 
   const {
-    presentation, isGenerating, isExporting, exportFormat,
-    progress, error, generate, loadPresentation,
+    presentation: generatedPresentation,
+    isGenerating, isExporting, exportFormat, progress, error,
+    generate, loadPresentation,
     exportPPTX, exportPDF, exportHTML, deletePresentation,
   } = useSlideGenerator(report);
 
-  // ── Part 24: Credit gate ──────────────────────────────────────────────────
-  const {
-    balance,
-    guardedConsume,
-    insufficientInfo,
-    clearInsufficient,
-    isConsuming,
-  } = useCreditGate();
-  // ─────────────────────────────────────────────────────────────────────────
+  const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
+
+  // The presentation shown in the preview panel — prefer freshPresentation (post-edit reload)
+  const presentation = freshPresentation ?? generatedPresentation;
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
 
   useEffect(() => {
-    if (isGenerating)  { setScreenPhase('generating'); return; }
-    if (presentation)  { setScreenPhase('preview');    return; }
-  }, [isGenerating, presentation]);
+    if (isGenerating)            { setScreenPhase('generating'); return; }
+    if (generatedPresentation)   { setScreenPhase('preview');    return; }
+  }, [isGenerating, generatedPresentation]);
 
   useEffect(() => {
-    if (paramPresentationId && !presentation) loadPresentation(paramPresentationId);
+    if (paramPresentationId && !generatedPresentation) loadPresentation(paramPresentationId);
   }, [paramPresentationId]);
+
+  // ── FIX 3: Re-fetch slides from Supabase every time screen regains focus ──
+  useFocusEffect(
+    useCallback(() => {
+      const presId = presentation?.id ?? paramPresentationId;
+      if (!presId) return;
+
+      // Skip on first mount — data already loaded by loadReport / loadPresentation
+      if (!hasMountedRef.current) {
+        hasMountedRef.current = true;
+        return;
+      }
+
+      // Fetch latest slides + editor_data directly from Supabase
+      const fetchFresh = async () => {
+        try {
+          const { data, error: dbErr } = await supabase
+            .from('presentations')
+            .select('id, title, subtitle, theme, slides, editor_data, font_family, report_id, user_id, generated_at, export_count')
+            .eq('id', presId)
+            .single();
+
+          if (dbErr || !data) return;
+
+          const theme: PresentationTheme = (data.theme as PresentationTheme) ?? 'dark';
+          const rawSlides: any[]         = data.slides ?? [];
+          const editorDataArr: any[]     = Array.isArray(data.editor_data) ? data.editor_data : [];
+
+          // Merge editor overlays back into slides so the preview shows edited content
+          const mergedSlides = rawSlides.map((s: any, i: number) => ({
+            ...s,
+            ...(editorDataArr[i]?.fieldFormats ? {} : {}), // fieldFormats stored in editorData, not on slide directly
+            editorData: editorDataArr[i] ?? undefined,
+          }));
+
+          const fresh: GeneratedPresentation = {
+            id:          data.id,
+            reportId:    data.report_id,
+            userId:      data.user_id,
+            title:       data.title,
+            subtitle:    data.subtitle ?? '',
+            theme,
+            themeTokens: getThemeTokens(theme),
+            slides:      mergedSlides,
+            totalSlides: mergedSlides.length,
+            generatedAt: data.generated_at,
+            exportCount: data.export_count ?? 0,
+          };
+
+          setFreshPresentation(fresh);
+          setRefreshKey(k => k + 1);   // force SlidePreviewPanel to re-mount
+          setScreenPhase('preview');
+        } catch (err) {
+          console.warn('[SlidePreview] refresh fetch error:', err);
+        }
+      };
+
+      fetchFresh();
+    }, [presentation?.id, paramPresentationId]),
+  );
 
   const loadReport = async () => {
     setLoadingReport(true);
     try {
-      const { data, error: dbErr } = await supabase
-        .from('research_reports').select('*').eq('id', reportId).single();
+      const { data, error: dbErr } = await supabase.from('research_reports').select('*').eq('id', reportId).single();
       if (dbErr || !data) { Alert.alert('Error', 'Could not load report.'); router.back(); return; }
       const mapped: ResearchReport = {
         id: data.id, userId: data.user_id, query: data.query, depth: data.depth,
@@ -188,33 +231,32 @@ export default function SlidePreviewScreen() {
 
   const handleBack = useCallback(() => router.back(), []);
 
-  // ── Generate with credit gate ─────────────────────────────────────────────
-
   const handleGenerate = useCallback(async () => {
     if (!report || isGenerating || isConsuming) return;
-
-    // ── Part 24: Check & deduct credits BEFORE generating ────────────────
     const ok = await guardedConsume('presentation');
     if (!ok) return;
-    // ─────────────────────────────────────────────────────────────────────
-
+    setFreshPresentation(null); // clear stale fresh data when re-generating
     generate(selectedTheme);
   }, [report, selectedTheme, generate, isGenerating, isConsuming, guardedConsume]);
+
+  const handleOpenEditor = useCallback(() => {
+    if (!presentation) return;
+    const params: Record<string, string> = { presentationId: presentation.id };
+    if (report?.id) params.reportId = report.id;
+    router.push({ pathname: '/(app)/slide-editor' as any, params });
+  }, [presentation, report]);
 
   const handleRegenerate = useCallback(() => {
     Alert.alert('Regenerate Presentation', 'This will replace the current slides. Continue?', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Regenerate', onPress: async () => {
-          // ── Part 24: Also charge credits for regeneration ───────────────
-          const ok = await guardedConsume('presentation');
-          if (!ok) return;
-          // ─────────────────────────────────────────────────────────────────
-          await deletePresentation();
-          setScreenPhase('setup');
-          generate(selectedTheme);
-        },
-      },
+      { text: 'Regenerate', onPress: async () => {
+        const ok = await guardedConsume('presentation');
+        if (!ok) return;
+        setFreshPresentation(null);
+        await deletePresentation();
+        setScreenPhase('setup');
+        generate(selectedTheme);
+      }},
     ]);
   }, [generate, selectedTheme, deletePresentation, guardedConsume]);
 
@@ -223,41 +265,27 @@ export default function SlidePreviewScreen() {
   // ── PREVIEW MODE ──────────────────────────────────────────────────────────
 
   if (screenPhase === 'preview' && presentation) {
+    const selectedThemeObj = THEME_OPTIONS.find(t => t.id === (presentation.theme ?? 'dark'))!;
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-          <SlidePreviewPanel presentation={presentation} onClose={() => setScreenPhase('setup')} />
+          {/* key={refreshKey} forces full re-mount of SlidePreviewPanel when data changes */}
+          <SlidePreviewPanel key={refreshKey} presentation={presentation} onClose={() => setScreenPhase('setup')} />
 
-          <View style={{
-            paddingHorizontal: SPACING.lg,
-            paddingTop:        SPACING.sm,
-            paddingBottom:     insets.bottom + SPACING.sm,
-            backgroundColor:   COLORS.backgroundCard,
-            borderTopWidth:    1, borderTopColor: COLORS.border,
-            gap:               SPACING.sm,
-          }}>
+          <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border, gap: SPACING.sm }}>
             {/* Primary export row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
               <Pressable onPress={exportPPTX} disabled={isExporting} style={{ flex: 1.6, opacity: isExporting && exportFormat !== 'pptx' ? 0.5 : 1 }}>
-                <LinearGradient
-                  colors={['#6C63FF', '#8B5CF6']}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, ...SHADOWS.medium }}
-                >
-                  {isExporting && exportFormat === 'pptx'
-                    ? <ActivityIndicator size="small" color="#FFF" />
-                    : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
+                <LinearGradient colors={['#6C63FF', '#8B5CF6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, ...SHADOWS.medium }}>
+                  {isExporting && exportFormat === 'pptx' ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
                   <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
                     {isExporting && exportFormat === 'pptx' ? 'Exporting…' : 'Export PPTX'}
                   </Text>
                 </LinearGradient>
               </Pressable>
-
               <Pressable onPress={exportPDF} disabled={isExporting} style={{ flex: 1, opacity: isExporting && exportFormat !== 'pdf' ? 0.5 : 1 }}>
                 <View style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1.5, borderColor: COLORS.border }}>
-                  {isExporting && exportFormat === 'pdf'
-                    ? <ActivityIndicator size="small" color={COLORS.textSecondary} />
-                    : <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />}
+                  {isExporting && exportFormat === 'pdf' ? <ActivityIndicator size="small" color={COLORS.textSecondary} /> : <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />}
                   <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>PDF</Text>
                 </View>
               </Pressable>
@@ -265,29 +293,25 @@ export default function SlidePreviewScreen() {
 
             {/* Secondary row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-              <Pressable onPress={exportHTML} disabled={isExporting}
-                style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, isExporting && exportFormat !== 'html' ? { opacity: 0.5 } : {}]}>
-                {isExporting && exportFormat === 'html'
-                  ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                  : <Ionicons name="globe-outline" size={15} color={COLORS.textMuted} />}
+              <Pressable onPress={exportHTML} disabled={isExporting} style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, isExporting && exportFormat !== 'html' ? { opacity: 0.5 } : {}]}>
+                {isExporting && exportFormat === 'html' ? <ActivityIndicator size="small" color={COLORS.textMuted} /> : <Ionicons name="globe-outline" size={15} color={COLORS.textMuted} />}
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>HTML</Text>
               </Pressable>
 
-              {/* Share to workspace */}
+              {/* Edit button */}
+              <Pressable onPress={handleOpenEditor} style={{ flex: 1.2, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.accent}15`, borderWidth: 1, borderColor: `${COLORS.accent}35` }}>
+                <Ionicons name="pencil-outline" size={15} color={COLORS.accent} />
+                <Text style={{ color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Edit</Text>
+              </Pressable>
+
               <Pressable onPress={() => setShowShareModal(true)} style={{ flex: 1.4, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.primary}15`, borderWidth: 1, borderColor: `${COLORS.primary}35` }}>
                 <Ionicons name="people-outline" size={15} color={COLORS.primary} />
-                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Share to Team</Text>
+                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Share</Text>
               </Pressable>
 
-              <Pressable onPress={handleRegenerate} disabled={isExporting || isConsuming}
-                style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, (isExporting || isConsuming) ? { opacity: 0.5 } : {}]}>
+              <Pressable onPress={handleRegenerate} disabled={isExporting || isConsuming} style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, (isExporting || isConsuming) ? { opacity: 0.5 } : {}]}>
                 <Ionicons name="refresh-outline" size={15} color={COLORS.textMuted} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Redo</Text>
-              </Pressable>
-
-              <Pressable onPress={handleBack} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }}>
-                <Ionicons name="arrow-back-outline" size={15} color={COLORS.textMuted} />
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Back</Text>
               </Pressable>
             </View>
 
@@ -295,7 +319,7 @@ export default function SlidePreviewScreen() {
             <View style={{ flexDirection: 'row', justifyContent: 'center', gap: SPACING.lg }}>
               {[
                 { label: 'Slides',   value: String(presentation.totalSlides) },
-                { label: 'Theme',    value: THEME_OPTIONS.find(t => t.id === presentation.theme)?.label ?? presentation.theme },
+                { label: 'Theme',    value: selectedThemeObj?.label ?? presentation.theme },
                 { label: 'Exported', value: String(presentation.exportCount ?? 0) },
               ].map(stat => (
                 <View key={stat.label} style={{ alignItems: 'center' }}>
@@ -317,11 +341,9 @@ export default function SlidePreviewScreen() {
             reportId={report?.id}
             metadata={{ totalSlides: presentation.totalSlides, theme: presentation.theme, exportCount: presentation.exportCount }}
             onClose={() => setShowShareModal(false)}
-            onShared={(_, workspaceName) => Alert.alert('✅ Shared!', `"${presentation.title}" has been shared to ${workspaceName}.`, [{ text: 'OK' }])}
+            onShared={(_, workspaceName) => Alert.alert('✅ Shared!', `"${presentation.title}" shared to ${workspaceName}.`, [{ text: 'OK' }])}
           />
         )}
-
-        {/* Part 24: Insufficient Credits Modal */}
         <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
       </LinearGradient>
     );
@@ -353,8 +375,6 @@ export default function SlidePreviewScreen() {
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-
-        {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
           <Pressable onPress={handleBack} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
             <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
@@ -363,22 +383,15 @@ export default function SlidePreviewScreen() {
             <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>AI Slide Generator</Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Convert your research into a presentation</Text>
           </View>
-          {/* Part 24: Balance pill */}
           <CreditBalance balance={balance} size="sm" />
         </View>
 
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg, paddingBottom: SPACING.xl }} showsVerticalScrollIndicator={true} keyboardShouldPersistTaps="handled" scrollEventThrottle={16}>
-
-          {/* Hero card */}
+        {/* Scrollable setup content */}
+        <View style={{ flex: 1, paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg }}>
+          {/* Report card */}
           <Animated.View entering={FadeInDown.duration(400).delay(60)} style={{ marginBottom: SPACING.lg }}>
-            <LinearGradient
-              colors={['#1A1A35', '#12122A']}
-              style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}30`, flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}
-            >
-              <LinearGradient
-                colors={['#6C63FF', '#8B5CF6']}
-                style={{ width: 56, height: 56, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}
-              >
+            <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}30`, flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+              <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 56, height: 56, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
                 <Ionicons name="easel-outline" size={26} color="#FFF" />
               </LinearGradient>
               <View style={{ flex: 1 }}>
@@ -388,8 +401,8 @@ export default function SlidePreviewScreen() {
                 <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
                   {[
                     { icon: 'layers-outline',           label: `${report?.sections.length ?? 0} sections` },
-                    { icon: 'stats-chart-outline',      label: `${report?.statistics.length ?? 0} stats`  },
-                    { icon: 'shield-checkmark-outline', label: `${report?.reliabilityScore ?? 0}/10`       },
+                    { icon: 'stats-chart-outline',      label: `${report?.statistics.length ?? 0} stats`   },
+                    { icon: 'shield-checkmark-outline', label: `${report?.reliabilityScore ?? 0}/10`        },
                   ].map(tag => (
                     <View key={tag.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
                       <Ionicons name={tag.icon as any} size={11} color={COLORS.primary} />
@@ -401,57 +414,29 @@ export default function SlidePreviewScreen() {
             </LinearGradient>
           </Animated.View>
 
-          {/* What's generated */}
-          <Animated.View entering={FadeInDown.duration(400).delay(100)} style={{ marginBottom: SPACING.lg }}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>What's Generated</Text>
-            <View style={{ gap: SPACING.sm }}>
-              {[
-                { icon: 'easel-outline',        label: '13–15 professionally structured slides',   color: COLORS.primary   },
-                { icon: 'grid-outline',          label: 'Title, agenda, sections, stats & closing', color: COLORS.info      },
-                { icon: 'chatbubble-outline',    label: 'Speaker notes for every slide',            color: COLORS.accent    },
-                { icon: 'download-outline',      label: 'Export as PPTX, PDF or HTML',              color: COLORS.warning   },
-                { icon: 'people-outline',        label: 'Share directly to team workspaces',        color: COLORS.success   },
-                { icon: 'color-palette-outline', label: '4 professional visual themes',             color: COLORS.secondary },
-              ].map(item => (
-                <View key={item.label} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: item.color }}>
-                  <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: `${item.color}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <Ionicons name={item.icon as any} size={16} color={item.color} />
-                  </View>
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, flex: 1 }}>{item.label}</Text>
-                </View>
-              ))}
-            </View>
-          </Animated.View>
-
           {/* Theme picker */}
-          <View style={{ marginBottom: SPACING.lg }}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>Choose Theme</Text>
-            <View style={{ gap: SPACING.sm }}>
-              {THEME_OPTIONS.map(theme => {
-                const isSelected = selectedTheme === theme.id;
-                return (
-                  <Pressable
-                    key={theme.id}
-                    onPress={() => setSelectedTheme(theme.id)}
-                    style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? `${theme.colors[0]}12` : COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1.5, borderColor: isSelected ? theme.colors[0] : COLORS.border }}
-                  >
-                    <View style={{ width: 48, height: 32, borderRadius: 8, marginRight: SPACING.md, overflow: 'hidden', flexShrink: 0, borderWidth: 1, borderColor: COLORS.border, backgroundColor: theme.preview, alignItems: 'center', justifyContent: 'center' }}>
-                      <LinearGradient colors={theme.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 8 }} />
-                      <Ionicons name={theme.icon as any} size={12} color={theme.colors[0]} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: isSelected ? COLORS.textPrimary : COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>{theme.label}</Text>
-                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{theme.desc}</Text>
-                    </View>
-                    {isSelected && (
-                      <LinearGradient colors={theme.colors} style={{ width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <Ionicons name="checkmark" size={13} color="#FFF" />
-                      </LinearGradient>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>Choose Theme</Text>
+          <View style={{ gap: SPACING.sm, marginBottom: SPACING.lg }}>
+            {THEME_OPTIONS.map(theme => {
+              const isSelected = selectedTheme === theme.id;
+              return (
+                <Pressable key={theme.id} onPress={() => setSelectedTheme(theme.id)} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? `${theme.colors[0]}12` : COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1.5, borderColor: isSelected ? theme.colors[0] : COLORS.border }}>
+                  <View style={{ width: 48, height: 32, borderRadius: 8, marginRight: SPACING.md, overflow: 'hidden', flexShrink: 0, borderWidth: 1, borderColor: COLORS.border, backgroundColor: theme.preview, alignItems: 'center', justifyContent: 'center' }}>
+                    <LinearGradient colors={theme.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 8 }} />
+                    <Ionicons name={theme.icon as any} size={12} color={theme.colors[0]} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: isSelected ? COLORS.textPrimary : COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>{theme.label}</Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{theme.desc}</Text>
+                  </View>
+                  {isSelected && (
+                    <LinearGradient colors={theme.colors} style={{ width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Ionicons name="checkmark" size={13} color="#FFF" />
+                    </LinearGradient>
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
 
           {error && (
@@ -460,46 +445,25 @@ export default function SlidePreviewScreen() {
               <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, flex: 1, lineHeight: 18 }}>{error}</Text>
             </View>
           )}
-        </ScrollView>
+        </View>
 
-        {/* Bottom CTA */}
+        {/* CTA */}
         <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: insets.bottom + SPACING.md, backgroundColor: 'rgba(10,10,26,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
-          {/* Part 24: credit cost + balance row */}
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
               <Ionicons name="flash" size={13} color={COLORS.primary} />
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                This will use{' '}
-                <Text style={{ color: COLORS.primary, fontWeight: '700' }}>{FEATURE_COSTS.presentation} credits</Text>
+                This will use <Text style={{ color: COLORS.primary, fontWeight: '700' }}>{FEATURE_COSTS.presentation} credits</Text>
               </Text>
             </View>
             <CreditBalance balance={balance} size="sm" />
           </View>
-
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: SPACING.sm }}>
-            <Ionicons name={selectedThemeObj.icon as any} size={13} color={selectedThemeObj.colors[0]} />
-            <Text style={{ color: selectedThemeObj.colors[0], fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-              {selectedThemeObj.label} theme selected
-            </Text>
-          </View>
-
-          <Pressable
-            onPress={handleGenerate}
-            disabled={isGenerating || isConsuming || !report}
-            style={{ opacity: isGenerating || isConsuming || !report ? 0.55 : 1 }}
-          >
-            <LinearGradient
-              colors={selectedThemeObj.colors}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-              style={{ borderRadius: RADIUS.full, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, ...SHADOWS.large }}
-            >
-              {isGenerating || isConsuming
-                ? <ActivityIndicator size="small" color="#FFF" />
-                : <Ionicons name="sparkles" size={20} color="#FFF" />}
+          <Pressable onPress={handleGenerate} disabled={isGenerating || isConsuming || !report} style={{ opacity: isGenerating || isConsuming || !report ? 0.55 : 1 }}>
+            <LinearGradient colors={selectedThemeObj.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ borderRadius: RADIUS.full, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, ...SHADOWS.large }}>
+              {isGenerating || isConsuming ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="sparkles" size={20} color="#FFF" />}
               <Text style={{ color: '#FFF', fontSize: FONTS.sizes.md, fontWeight: '800' }}>
-                {isConsuming ? 'Checking credits...' : isGenerating ? 'Generating…' : 'Generate Presentation'}
+                {isConsuming ? 'Checking credits…' : isGenerating ? 'Generating…' : 'Generate Presentation'}
               </Text>
-              {/* Part 24: credit badge */}
               {!isGenerating && !isConsuming && (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
                   <Ionicons name="flash" size={10} color="#FFF" />
@@ -508,14 +472,11 @@ export default function SlidePreviewScreen() {
               )}
             </LinearGradient>
           </Pressable>
-
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginTop: SPACING.sm }}>
             Powered by GPT-4o · Takes 15–30 seconds
           </Text>
         </View>
       </SafeAreaView>
-
-      {/* Part 24: Insufficient Credits Modal */}
       <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
     </LinearGradient>
   );
