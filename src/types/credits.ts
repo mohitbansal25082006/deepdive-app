@@ -1,46 +1,57 @@
 // src/types/credits.ts
 // Part 24 — Monetization: Token/Credit system types
+// Part 31 — Added slide_ai_rewrite, slide_ai_generate, slide_ai_notes
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Credit Feature Costs ────────────────────────────────────────────────────
 
 export type CreditFeature =
+  // ── Core research ────────────────────────────────────────────────────────
   | 'research_quick'
   | 'research_deep'
   | 'research_expert'
+  // ── Podcast ──────────────────────────────────────────────────────────────
   | 'podcast_5min'
   | 'podcast_10min'
   | 'podcast_15min'
   | 'podcast_20min'
+  // ── Content generation ────────────────────────────────────────────────────
   | 'academic_paper'
   | 'presentation'
-  | 'debate';
+  | 'debate'
+  // ── Part 31: Slide editor AI (per-operation, cheap) ───────────────────────
+  // These replace the incorrect 'research_quick' calls in useSlideEditor.ts.
+  // Previously every AI edit deducted 5 credits; now the correct amount is used.
+  | 'slide_ai_rewrite'    // 1 cr — rewrite a field, all bullets, or one bullet
+  | 'slide_ai_generate'   // 2 cr — generate a brand-new slide from description
+  | 'slide_ai_notes';     // 1 cr — generate speaker notes for a slide
 
 // ─── Credit Pack ─────────────────────────────────────────────────────────────
 
 export interface CreditPack {
-  id:            string;     // e.g. 'starter_99'
-  name:          string;     // e.g. 'Starter Pack'
-  credits:       number;     // e.g. 50
-  priceINR:      number;     // e.g. 99  (₹)
-  amountPaise:   number;     // priceINR * 100 (Razorpay uses paise)
-  tag?:          string;     // e.g. 'POPULAR', 'BEST VALUE'
-  bonusCredits?: number;     // bonus on top (e.g. 10 bonus)
-  description:   string;
-  iconName:      string;     // Ionicons name
+  id:             string;     // e.g. 'starter_99'
+  name:           string;     // e.g. 'Starter Pack'
+  credits:        number;     // e.g. 50
+  priceINR:       number;     // e.g. 99  (₹)
+  amountPaise:    number;     // priceINR * 100 (Razorpay uses paise)
+  tag?:           string;     // e.g. 'POPULAR', 'BEST VALUE'
+  bonusCredits?:  number;     // bonus on top (e.g. 10 bonus)
+  description:    string;
+  iconName:       string;     // Ionicons name
   gradientColors: readonly [string, string];
 }
 
 // ─── User Credits ─────────────────────────────────────────────────────────────
 
 export interface UserCredits {
-  id:              string;
-  userId:          string;
-  balance:         number;   // current credit balance
-  totalPurchased:  number;   // lifetime credits purchased
-  totalConsumed:   number;   // lifetime credits used
-  freeCreditsGiven: boolean; // whether signup bonus was given
-  createdAt:       string;
-  updatedAt:       string;
+  id:               string;
+  userId:           string;
+  balance:          number;   // current credit balance
+  totalPurchased:   number;   // lifetime credits purchased
+  totalConsumed:    number;   // lifetime credits used
+  freeCreditsGiven: boolean;  // whether signup bonus was given
+  createdAt:        string;
+  updatedAt:        string;
 }
 
 // ─── Credit Transaction ───────────────────────────────────────────────────────
@@ -53,18 +64,18 @@ export type CreditTransactionType =
   | 'admin_grant';      // manually granted by admin
 
 export interface CreditTransaction {
-  id:          string;
-  userId:      string;
-  type:        CreditTransactionType;
-  amount:      number;         // positive = credit added, negative = credit consumed
-  balanceAfter: number;        // balance after this transaction
-  feature?:    CreditFeature;  // which feature was used (for consume)
-  packId?:     string;         // which pack was purchased (for purchase)
-  orderId?:    string;         // Razorpay order ID (for purchase)
-  paymentId?:  string;         // Razorpay payment ID (for purchase)
-  description: string;
-  metadata?:   Record<string, unknown>;
-  createdAt:   string;
+  id:           string;
+  userId:       string;
+  type:         CreditTransactionType;
+  amount:       number;          // positive = credit added, negative = credit consumed
+  balanceAfter: number;          // balance after this transaction
+  feature?:     CreditFeature;   // which feature was used (for consume)
+  packId?:      string;          // which pack was purchased (for purchase)
+  orderId?:     string;          // Razorpay order ID (for purchase)
+  paymentId?:   string;          // Razorpay payment ID (for purchase)
+  description:  string;
+  metadata?:    Record<string, unknown>;
+  createdAt:    string;
 }
 
 // ─── Razorpay Order ───────────────────────────────────────────────────────────
@@ -112,13 +123,13 @@ export interface PurchaseState {
 // ─── Credits Hook State ───────────────────────────────────────────────────────
 
 export interface CreditsState {
-  balance:         number;
-  isLoading:       boolean;
-  isRefreshing:    boolean;
-  purchase:        PurchaseState;
-  transactions:    CreditTransaction[];
-  txLoading:       boolean;
-  error:           string | null;
+  balance:      number;
+  isLoading:    boolean;
+  isRefreshing: boolean;
+  purchase:     PurchaseState;
+  transactions: CreditTransaction[];
+  txLoading:    boolean;
+  error:        string | null;
 }
 
 // ─── Insufficient Credits Modal Props ─────────────────────────────────────────

@@ -1,12 +1,16 @@
 // src/hooks/useSlideEditor.ts
-// Part 30 — UPDATED from Part 29
-// Changes:
-//   1. applyTemplate() now saves a history snapshot BEFORE replacing slides
-//   2. insertTemplate() now saves a history snapshot BEFORE inserting
-//   3. restoreFromHistory() — new function to restore from a snapshot
-//   4. EditorPanel union extended with 'template_history', 'online_image_search', 'iconify_picker'
-//   5. useTemplateHistory hook integrated
-//   6. All Part 29 logic unchanged
+// Part 31 — Credit deduction fix only. All other logic identical to Part 30.
+//
+// WHAT CHANGED (Part 31 only — search "PART 31 FIX"):
+//   aiRewriteField:        consume('research_quick')×1 [5 cr] → consume('slide_ai_rewrite') [1 cr]
+//   aiRewriteBullets:      consume('research_quick')×1 [5 cr] → consume('slide_ai_rewrite') [1 cr]
+//   aiRewriteSingleBullet: consume('research_quick')×1 [5 cr] → consume('slide_ai_rewrite') [1 cr]
+//   aiGenerateSlide:       consume('research_quick')×2 [10 cr]→ consume('slide_ai_generate') [2 cr]
+//   aiGenerateSpeakerNotes:consume('research_quick')×1 [5 cr] → consume('slide_ai_notes')   [1 cr]
+//
+// The balance CHECKS already showed the correct EDITOR_CREDIT_COSTS amounts.
+// Only the actual consume() calls were wrong — they always charged 5 cr regardless.
+// These changes ensure transaction history shows the right feature label & amount.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -16,11 +20,9 @@ import { Alert } from 'react-native';
 
 import { useAuth }        from '../context/AuthContext';
 import { useCredits }     from '../context/CreditsContext';
-import { FEATURE_COSTS }  from '../constants/credits';
 import {
   loadEditorPresentation,
   saveEditorState,
-  toExportSlides,
   applyTemplateToSlides,
   insertTemplateSlidesAtIndex,
   replaceWithTemplateSlides,
@@ -29,11 +31,11 @@ import {
 } from '../services/slideEditorService';
 import {
   rewriteText,
-  rewriteBullets     as rewriteBulletsAgent,
+  rewriteBullets      as rewriteBulletsAgent,
   rewriteSingleBullet as rewriteSingleBulletAgent,
-  generateSlide      as generateSlideAgent,
+  generateSlide       as generateSlideAgent,
   generateSpeakerNotes,
-  suggestLayout      as suggestLayoutAgent,
+  suggestLayout       as suggestLayoutAgent,
 } from '../services/agents/slideEditAgent';
 import { getThemeTokens } from '../services/pptxExport';
 import { supabase }       from '../lib/supabase';
@@ -69,7 +71,7 @@ import type {
   ResearchReport,
 } from '../types';
 
-// ─── Reducer (identical to Part 29) ──────────────────────────────────────────
+// ─── Reducer ──────────────────────────────────────────────────────────────────
 
 type Action =
   | { type: 'SET_SLIDES';         payload: EditableSlide[] }
@@ -117,7 +119,11 @@ function reducer(state: SlideEditorState, action: Action): SlideEditorState {
     case 'SET_SAVE_ERROR':
       return { ...state, saveError: action.error };
     case 'SET_AI_PROCESSING':
-      return { ...state, isAIProcessing: action.processing, aiProcessingLabel: action.label ?? state.aiProcessingLabel };
+      return {
+        ...state,
+        isAIProcessing:    action.processing,
+        aiProcessingLabel: action.label ?? state.aiProcessingLabel,
+      };
     case 'SET_LAYOUT_SUGGEST':
       return { ...state, layoutSuggestion: action.suggestion };
     case 'PUSH_UNDO': {
@@ -127,12 +133,24 @@ function reducer(state: SlideEditorState, action: Action): SlideEditorState {
     case 'UNDO': {
       if (state.undoStack.length === 0) return state;
       const [prev, ...rest] = state.undoStack;
-      return { ...state, slides: prev, undoStack: rest, redoStack: [state.slides, ...state.redoStack].slice(0, MAX_UNDO_DEPTH), isDirty: true };
+      return {
+        ...state,
+        slides:    prev,
+        undoStack: rest,
+        redoStack: [state.slides, ...state.redoStack].slice(0, MAX_UNDO_DEPTH),
+        isDirty:   true,
+      };
     }
     case 'REDO': {
       if (state.redoStack.length === 0) return state;
       const [next, ...rest] = state.redoStack;
-      return { ...state, slides: next, redoStack: rest, undoStack: [state.slides, ...state.undoStack].slice(0, MAX_UNDO_DEPTH), isDirty: true };
+      return {
+        ...state,
+        slides:    next,
+        redoStack: rest,
+        undoStack: [state.slides, ...state.undoStack].slice(0, MAX_UNDO_DEPTH),
+        isDirty:   true,
+      };
     }
     default:
       return state;
@@ -140,47 +158,58 @@ function reducer(state: SlideEditorState, action: Action): SlideEditorState {
 }
 
 const INITIAL_STATE: SlideEditorState = {
-  slides: [], activeSlideIndex: 0, selectedField: null, editingText: '',
-  activePanel: 'none', colorPickerTarget: null, activeTool: 'select',
-  fontFamily: DEFAULT_FONT, isDirty: false, isSaving: false, saveError: null,
-  isAIProcessing: false, aiProcessingLabel: '', layoutSuggestion: null,
-  undoStack: [], redoStack: [],
+  slides:            [],
+  activeSlideIndex:  0,
+  selectedField:     null,
+  editingText:       '',
+  activePanel:       'none',
+  colorPickerTarget: null,
+  activeTool:        'select',
+  fontFamily:        DEFAULT_FONT,
+  isDirty:           false,
+  isSaving:          false,
+  saveError:         null,
+  isAIProcessing:    false,
+  aiProcessingLabel: '',
+  layoutSuggestion:  null,
+  undoStack:         [],
+  redoStack:         [],
 };
 
 // ─── Hook Return Type ─────────────────────────────────────────────────────────
 
 export interface UseSlideEditorReturn {
-  state:              SlideEditorState;
-  presentation:       GeneratedPresentation | null;
-  isLoading:          boolean;
-  loadError:          string | null;
-  activeSlide:        EditableSlide | null;
+  state:       SlideEditorState;
+  presentation: GeneratedPresentation | null;
+  isLoading:   boolean;
+  loadError:   string | null;
+  activeSlide: EditableSlide | null;
 
-  loadEditor:         (presentationId: string) => Promise<void>;
+  loadEditor: (presentationId: string) => Promise<void>;
 
-  goToSlide:          (index: number) => void;
-  goToNext:           () => void;
-  goToPrev:           () => void;
+  goToSlide: (index: number) => void;
+  goToNext:  () => void;
+  goToPrev:  () => void;
 
-  openPanel:          (panel: EditorPanel) => void;
-  closePanel:         () => void;
+  openPanel:  (panel: EditorPanel) => void;
+  closePanel: () => void;
 
-  selectField:        (field: EditableFieldKey) => void;
-  commitFieldEdit:    (field: EditableFieldKey, value: string) => void;
-  setEditingText:     (text: string) => void;
-  updateBullet:       (bulletIndex: number, value: string) => void;
-  addBullet:          () => void;
-  removeBullet:       (bulletIndex: number) => void;
-  reorderBullets:     (from: number, to: number) => void;
+  selectField:     (field: EditableFieldKey) => void;
+  commitFieldEdit: (field: EditableFieldKey, value: string) => void;
+  setEditingText:  (text: string) => void;
+  updateBullet:    (bulletIndex: number, value: string) => void;
+  addBullet:       () => void;
+  removeBullet:    (bulletIndex: number) => void;
+  reorderBullets:  (from: number, to: number) => void;
 
-  applyFormatting:    (field: EditableFieldKey, fmt: Partial<FieldFormatting>) => void;
-  toggleBold:         (field: EditableFieldKey) => void;
-  toggleItalic:       (field: EditableFieldKey) => void;
-  cycleFontSizeUp:    (field: EditableFieldKey) => void;
-  cycleFontSizeDown:  (field: EditableFieldKey) => void;
-  setAlignment:       (field: EditableFieldKey, align: TextAlignment) => void;
-  setFieldColor:      (field: EditableFieldKey, color: string) => void;
-  getFormatting:      (field: EditableFieldKey) => FieldFormatting;
+  applyFormatting:   (field: EditableFieldKey, fmt: Partial<FieldFormatting>) => void;
+  toggleBold:        (field: EditableFieldKey) => void;
+  toggleItalic:      (field: EditableFieldKey) => void;
+  cycleFontSizeUp:   (field: EditableFieldKey) => void;
+  cycleFontSizeDown: (field: EditableFieldKey) => void;
+  setAlignment:      (field: EditableFieldKey, align: TextAlignment) => void;
+  setFieldColor:     (field: EditableFieldKey, color: string) => void;
+  getFormatting:     (field: EditableFieldKey) => FieldFormatting;
 
   switchLayout:       (layout: SlideLayout) => void;
   setBackgroundColor: (color: string, applyAll?: boolean) => void;
@@ -189,25 +218,25 @@ export interface UseSlideEditorReturn {
   setFontFamily:      (font: FontFamily) => void;
   setSpacing:         (spacing: SpacingLevel, applyAll?: boolean) => void;
 
-  openColorPicker:    (target: ColorPickerTarget) => void;
-  applyPickedColor:   (color: string) => void;
+  openColorPicker:  (target: ColorPickerTarget) => void;
+  applyPickedColor: (color: string) => void;
 
-  addSlide:           (afterIndex: number, layout?: SlideLayout) => void;
-  deleteSlide:        (index: number) => void;
-  reorderSlides:      (fromIndex: number, toIndex: number) => void;
-  duplicateSlide:     (index: number) => void;
+  addSlide:      (afterIndex: number, layout?: SlideLayout) => void;
+  deleteSlide:   (index: number) => void;
+  reorderSlides: (fromIndex: number, toIndex: number) => void;
+  duplicateSlide:(index: number) => void;
 
-  addBlock:           (block: AdditionalBlock) => void;
-  updateBlock:        (blockId: string, patch: Partial<AdditionalBlock>) => void;
-  deleteBlock:        (blockId: string) => void;
-  reorderBlocks:      (from: number, to: number) => void;
+  addBlock:     (block: AdditionalBlock) => void;
+  updateBlock:  (blockId: string, patch: Partial<AdditionalBlock>) => void;
+  deleteBlock:  (blockId: string) => void;
+  reorderBlocks:(from: number, to: number) => void;
 
-  undo:               () => void;
-  redo:               () => void;
-  canUndo:            boolean;
-  canRedo:            boolean;
+  undo:    () => void;
+  redo:    () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 
-  saveNow:            () => Promise<void>;
+  saveNow:               () => Promise<void>;
   getExportPresentation: () => GeneratedPresentation | null;
 
   aiRewriteField:          (field: EditableFieldKey, style: AIRewriteStyle) => Promise<void>;
@@ -219,35 +248,36 @@ export interface UseSlideEditorReturn {
   dismissLayoutSuggestion: () => void;
   applyLayoutSuggestion:   () => void;
 
-  // Part 29: Template operations
+  // Part 29+
   applyTemplate:  (template: SlideTemplate) => void;
   insertTemplate: (template: SlideTemplate) => void;
 
-  // Part 30: Template history
-  templateHistory:         ReturnType<typeof useTemplateHistory>['historyState'];
-  loadTemplateHistory:     (presentationId: string) => Promise<void>;
-  restoreFromHistory:      (entry: TemplateHistoryEntry) => void;
-  deleteHistoryEntry:      (entryId: string) => Promise<void>;
-  clearTemplateHistory:    () => Promise<void>;
+  // Part 30+
+  templateHistory:      ReturnType<typeof useTemplateHistory>['historyState'];
+  loadTemplateHistory:  (presentationId: string) => Promise<void>;
+  restoreFromHistory:   (entry: TemplateHistoryEntry) => void;
+  deleteHistoryEntry:   (entryId: string) => Promise<void>;
+  clearTemplateHistory: () => Promise<void>;
 }
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// HOOK
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorReturn {
   const { user }             = useAuth();
   const { balance, consume } = useCredits();
 
   const [editorState, dispatch] = useReducer(reducer, INITIAL_STATE);
-  const [presentation,   setPres]     = useState<GeneratedPresentation | null>(null);
-  const [isLoading,      setIsLoading]= useState(false);
-  const [loadError,      setLoadError]= useState<string | null>(null);
+  const [presentation, setPres] = useState<GeneratedPresentation | null>(null);
+  const [isLoading,  setIsLoading] = useState(false);
+  const [loadError,  setLoadError] = useState<string | null>(null);
 
   const stateRef     = useRef(editorState);
   const presRef      = useRef(presentation);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiEditsRef   = useRef(0);
 
-  // Part 30: Template history hook
   const {
     historyState:           templateHistoryState,
     snapshotBeforeTemplate,
@@ -270,9 +300,9 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     try {
       const result = await loadEditorPresentation(presentationId, user.id);
       if (!result) { setLoadError('Presentation not found or access denied.'); return; }
-      dispatch({ type: 'SET_SLIDES',  payload: result.editorSlides });
-      dispatch({ type: 'SET_FONT',    font: result.fontFamily });
-      dispatch({ type: 'SET_DIRTY',   dirty: false });
+      dispatch({ type: 'SET_SLIDES', payload: result.editorSlides });
+      dispatch({ type: 'SET_FONT',   font: result.fontFamily });
+      dispatch({ type: 'SET_DIRTY',  dirty: false });
       setPres(result.presentation);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Failed to load editor.');
@@ -281,7 +311,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
   }, [user]);
 
-  // ─── PUSH UNDO ─────────────────────────────────────────────────────────────
+  // ─── UNDO HELPERS ─────────────────────────────────────────────────────────
 
   const pushUndo = useCallback(() => {
     dispatch({ type: 'PUSH_UNDO', snapshot: [...stateRef.current.slides] });
@@ -299,7 +329,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
       try {
         await saveEditorState(pres.id, user.id, state.slides, state.fontFamily, aiEditsRef.current);
         aiEditsRef.current = 0;
-        dispatch({ type: 'SET_DIRTY',     dirty: false });
+        dispatch({ type: 'SET_DIRTY',      dirty: false });
         dispatch({ type: 'SET_SAVE_ERROR', error: null });
       } catch {
         dispatch({ type: 'SET_SAVE_ERROR', error: 'Auto-save failed.' });
@@ -322,7 +352,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     try {
       await saveEditorState(pres.id, user.id, state.slides, state.fontFamily, aiEditsRef.current);
       aiEditsRef.current = 0;
-      dispatch({ type: 'SET_DIRTY',     dirty: false });
+      dispatch({ type: 'SET_DIRTY',      dirty: false });
       dispatch({ type: 'SET_SAVE_ERROR', error: null });
     } catch {
       dispatch({ type: 'SET_SAVE_ERROR', error: 'Save failed. Please try again.' });
@@ -334,8 +364,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   // ─── NAVIGATION ───────────────────────────────────────────────────────────
 
   const goToSlide = useCallback((index: number) => {
-    const slides  = stateRef.current.slides;
-    const clamped = Math.max(0, Math.min(index, slides.length - 1));
+    const clamped = Math.max(0, Math.min(index, stateRef.current.slides.length - 1));
     dispatch({ type: 'SET_ACTIVE_IDX', index: clamped });
   }, []);
 
@@ -363,7 +392,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_PANEL', panel: 'text_edit' });
   }, []);
 
-  const setEditingText = useCallback((text: string) => dispatch({ type: 'SET_EDITING_TEXT', text }), []);
+  const setEditingText = useCallback((text: string) =>
+    dispatch({ type: 'SET_EDITING_TEXT', text }), []);
 
   const commitFieldEdit = useCallback((field: EditableFieldKey, value: string) => {
     pushUndo();
@@ -376,8 +406,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
 
   const updateBullet = useCallback((bulletIndex: number, value: string) => {
     pushUndo();
-    const idx   = stateRef.current.activeSlideIndex;
-    const slide = stateRef.current.slides[idx];
+    const idx     = stateRef.current.activeSlideIndex;
+    const slide   = stateRef.current.slides[idx];
     const bullets = [...(slide.bullets ?? [])];
     bullets[bulletIndex] = value;
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { bullets } });
@@ -414,19 +444,22 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   }, []);
 
   const applyFormatting = useCallback((field: EditableFieldKey, fmt: Partial<FieldFormatting>) => {
-    const idx     = stateRef.current.activeSlideIndex;
-    const slide   = stateRef.current.slides[idx];
+    const idx      = stateRef.current.activeSlideIndex;
+    const slide    = stateRef.current.slides[idx];
     const existing = slide?.editorData?.fieldFormats?.[field] ?? {};
     const newEditorData = {
       ...(slide.editorData ?? {}),
-      fieldFormats: { ...(slide.editorData?.fieldFormats ?? {}), [field]: { ...existing, ...fmt } },
+      fieldFormats: {
+        ...(slide.editorData?.fieldFormats ?? {}),
+        [field]: { ...existing, ...fmt },
+      },
     };
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: newEditorData } });
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, []);
 
-  const toggleBold      = useCallback((field: EditableFieldKey) => applyFormatting(field, { bold: !getFormatting(field).bold }), [applyFormatting, getFormatting]);
-  const toggleItalic    = useCallback((field: EditableFieldKey) => applyFormatting(field, { italic: !getFormatting(field).italic }), [applyFormatting, getFormatting]);
+  const toggleBold      = useCallback((f: EditableFieldKey) => applyFormatting(f, { bold:   !getFormatting(f).bold   }), [applyFormatting, getFormatting]);
+  const toggleItalic    = useCallback((f: EditableFieldKey) => applyFormatting(f, { italic: !getFormatting(f).italic }), [applyFormatting, getFormatting]);
 
   const cycleFontSizeUp = useCallback((field: EditableFieldKey) => {
     const cur = getFormatting(field).fontScale ?? DEFAULT_FONT_SCALE;
@@ -440,8 +473,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     applyFormatting(field, { fontScale: FONT_SCALE_STEPS[Math.max(idx - 1, 0)] });
   }, [getFormatting, applyFormatting]);
 
-  const setAlignment  = useCallback((field: EditableFieldKey, align: TextAlignment) => applyFormatting(field, { alignment: align }), [applyFormatting]);
-  const setFieldColor = useCallback((field: EditableFieldKey, color: string) => applyFormatting(field, { color }), [applyFormatting]);
+  const setAlignment  = useCallback((f: EditableFieldKey, align: TextAlignment) => applyFormatting(f, { alignment: align }), [applyFormatting]);
+  const setFieldColor = useCallback((f: EditableFieldKey, color: string)        => applyFormatting(f, { color }),             [applyFormatting]);
 
   // ─── DESIGN ───────────────────────────────────────────────────────────────
 
@@ -474,8 +507,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     pushUndo();
     const state = stateRef.current;
     if (applyAll) {
-      const slides = state.slides.map(s => ({ ...s, editorData: { ...s.editorData, backgroundColor: color } }));
-      dispatch({ type: 'SET_SLIDES', payload: slides });
+      dispatch({ type: 'SET_SLIDES', payload: state.slides.map(s => ({ ...s, editorData: { ...s.editorData, backgroundColor: color } })) });
     } else {
       const idx = state.activeSlideIndex;
       dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: { ...(state.slides[idx].editorData ?? {}), backgroundColor: color } } });
@@ -506,21 +538,16 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }));
     dispatch({ type: 'SET_SLIDES', payload: slides });
     dispatch({ type: 'SET_DIRTY', dirty: true });
-
-    // Persist theme column immediately
+    // Persist theme column immediately (fire-and-forget)
     if (user) {
-      supabase
-        .from('presentations')
-        .update({ theme })
-        .eq('id', pres.id)
-        .eq('user_id', user.id)
-        .then(({ error }) => {
-          if (error) console.warn('[useSlideEditor] theme persist failed:', error.message);
-        });
+      supabase.from('presentations').update({ theme })
+        .eq('id', pres.id).eq('user_id', user.id)
+        .then(({ error }) => { if (error) console.warn('[useSlideEditor] theme persist failed:', error.message); });
     }
   }, [pushUndo, user]);
 
-  const setFontFamily = useCallback((font: FontFamily) => dispatch({ type: 'SET_FONT', font }), []);
+  const setFontFamily = useCallback((font: FontFamily) =>
+    dispatch({ type: 'SET_FONT', font }), []);
 
   const setSpacing = useCallback((spacing: SpacingLevel, applyAll = false) => {
     pushUndo();
@@ -549,9 +576,11 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
       case 'accent':   setAccentColor(color, false); break;
       case 'field':    setFieldColor((target as any).fieldKey, color); break;
       case 'block': {
-        const idx   = stateRef.current.activeSlideIndex;
-        const slide = stateRef.current.slides[idx];
-        const blocks = (slide.editorData?.additionalBlocks ?? []).map(b => b.id === (target as any).blockId ? { ...b, color } : b);
+        const idx    = stateRef.current.activeSlideIndex;
+        const slide  = stateRef.current.slides[idx];
+        const blocks = (slide.editorData?.additionalBlocks ?? []).map(b =>
+          b.id === (target as any).blockId ? { ...b, color } : b,
+        );
         dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } } });
         break;
       }
@@ -564,25 +593,28 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
 
   const addSlide = useCallback((afterIndex: number, layout: SlideLayout = 'content') => {
     pushUndo();
-    const state  = stateRef.current;
     const newSlide: EditableSlide = {
       id: `slide_new_${Date.now()}`, slideNumber: 0, layout, title: 'New Slide',
-      accentColor: presRef.current?.themeTokens.primary ?? '#6C63FF', icon: 'document-text-outline',
+      accentColor: presRef.current?.themeTokens.primary ?? '#6C63FF',
+      icon: 'document-text-outline',
     };
-    const slides = [...state.slides];
+    const slides = [...stateRef.current.slides];
     slides.splice(afterIndex + 1, 0, newSlide);
-    dispatch({ type: 'SET_SLIDES', payload: slides.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
+    dispatch({ type: 'SET_SLIDES',    payload: slides.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
     dispatch({ type: 'SET_ACTIVE_IDX', index: afterIndex + 1 });
   }, [pushUndo]);
 
   const deleteSlide = useCallback((index: number) => {
     const slides = stateRef.current.slides;
-    if (slides.length <= 1) { Alert.alert('Cannot delete', 'A presentation must have at least one slide.'); return; }
+    if (slides.length <= 1) {
+      Alert.alert('Cannot delete', 'A presentation must have at least one slide.');
+      return;
+    }
     pushUndo();
     const updated = slides.filter((_, i) => i !== index).map((s, i) => ({ ...s, slideNumber: i + 1 }));
-    dispatch({ type: 'SET_SLIDES', payload: updated });
+    dispatch({ type: 'SET_SLIDES',    payload: updated });
     dispatch({ type: 'SET_ACTIVE_IDX', index: Math.min(index, updated.length - 1) });
-    dispatch({ type: 'SET_DIRTY', dirty: true });
+    dispatch({ type: 'SET_DIRTY',     dirty: true });
   }, [pushUndo]);
 
   const reorderSlides = useCallback((fromIndex: number, toIndex: number) => {
@@ -591,17 +623,20 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     const slides = [...stateRef.current.slides];
     const [item] = slides.splice(fromIndex, 1);
     slides.splice(toIndex, 0, item);
-    dispatch({ type: 'SET_SLIDES', payload: slides.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
+    dispatch({ type: 'SET_SLIDES',    payload: slides.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
     dispatch({ type: 'SET_ACTIVE_IDX', index: toIndex });
   }, [pushUndo]);
 
   const duplicateSlide = useCallback((index: number) => {
     pushUndo();
     const slides = stateRef.current.slides;
-    const copy: EditableSlide = { ...JSON.parse(JSON.stringify(slides[index])), id: `slide_dup_${Date.now()}` };
+    const copy: EditableSlide = {
+      ...JSON.parse(JSON.stringify(slides[index])),
+      id: `slide_dup_${Date.now()}`,
+    };
     const updated = [...slides];
     updated.splice(index + 1, 0, copy);
-    dispatch({ type: 'SET_SLIDES', payload: updated.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
+    dispatch({ type: 'SET_SLIDES',    payload: updated.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
     dispatch({ type: 'SET_ACTIVE_IDX', index: index + 1 });
   }, [pushUndo]);
 
@@ -609,33 +644,35 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
 
   const addBlock = useCallback((block: AdditionalBlock) => {
     pushUndo();
-    const idx   = stateRef.current.activeSlideIndex;
-    const slide = stateRef.current.slides[idx];
+    const idx    = stateRef.current.activeSlideIndex;
+    const slide  = stateRef.current.slides[idx];
     const blocks = [...(slide.editorData?.additionalBlocks ?? []), block];
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } } });
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
   const updateBlock = useCallback((blockId: string, patch: Partial<AdditionalBlock>) => {
-    const idx   = stateRef.current.activeSlideIndex;
-    const slide = stateRef.current.slides[idx];
-    const blocks = (slide.editorData?.additionalBlocks ?? []).map(b => b.id === blockId ? { ...b, ...patch } as AdditionalBlock : b);
+    const idx    = stateRef.current.activeSlideIndex;
+    const slide  = stateRef.current.slides[idx];
+    const blocks = (slide.editorData?.additionalBlocks ?? []).map(b =>
+      b.id === blockId ? { ...b, ...patch } as AdditionalBlock : b,
+    );
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } } });
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, []);
 
   const deleteBlock = useCallback((blockId: string) => {
     pushUndo();
-    const idx   = stateRef.current.activeSlideIndex;
-    const slide = stateRef.current.slides[idx];
+    const idx    = stateRef.current.activeSlideIndex;
+    const slide  = stateRef.current.slides[idx];
     const blocks = (slide.editorData?.additionalBlocks ?? []).filter(b => b.id !== blockId);
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } } });
   }, [pushUndo]);
 
   const reorderBlocks = useCallback((from: number, to: number) => {
     pushUndo();
-    const idx   = stateRef.current.activeSlideIndex;
-    const slide = stateRef.current.slides[idx];
+    const idx    = stateRef.current.activeSlideIndex;
+    const slide  = stateRef.current.slides[idx];
     const blocks = [...(slide.editorData?.additionalBlocks ?? [])];
     const [item] = blocks.splice(from, 1);
     blocks.splice(to, 0, item);
@@ -653,14 +690,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     const pres  = presRef.current;
     const state = stateRef.current;
     if (!pres) return null;
-
-    // FIX: Pass raw EditableSlide[] cast as PresentationSlide[] so pptxExport
-    // can read editorData for formatting, background color, spacing and blocks.
-    // Previously toExportSlides() stripped editorData which broke Part 30 export.
+    // Pass EditableSlide[] (with editorData intact) so pptxExport reads overlays.
     const slidesWithEdits = state.slides as unknown as GeneratedPresentation['slides'];
-
-    // FIX: Attach fontFamily from editor state — it's not stored on the
-    // presentation object, so without this pptxExport used the default font.
     return {
       ...pres,
       slides:      slidesWithEdits,
@@ -669,99 +700,166 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     } as GeneratedPresentation & { fontFamily: string };
   }, []);
 
-  // ─── AI OPERATIONS ────────────────────────────────────────────────────────
+  // ─── AI OPERATIONS — PART 31 CREDIT FIX ──────────────────────────────────
+  //
+  // Root cause: every AI call previously called consume('research_quick') which
+  // costs 5 credits each.  The EDITOR_CREDIT_COSTS constants were always right
+  // (1 cr, 2 cr) but the consume() calls used the wrong feature key.
+  //
+  // Fix: map each AI operation to its dedicated slide_ai_* feature:
+  //   rewrite / rewrite bullets / rewrite single bullet → 'slide_ai_rewrite'  (1 cr)
+  //   generate new slide                                → 'slide_ai_generate' (2 cr)
+  //   generate speaker notes                           → 'slide_ai_notes'    (1 cr)
+  //
+  // The Alert messages already showed the correct cost; now the DB deduction
+  // and transaction history both reflect the same correct amount.
 
+  // ── Rewrite a single text field ───────────────────────────────────────────
   const aiRewriteField = useCallback(async (field: EditableFieldKey, style: AIRewriteStyle) => {
     const slide    = stateRef.current.slides[stateRef.current.activeSlideIndex];
     const original = (slide as any)[field] as string | undefined;
-    if (!original?.trim()) { Alert.alert('Nothing to rewrite', 'This field is empty.'); return; }
-    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) { Alert.alert('Not enough credits', `Rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit. You have ${balance}.`); return; }
+    if (!original?.trim()) {
+      Alert.alert('Nothing to rewrite', 'This field is empty.');
+      return;
+    }
+    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
+      Alert.alert('Not enough credits', `Rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit. You have ${balance}.`);
+      return;
+    }
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: `Rewriting ${field} as "${style}"…` });
     try {
       const result = await rewriteText(original, style, report, field);
-      await consume('research_quick');
+      // PART 31 FIX: was consume('research_quick') = 5 cr
+      await consume('slide_ai_rewrite');          // ← 1 cr, correct feature label
       aiEditsRef.current += 1;
       pushUndo();
       dispatch({ type: 'PATCH_SLIDE', index: stateRef.current.activeSlideIndex, patch: { [field]: result } as any });
       dispatch({ type: 'SET_DIRTY', dirty: true });
-    } catch (err) { Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.'); }
-    finally { dispatch({ type: 'SET_AI_PROCESSING', processing: false }); closePanel(); }
+    } catch (err) {
+      Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+      closePanel();
+    }
   }, [balance, consume, report, pushUndo, closePanel]);
 
+  // ── Rewrite all bullets ───────────────────────────────────────────────────
   const aiRewriteBullets = useCallback(async (style: AIRewriteStyle) => {
     const slide = stateRef.current.slides[stateRef.current.activeSlideIndex];
-    if (!slide?.bullets?.length) { Alert.alert('No bullets', 'No bullet points to rewrite.'); return; }
-    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) { Alert.alert('Not enough credits', `Bullet rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit.`); return; }
+    if (!slide?.bullets?.length) {
+      Alert.alert('No bullets', 'No bullet points to rewrite.');
+      return;
+    }
+    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
+      Alert.alert('Not enough credits', `Bullet rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit.`);
+      return;
+    }
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: `Rewriting all bullets as "${style}"…` });
     try {
       const result = await rewriteBulletsAgent(slide.bullets, style, report);
-      await consume('research_quick');
+      // PART 31 FIX: was consume('research_quick') = 5 cr
+      await consume('slide_ai_rewrite');          // ← 1 cr
       aiEditsRef.current += 1;
       pushUndo();
       dispatch({ type: 'PATCH_SLIDE', index: stateRef.current.activeSlideIndex, patch: { bullets: result } });
       dispatch({ type: 'SET_DIRTY', dirty: true });
-    } catch (err) { Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.'); }
-    finally { dispatch({ type: 'SET_AI_PROCESSING', processing: false }); closePanel(); }
+    } catch (err) {
+      Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+      closePanel();
+    }
   }, [balance, consume, report, pushUndo, closePanel]);
 
+  // ── Rewrite a single bullet ───────────────────────────────────────────────
   const aiRewriteSingleBullet = useCallback(async (bulletIndex: number, style: AIRewriteStyle) => {
     const slide  = stateRef.current.slides[stateRef.current.activeSlideIndex];
     const bullet = slide?.bullets?.[bulletIndex];
-    if (!bullet?.trim()) { Alert.alert('Empty bullet', 'This bullet is empty.'); return; }
-    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) { Alert.alert('Not enough credits', `Costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit.`); return; }
+    if (!bullet?.trim()) {
+      Alert.alert('Empty bullet', 'This bullet is empty.');
+      return;
+    }
+    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
+      Alert.alert('Not enough credits', `Costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit.`);
+      return;
+    }
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: `Rewriting bullet ${bulletIndex + 1}…` });
     try {
       const result = await rewriteSingleBulletAgent(bullet, style);
-      await consume('research_quick');
+      // PART 31 FIX: was consume('research_quick') = 5 cr
+      await consume('slide_ai_rewrite');          // ← 1 cr
       aiEditsRef.current += 1;
       pushUndo();
-      const idx      = stateRef.current.activeSlideIndex;
+      const idx        = stateRef.current.activeSlideIndex;
       const newBullets = [...(stateRef.current.slides[idx].bullets ?? [])];
       newBullets[bulletIndex] = result;
       dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { bullets: newBullets } });
       dispatch({ type: 'SET_DIRTY', dirty: true });
-    } catch (err) { Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.'); }
-    finally { dispatch({ type: 'SET_AI_PROCESSING', processing: false }); }
+    } catch (err) {
+      Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+    }
   }, [balance, consume, report, pushUndo]);
 
+  // ── Generate a new slide ──────────────────────────────────────────────────
   const aiGenerateSlide = useCallback(async (req: AIGenerateSlideRequest) => {
-    if (balance < EDITOR_CREDIT_COSTS.ai_generate) { Alert.alert('Not enough credits', `Generation costs ${EDITOR_CREDIT_COSTS.ai_generate} credits. You have ${balance}.`); return; }
+    if (balance < EDITOR_CREDIT_COSTS.ai_generate) {
+      Alert.alert('Not enough credits', `Generation costs ${EDITOR_CREDIT_COSTS.ai_generate} credits. You have ${balance}.`);
+      return;
+    }
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: 'Generating slide…' });
     try {
       const newSlideData = await generateSlideAgent(req, report, stateRef.current.slides.length);
-      await consume('research_quick');
-      await consume('research_quick');
-      aiEditsRef.current += 2;
+      // PART 31 FIX: was consume('research_quick')×2 = 10 cr total
+      await consume('slide_ai_generate');         // ← 2 cr, single call, correct label
+      aiEditsRef.current += 1;
       pushUndo();
       const slides = [...stateRef.current.slides];
       const newSlide: EditableSlide = { ...newSlideData, slideNumber: req.insertAfterIdx + 2 };
       slides.splice(req.insertAfterIdx + 1, 0, newSlide);
-      dispatch({ type: 'SET_SLIDES', payload: slides.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
+      dispatch({ type: 'SET_SLIDES',    payload: slides.map((s, i) => ({ ...s, slideNumber: i + 1 })) });
       dispatch({ type: 'SET_ACTIVE_IDX', index: req.insertAfterIdx + 1 });
-      dispatch({ type: 'SET_DIRTY', dirty: true });
-    } catch (err) { Alert.alert('Generation failed', err instanceof Error ? err.message : 'Please try again.'); }
-    finally { dispatch({ type: 'SET_AI_PROCESSING', processing: false }); closePanel(); }
+      dispatch({ type: 'SET_DIRTY',     dirty: true });
+    } catch (err) {
+      Alert.alert('Generation failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+      closePanel();
+    }
   }, [balance, consume, report, pushUndo, closePanel]);
 
+  // ── Generate speaker notes ────────────────────────────────────────────────
   const aiGenerateSpeakerNotes = useCallback(async (slideIndex?: number) => {
     const currentState = stateRef.current;
     const idx   = slideIndex !== undefined ? slideIndex : currentState.activeSlideIndex;
     const slide = currentState.slides[idx];
-    if (!slide || !slide.layout) { Alert.alert('No slide found', 'Please select a slide first.'); return; }
-    if (balance < EDITOR_CREDIT_COSTS.ai_notes) { Alert.alert('Not enough credits', `Speaker notes cost ${EDITOR_CREDIT_COSTS.ai_notes} credit. You have ${balance}.`); return; }
+    if (!slide || !slide.layout) {
+      Alert.alert('No slide found', 'Please select a slide first.');
+      return;
+    }
+    if (balance < EDITOR_CREDIT_COSTS.ai_notes) {
+      Alert.alert('Not enough credits', `Speaker notes cost ${EDITOR_CREDIT_COSTS.ai_notes} credit. You have ${balance}.`);
+      return;
+    }
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: 'Writing speaker notes…' });
     try {
       const notes = await generateSpeakerNotes({ ...slide }, report);
       if (!notes?.trim()) throw new Error('AI returned empty notes. Please try again.');
-      await consume('research_quick');
+      // PART 31 FIX: was consume('research_quick') = 5 cr
+      await consume('slide_ai_notes');            // ← 1 cr, correct label
       aiEditsRef.current += 1;
       pushUndo();
       dispatch({ type: 'PATCH_SLIDE', index: stateRef.current.activeSlideIndex, patch: { speakerNotes: notes } });
       dispatch({ type: 'SET_DIRTY', dirty: true });
-    } catch (err) { Alert.alert('Notes failed', err instanceof Error ? err.message : 'Please try again.'); }
-    finally { dispatch({ type: 'SET_AI_PROCESSING', processing: false }); }
+    } catch (err) {
+      Alert.alert('Notes failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+    }
   }, [balance, consume, report, pushUndo]);
 
+  // ── Suggest layout (free — no credit) ────────────────────────────────────
   const aiSuggestLayout = useCallback(async () => {
     const idx   = stateRef.current.activeSlideIndex;
     const slide = stateRef.current.slides[idx];
@@ -769,11 +867,15 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     try {
       const suggestion = await suggestLayoutAgent(slide, slide.layout);
       dispatch({ type: 'SET_LAYOUT_SUGGEST', suggestion });
-    } catch (err) { Alert.alert('Layout analysis failed', err instanceof Error ? err.message : 'Please try again.'); }
-    finally { dispatch({ type: 'SET_AI_PROCESSING', processing: false }); }
+    } catch (err) {
+      Alert.alert('Layout analysis failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+    }
   }, []);
 
-  const dismissLayoutSuggestion = useCallback(() => dispatch({ type: 'SET_LAYOUT_SUGGEST', suggestion: null }), []);
+  const dismissLayoutSuggestion = useCallback(() =>
+    dispatch({ type: 'SET_LAYOUT_SUGGEST', suggestion: null }), []);
 
   const applyLayoutSuggestion = useCallback(() => {
     const suggestion = stateRef.current.layoutSuggestion;
@@ -782,121 +884,81 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_LAYOUT_SUGGEST', suggestion: null });
   }, [switchLayout]);
 
-  // ─── Part 29: TEMPLATE OPERATIONS (updated in Part 30 with history) ──────
+  // ─── TEMPLATE OPERATIONS (Part 29 + Part 30 history snapshots) ───────────
 
-  /**
-   * Part 30 change: saves a history snapshot BEFORE replacing all slides.
-   * Then calls the same replacement logic as Part 29.
-   */
   const applyTemplate = useCallback((template: SlideTemplate) => {
     Alert.alert(
       `Apply "${template.name}"?`,
-      `This will replace all ${stateRef.current.slides.length} slides with ${template.slideCount} template slides. Your current content will be lost.\n\nA snapshot is saved in Template History so you can restore anytime.`,
+      `This will replace all ${stateRef.current.slides.length} slides with ${template.slideCount} template slides.\n\nA snapshot is saved in Template History so you can restore anytime.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Apply Template',
+          text:  'Apply Template',
           style: 'destructive',
           onPress: () => {
             const pres  = presRef.current;
             const theme = pres?.theme ?? 'dark';
             const state = stateRef.current;
-
-            // Part 30: Save history snapshot BEFORE applying (fire-and-forget)
             if (pres && user) {
-              const editorDataArr = state.slides.map(s => s.editorData ?? {});
               snapshotBeforeTemplate(
                 pres.id,
                 state.slides,
-                editorDataArr,
+                state.slides.map(s => s.editorData ?? {}),
                 state.fontFamily,
                 template.id,
                 template.name,
               );
             }
-
             pushUndo();
             const templateSlides = applyTemplateToSlides(template, theme, 1);
-            const replaced = replaceWithTemplateSlides(templateSlides);
-            dispatch({ type: 'SET_SLIDES', payload: replaced });
+            dispatch({ type: 'SET_SLIDES',    payload: replaceWithTemplateSlides(templateSlides) });
             dispatch({ type: 'SET_ACTIVE_IDX', index: 0 });
-            dispatch({ type: 'SET_DIRTY', dirty: true });
-            dispatch({ type: 'SET_PANEL', panel: 'none' });
-
-            // Track usage (fire-and-forget)
-            if (pres) {
-              trackTemplateUsage(template.id, pres.id, theme);
-            }
+            dispatch({ type: 'SET_DIRTY',     dirty: true });
+            dispatch({ type: 'SET_PANEL',     panel: 'none' });
+            if (pres) trackTemplateUsage(template.id, pres.id, theme);
           },
         },
       ],
     );
   }, [pushUndo, user, snapshotBeforeTemplate]);
 
-  /**
-   * Part 30 change: saves a history snapshot BEFORE inserting template slides.
-   */
   const insertTemplate = useCallback((template: SlideTemplate) => {
-    const state     = stateRef.current;
-    const pres      = presRef.current;
-    const theme     = pres?.theme ?? 'dark';
-    const afterIdx  = state.activeSlideIndex;
-    const startNum  = afterIdx + 2;
-
-    // Part 30: Save history snapshot BEFORE inserting (fire-and-forget)
+    const state    = stateRef.current;
+    const pres     = presRef.current;
+    const theme    = pres?.theme ?? 'dark';
+    const afterIdx = state.activeSlideIndex;
     if (pres && user) {
-      const editorDataArr = state.slides.map(s => s.editorData ?? {});
       snapshotBeforeTemplate(
         pres.id,
         state.slides,
-        editorDataArr,
+        state.slides.map(s => s.editorData ?? {}),
         state.fontFamily,
         template.id,
         template.name,
       );
     }
-
     pushUndo();
-    const templateSlides = applyTemplateToSlides(template, theme, startNum);
-    const merged = insertTemplateSlidesAtIndex(state.slides, templateSlides, afterIdx);
-
-    dispatch({ type: 'SET_SLIDES', payload: merged });
+    const templateSlides = applyTemplateToSlides(template, theme, afterIdx + 2);
+    dispatch({ type: 'SET_SLIDES',    payload: insertTemplateSlidesAtIndex(state.slides, templateSlides, afterIdx) });
     dispatch({ type: 'SET_ACTIVE_IDX', index: afterIdx + 1 });
-    dispatch({ type: 'SET_DIRTY', dirty: true });
-    dispatch({ type: 'SET_PANEL', panel: 'none' });
-
-    // Track usage (fire-and-forget)
-    if (pres) {
-      trackTemplateUsage(template.id, pres.id, theme);
-    }
+    dispatch({ type: 'SET_DIRTY',     dirty: true });
+    dispatch({ type: 'SET_PANEL',     panel: 'none' });
+    if (pres) trackTemplateUsage(template.id, pres.id, theme);
   }, [pushUndo, user, snapshotBeforeTemplate]);
 
-  // ─── Part 30: TEMPLATE HISTORY OPERATIONS ────────────────────────────────
+  // ─── TEMPLATE HISTORY ─────────────────────────────────────────────────────
 
-  /** Load history list from DB for the current presentation */
   const loadTemplateHistoryForPresentation = useCallback(async (presentationId: string) => {
     await loadHistory(presentationId);
   }, [loadHistory]);
 
-  /**
-   * Restore slides + editorData from a history snapshot.
-   * Uses the local undo stack so Ctrl+Z still works after restore.
-   */
   const restoreFromHistory = useCallback((entry: TemplateHistoryEntry) => {
     pushUndo();
-    const pres = presRef.current;
-
-    // Re-merge editorData into slides (same pattern as loadEditorPresentation)
-    const mergedSlides = mergeEditorData(
-      entry.slidesSnapshot,
-      entry.editorDataSnapshot,
-    );
-
-    dispatch({ type: 'SET_SLIDES',  payload: mergedSlides });
-    dispatch({ type: 'SET_FONT',    font: entry.fontFamily as any });
+    dispatch({ type: 'SET_SLIDES',    payload: mergeEditorData(entry.slidesSnapshot, entry.editorDataSnapshot) });
+    dispatch({ type: 'SET_FONT',      font: entry.fontFamily as FontFamily });
     dispatch({ type: 'SET_ACTIVE_IDX', index: 0 });
-    dispatch({ type: 'SET_DIRTY',   dirty: true });
-    dispatch({ type: 'SET_PANEL',   panel: 'none' });
+    dispatch({ type: 'SET_DIRTY',     dirty: true });
+    dispatch({ type: 'SET_PANEL',     panel: 'none' });
   }, [pushUndo]);
 
   const deleteHistoryEntry = useCallback(async (entryId: string) => {
@@ -909,7 +971,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     await clearHistory(pres.id);
   }, [clearHistory]);
 
-  // ─── Return ───────────────────────────────────────────────────────────────
+  // ─── RETURN ───────────────────────────────────────────────────────────────
 
   return {
     state: editorState, presentation, isLoading, loadError, activeSlide,
@@ -924,13 +986,14 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     openColorPicker, applyPickedColor,
     addSlide, deleteSlide, reorderSlides, duplicateSlide,
     addBlock, updateBlock, deleteBlock, reorderBlocks,
-    undo, redo, canUndo: editorState.undoStack.length > 0, canRedo: editorState.redoStack.length > 0,
+    undo, redo,
+    canUndo: editorState.undoStack.length > 0,
+    canRedo: editorState.redoStack.length > 0,
     saveNow, getExportPresentation,
     aiRewriteField, aiRewriteBullets, aiRewriteSingleBullet,
     aiGenerateSlide, aiGenerateSpeakerNotes, aiSuggestLayout,
     dismissLayoutSuggestion, applyLayoutSuggestion,
     applyTemplate, insertTemplate,
-    // Part 30
     templateHistory:      templateHistoryState,
     loadTemplateHistory:  loadTemplateHistoryForPresentation,
     restoreFromHistory,

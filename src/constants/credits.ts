@@ -1,5 +1,6 @@
 // src/constants/credits.ts
 // Part 24 — All credit pack definitions, feature costs, and display helpers
+// Part 31 — Added slide_ai_rewrite, slide_ai_generate, slide_ai_notes entries
 
 import type { CreditPack, CreditFeature } from '../types/credits';
 
@@ -21,6 +22,11 @@ export const FEATURE_COSTS: Record<CreditFeature, number> = {
   academic_paper:  25,
   presentation:    10,
   debate:          15,
+  // Part 31: slide editor AI operations (per-operation, cheap)
+  // Matches EDITOR_CREDIT_COSTS in src/constants/editor.ts
+  slide_ai_rewrite:  1,   // rewrite field / bullets / single bullet
+  slide_ai_generate: 2,   // generate a brand-new slide from description
+  slide_ai_notes:    1,   // generate speaker notes for a slide
 };
 
 // ─── Feature Labels ───────────────────────────────────────────────────────────
@@ -36,6 +42,10 @@ export const FEATURE_LABELS: Record<CreditFeature, string> = {
   academic_paper:  'Academic Paper',
   presentation:    'AI Presentation',
   debate:          'AI Debate',
+  // Part 31
+  slide_ai_rewrite:  'AI Slide Rewrite',
+  slide_ai_generate: 'AI Generate Slide',
+  slide_ai_notes:    'AI Speaker Notes',
 };
 
 // ─── Feature Icons ─────────────────────────────────────────────────────────────
@@ -51,6 +61,10 @@ export const FEATURE_ICONS: Record<CreditFeature, string> = {
   academic_paper:  'school-outline',
   presentation:    'easel-outline',
   debate:          'people-outline',
+  // Part 31
+  slide_ai_rewrite:  'pencil-outline',
+  slide_ai_generate: 'add-circle-outline',
+  slide_ai_notes:    'document-text-outline',
 };
 
 // ─── Credit Packs ─────────────────────────────────────────────────────────────
