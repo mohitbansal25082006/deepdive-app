@@ -1,5 +1,5 @@
 // src/context/CreditsContext.tsx
-// Part 24 (Fix v6) — Two critical fixes:
+// Part 24 (Fix v7) — Two critical fixes:
 //
 // FIX 1 (features showing not enough credits):
 //   consume() now fetches a FRESH balance from the DB before attempting deduction.
@@ -9,6 +9,15 @@
 // FIX 2 (polling forever on failed payment):
 //   pollCheckOrder now checks result.payment_failed and immediately stops with
 //   a clear "payment was declined" error — no more 30s of useless polling.
+//
+// FIX 3 (Part 31 — admin credit adjustments not reflected in app balance):
+//   loadTransactions() now ALSO refreshes the live balance from DB after fetching
+//   transactions. Previously, when an admin added/deducted credits via the admin
+//   dashboard, the transaction appeared in history but the balance shown in the
+//   app header was still the old cached value.
+//   Root cause: loadTransactions() and loadBalance() were completely independent.
+//   The user saw the new transaction but the balance never re-fetched.
+//   Fix: call fetchUserCredits() inside loadTransactions() so both always sync.
 
 import React, {
   createContext, useContext, useEffect, useState,
@@ -128,9 +137,23 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(() => loadBalance(true), [loadBalance]);
 
   // ── Load transactions ─────────────────────────────────────────────────────
+  // FIX 3: After fetching transactions, ALSO refresh the balance from DB.
+  //
+  // WHY: The admin dashboard can add or deduct credits at any time.
+  // That updates user_credits.balance in Supabase, and inserts a transaction row.
+  // When the user opens their transaction history screen, they call loadTransactions().
+  // Previously this only fetched transactions — the balance shown in the header
+  // was still the old cached value because loadBalance() was never called.
+  //
+  // Now loadTransactions() always fetches a fresh balance from DB as well,
+  // so the balance and transaction list are always in sync after viewing history.
+  //
+  // Performance: fetchUserCredits() is a single lightweight DB read.
+  // The balance update runs in the background (non-blocking) after transactions load.
 
   const loadTransactions = useCallback(async () => {
-    if (!user || txLoading) return;
+    if (!user) return;
+
     setTxLoading(true);
     try {
       const txs = await fetchTransactions(user.id, 20, 0);
@@ -140,7 +163,22 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     } finally {
       setTxLoading(false);
     }
-  }, [user, txLoading]);
+
+    // FIX 3: Refresh live balance from DB after loading transactions.
+    // This catches any admin-side adjustments that happened since last app open.
+    // Runs after setTxLoading(false) so it never delays the transaction list render.
+    // Uses a separate try/catch so a balance fetch failure never hides transactions.
+    if (user) {
+      try {
+        const credits = await fetchUserCredits(user.id);
+        setBalance(credits.balance);
+        cacheBalance(user.id, credits.balance);
+      } catch (err) {
+        // Non-fatal — balance will still show the last known value
+        console.warn('[Credits] Balance refresh after loadTransactions failed:', err);
+      }
+    }
+  }, [user]);
 
   // ── Consume credits ───────────────────────────────────────────────────────
   // FIX 1: Always fetch fresh balance from DB before consuming.
@@ -200,9 +238,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   ): Promise<'paid' | 'failed' | 'timeout'> => {
     if (!user) return 'timeout';
 
-    const MAX_ATTEMPTS = 15;
+    const MAX_ATTEMPTS    = 15;
     const INITIAL_DELAY_MS = 2000;
-    const INTERVAL_MS      = 2000;
+    const INTERVAL_MS     = 2000;
 
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
       await new Promise<void>(r => setTimeout(r, i === 0 ? INITIAL_DELAY_MS : INTERVAL_MS));
@@ -293,14 +331,12 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     const pollResult = await pollCheckOrder(orderData.order_id, pack, prevBalance);
 
     if (pollResult === 'failed') {
-      // Payment was declined by the bank
       setPurchaseState(prev => ({
         ...prev,
         phase: 'failed',
         error: 'Your payment was declined.\n\nNo charges were made. Please try again with a different payment method (UPI / Card / Netbanking).',
       }));
     } else if (pollResult === 'timeout') {
-      // Browser closed without paying, OR Razorpay is slow
       setPurchaseState(prev => ({
         ...prev,
         phase: 'failed',
