@@ -1,18 +1,10 @@
 // app/(app)/slide-preview.tsx
-// Part 29 — Fix: Edited slides always shown (including after theme change)
+// Part 30 — FIXED: export uses freshPresentation (with editorData)
 // ─────────────────────────────────────────────────────────────────────────────
-// KEY FIX: When returning from slide-editor, useFocusEffect fetches the
-// FULL presentation from Supabase including slides + editor_data.
-// The mergeEditorData() helper reattaches per-slide editor overlays so
-// SlideCard renders the edited content.
-//
-// THEME FIX: setTheme() in useSlideEditor now saves the theme column to DB.
-// When the preview re-fetches, it reads the theme column and applies
-// getThemeTokens(theme) — so the preview always reflects the current theme.
-//
-// No new features in this file vs Part 28; only the refresh + theme handling
-// is corrected. All existing features (theme picker, export, share, generate)
-// remain unchanged.
+// Fix: exportPPTX, exportPDF, exportHTML from useSlideGenerator always used
+// the original unedited generatedPresentation. Now they are replaced with
+// direct calls to generatePPTX / exportAsSlidePDF / exportAsHTMLSlides using
+// freshPresentation (which carries merged editorData from the last DB refresh).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -36,8 +28,13 @@ import { CreditBalance }          from '../../src/components/credits/CreditBalan
 import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
 import { useCreditGate }          from '../../src/hooks/useCreditGate';
 import { FEATURE_COSTS }          from '../../src/constants/credits';
-import { getThemeTokens }         from '../../src/services/pptxExport';
-import { mergeEditorData }        from '../../src/services/slideEditorService';
+import {
+  getThemeTokens,
+  generatePPTX,
+  exportAsSlidePDF,
+  exportAsHTMLSlides,
+} from '../../src/services/pptxExport';
+import { mergeEditorData } from '../../src/services/slideEditorService';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import type {
   ResearchReport, PresentationTheme, GeneratedPresentation,
@@ -126,23 +123,25 @@ export default function SlidePreviewScreen() {
   const [screenPhase,    setScreenPhase]    = useState<'setup' | 'generating' | 'preview'>('setup');
   const [showShareModal, setShowShareModal] = useState(false);
 
-  // ── Part 29 FIX: freshPresentation holds data re-fetched from Supabase ────
-  // This is set on every useFocusEffect call (i.e., every return from editor).
-  // It always carries the latest slides + editor_data + theme from the DB.
+  // FIX: freshPresentation carries editorData from DB — always export THIS
   const [freshPresentation, setFreshPresentation] = useState<GeneratedPresentation | null>(null);
   const [refreshKey,        setRefreshKey]         = useState(0);
   const hasMountedRef = useRef(false);
 
+  // FIX: local export state — no longer delegating to useSlideGenerator for export
+  const [isExporting,   setIsExporting]   = useState(false);
+  const [exportFormat,  setExportFormat]  = useState<'pptx' | 'pdf' | 'html' | null>(null);
+
   const {
     presentation: generatedPresentation,
-    isGenerating, isExporting, exportFormat, progress, error,
+    isGenerating, progress, error,
     generate, loadPresentation,
-    exportPPTX, exportPDF, exportHTML, deletePresentation,
+    deletePresentation,
   } = useSlideGenerator(report);
 
   const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  // The presentation shown in the preview: freshPresentation (post-edit) wins
+  // The presentation used for PREVIEW (freshPresentation wins when available)
   const presentation = freshPresentation ?? generatedPresentation;
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
@@ -156,21 +155,12 @@ export default function SlidePreviewScreen() {
     if (paramPresentationId && !generatedPresentation) loadPresentation(paramPresentationId);
   }, [paramPresentationId]);
 
-  // ── Part 29 FIX: Re-fetch full presentation on every focus return ──────────
-  // This correctly handles:
-  //   (a) Edited slides — editor_data changes reflected in SlideCard
-  //   (b) Theme changes — theme column changes reflected in tokens
-  //   (c) New slides added/deleted in editor
+  // Re-fetch full presentation on every focus return (same as Part 29)
   useFocusEffect(
     useCallback(() => {
       const presId = presentation?.id ?? paramPresentationId;
       if (!presId) return;
-
-      // Skip on first mount — data already loaded by loadReport/loadPresentation
-      if (!hasMountedRef.current) {
-        hasMountedRef.current = true;
-        return;
-      }
+      if (!hasMountedRef.current) { hasMountedRef.current = true; return; }
 
       const fetchFresh = async () => {
         try {
@@ -182,35 +172,29 @@ export default function SlidePreviewScreen() {
 
           if (dbErr || !data) return;
 
-          // Part 29 THEME FIX: read theme from DB, not from local state
           const theme: PresentationTheme = (data.theme as PresentationTheme) ?? 'dark';
           const rawSlides: any[]         = data.slides ?? [];
           const editorDataArr: any[]     = Array.isArray(data.editor_data) ? data.editor_data : [];
+          const mergedSlides             = mergeEditorData(rawSlides, editorDataArr);
 
-          // Part 29 EDIT FIX: merge editor_data back into slides
-          // mergeEditorData() attaches per-slide fieldFormats, backgroundColor,
-          // spacing, and additionalBlocks so SlideCard renders edited content.
-          const mergedSlides = mergeEditorData(rawSlides, editorDataArr);
-
-          const fresh: GeneratedPresentation = {
+          const fresh: GeneratedPresentation & { fontFamily?: string } = {
             id:          data.id,
             reportId:    data.report_id,
             userId:      data.user_id,
             title:       data.title,
             subtitle:    data.subtitle ?? '',
-            // Use DB theme — this reflects any theme change made in the editor
             theme,
             themeTokens: getThemeTokens(theme),
             slides:      mergedSlides,
             totalSlides: mergedSlides.length,
             generatedAt: data.generated_at,
             exportCount: data.export_count ?? 0,
+            // FIX: carry font_family so export applies the correct typeface
+            fontFamily:  data.font_family ?? 'system',
           };
 
           setFreshPresentation(fresh);
-          // Update selected theme chip to match DB theme
           setSelectedTheme(theme);
-          // Force SlidePreviewPanel to fully re-mount with new data
           setRefreshKey(k => k + 1);
           setScreenPhase('preview');
         } catch (err) {
@@ -250,7 +234,45 @@ export default function SlidePreviewScreen() {
     }
   };
 
-  const handleBack = useCallback(() => router.back(), []);
+  const handleBack        = useCallback(() => router.back(), []);
+  const handleOpenEditor  = useCallback(() => {
+    if (!presentation) return;
+    const params: Record<string, string> = { presentationId: presentation.id };
+    if (report?.id) params.reportId = report.id;
+    router.push({ pathname: '/(app)/slide-editor' as any, params });
+  }, [presentation, report]);
+
+  // FIX: Export functions use freshPresentation (which has editorData intact)
+  // instead of delegating to useSlideGenerator's export (which uses unedited data)
+  const handleExportPPTX = useCallback(async () => {
+    const pres = freshPresentation ?? generatedPresentation;
+    if (!pres) return;
+    setIsExporting(true);
+    setExportFormat('pptx');
+    try { await generatePPTX(pres); }
+    catch (e) { Alert.alert('Export failed', String(e)); }
+    finally { setIsExporting(false); setExportFormat(null); }
+  }, [freshPresentation, generatedPresentation]);
+
+  const handleExportPDF = useCallback(async () => {
+    const pres = freshPresentation ?? generatedPresentation;
+    if (!pres) return;
+    setIsExporting(true);
+    setExportFormat('pdf');
+    try { await exportAsSlidePDF(pres); }
+    catch (e) { Alert.alert('Export failed', String(e)); }
+    finally { setIsExporting(false); setExportFormat(null); }
+  }, [freshPresentation, generatedPresentation]);
+
+  const handleExportHTML = useCallback(async () => {
+    const pres = freshPresentation ?? generatedPresentation;
+    if (!pres) return;
+    setIsExporting(true);
+    setExportFormat('html');
+    try { await exportAsHTMLSlides(pres); }
+    catch (e) { Alert.alert('Export failed', String(e)); }
+    finally { setIsExporting(false); setExportFormat(null); }
+  }, [freshPresentation, generatedPresentation]);
 
   const handleGenerate = useCallback(async () => {
     if (!report || isGenerating || isConsuming) return;
@@ -259,13 +281,6 @@ export default function SlidePreviewScreen() {
     setFreshPresentation(null);
     generate(selectedTheme);
   }, [report, selectedTheme, generate, isGenerating, isConsuming, guardedConsume]);
-
-  const handleOpenEditor = useCallback(() => {
-    if (!presentation) return;
-    const params: Record<string, string> = { presentationId: presentation.id };
-    if (report?.id) params.reportId = report.id;
-    router.push({ pathname: '/(app)/slide-editor' as any, params });
-  }, [presentation, report]);
 
   const handleRegenerate = useCallback(() => {
     Alert.alert('Regenerate Presentation', 'This will replace the current slides. Continue?', [
@@ -290,11 +305,6 @@ export default function SlidePreviewScreen() {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-          {/*
-            key={refreshKey} forces full re-mount of SlidePreviewPanel.
-            This ensures SlideCard re-renders with the latest editorData
-            AND the latest theme tokens after returning from the editor.
-          */}
           <SlidePreviewPanel
             key={refreshKey}
             presentation={presentation}
@@ -309,17 +319,29 @@ export default function SlidePreviewScreen() {
           }}>
             {/* Primary export row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-              <Pressable onPress={exportPPTX} disabled={isExporting} style={{ flex: 1.6, opacity: isExporting && exportFormat !== 'pptx' ? 0.5 : 1 }}>
+              <Pressable
+                onPress={handleExportPPTX}
+                disabled={isExporting}
+                style={{ flex: 1.6, opacity: isExporting && exportFormat !== 'pptx' ? 0.5 : 1 }}
+              >
                 <LinearGradient colors={['#6C63FF', '#8B5CF6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, ...SHADOWS.medium }}>
-                  {isExporting && exportFormat === 'pptx' ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
+                  {isExporting && exportFormat === 'pptx'
+                    ? <ActivityIndicator size="small" color="#FFF" />
+                    : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
                   <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
                     {isExporting && exportFormat === 'pptx' ? 'Exporting…' : 'Export PPTX'}
                   </Text>
                 </LinearGradient>
               </Pressable>
-              <Pressable onPress={exportPDF} disabled={isExporting} style={{ flex: 1, opacity: isExporting && exportFormat !== 'pdf' ? 0.5 : 1 }}>
+              <Pressable
+                onPress={handleExportPDF}
+                disabled={isExporting}
+                style={{ flex: 1, opacity: isExporting && exportFormat !== 'pdf' ? 0.5 : 1 }}
+              >
                 <View style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1.5, borderColor: COLORS.border }}>
-                  {isExporting && exportFormat === 'pdf' ? <ActivityIndicator size="small" color={COLORS.textSecondary} /> : <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />}
+                  {isExporting && exportFormat === 'pdf'
+                    ? <ActivityIndicator size="small" color={COLORS.textSecondary} />
+                    : <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />}
                   <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>PDF</Text>
                 </View>
               </Pressable>
@@ -327,22 +349,38 @@ export default function SlidePreviewScreen() {
 
             {/* Secondary row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-              <Pressable onPress={exportHTML} disabled={isExporting} style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, isExporting && exportFormat !== 'html' ? { opacity: 0.5 } : {}]}>
-                {isExporting && exportFormat === 'html' ? <ActivityIndicator size="small" color={COLORS.textMuted} /> : <Ionicons name="globe-outline" size={15} color={COLORS.textMuted} />}
+              <Pressable
+                onPress={handleExportHTML}
+                disabled={isExporting}
+                style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, isExporting && exportFormat !== 'html' ? { opacity: 0.5 } : {}]}
+              >
+                {isExporting && exportFormat === 'html'
+                  ? <ActivityIndicator size="small" color={COLORS.textMuted} />
+                  : <Ionicons name="globe-outline" size={15} color={COLORS.textMuted} />}
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>HTML</Text>
               </Pressable>
 
-              <Pressable onPress={handleOpenEditor} style={{ flex: 1.2, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.accent}15`, borderWidth: 1, borderColor: `${COLORS.accent}35` }}>
+              <Pressable
+                onPress={handleOpenEditor}
+                style={{ flex: 1.2, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.accent}15`, borderWidth: 1, borderColor: `${COLORS.accent}35` }}
+              >
                 <Ionicons name="pencil-outline" size={15} color={COLORS.accent} />
                 <Text style={{ color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Edit</Text>
               </Pressable>
 
-              <Pressable onPress={() => setShowShareModal(true)} style={{ flex: 1.4, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.primary}15`, borderWidth: 1, borderColor: `${COLORS.primary}35` }}>
+              <Pressable
+                onPress={() => setShowShareModal(true)}
+                style={{ flex: 1.4, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.primary}15`, borderWidth: 1, borderColor: `${COLORS.primary}35` }}
+              >
                 <Ionicons name="people-outline" size={15} color={COLORS.primary} />
                 <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Share</Text>
               </Pressable>
 
-              <Pressable onPress={handleRegenerate} disabled={isExporting || isConsuming} style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, (isExporting || isConsuming) ? { opacity: 0.5 } : {}]}>
+              <Pressable
+                onPress={handleRegenerate}
+                disabled={isExporting || isConsuming}
+                style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, (isExporting || isConsuming) ? { opacity: 0.5 } : {}]}
+              >
                 <Ionicons name="refresh-outline" size={15} color={COLORS.textMuted} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Redo</Text>
               </Pressable>

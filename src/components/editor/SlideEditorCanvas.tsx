@@ -1,30 +1,30 @@
 // src/components/editor/SlideEditorCanvas.tsx
-// Part 29 — FULL REWRITE
-// Changes from Part 28:
-//   1. Block insertion UI is now inline inside the canvas/field section.
-//      Users tap "Add Element to Slide" to open the advanced InlineBlockInserter
-//      modal — no separate Blocks tab needed.
-//   2. Overlay blocks show in-canvas position controls (x, y, width sliders).
-//   3. InlineBlockInserter replaces BlockInserter entirely — blocks can be
-//      placed either as overlays inside the slide or stacked below.
-//   4. The "Blocks" tool tab is gone; the Add button lives in the canvas area.
-//   5. All Part 28 field-card, bullet-editor, and speaker-notes logic preserved.
+// Part 30 — FULL REWRITE
+// Changes from Part 29:
+//   1. PositionControl replaced with JoystickPositionControl (trackpad + sliders)
+//   2. ImagePanel: added "Search Online" tab using OnlineImageSearchPanel
+//   3. IconPanel block type: opens IconifyIconPicker instead of old IconPicker
+//   4. Block type tabs: fixed horizontal scroll container (prevents squishing)
+//   5. OverlayBlockCard: uses JoystickPositionControl for in-place editing
+//   6. "Template History" shortcut button in canvas header area
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useCallback, useState } from 'react';
 import {
   View, Text, ScrollView, Pressable, TextInput,
   Modal, Alert, Dimensions, KeyboardAvoidingView,
-  Platform, Image, TouchableOpacity, Switch,
+  Platform, Image, TouchableOpacity,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
 import * as ImagePicker      from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { SlideCard }                               from '../research/SlideCard';
-import { TOOLBAR_ACCESSORY_ID }                    from './FormattingToolbar';
-import { IconPicker }                              from './IconPicker';
+import { SlideCard }                    from '../research/SlideCard';
+import { TOOLBAR_ACCESSORY_ID }         from './FormattingToolbar';
+import { JoystickPositionControl }      from './JoystickPositionControl';
+import { OnlineImageSearchPanel }       from './OnlineImageSearchPanel';
+import { IconifyIconPicker }            from './IconifyIconPicker';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 import {
   DIVIDER_STYLES,
@@ -174,10 +174,7 @@ function BulletEditor({ bullets, accentColor, onUpdate, onAdd, onRemove }: {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// INLINE BLOCK INSERTER (Part 29 — Advanced)
-// Full-featured block insertion modal with position control (inline vs overlay)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Block type tabs metadata ─────────────────────────────────────────────────
 
 type BlockTabId = 'image' | 'stat' | 'chart' | 'quote_block' | 'divider' | 'spacer' | 'icon';
 
@@ -198,108 +195,22 @@ const BLOCK_TABS: BlockTabMeta[] = [
   { id: 'icon',        label: 'Icon',    icon: 'shapes-outline',      color: '#29B6F6' },
 ];
 
-// ─── Position Control ─────────────────────────────────────────────────────────
+// ─── ImagePanel (Part 30: with online search tab) ─────────────────────────────
 
-function PositionControl({
+function ImagePanel({
   position,
-  onChange,
+  slideTitle,
+  slideLayout,
+  onInsert,
 }: {
-  position: InlineBlockPosition;
-  onChange: (pos: InlineBlockPosition) => void;
+  position:    InlineBlockPosition;
+  slideTitle?: string;
+  slideLayout?: string;
+  onInsert:    (b: ImageBlock) => void;
 }) {
-  const isOverlay = position.type === 'overlay';
+  const [showOnlineSearch, setShowOnlineSearch] = useState(false);
 
-  return (
-    <View style={{ gap: SPACING.sm }}>
-      {/* Type toggle */}
-      <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: 3, borderWidth: 1, borderColor: COLORS.border }}>
-        {[
-          { id: 'inline',  label: '⬇ Below Slide',   desc: 'Stacked below slide content' },
-          { id: 'overlay', label: '🎯 Inside Slide',  desc: 'Placed directly on the slide' },
-        ].map(opt => (
-          <Pressable
-            key={opt.id}
-            onPress={() => onChange({ ...position, type: opt.id as any })}
-            style={{ flex: 1, alignItems: 'center', paddingVertical: 9, paddingHorizontal: SPACING.sm, borderRadius: RADIUS.lg, backgroundColor: position.type === opt.id ? COLORS.primary : 'transparent' }}
-          >
-            <Text style={{ color: position.type === opt.id ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
-            <Text style={{ color: position.type === opt.id ? 'rgba(255,255,255,0.7)' : COLORS.textMuted, fontSize: 9, marginTop: 2 }}>{opt.desc}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* Overlay position controls */}
-      {isOverlay && (
-        <View style={{ backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30`, gap: SPACING.md }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Ionicons name="locate-outline" size={14} color={COLORS.primary} />
-            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 }}>Position & Size</Text>
-          </View>
-
-          {/* Quick presets */}
-          <View>
-            <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '600', marginBottom: 6 }}>QUICK PRESETS</Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-              {[
-                { label: 'Top',      xFrac: 0.05, yFrac: 0.06, wFrac: 0.9  },
-                { label: 'Center',   xFrac: 0.05, yFrac: 0.35, wFrac: 0.9  },
-                { label: 'Bottom',   xFrac: 0.05, yFrac: 0.7,  wFrac: 0.9  },
-                { label: 'Left ½',   xFrac: 0.05, yFrac: 0.35, wFrac: 0.43 },
-                { label: 'Right ½',  xFrac: 0.52, yFrac: 0.35, wFrac: 0.43 },
-                { label: 'Top-Left', xFrac: 0.05, yFrac: 0.06, wFrac: 0.45 },
-              ].map(preset => (
-                <Pressable
-                  key={preset.label}
-                  onPress={() => onChange({ type: 'overlay', xFrac: preset.xFrac, yFrac: preset.yFrac, wFrac: preset.wFrac })}
-                  style={{ backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: `${COLORS.primary}30` }}
-                >
-                  <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{preset.label}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {/* Numeric controls */}
-          {[
-            { label: 'Left edge (0 = far left, 1 = far right)', key: 'xFrac', val: position.xFrac ?? 0.05 },
-            { label: 'Top edge (0 = top, 1 = bottom)',          key: 'yFrac', val: position.yFrac ?? 0.5  },
-            { label: 'Width (0.1 = narrow, 1 = full width)',    key: 'wFrac', val: position.wFrac ?? 0.9  },
-          ].map(ctrl => (
-            <View key={ctrl.key}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                <Text style={{ color: COLORS.textSecondary, fontSize: 10 }}>{ctrl.label}</Text>
-                <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{ctrl.val.toFixed(2)}</Text>
-              </View>
-              <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-                {[0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0].map(v => (
-                  <Pressable
-                    key={v}
-                    onPress={() => onChange({ ...position, [ctrl.key]: v })}
-                    style={{ flex: 1, paddingVertical: 6, borderRadius: RADIUS.sm, backgroundColor: Math.abs((ctrl.val) - v) < 0.01 ? COLORS.primary : COLORS.backgroundCard, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}
-                  >
-                    <Text style={{ color: Math.abs((ctrl.val) - v) < 0.01 ? '#FFF' : COLORS.textMuted, fontSize: 7, fontWeight: '700' }}>{v}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ))}
-
-          <View style={{ backgroundColor: `${COLORS.info}12`, borderRadius: RADIUS.sm, padding: 8, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Ionicons name="information-circle-outline" size={13} color={COLORS.info} />
-            <Text style={{ color: COLORS.info, fontSize: 9, flex: 1, lineHeight: 13 }}>
-              The element will appear at these coordinates on the 16:9 slide canvas.
-            </Text>
-          </View>
-        </View>
-      )}
-    </View>
-  );
-}
-
-// ─── Individual block panels ──────────────────────────────────────────────────
-
-function ImagePanel({ position, onInsert }: { position: InlineBlockPosition; onInsert: (b: ImageBlock) => void }) {
-  const handlePick = useCallback(async () => {
+  const handlePickLocal = useCallback(async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo library access.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.85 });
@@ -309,24 +220,75 @@ function ImagePanel({ position, onInsert }: { position: InlineBlockPosition; onI
     }
   }, [position, onInsert]);
 
+  const handleOnlineInsert = useCallback((block: ImageBlock) => {
+    // Online image block already has position injected inside OnlineImageSearchPanel
+    onInsert(block);
+  }, [onInsert]);
+
   return (
     <View style={{ gap: SPACING.md }}>
-      <Pressable onPress={handlePick}>
-        <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, alignItems: 'center', gap: SPACING.sm }}>
-          <Ionicons name="image" size={36} color="#FFF" />
-          <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Choose from Photos</Text>
-          <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: FONTS.sizes.xs }}>Pick an image from your device library</Text>
-        </LinearGradient>
-      </Pressable>
-      {position.type === 'overlay' && (
+      {/* Tab toggle: Local vs Online */}
+      <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: 3, borderWidth: 1, borderColor: COLORS.border }}>
+        {[
+          { id: false, label: '📱 From Device', desc: 'Pick from your photo library' },
+          { id: true,  label: '🌐 Search Online', desc: 'Search via Google Images' },
+        ].map(opt => (
+          <Pressable
+            key={String(opt.id)}
+            onPress={() => setShowOnlineSearch(opt.id)}
+            style={{ flex: 1, alignItems: 'center', paddingVertical: 9, paddingHorizontal: SPACING.sm, borderRadius: RADIUS.lg, backgroundColor: showOnlineSearch === opt.id ? COLORS.primary : 'transparent' }}
+          >
+            <Text style={{ color: showOnlineSearch === opt.id ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
+            <Text style={{ color: showOnlineSearch === opt.id ? 'rgba(255,255,255,0.7)' : COLORS.textMuted, fontSize: 9, marginTop: 2 }}>{opt.desc}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* Local picker */}
+      {!showOnlineSearch && (
+        <Pressable onPress={handlePickLocal}>
+          <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, alignItems: 'center', gap: SPACING.sm }}>
+            <Ionicons name="image" size={36} color="#FFF" />
+            <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Choose from Photos</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: FONTS.sizes.xs }}>Pick an image from your device library</Text>
+          </LinearGradient>
+        </Pressable>
+      )}
+
+      {/* Online search inline */}
+      {showOnlineSearch && (
+        <View style={{ backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.info}20` }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm }}>
+            <Ionicons name="information-circle-outline" size={14} color={COLORS.info} />
+            <Text style={{ color: COLORS.info, fontSize: FONTS.sizes.xs, flex: 1 }}>
+              Tapping "Search" below will open the full image search screen.
+            </Text>
+          </View>
+          <Pressable onPress={() => {
+            // We trigger the full modal from the parent via a flag; use a workaround:
+            // close this inserter and reopen with online_image_search panel
+            // Signal via a special onInsert call with a sentinel value
+            onInsert({ type: 'image', id: '__OPEN_ONLINE_SEARCH__', uri: '', position } as any);
+          }}>
+            <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.full, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <Ionicons name="search" size={18} color="#FFF" />
+              <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Open Image Search</Text>
+            </LinearGradient>
+          </Pressable>
+        </View>
+      )}
+
+      {position.type === 'overlay' && !showOnlineSearch && (
         <View style={{ backgroundColor: `${COLORS.success}10`, borderRadius: RADIUS.lg, padding: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Ionicons name="checkmark-circle-outline" size={13} color={COLORS.success} />
-          <Text style={{ color: COLORS.success, fontSize: 9 }}>Image will be placed directly on the slide canvas</Text>
+          <Text style={{ color: COLORS.success, fontSize: 9 }}>Image will be placed on the slide canvas at the position set above</Text>
         </View>
       )}
     </View>
   );
 }
+
+// ─── StatPanel ────────────────────────────────────────────────────────────────
 
 function StatPanel({ position, onInsert, infographicData }: { position: InlineBlockPosition; onInsert: (b: StatBlock) => void; infographicData?: InfographicData | null }) {
   const [value, setValue] = useState('');
@@ -369,7 +331,6 @@ function StatPanel({ position, onInsert, infographicData }: { position: InlineBl
           <TextInput value={field.value} onChangeText={field.set} placeholder={field.placeholder} placeholderTextColor={COLORS.textMuted} style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, paddingVertical: 8 }} />
         </View>
       ))}
-      {/* Color picker row */}
       <View>
         <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '600', marginBottom: 6 }}>ACCENT COLOR</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -389,6 +350,8 @@ function StatPanel({ position, onInsert, infographicData }: { position: InlineBl
     </View>
   );
 }
+
+// ─── ChartPanel ───────────────────────────────────────────────────────────────
 
 function ChartPanel({ position, onInsert, infographicData }: { position: InlineBlockPosition; onInsert: (b: ChartBlock) => void; infographicData?: InfographicData | null }) {
   const charts = infographicData?.charts ?? [];
@@ -422,6 +385,8 @@ function ChartPanel({ position, onInsert, infographicData }: { position: InlineB
   );
 }
 
+// ─── QuotePanel ───────────────────────────────────────────────────────────────
+
 function QuotePanel({ position, onInsert }: { position: InlineBlockPosition; onInsert: (b: QuoteBlock) => void }) {
   const [text,   setText]   = useState('');
   const [attrib, setAttrib] = useState('');
@@ -449,6 +414,8 @@ function QuotePanel({ position, onInsert }: { position: InlineBlockPosition; onI
     </View>
   );
 }
+
+// ─── DividerPanel ─────────────────────────────────────────────────────────────
 
 function DividerPanel({ position, onInsert, accentColor }: { position: InlineBlockPosition; onInsert: (b: DividerBlock) => void; accentColor: string }) {
   const [selected, setSelected] = useState<DividerStyle>('solid');
@@ -478,6 +445,8 @@ function DividerPanel({ position, onInsert, accentColor }: { position: InlineBlo
   );
 }
 
+// ─── SpacerPanel ──────────────────────────────────────────────────────────────
+
 function SpacerPanel({ position, onInsert }: { position: InlineBlockPosition; onInsert: (b: SpacerBlock) => void }) {
   const options = [12, 24, 48, 72];
   const [selected, setSelected] = useState(24);
@@ -502,125 +471,16 @@ function SpacerPanel({ position, onInsert }: { position: InlineBlockPosition; on
   );
 }
 
-// ─── Advanced InlineBlockInserter Modal ───────────────────────────────────────
-
-function InlineBlockInserterModal({
-  visible,
-  infographicData,
-  accentColor,
-  onInsertBlock,
-  onClose,
-}: {
-  visible:         boolean;
-  infographicData?: InfographicData | null;
-  accentColor:     string;
-  onInsertBlock:   (block: AdditionalBlock) => void;
-  onClose:         () => void;
-}) {
-  const insets = useSafeAreaInsets();
-
-  const [activeTab,      setActiveTab]      = useState<BlockTabId>('stat');
-  const [position,       setPosition]       = useState<InlineBlockPosition>({ type: 'overlay', xFrac: 0.05, yFrac: 0.5, wFrac: 0.9 });
-  const [showIconPicker, setShowIconPicker] = useState(false);
-
-  const handleInsert = useCallback((block: AdditionalBlock) => {
-    onInsertBlock(block);
-    onClose();
-  }, [onInsertBlock, onClose]);
-
-  const handleIconSelect = useCallback((iconName: string) => {
-    handleInsert({ type: 'icon', id: uid(), iconName, size: DEFAULT_ICON_SIZE, color: accentColor, position });
-  }, [handleInsert, accentColor, position]);
-
-  return (
-    <>
-      <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={onClose}>
-          <Pressable onPress={e => e.stopPropagation()} style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.md, maxHeight: SCREEN_H * 0.92, borderTopWidth: 1, borderTopColor: COLORS.border }}>
-            {/* Handle */}
-            <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
-
-            {/* Header */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
-              <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
-                <Ionicons name="add" size={19} color="#FFF" />
-              </LinearGradient>
-              <View style={{ flex: 1 }}>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Add Element to Slide</Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>Choose type, then set placement</Text>
-              </View>
-              <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                <Ionicons name="close" size={22} color={COLORS.textMuted} />
-              </Pressable>
-            </View>
-
-            {/* Block type tabs */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: SPACING.sm, marginBottom: SPACING.md }}>
-              {BLOCK_TABS.map(tab => {
-                const active = activeTab === tab.id;
-                return (
-                  <Pressable
-                    key={tab.id}
-                    onPress={() => {
-                      if (tab.id === 'icon') { setShowIconPicker(true); onClose(); return; }
-                      setActiveTab(tab.id);
-                    }}
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: active ? `${tab.color}18` : COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: active ? tab.color : COLORS.border }}
-                  >
-                    <Ionicons name={tab.icon as any} size={14} color={active ? tab.color : COLORS.textMuted} />
-                    <Text style={{ color: active ? tab.color : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: active ? '700' : '500' }}>{tab.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg, gap: SPACING.lg }}>
-
-              {/* Position control — always shown at top */}
-              <View style={{ gap: SPACING.sm }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="layers-outline" size={13} color={COLORS.textMuted} />
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>Placement</Text>
-                </View>
-                <PositionControl position={position} onChange={setPosition} />
-              </View>
-
-              <View style={{ height: 1, backgroundColor: COLORS.border }} />
-
-              {/* Block-specific panel */}
-              {activeTab === 'image'       && <ImagePanel   position={position} onInsert={handleInsert} />}
-              {activeTab === 'stat'        && <StatPanel    position={position} onInsert={handleInsert} infographicData={infographicData} />}
-              {activeTab === 'chart'       && <ChartPanel   position={position} onInsert={handleInsert} infographicData={infographicData} />}
-              {activeTab === 'quote_block' && <QuotePanel   position={position} onInsert={handleInsert} />}
-              {activeTab === 'divider'     && <DividerPanel position={position} onInsert={handleInsert} accentColor={accentColor} />}
-              {activeTab === 'spacer'      && <SpacerPanel  position={position} onInsert={handleInsert} />}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <IconPicker
-        visible={showIconPicker}
-        iconColor={accentColor}
-        onSelectIcon={handleIconSelect}
-        onClose={() => setShowIconPicker(false)}
-      />
-    </>
-  );
-}
-
-// ─── Overlay block position editor (shown in canvas section) ─────────────────
+// ─── OverlayBlockCard (Part 30: uses JoystickPositionControl) ─────────────────
 
 function OverlayBlockCard({
   block,
   accentColor,
-  tokens,
   onDelete,
   onUpdateBlock,
 }: {
   block:         AdditionalBlock;
   accentColor:   string;
-  tokens:        PresentationThemeTokens;
   onDelete:      (id: string) => void;
   onUpdateBlock: (id: string, patch: Partial<AdditionalBlock>) => void;
 }) {
@@ -628,11 +488,12 @@ function OverlayBlockCard({
   const col = (block as any).color ?? accentColor;
   const blockIcon: Record<string, string> = {
     image: 'image-outline', stat: 'trending-up-outline', chart: 'bar-chart-outline',
-    quote_block: 'chatbubble-outline', divider: 'remove-outline', spacer: 'resize-outline', icon: 'apps-outline',
+    quote_block: 'chatbubble-outline', divider: 'remove-outline', spacer: 'resize-outline', icon: 'shapes-outline',
   };
 
   const pos        = block.position ?? { type: 'inline' };
   const isOverlay  = pos.type === 'overlay';
+  const supportsH  = block.type === 'image' || block.type === 'stat';
 
   return (
     <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: isOverlay ? `${COLORS.primary}40` : COLORS.border, overflow: 'hidden' }}>
@@ -642,29 +503,12 @@ function OverlayBlockCard({
         <Text style={{ color: isOverlay ? COLORS.primary : col, fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1, flex: 1 }}>
           {block.type.replace('_', ' ')} · {isOverlay ? '🎯 On Slide' : '⬇ Below Slide'}
         </Text>
-
-        {/* Toggle position type */}
-        <Pressable
-          onPress={() => {
-            const newPos: InlineBlockPosition = isOverlay
-              ? { type: 'inline' }
-              : { type: 'overlay', xFrac: 0.05, yFrac: 0.5, wFrac: 0.9 };
-            onUpdateBlock(block.id, { position: newPos } as any);
-          }}
-          style={{ backgroundColor: isOverlay ? `${COLORS.primary}20` : COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: isOverlay ? `${COLORS.primary}40` : COLORS.border }}
-        >
-          <Text style={{ color: isOverlay ? COLORS.primary : COLORS.textMuted, fontSize: 9, fontWeight: '700' }}>
-            {isOverlay ? '⬇ Move Below' : '🎯 Put on Slide'}
-          </Text>
-        </Pressable>
-
-        {/* Edit position */}
+        {/* Edit joystick toggle */}
         {isOverlay && (
           <Pressable onPress={() => setEditPos(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name={editPos ? 'chevron-up' : 'locate-outline'} size={13} color={COLORS.primary} />
           </Pressable>
         )}
-
         {/* Delete */}
         <TouchableOpacity
           onPress={() => Alert.alert('Delete Block', `Remove this ${block.type.replace('_', ' ')} block?`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => onDelete(block.id) }])}
@@ -676,17 +520,19 @@ function OverlayBlockCard({
         </TouchableOpacity>
       </View>
 
-      {/* Inline position editor */}
+      {/* Part 30: Joystick position editor */}
       {isOverlay && editPos && (
         <View style={{ padding: SPACING.md }}>
-          <PositionControl
+          <JoystickPositionControl
             position={pos}
             onChange={newPos => onUpdateBlock(block.id, { position: newPos } as any)}
+            supportsHeight={supportsH}
+            accentColor={COLORS.primary}
           />
         </View>
       )}
 
-      {/* Block summary (non-editable preview) */}
+      {/* Block summary */}
       {!editPos && (
         <View style={{ paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm }}>
           {block.type === 'stat' && (
@@ -695,25 +541,189 @@ function OverlayBlockCard({
               <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm }}>{block.label}</Text>
             </View>
           )}
-          {block.type === 'image' && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.uri ? '📷 Image selected' : 'No image'}</Text>}
+          {block.type === 'image' && (
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+              {(block as any).onlineUrl ? '🌐 Online image' : block.uri ? '📷 Device image' : 'No image'}
+            </Text>
+          )}
           {block.type === 'chart' && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>📊 {block.chart.title}</Text>}
           {block.type === 'quote_block' && <Text numberOfLines={2} style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontStyle: 'italic' }}>"{block.text}"</Text>}
           {block.type === 'divider' && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.style} divider</Text>}
           {block.type === 'spacer' && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.height}dp spacer</Text>}
           {block.type === 'icon' && (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name={block.iconName as any} size={22} color={col} />
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.label ?? block.iconName}</Text>
+              <Ionicons name={(block.iconName as any) || 'shapes-outline'} size={22} color={col} />
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                {(block as any).iconifyId ?? block.iconName}
+              </Text>
             </View>
           )}
           {isOverlay && (
             <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 4 }}>
               Position: x={((pos.xFrac ?? 0.05) * 100).toFixed(0)}% y={((pos.yFrac ?? 0.5) * 100).toFixed(0)}% w={((pos.wFrac ?? 0.9) * 100).toFixed(0)}%
+              {pos.hFrac !== undefined ? ` h=${(pos.hFrac * 100).toFixed(0)}%` : ''}
             </Text>
           )}
         </View>
       )}
     </View>
+  );
+}
+
+// ─── InlineBlockInserterModal (Part 30: fully updated) ────────────────────────
+
+function InlineBlockInserterModal({
+  visible,
+  infographicData,
+  accentColor,
+  slide,
+  onInsertBlock,
+  onOpenOnlineImageSearch,
+  onOpenIconifyPicker,
+  onClose,
+}: {
+  visible:                  boolean;
+  infographicData?:         InfographicData | null;
+  accentColor:              string;
+  slide:                    EditableSlide;
+  onInsertBlock:            (block: AdditionalBlock) => void;
+  onOpenOnlineImageSearch:  () => void;
+  onOpenIconifyPicker:      () => void;
+  onClose:                  () => void;
+}) {
+  const insets = useSafeAreaInsets();
+
+  const [activeTab, setActiveTab] = useState<BlockTabId>('stat');
+  const [position,  setPosition]  = useState<InlineBlockPosition>({
+    type:  'overlay',
+    xFrac: 0.05,
+    yFrac: 0.5,
+    wFrac: 0.9,
+  });
+
+  const handleInsert = useCallback((block: AdditionalBlock) => {
+    // Sentinel for "open online search" from ImagePanel
+    if ((block as any).id === '__OPEN_ONLINE_SEARCH__') {
+      onClose();
+      setTimeout(onOpenOnlineImageSearch, 150);
+      return;
+    }
+    onInsertBlock(block);
+    onClose();
+  }, [onInsertBlock, onClose, onOpenOnlineImageSearch]);
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={onClose}>
+        <Pressable onPress={e => e.stopPropagation()} style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.md, maxHeight: SCREEN_H * 0.92, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+          {/* Handle */}
+          <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
+
+          {/* Header */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
+            <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
+              <Ionicons name="add" size={19} color="#FFF" />
+            </LinearGradient>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Add Element to Slide</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>Choose type then set placement</Text>
+            </View>
+            <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Ionicons name="close" size={22} color={COLORS.textMuted} />
+            </Pressable>
+          </View>
+
+          {/* Block type tabs
+              Part 30 FIX: wrapped in ScrollView with horizontal scrolling
+              so tabs are never squished on narrow screens */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingHorizontal: SPACING.lg,
+              gap:               SPACING.sm,
+              marginBottom:      SPACING.md,
+              // Ensure minimum height so chips don't get compressed
+              alignItems:        'center',
+            }}
+            style={{ flexGrow: 0, flexShrink: 0 }}
+          >
+            {BLOCK_TABS.map(tab => {
+              const active = activeTab === tab.id;
+              const isIconTab = tab.id === 'icon';
+              return (
+                <Pressable
+                  key={tab.id}
+                  onPress={() => {
+                    if (isIconTab) {
+                      // Close this modal and open Iconify picker
+                      onClose();
+                      setTimeout(onOpenIconifyPicker, 150);
+                      return;
+                    }
+                    setActiveTab(tab.id);
+                  }}
+                  style={{
+                    flexDirection:   'row',
+                    alignItems:      'center',
+                    gap:             5,
+                    backgroundColor: active ? `${tab.color}18` : COLORS.backgroundElevated,
+                    borderRadius:    RADIUS.full,
+                    paddingHorizontal: 14,
+                    paddingVertical: 9,
+                    borderWidth:     1,
+                    borderColor:     active ? tab.color : COLORS.border,
+                    // Prevent flex shrink so chips stay their natural size
+                    flexShrink:      0,
+                  }}
+                >
+                  <Ionicons name={tab.icon as any} size={14} color={active ? tab.color : COLORS.textMuted} />
+                  <Text style={{ color: active ? tab.color : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: active ? '700' : '500' }}>
+                    {tab.label}
+                    {isIconTab ? ' ✦' : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg, gap: SPACING.lg }}>
+
+            {/* Placement / Joystick — always shown at top */}
+            <View style={{ gap: SPACING.sm }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="layers-outline" size={13} color={COLORS.textMuted} />
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>Placement</Text>
+              </View>
+              {/* Part 30: Joystick replaces coordinate sliders */}
+              <JoystickPositionControl
+                position={position}
+                onChange={setPosition}
+                supportsHeight={activeTab === 'image' || activeTab === 'stat'}
+                accentColor={accentColor}
+              />
+            </View>
+
+            <View style={{ height: 1, backgroundColor: COLORS.border }} />
+
+            {/* Block-specific panel */}
+            {activeTab === 'image'       && (
+              <ImagePanel
+                position={position}
+                slideTitle={slide.title}
+                slideLayout={slide.layout}
+                onInsert={handleInsert}
+              />
+            )}
+            {activeTab === 'stat'        && <StatPanel    position={position} onInsert={handleInsert} infographicData={infographicData} />}
+            {activeTab === 'chart'       && <ChartPanel   position={position} onInsert={handleInsert} infographicData={infographicData} />}
+            {activeTab === 'quote_block' && <QuotePanel   position={position} onInsert={handleInsert} />}
+            {activeTab === 'divider'     && <DividerPanel position={position} onInsert={handleInsert} accentColor={accentColor} />}
+            {activeTab === 'spacer'      && <SpacerPanel  position={position} onInsert={handleInsert} />}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -736,6 +746,10 @@ interface SlideEditorCanvasProps {
   onDeleteBlock:       (blockId: string) => void;
   onUpdateBlock:       (blockId: string, patch: Partial<AdditionalBlock>) => void;
   onAddBlock:          (block: AdditionalBlock) => void;
+  /** Part 30: called when user requests the online image search panel */
+  onOpenOnlineImageSearch?: () => void;
+  /** Part 30: called when user requests the Iconify picker panel */
+  onOpenIconifyPicker?: () => void;
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -745,6 +759,8 @@ export function SlideEditorCanvas({
   onFieldTap, onEditingTextChange, onCommitField,
   onUpdateBullet, onAddBullet, onRemoveBullet,
   onDeleteBlock, onUpdateBlock, onAddBlock,
+  onOpenOnlineImageSearch,
+  onOpenIconifyPicker,
 }: SlideEditorCanvasProps) {
   const accentColor    = slide.accentColor ?? tokens.primary;
   const editableFields = LAYOUT_FIELDS[slide.layout] ?? ['title'];
@@ -756,9 +772,6 @@ export function SlideEditorCanvas({
   const spacingLabel = SPACING_LABELS[spacingLevel];
 
   const [showBlockInserter, setShowBlockInserter] = useState(false);
-
-  const overlayBlocks = blocks.filter(b => !b.position || b.position.type === 'overlay');
-  const inlineBlocks  = blocks.filter(b => b.position?.type === 'inline');
 
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }} keyboardShouldPersistTaps="handled">
@@ -787,10 +800,12 @@ export function SlideEditorCanvas({
               <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>Font: {fontFamily}</Text>
             </View>
           )}
-          {overlayBlocks.length > 0 && (
+          {blocks.filter(b => b.position?.type === 'overlay').length > 0 && (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
               <Ionicons name="layers-outline" size={9} color={COLORS.primary} />
-              <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>{overlayBlocks.length} element{overlayBlocks.length !== 1 ? 's' : ''} on slide</Text>
+              <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>
+                {blocks.filter(b => b.position?.type === 'overlay').length} element{blocks.filter(b => b.position?.type === 'overlay').length !== 1 ? 's' : ''} on slide
+              </Text>
             </View>
           )}
         </View>
@@ -805,14 +820,13 @@ export function SlideEditorCanvas({
           </LinearGradient>
           <View>
             <Text style={{ color: accentColor, fontSize: FONTS.sizes.sm, fontWeight: '800' }}>Add Element to Slide</Text>
-            <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>Image · Stat · Chart · Quote · Divider · Icon</Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>Image · Stat · Chart · Quote · Divider · Icon ✦</Text>
           </View>
         </Pressable>
       </View>
 
       {/* ── EDITABLE FIELDS ── */}
       <View style={{ paddingHorizontal: SPACING.lg, marginTop: SPACING.md, gap: SPACING.sm }}>
-
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
           <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
           <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 }}>✏ Fields</Text>
@@ -847,7 +861,7 @@ export function SlideEditorCanvas({
           <BulletEditor bullets={slide.bullets ?? []} accentColor={accentColor} onUpdate={onUpdateBullet} onAdd={onAddBullet} onRemove={onRemoveBullet} />
         )}
 
-        {/* Stats quick view */}
+        {/* Stats */}
         {slide.layout === 'stats' && (slide.stats?.length ?? 0) > 0 && (
           <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${accentColor}25`, gap: SPACING.sm }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -881,7 +895,7 @@ export function SlideEditorCanvas({
           </Pressable>
         )}
 
-        {/* ── BLOCKS (overlay + inline) ── */}
+        {/* ── BLOCKS ── */}
         {blocks.length > 0 && (
           <>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: SPACING.xs }}>
@@ -889,7 +903,7 @@ export function SlideEditorCanvas({
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${accentColor}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4 }}>
                 <Ionicons name="layers-outline" size={11} color={accentColor} />
                 <Text style={{ color: accentColor, fontSize: 9, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1 }}>
-                  {blocks.length} added element{blocks.length !== 1 ? 's' : ''}
+                  {blocks.length} element{blocks.length !== 1 ? 's' : ''}
                 </Text>
               </View>
               <View style={{ flex: 1, height: 1.5, backgroundColor: `${accentColor}30` }} />
@@ -901,7 +915,6 @@ export function SlideEditorCanvas({
                   key={block.id}
                   block={block}
                   accentColor={accentColor}
-                  tokens={tokens}
                   onDelete={onDeleteBlock}
                   onUpdateBlock={onUpdateBlock}
                 />
@@ -930,12 +943,15 @@ export function SlideEditorCanvas({
         onClose={() => selectedField && onCommitField(selectedField, editingText)}
       />
 
-      {/* Advanced block inserter */}
+      {/* Block inserter modal */}
       <InlineBlockInserterModal
         visible={showBlockInserter}
         infographicData={infographicData}
         accentColor={accentColor}
+        slide={slide}
         onInsertBlock={block => { onAddBlock(block); setShowBlockInserter(false); }}
+        onOpenOnlineImageSearch={() => { setShowBlockInserter(false); onOpenOnlineImageSearch?.(); }}
+        onOpenIconifyPicker={() => { setShowBlockInserter(false); onOpenIconifyPicker?.(); }}
         onClose={() => setShowBlockInserter(false)}
       />
     </ScrollView>

@@ -1,15 +1,21 @@
 // app/(app)/slide-editor.tsx
-// Part 29 — FULL REWRITE
-// Changes from Part 28:
-//   1. 'blocks' tool tab removed → 'template' tool tab added
-//   2. BlockInserter panel removed from bottom sheets
-//   3. TemplateLibrary panel added as bottom sheet
-//   4. SlideEditorCanvas now receives infographicData + onAddBlock props
-//   5. setTheme() saves theme to DB so preview picks it up correctly
-//   6. Tool tabs driven by EDITOR_TOOL_TABS constant from Part 29 constants
+// Part 30 — FIX: online image stale closure, icon insert
+// ─────────────────────────────────────────────────────────────────────────────
+// The ONLY changes from part30B_slide-editor.tsx are:
+//
+// 1. handleOnlineImageInsert: use useRef to hold addBlock so it never goes stale
+//    The old useCallback([editor]) captured a stale editor reference when the
+//    panel was open. addBlock reads from stateRef (a ref) so it never goes stale
+//    — but the function reference itself was recreated each render, meaning the
+//    useCallback with [editor] dependency would miss updates.
+//    Fix: store editor.addBlock in a ref and call it directly.
+//
+// 2. handleIconifyInsert: same fix.
+//
+// All other code is identical to part30B_slide-editor.tsx.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback, useState, useRef } from 'react';
 import {
   View, Text, Pressable, ActivityIndicator, Alert,
   Dimensions, Platform, KeyboardAvoidingView,
@@ -25,23 +31,25 @@ import { useCredits }                      from '../../src/context/CreditsContex
 import { useSlideEditor }                  from '../../src/hooks/useSlideEditor';
 import { generatePPTX, exportAsSlidePDF } from '../../src/services/pptxExport';
 
-// Part 29 editor components
-import { SlideEditorCanvas }   from '../../src/components/editor/SlideEditorCanvas';
-import { SlideThumbnailStrip } from '../../src/components/editor/SlideThumbnailStrip';
-import { FormattingToolbar }   from '../../src/components/editor/FormattingToolbar';
-import { ColorPicker }         from '../../src/components/editor/ColorPicker';
-import { LayoutSwitcher }      from '../../src/components/editor/LayoutSwitcher';
-import { ThemeSwitcher }       from '../../src/components/editor/ThemeSwitcher';
-import { AIEditPanel }         from '../../src/components/editor/AIEditPanel';
-import { DesignPanel }         from '../../src/components/editor/DesignPanel';
-import { TemplateLibrary }     from '../../src/components/editor/TemplateLibrary';
-import { LoadingOverlay }      from '../../src/components/common/LoadingOverlay';
+import { SlideEditorCanvas }        from '../../src/components/editor/SlideEditorCanvas';
+import { SlideThumbnailStrip }      from '../../src/components/editor/SlideThumbnailStrip';
+import { FormattingToolbar }        from '../../src/components/editor/FormattingToolbar';
+import { ColorPicker }              from '../../src/components/editor/ColorPicker';
+import { LayoutSwitcher }           from '../../src/components/editor/LayoutSwitcher';
+import { ThemeSwitcher }            from '../../src/components/editor/ThemeSwitcher';
+import { AIEditPanel }              from '../../src/components/editor/AIEditPanel';
+import { DesignPanel }              from '../../src/components/editor/DesignPanel';
+import { TemplateLibrary }          from '../../src/components/editor/TemplateLibrary';
+import { TemplateHistoryPanel }     from '../../src/components/editor/TemplateHistoryPanel';
+import { OnlineImageSearchPanel }   from '../../src/components/editor/OnlineImageSearchPanel';
+import { IconifyIconPicker }        from '../../src/components/editor/IconifyIconPicker';
+import { LoadingOverlay }           from '../../src/components/common/LoadingOverlay';
 import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
 
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import { EDITOR_TOOL_TABS }                        from '../../src/constants/editor';
 import type { ResearchReport, InfographicData }    from '../../src/types';
-import type { EditorTool }                         from '../../src/types/editor';
+import type { EditorTool, ImageBlock, IconBlock, AdditionalBlock } from '../../src/types/editor';
 import { supabase }                                from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,8 +67,14 @@ export default function SlideEditorScreen() {
   const [infographicData,  setInfographicData]  = useState<InfographicData | null>(null);
   const [activeToolTab,    setActiveToolTab]     = useState<EditorTool>('select');
   const [isExporting,      setIsExporting]       = useState(false);
+  const [showOnlineImageSearch, setShowOnlineImageSearch] = useState(false);
+  const [showIconifyPicker,     setShowIconifyPicker]     = useState(false);
+  const [showTemplateHistory,   setShowTemplateHistory]   = useState(false);
 
-  // Load report + infographic data for AI context and block insertion
+  // FIX: keep a ref to addBlock so callbacks never go stale
+  const addBlockRef = useRef<((block: AdditionalBlock) => void) | null>(null);
+
+  // Load report
   useEffect(() => {
     if (!reportId) return;
     supabase.from('research_reports').select('*').eq('id', reportId).single()
@@ -77,13 +91,14 @@ export default function SlideEditorScreen() {
           agentLogs: data.agent_logs ?? [], infographicData: data.infographic_data ?? undefined,
           createdAt: data.created_at,
         } as ResearchReport);
-        if (data.infographic_data) {
-          setInfographicData(data.infographic_data as InfographicData);
-        }
+        if (data.infographic_data) setInfographicData(data.infographic_data as InfographicData);
       });
   }, [reportId]);
 
   const editor = useSlideEditor(report);
+
+  // FIX: update ref every render so it always points to the latest addBlock
+  addBlockRef.current = editor.addBlock;
 
   useEffect(() => {
     if (presentationId) editor.loadEditor(presentationId);
@@ -100,7 +115,6 @@ export default function SlideEditorScreen() {
 
   const accentColor = activeSlide?.accentColor ?? tokens.primary;
 
-  // Panel booleans
   const isColorPickerOpen = state.activePanel === 'color_picker';
   const isLayoutOpen      = state.activePanel === 'layout_switcher';
   const isThemeOpen       = state.activePanel === 'theme_switcher';
@@ -120,10 +134,10 @@ export default function SlideEditorScreen() {
   const handleToolTab = useCallback((tab: EditorTool) => {
     setActiveToolTab(tab);
     switch (tab) {
-      case 'design':   editor.openPanel('spacing');         break;
-      case 'ai':       editor.openPanel('ai_rewrite');      break;
+      case 'design':   editor.openPanel('spacing');          break;
+      case 'ai':       editor.openPanel('ai_rewrite');       break;
       case 'template': editor.openPanel('template_library'); break;
-      case 'select':   editor.closePanel();                 break;
+      case 'select':   editor.closePanel();                  break;
     }
   }, [editor]);
 
@@ -140,7 +154,7 @@ export default function SlideEditorScreen() {
   const handleBack = useCallback(() => {
     if (state.isDirty) {
       Alert.alert('Unsaved changes', 'Save before leaving?', [
-        { text: 'Discard',    style: 'destructive', onPress: () => router.back() },
+        { text: 'Discard',     style: 'destructive', onPress: () => router.back() },
         { text: 'Save & Exit', onPress: async () => { await editor.saveNow(); router.back(); } },
         { text: 'Keep Editing', style: 'cancel' },
       ]);
@@ -148,6 +162,17 @@ export default function SlideEditorScreen() {
       router.back();
     }
   }, [state.isDirty, editor]);
+
+  // FIX: use the ref so this callback never captures a stale addBlock
+  const handleOnlineImageInsert = useCallback((block: ImageBlock) => {
+    addBlockRef.current?.(block as any);
+    setShowOnlineImageSearch(false);
+  }, []); // empty deps — always reads latest addBlock from ref
+
+  const handleIconifyInsert = useCallback((block: IconBlock) => {
+    addBlockRef.current?.(block as any);
+    setShowIconifyPicker(false);
+  }, []); // empty deps — always reads latest addBlock from ref
 
   if (isLoading) return <LoadingOverlay visible message="Loading editor…" />;
 
@@ -190,6 +215,15 @@ export default function SlideEditorScreen() {
               </View>
             </View>
 
+            {/* Template History button */}
+            <Pressable
+              onPress={() => setShowTemplateHistory(true)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: editor.templateHistory.entries.length > 0 ? `${COLORS.primary}18` : COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: editor.templateHistory.entries.length > 0 ? `${COLORS.primary}40` : COLORS.border }}
+            >
+              <Ionicons name="time-outline" size={17} color={editor.templateHistory.entries.length > 0 ? COLORS.primary : COLORS.textMuted} />
+            </Pressable>
+
             <Pressable onPress={editor.undo} disabled={!editor.canUndo} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, opacity: editor.canUndo ? 1 : 0.3 }}>
               <Ionicons name="arrow-undo" size={17} color={COLORS.textSecondary} />
             </Pressable>
@@ -205,7 +239,7 @@ export default function SlideEditorScreen() {
             </Pressable>
           </View>
 
-          {/* ── TOOL TABS (Part 29: 4 tabs — no blocks) ── */}
+          {/* ── TOOL TABS ── */}
           <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.xs }}>
             {EDITOR_TOOL_TABS.map(tab => {
               const active = activeToolTab === tab.id;
@@ -225,17 +259,14 @@ export default function SlideEditorScreen() {
                 </Pressable>
               );
             })}
-            {/* Layout quick-access */}
             <Pressable onPress={() => editor.openPanel('layout_switcher')} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }} style={{ width: 36, height: 36, borderRadius: RADIUS.md, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
               <Ionicons name="grid-outline" size={17} color={COLORS.textSecondary} />
             </Pressable>
-            {/* Theme quick-access */}
             <Pressable onPress={() => editor.openPanel('theme_switcher')} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }} style={{ width: 36, height: 36, borderRadius: RADIUS.md, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
               <Ionicons name="color-palette-outline" size={17} color={COLORS.textSecondary} />
             </Pressable>
           </View>
 
-          {/* ── AI processing banner ── */}
           {state.isAIProcessing && (
             <Animated.View entering={FadeIn.duration(200)} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, paddingHorizontal: SPACING.lg, paddingVertical: 10, backgroundColor: `${COLORS.primary}15`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}25` }}>
               <ActivityIndicator size="small" color={COLORS.primary} />
@@ -263,6 +294,8 @@ export default function SlideEditorScreen() {
                 onDeleteBlock={editor.deleteBlock}
                 onUpdateBlock={editor.updateBlock}
                 onAddBlock={editor.addBlock}
+                onOpenOnlineImageSearch={() => setShowOnlineImageSearch(true)}
+                onOpenIconifyPicker={() => setShowIconifyPicker(true)}
               />
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -271,7 +304,6 @@ export default function SlideEditorScreen() {
             )}
           </View>
 
-          {/* ── FORMATTING TOOLBAR ── */}
           <FormattingToolbar
             activeField={state.selectedField}
             formatting={state.selectedField ? editor.getFormatting(state.selectedField) : {}}
@@ -287,7 +319,6 @@ export default function SlideEditorScreen() {
             accentColor={accentColor}
           />
 
-          {/* ── THUMBNAIL STRIP ── */}
           <SlideThumbnailStrip
             slides={state.slides}
             activeIndex={state.activeSlideIndex}
@@ -333,7 +364,6 @@ export default function SlideEditorScreen() {
         onClose={() => editor.closePanel()}
       />
 
-      {/* Part 29: AIEditPanel — no blocks tab, same as Part 28 */}
       <AIEditPanel
         visible={isAIPanelOpen}
         isProcessing={state.isAIProcessing}
@@ -374,7 +404,6 @@ export default function SlideEditorScreen() {
         onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
 
-      {/* Part 29: Template Library Panel */}
       <TemplateLibrary
         visible={isTemplateOpen}
         currentTheme={presentation.theme}
@@ -383,6 +412,33 @@ export default function SlideEditorScreen() {
         onApplyTemplate={editor.applyTemplate}
         onInsertTemplate={editor.insertTemplate}
         onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
+      />
+
+      <TemplateHistoryPanel
+        visible={showTemplateHistory}
+        presentationId={presentation.id}
+        entries={editor.templateHistory.entries}
+        isLoading={editor.templateHistory.isLoading}
+        onLoad={editor.loadTemplateHistory}
+        onRestore={entry => { editor.restoreFromHistory(entry); setShowTemplateHistory(false); }}
+        onDelete={editor.deleteHistoryEntry}
+        onClearAll={() => editor.clearTemplateHistory()}
+        onClose={() => setShowTemplateHistory(false)}
+      />
+
+      <OnlineImageSearchPanel
+        visible={showOnlineImageSearch}
+        slideTitle={activeSlide?.title}
+        slideLayout={activeSlide?.layout}
+        onInsert={handleOnlineImageInsert}
+        onClose={() => setShowOnlineImageSearch(false)}
+      />
+
+      <IconifyIconPicker
+        visible={showIconifyPicker}
+        iconColor={accentColor}
+        onInsert={handleIconifyInsert}
+        onClose={() => setShowIconifyPicker(false)}
       />
 
     </LinearGradient>

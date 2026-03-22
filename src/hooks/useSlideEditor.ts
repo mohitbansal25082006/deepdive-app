@@ -1,12 +1,12 @@
 // src/hooks/useSlideEditor.ts
-// Part 29 — UPDATED from Part 28
+// Part 30 — UPDATED from Part 29
 // Changes:
-//   1. Added applyTemplate() — replaces ALL slides with template slides
-//   2. Added insertTemplate() — inserts template slides after active index
-//   3. setTheme() now also persists theme column to Supabase DB so
-//      slide-preview's useFocusEffect reads the correct theme on return
-//   4. EditorTool type updated — 'blocks' removed, 'template' added
-//   5. All Part 28 logic unchanged
+//   1. applyTemplate() now saves a history snapshot BEFORE replacing slides
+//   2. insertTemplate() now saves a history snapshot BEFORE inserting
+//   3. restoreFromHistory() — new function to restore from a snapshot
+//   4. EditorPanel union extended with 'template_history', 'online_image_search', 'iconify_picker'
+//   5. useTemplateHistory hook integrated
+//   6. All Part 29 logic unchanged
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -25,6 +25,7 @@ import {
   insertTemplateSlidesAtIndex,
   replaceWithTemplateSlides,
   trackTemplateUsage,
+  mergeEditorData,
 } from '../services/slideEditorService';
 import {
   rewriteText,
@@ -43,6 +44,7 @@ import {
   DEFAULT_FONT_SCALE,
   DEFAULT_FONT,
 } from '../constants/editor';
+import { useTemplateHistory } from './useTemplateHistory';
 
 import type {
   EditableSlide,
@@ -58,6 +60,7 @@ import type {
   AIGenerateSlideRequest,
   ColorPickerTarget,
   SlideTemplate,
+  TemplateHistoryEntry,
 } from '../types/editor';
 import type {
   GeneratedPresentation,
@@ -66,7 +69,7 @@ import type {
   ResearchReport,
 } from '../types';
 
-// ─── Reducer ─────────────────────────────────────────────────────────────────
+// ─── Reducer (identical to Part 29) ──────────────────────────────────────────
 
 type Action =
   | { type: 'SET_SLIDES';         payload: EditableSlide[] }
@@ -219,6 +222,13 @@ export interface UseSlideEditorReturn {
   // Part 29: Template operations
   applyTemplate:  (template: SlideTemplate) => void;
   insertTemplate: (template: SlideTemplate) => void;
+
+  // Part 30: Template history
+  templateHistory:         ReturnType<typeof useTemplateHistory>['historyState'];
+  loadTemplateHistory:     (presentationId: string) => Promise<void>;
+  restoreFromHistory:      (entry: TemplateHistoryEntry) => void;
+  deleteHistoryEntry:      (entryId: string) => Promise<void>;
+  clearTemplateHistory:    () => Promise<void>;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -236,6 +246,15 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   const presRef      = useRef(presentation);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiEditsRef   = useRef(0);
+
+  // Part 30: Template history hook
+  const {
+    historyState:           templateHistoryState,
+    snapshotBeforeTemplate,
+    loadHistory,
+    deleteEntry,
+    clearHistory,
+  } = useTemplateHistory();
 
   useEffect(() => { stateRef.current = editorState; }, [editorState]);
   useEffect(() => { presRef.current  = presentation;  }, [presentation]);
@@ -475,11 +494,6 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
-  /**
-   * Part 29 FIX: setTheme now also persists the theme column to Supabase.
-   * This ensures slide-preview's useFocusEffect reads the correct theme
-   * when returning from the editor — fixing the "theme reverts to original" bug.
-   */
   const setTheme = useCallback((theme: PresentationTheme) => {
     pushUndo();
     const pres = presRef.current;
@@ -493,7 +507,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_SLIDES', payload: slides });
     dispatch({ type: 'SET_DIRTY', dirty: true });
 
-    // Part 29 FIX: Persist theme column to DB immediately (fire-and-forget)
+    // Persist theme column immediately
     if (user) {
       supabase
         .from('presentations')
@@ -636,9 +650,23 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   // ─── EXPORT ───────────────────────────────────────────────────────────────
 
   const getExportPresentation = useCallback((): GeneratedPresentation | null => {
-    const pres = presRef.current;
+    const pres  = presRef.current;
+    const state = stateRef.current;
     if (!pres) return null;
-    return { ...pres, slides: toExportSlides(stateRef.current.slides), totalSlides: stateRef.current.slides.length };
+
+    // FIX: Pass raw EditableSlide[] cast as PresentationSlide[] so pptxExport
+    // can read editorData for formatting, background color, spacing and blocks.
+    // Previously toExportSlides() stripped editorData which broke Part 30 export.
+    const slidesWithEdits = state.slides as unknown as GeneratedPresentation['slides'];
+
+    // FIX: Attach fontFamily from editor state — it's not stored on the
+    // presentation object, so without this pptxExport used the default font.
+    return {
+      ...pres,
+      slides:      slidesWithEdits,
+      totalSlides: state.slides.length,
+      fontFamily:  state.fontFamily,
+    } as GeneratedPresentation & { fontFamily: string };
   }, []);
 
   // ─── AI OPERATIONS ────────────────────────────────────────────────────────
@@ -754,25 +782,40 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_LAYOUT_SUGGEST', suggestion: null });
   }, [switchLayout]);
 
-  // ─── Part 29: TEMPLATE OPERATIONS ────────────────────────────────────────
+  // ─── Part 29: TEMPLATE OPERATIONS (updated in Part 30 with history) ──────
 
   /**
-   * Replace ALL slides in the deck with a template's slides.
-   * Asks for confirmation since this is destructive.
+   * Part 30 change: saves a history snapshot BEFORE replacing all slides.
+   * Then calls the same replacement logic as Part 29.
    */
   const applyTemplate = useCallback((template: SlideTemplate) => {
     Alert.alert(
       `Apply "${template.name}"?`,
-      `This will replace all ${stateRef.current.slides.length} slides with ${template.slideCount} template slides. Your current content will be lost.\n\nYou can undo this action.`,
+      `This will replace all ${stateRef.current.slides.length} slides with ${template.slideCount} template slides. Your current content will be lost.\n\nA snapshot is saved in Template History so you can restore anytime.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Apply Template',
           style: 'destructive',
           onPress: () => {
-            pushUndo();
             const pres  = presRef.current;
             const theme = pres?.theme ?? 'dark';
+            const state = stateRef.current;
+
+            // Part 30: Save history snapshot BEFORE applying (fire-and-forget)
+            if (pres && user) {
+              const editorDataArr = state.slides.map(s => s.editorData ?? {});
+              snapshotBeforeTemplate(
+                pres.id,
+                state.slides,
+                editorDataArr,
+                state.fontFamily,
+                template.id,
+                template.name,
+              );
+            }
+
+            pushUndo();
             const templateSlides = applyTemplateToSlides(template, theme, 1);
             const replaced = replaceWithTemplateSlides(templateSlides);
             dispatch({ type: 'SET_SLIDES', payload: replaced });
@@ -788,20 +831,32 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
         },
       ],
     );
-  }, [pushUndo]);
+  }, [pushUndo, user, snapshotBeforeTemplate]);
 
   /**
-   * Insert template slides after the active slide index.
-   * Non-destructive — existing slides are preserved.
+   * Part 30 change: saves a history snapshot BEFORE inserting template slides.
    */
   const insertTemplate = useCallback((template: SlideTemplate) => {
-    pushUndo();
     const state     = stateRef.current;
     const pres      = presRef.current;
     const theme     = pres?.theme ?? 'dark';
     const afterIdx  = state.activeSlideIndex;
-    const startNum  = afterIdx + 2; // +1 for active, +1 for 1-indexed
+    const startNum  = afterIdx + 2;
 
+    // Part 30: Save history snapshot BEFORE inserting (fire-and-forget)
+    if (pres && user) {
+      const editorDataArr = state.slides.map(s => s.editorData ?? {});
+      snapshotBeforeTemplate(
+        pres.id,
+        state.slides,
+        editorDataArr,
+        state.fontFamily,
+        template.id,
+        template.name,
+      );
+    }
+
+    pushUndo();
     const templateSlides = applyTemplateToSlides(template, theme, startNum);
     const merged = insertTemplateSlidesAtIndex(state.slides, templateSlides, afterIdx);
 
@@ -814,7 +869,45 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     if (pres) {
       trackTemplateUsage(template.id, pres.id, theme);
     }
+  }, [pushUndo, user, snapshotBeforeTemplate]);
+
+  // ─── Part 30: TEMPLATE HISTORY OPERATIONS ────────────────────────────────
+
+  /** Load history list from DB for the current presentation */
+  const loadTemplateHistoryForPresentation = useCallback(async (presentationId: string) => {
+    await loadHistory(presentationId);
+  }, [loadHistory]);
+
+  /**
+   * Restore slides + editorData from a history snapshot.
+   * Uses the local undo stack so Ctrl+Z still works after restore.
+   */
+  const restoreFromHistory = useCallback((entry: TemplateHistoryEntry) => {
+    pushUndo();
+    const pres = presRef.current;
+
+    // Re-merge editorData into slides (same pattern as loadEditorPresentation)
+    const mergedSlides = mergeEditorData(
+      entry.slidesSnapshot,
+      entry.editorDataSnapshot,
+    );
+
+    dispatch({ type: 'SET_SLIDES',  payload: mergedSlides });
+    dispatch({ type: 'SET_FONT',    font: entry.fontFamily as any });
+    dispatch({ type: 'SET_ACTIVE_IDX', index: 0 });
+    dispatch({ type: 'SET_DIRTY',   dirty: true });
+    dispatch({ type: 'SET_PANEL',   panel: 'none' });
   }, [pushUndo]);
+
+  const deleteHistoryEntry = useCallback(async (entryId: string) => {
+    await deleteEntry(entryId);
+  }, [deleteEntry]);
+
+  const clearTemplateHistory = useCallback(async () => {
+    const pres = presRef.current;
+    if (!pres) return;
+    await clearHistory(pres.id);
+  }, [clearHistory]);
 
   // ─── Return ───────────────────────────────────────────────────────────────
 
@@ -836,7 +929,12 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     aiRewriteField, aiRewriteBullets, aiRewriteSingleBullet,
     aiGenerateSlide, aiGenerateSpeakerNotes, aiSuggestLayout,
     dismissLayoutSuggestion, applyLayoutSuggestion,
-    // Part 29
     applyTemplate, insertTemplate,
+    // Part 30
+    templateHistory:      templateHistoryState,
+    loadTemplateHistory:  loadTemplateHistoryForPresentation,
+    restoreFromHistory,
+    deleteHistoryEntry,
+    clearTemplateHistory,
   };
 }

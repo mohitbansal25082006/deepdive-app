@@ -1,12 +1,12 @@
 // src/types/editor.ts
-// Part 29 — FULL REWRITE
-// Changes from Part 28:
-//   1. Removed BlockInserter/EditorTool 'blocks' — blocks tab is gone
-//   2. Added InlineBlockPosition for placing blocks inside slide canvas
-//   3. Added SlideTemplate & TemplateCategory for the 20+ template library
-//   4. EditorTool: 'blocks' → removed, now 'template' added
-//   5. EditorPanel: 'block_inserter' removed, 'template_library' added
-//   6. AdditionalBlock now carries optional position: InlineBlockPosition
+// Part 30 — FULL REWRITE (merged with Part 29)
+// Changes from Part 29:
+//   1. Added hFrac to InlineBlockPosition for independent height control
+//   2. Added onlineUrl and sourceQuery to ImageBlock for online images
+//   3. Added iconifyId and svgData to IconBlock for Iconify icons
+//   4. Added TemplateHistoryEntry & TemplateHistoryState for version history
+//   5. Extended EditorPanel with template_history, online_image_search, iconify_picker
+//   6. Added OnlineImageSearchState & IconifySearchState
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type {
@@ -61,6 +61,12 @@ export interface InlineBlockPosition {
   yFrac?: number;
   /** For overlay: 0–1 fraction of slide width  (default 0.9) */
   wFrac?: number;
+  /**
+   * Part 30: 0–1 fraction of slide height for the element's height.
+   * When undefined the element uses its natural/auto height.
+   * Only meaningful for image and stat blocks that can have explicit heights.
+   */
+  hFrac?: number;
 }
 
 // ─── Additional Blocks ────────────────────────────────────────────────────────
@@ -80,11 +86,14 @@ export type SpacingLevel  = 'compact' | 'default' | 'spacious';
 export interface ImageBlock {
   type:         'image';
   id:           string;
-  uri:          string;
+  uri:          string;            // local file URI (from picker) or empty when online
+  /** Part 30: remote URL from SerpAPI image search */
+  onlineUrl?:    string;
+  /** Part 30: the search query that produced this image, for display */
+  sourceQuery?:  string;
   caption?:     string;
   aspectRatio?: number;
-  /** Part 29: inline positioning */
-  position?:   InlineBlockPosition;
+  position?:    InlineBlockPosition;
 }
 
 export interface ChartBlock {
@@ -132,7 +141,12 @@ export interface SpacerBlock {
 export interface IconBlock {
   type:      'icon';
   id:        string;
+  /** Ionicons name — used when iconifyId is not set */
   iconName:  string;
+  /** Part 30: Iconify icon id e.g. "mdi:home", "ph:heart-fill" */
+  iconifyId?: string;
+  /** Part 30: cached SVG path data string for offline PPTX/PDF rendering */
+  svgData?:   string;
   size:      number;
   color?:    string;
   label?:    string;
@@ -198,10 +212,6 @@ export interface FontOption {
 
 // ─── Editor UI State ──────────────────────────────────────────────────────────
 
-/**
- * Part 29: removed 'blocks' tool tab.
- * Now: select | design | ai | template
- */
 export type EditorTool = 'select' | 'design' | 'ai' | 'template';
 
 export type EditorPanel =
@@ -220,8 +230,11 @@ export type EditorPanel =
   | 'ai_rewrite'
   | 'ai_generate_slide'
   | 'ai_layout_suggest'
-  | 'block_inserter'      // kept for inline-block insertion access from canvas
-  | 'template_library';   // Part 29: new template library panel
+  | 'block_inserter'          // kept for inline-block insertion access from canvas
+  | 'template_library'        // Part 29: new template library panel
+  | 'template_history'        // Part 30: view + restore previous states
+  | 'online_image_search'     // Part 30: search SerpAPI for slide images
+  | 'iconify_picker';         // Part 30: full Iconify icon search
 
 export type ColorPickerTarget =
   | { scope: 'slide_bg' }
@@ -314,4 +327,79 @@ export interface TemplateCategoryMeta {
   label: string;
   emoji: string;
   description: string;
+}
+
+// ─── Part 30: Template History ────────────────────────────────────────────────
+
+/**
+ * A single snapshot of the presentation slides + editorData saved BEFORE
+ * a template was applied. Stored in Supabase template_history table so users
+ * can roll back to any previous state.
+ */
+export interface TemplateHistoryEntry {
+  id:               string;
+  presentationId:   string;
+  userId:           string;
+  /** Snapshot of slides array before template was applied */
+  slidesSnapshot:   any[];
+  /** Snapshot of editor_data array before template was applied */
+  editorDataSnapshot: any[];
+  /** Font family at time of snapshot */
+  fontFamily:       string;
+  /** The template that was about to be applied (for display in history list) */
+  templateId?:      string;
+  templateName?:    string;
+  createdAt:        string;
+}
+
+export interface TemplateHistoryState {
+  entries:    TemplateHistoryEntry[];
+  isLoading:  boolean;
+  isRestoring: boolean;
+  error:      string | null;
+}
+
+// ─── Part 30: Online Image Search ────────────────────────────────────────────
+
+export interface OnlineImageResult {
+  url:          string;
+  thumbnailUrl: string;
+  title:        string;
+  width?:       number;
+  height?:      number;
+  sourceUrl?:   string;
+}
+
+export interface OnlineImageSearchState {
+  query:      string;
+  results:    OnlineImageResult[];
+  isLoading:  boolean;
+  error:      string | null;
+  hasSearched: boolean;
+}
+
+// ─── Part 30: Iconify Search ─────────────────────────────────────────────────
+
+export interface IconifySearchResult {
+  /** Full Iconify id, e.g. "mdi:home" */
+  id:        string;
+  /** Icon set prefix, e.g. "mdi" */
+  prefix:    string;
+  /** Icon name within set, e.g. "home" */
+  name:      string;
+  /** SVG path data string (d attribute) — fetched from Iconify API */
+  svgData?:  string;
+  /** SVG viewBox, e.g. "0 0 24 24" */
+  viewBox?:  string;
+  /** Width/height hint from API */
+  width?:    number;
+  height?:   number;
+}
+
+export interface IconifySearchState {
+  query:       string;
+  results:     IconifySearchResult[];
+  isLoading:   boolean;
+  error:       string | null;
+  hasSearched: boolean;
 }

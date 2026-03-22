@@ -1,21 +1,18 @@
 // src/components/research/SlideCard.tsx
-// Part 29 — FULL REWRITE
-// Changes from Part 28:
-//   1. Inline block rendering: image, stat, chart, quote_block, divider,
-//      spacer, icon blocks with position.type === 'overlay' are rendered
-//      INSIDE the 320×180 slide canvas using absolute positioning.
-//   2. Blocks with position.type === 'inline' (or no position) continue to
-//      stack below the slide (backward-compatible).
-//   3. renderInlineBlocks() placed at the end of each layout so blocks
-//      appear on top of the layout content.
-//   4. All Part 28 layout components unchanged — only overlay layer added.
+// Part 30 — FULL REWRITE
+// Changes from Part 29:
+//   1. InlineBlockOverlay: image blocks now render onlineUrl (remote images from SerpAPI)
+//   2. InlineBlockOverlay: hFrac support for independent height control on image/stat blocks
+//   3. InlineBlockOverlay: icon blocks with iconifyId render via SvgUri from react-native-svg
+//   4. All Part 29 layout components unchanged
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { memo } from 'react';
 import { View, Text, Image, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { SvgXml }   from 'react-native-svg';
 import type { PresentationSlide, PresentationThemeTokens } from '../../types';
-import type { AdditionalBlock, SlideEditorData } from '../../types/editor';
+import type { AdditionalBlock, SlideEditorData }           from '../../types/editor';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -88,9 +85,12 @@ interface LayoutCtx {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INLINE BLOCK RENDERER (Part 29)
-// Renders blocks with position.type === 'overlay' absolutely inside the canvas.
-// Blocks without a position or with type === 'inline' are NOT rendered here.
+// INLINE BLOCK OVERLAY RENDERER (Part 30 updated)
+// Changes:
+//   • image: renders onlineUrl if uri is empty (SerpAPI images)
+//   • image: respects hFrac for explicit height override
+//   • stat:  respects hFrac for explicit height override
+//   • icon:  renders Iconify SVG via SvgUri when iconifyId is set
 // ─────────────────────────────────────────────────────────────────────────────
 
 function InlineBlockOverlay({
@@ -112,20 +112,28 @@ function InlineBlockOverlay({
   const xFrac = pos.xFrac ?? 0.05;
   const yFrac = pos.yFrac ?? 0.5;
   const wFrac = pos.wFrac ?? 0.9;
+  const hFrac = pos.hFrac;  // Part 30: independent height
 
-  const left   = SLIDE_W * xFrac * sc;
-  const top    = SLIDE_H * yFrac * sc;
-  const width  = SLIDE_W * wFrac * sc;
+  const left  = SLIDE_W * xFrac * sc;
+  const top   = SLIDE_H * yFrac * sc;
+  const width = SLIDE_W * wFrac * sc;
 
   const col = (block as any).color ?? accentColor;
 
   switch (block.type) {
 
-    // ── IMAGE ──────────────────────────────────────────────────────────────
+    // ── IMAGE (Part 30: supports onlineUrl + hFrac) ────────────────────────
     case 'image': {
-      if (!block.uri) return null;
-      const ar    = block.aspectRatio ?? 16 / 9;
-      const imgH  = (width / ar);
+      // Use onlineUrl if local uri is empty (SerpAPI image)
+      const imageUri = block.uri || (block as any).onlineUrl || null;
+      if (!imageUri) return null;
+
+      const ar     = block.aspectRatio ?? 16 / 9;
+      // hFrac overrides aspect-ratio-based height when set
+      const imgH   = hFrac !== undefined
+        ? SLIDE_H * hFrac * sc
+        : (width / ar);
+
       return (
         <View style={{
           position:        'absolute',
@@ -136,7 +144,11 @@ function InlineBlockOverlay({
           borderWidth:     0.5,
           borderColor:     'rgba(255,255,255,0.15)',
         }}>
-          <Image source={{ uri: block.uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          <Image
+            source={{ uri: imageUri }}
+            style={{ width: '100%', height: '100%' }}
+            resizeMode="cover"
+          />
           {block.caption ? (
             <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 2 * sc, paddingHorizontal: 4 * sc }}>
               <Text style={{ color: '#FFF', fontSize: 4 * sc, fontFamily: ff }} numberOfLines={1}>{block.caption}</Text>
@@ -146,9 +158,10 @@ function InlineBlockOverlay({
       );
     }
 
-    // ── STAT ───────────────────────────────────────────────────────────────
+    // ── STAT (Part 30: respects hFrac) ─────────────────────────────────────
     case 'stat': {
-      const cardH = 38 * sc;
+      const defaultCardH = 38 * sc;
+      const cardH = hFrac !== undefined ? SLIDE_H * hFrac * sc : defaultCardH;
       return (
         <View style={{
           position:        'absolute',
@@ -297,15 +310,16 @@ function InlineBlockOverlay({
 
     // ── SPACER ─────────────────────────────────────────────────────────────
     case 'spacer':
-      // Spacers are invisible in overlay mode — they are meaningful only in
-      // inline (stacked-below) mode. Skip rendering.
       return null;
 
-    // ── ICON ───────────────────────────────────────────────────────────────
+    // ── ICON (Part 30 FIXED: use SvgXml with stored svgData) ──────────────
     case 'icon': {
-      const sz  = (block.size ?? 40) * sc * 0.5;
-      const ic  = block.color ?? accentColor;
-      const bSz = sz + 8 * sc;
+      const sz       = (block.size ?? 40) * sc * 0.5;
+      const ic       = block.color ?? accentColor;
+      const bSz      = sz + 8 * sc;
+      // svgData is stored by IconifyIconPicker — use SvgXml, no network needed
+      const svgData  = (block as any).svgData as string | undefined;
+
       return (
         <View style={{
           position:        'absolute',
@@ -319,7 +333,18 @@ function InlineBlockOverlay({
           alignItems:      'center',
           justifyContent:  'center',
         }}>
-          <Ionicons name={block.iconName as any} size={sz} color={ic} />
+          {svgData ? (
+            // Render pre-fetched SVG XML — no network call, correct color
+            <SvgXml
+              xml={svgData}
+              width={sz}
+              height={sz}
+              color={ic}
+            />
+          ) : (
+            // Fallback to Ionicons for legacy blocks without svgData
+            <Ionicons name={(block.iconName as any) || 'shapes-outline'} size={sz} color={ic} />
+          )}
           {block.label ? (
             <Text style={{
               position:   'absolute',
@@ -343,7 +368,7 @@ function InlineBlockOverlay({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAYOUT COMPONENTS (unchanged from Part 28)
+// LAYOUT COMPONENTS (identical to Part 29 — no changes)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function TitleLayout({ ctx }: { ctx: LayoutCtx }) {
@@ -611,7 +636,7 @@ export const SlideCard = memo(function SlideCard({
   const isQuote    = slide.layout === 'quote';
   const bgColor    = bgOverride ?? (isSection || isQuote ? ac : tokens.background);
 
-  // Part 29: Separate overlay blocks from inline blocks
+  // Separate overlay blocks from inline blocks
   const allBlocks     = getAdditionalBlocks(slide);
   const overlayBlocks = allBlocks.filter(b => b.position?.type === 'overlay');
 
@@ -644,7 +669,7 @@ export const SlideCard = memo(function SlideCard({
       }}>
         {renderLayout()}
 
-        {/* Part 29: Overlay blocks rendered on top of the layout */}
+        {/* Overlay blocks rendered on top of the layout */}
         {overlayBlocks.map(block => (
           <InlineBlockOverlay
             key={block.id}
