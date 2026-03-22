@@ -1,7 +1,12 @@
 // app/(app)/slide-editor.tsx
-// Part 28 — Slide Canvas Editor: Main screen
-// FIX: onRewriteBullets + onRewriteSingleBullet wired to AIEditPanel.
-//      onDeleteSlide no longer wraps with its own Alert (ThumbItem does it).
+// Part 29 — FULL REWRITE
+// Changes from Part 28:
+//   1. 'blocks' tool tab removed → 'template' tool tab added
+//   2. BlockInserter panel removed from bottom sheets
+//   3. TemplateLibrary panel added as bottom sheet
+//   4. SlideEditorCanvas now receives infographicData + onAddBlock props
+//   5. setTheme() saves theme to DB so preview picks it up correctly
+//   6. Tool tabs driven by EDITOR_TOOL_TABS constant from Part 29 constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useCallback, useState } from 'react';
@@ -9,50 +14,35 @@ import {
   View, Text, Pressable, ActivityIndicator, Alert,
   Dimensions, Platform, KeyboardAvoidingView,
 } from 'react-native';
-import { LinearGradient }                      from 'expo-linear-gradient';
-import { Ionicons }                            from '@expo/vector-icons';
-import { SafeAreaView, useSafeAreaInsets }     from 'react-native-safe-area-context';
-import { router, useLocalSearchParams }        from 'expo-router';
-import Animated, { FadeIn }                   from 'react-native-reanimated';
+import { LinearGradient }                  from 'expo-linear-gradient';
+import { Ionicons }                        from '@expo/vector-icons';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router, useLocalSearchParams }    from 'expo-router';
+import Animated, { FadeIn }               from 'react-native-reanimated';
 
-import { useAuth }                             from '../../src/context/AuthContext';
-import { useCredits }                          from '../../src/context/CreditsContext';
-import { useSlideEditor }                      from '../../src/hooks/useSlideEditor';
-import { generatePPTX, exportAsSlidePDF }      from '../../src/services/pptxExport';
+import { useAuth }                         from '../../src/context/AuthContext';
+import { useCredits }                      from '../../src/context/CreditsContext';
+import { useSlideEditor }                  from '../../src/hooks/useSlideEditor';
+import { generatePPTX, exportAsSlidePDF } from '../../src/services/pptxExport';
 
+// Part 29 editor components
 import { SlideEditorCanvas }   from '../../src/components/editor/SlideEditorCanvas';
 import { SlideThumbnailStrip } from '../../src/components/editor/SlideThumbnailStrip';
 import { FormattingToolbar }   from '../../src/components/editor/FormattingToolbar';
 import { ColorPicker }         from '../../src/components/editor/ColorPicker';
 import { LayoutSwitcher }      from '../../src/components/editor/LayoutSwitcher';
 import { ThemeSwitcher }       from '../../src/components/editor/ThemeSwitcher';
-import { BlockInserter }       from '../../src/components/editor/BlockInserter';
 import { AIEditPanel }         from '../../src/components/editor/AIEditPanel';
 import { DesignPanel }         from '../../src/components/editor/DesignPanel';
+import { TemplateLibrary }     from '../../src/components/editor/TemplateLibrary';
 import { LoadingOverlay }      from '../../src/components/common/LoadingOverlay';
 import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
 
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import type { ResearchReport }                  from '../../src/types';
-import { supabase }                             from '../../src/lib/supabase';
-
-// ─── Tool tabs ────────────────────────────────────────────────────────────────
-
-type ToolTab = 'canvas' | 'design' | 'blocks' | 'ai';
-
-interface ToolTabMeta {
-  id:       ToolTab;
-  label:    string;
-  icon:     string;
-  gradient: readonly [string, string];
-}
-
-const TOOL_TABS: ToolTabMeta[] = [
-  { id: 'canvas', label: 'Edit',   icon: 'pencil-outline',        gradient: ['#6C63FF', '#8B5CF6'] },
-  { id: 'design', label: 'Design', icon: 'color-palette-outline', gradient: ['#FF6584', '#F093FB'] },
-  { id: 'blocks', label: 'Blocks', icon: 'add-circle-outline',    gradient: ['#43E97B', '#38F9D7'] },
-  { id: 'ai',     label: 'AI ✦',   icon: 'sparkles-outline',      gradient: ['#FFA726', '#FF7043'] },
-];
+import { EDITOR_TOOL_TABS }                        from '../../src/constants/editor';
+import type { ResearchReport, InfographicData }    from '../../src/types';
+import type { EditorTool }                         from '../../src/types/editor';
+import { supabase }                                from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -65,11 +55,12 @@ export default function SlideEditorScreen() {
   const { user }    = useAuth();
   const { balance } = useCredits();
 
-  const [report,        setReport]        = useState<ResearchReport | null>(null);
-  const [activeToolTab, setActiveToolTab] = useState<ToolTab>('canvas');
-  const [isExporting,   setIsExporting]   = useState(false);
+  const [report,           setReport]           = useState<ResearchReport | null>(null);
+  const [infographicData,  setInfographicData]  = useState<InfographicData | null>(null);
+  const [activeToolTab,    setActiveToolTab]     = useState<EditorTool>('select');
+  const [isExporting,      setIsExporting]       = useState(false);
 
-  // Load optional report for AI context
+  // Load report + infographic data for AI context and block insertion
   useEffect(() => {
     if (!reportId) return;
     supabase.from('research_reports').select('*').eq('id', reportId).single()
@@ -86,6 +77,9 @@ export default function SlideEditorScreen() {
           agentLogs: data.agent_logs ?? [], infographicData: data.infographic_data ?? undefined,
           createdAt: data.created_at,
         } as ResearchReport);
+        if (data.infographic_data) {
+          setInfographicData(data.infographic_data as InfographicData);
+        }
       });
   }, [reportId]);
 
@@ -95,9 +89,7 @@ export default function SlideEditorScreen() {
     if (presentationId) editor.loadEditor(presentationId);
   }, [presentationId]);
 
-  const {
-    state, presentation, isLoading, loadError, activeSlide,
-  } = editor;
+  const { state, presentation, isLoading, loadError, activeSlide } = editor;
 
   const tokens = presentation?.themeTokens ?? {
     background: COLORS.background, surface: COLORS.backgroundCard,
@@ -109,12 +101,12 @@ export default function SlideEditorScreen() {
   const accentColor = activeSlide?.accentColor ?? tokens.primary;
 
   // Panel booleans
-  const isColorPickerOpen   = state.activePanel === 'color_picker';
-  const isLayoutOpen        = state.activePanel === 'layout_switcher';
-  const isThemeOpen         = state.activePanel === 'theme_switcher';
-  const isBlockInserterOpen = state.activePanel === 'block_inserter';
-  const isAIPanelOpen       = ['ai_rewrite','ai_generate_slide','ai_layout_suggest'].includes(state.activePanel);
-  const isDesignOpen        = ['spacing','font_picker','accent_picker'].includes(state.activePanel);
+  const isColorPickerOpen = state.activePanel === 'color_picker';
+  const isLayoutOpen      = state.activePanel === 'layout_switcher';
+  const isThemeOpen       = state.activePanel === 'theme_switcher';
+  const isAIPanelOpen     = ['ai_rewrite','ai_generate_slide','ai_layout_suggest'].includes(state.activePanel);
+  const isDesignOpen      = ['spacing','font_picker','accent_picker'].includes(state.activePanel);
+  const isTemplateOpen    = state.activePanel === 'template_library';
 
   const colorPickerCurrent = (() => {
     const t = state.colorPickerTarget;
@@ -125,13 +117,13 @@ export default function SlideEditorScreen() {
     return accentColor;
   })();
 
-  const handleToolTab = useCallback((tab: ToolTab) => {
+  const handleToolTab = useCallback((tab: EditorTool) => {
     setActiveToolTab(tab);
     switch (tab) {
-      case 'design': editor.openPanel('spacing');        break;
-      case 'blocks': editor.openPanel('block_inserter'); break;
-      case 'ai':     editor.openPanel('ai_rewrite');     break;
-      case 'canvas': editor.closePanel();                break;
+      case 'design':   editor.openPanel('spacing');         break;
+      case 'ai':       editor.openPanel('ai_rewrite');      break;
+      case 'template': editor.openPanel('template_library'); break;
+      case 'select':   editor.closePanel();                 break;
     }
   }, [editor]);
 
@@ -164,9 +156,7 @@ export default function SlideEditorScreen() {
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.lg }} edges={['top']}>
           <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700', marginTop: SPACING.md, textAlign: 'center' }}>
-            {loadError ?? 'Presentation not found'}
-          </Text>
+          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700', marginTop: SPACING.md, textAlign: 'center' }}>{loadError ?? 'Presentation not found'}</Text>
           <Pressable onPress={() => router.back()} style={{ marginTop: SPACING.lg, backgroundColor: COLORS.primary, borderRadius: RADIUS.full, paddingHorizontal: 24, paddingVertical: 12 }}>
             <Text style={{ color: '#FFF', fontWeight: '700' }}>Go Back</Text>
           </Pressable>
@@ -215,9 +205,9 @@ export default function SlideEditorScreen() {
             </Pressable>
           </View>
 
-          {/* ── TOOL TABS ── */}
+          {/* ── TOOL TABS (Part 29: 4 tabs — no blocks) ── */}
           <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.xs }}>
-            {TOOL_TABS.map(tab => {
+            {EDITOR_TOOL_TABS.map(tab => {
               const active = activeToolTab === tab.id;
               return (
                 <Pressable key={tab.id} onPress={() => handleToolTab(tab.id)} style={{ flex: 1 }}>
@@ -235,9 +225,11 @@ export default function SlideEditorScreen() {
                 </Pressable>
               );
             })}
+            {/* Layout quick-access */}
             <Pressable onPress={() => editor.openPanel('layout_switcher')} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }} style={{ width: 36, height: 36, borderRadius: RADIUS.md, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
               <Ionicons name="grid-outline" size={17} color={COLORS.textSecondary} />
             </Pressable>
+            {/* Theme quick-access */}
             <Pressable onPress={() => editor.openPanel('theme_switcher')} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }} style={{ width: 36, height: 36, borderRadius: RADIUS.md, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
               <Ionicons name="color-palette-outline" size={17} color={COLORS.textSecondary} />
             </Pressable>
@@ -247,9 +239,7 @@ export default function SlideEditorScreen() {
           {state.isAIProcessing && (
             <Animated.View entering={FadeIn.duration(200)} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, paddingHorizontal: SPACING.lg, paddingVertical: 10, backgroundColor: `${COLORS.primary}15`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}25` }}>
               <ActivityIndicator size="small" color={COLORS.primary} />
-              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 }}>
-                {state.aiProcessingLabel || 'AI is working…'}
-              </Text>
+              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 }}>{state.aiProcessingLabel || 'AI is working…'}</Text>
             </Animated.View>
           )}
 
@@ -260,17 +250,19 @@ export default function SlideEditorScreen() {
                 slide={activeSlide}
                 tokens={tokens}
                 fontFamily={state.fontFamily}
+                infographicData={infographicData}
                 getFormatting={editor.getFormatting}
                 editingText={state.editingText}
                 selectedField={state.selectedField}
-                onFieldTap={field => { editor.selectField(field); setActiveToolTab('canvas'); }}
+                onFieldTap={field => { editor.selectField(field); setActiveToolTab('select'); }}
                 onEditingTextChange={editor.setEditingText}
-                onCommitField={(field, value) => { editor.commitFieldEdit(field, value); setActiveToolTab('canvas'); }}
+                onCommitField={(field, value) => { editor.commitFieldEdit(field, value); setActiveToolTab('select'); }}
                 onUpdateBullet={editor.updateBullet}
                 onAddBullet={editor.addBullet}
                 onRemoveBullet={editor.removeBullet}
                 onDeleteBlock={editor.deleteBlock}
                 onUpdateBlock={editor.updateBlock}
+                onAddBlock={editor.addBlock}
               />
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -304,7 +296,6 @@ export default function SlideEditorScreen() {
             accentColor={accentColor}
             onSelectSlide={editor.goToSlide}
             onAddSlide={editor.addSlide}
-            // Delete is confirmed inside ThumbItem — just call directly
             onDeleteSlide={editor.deleteSlide}
             onReorderSlide={editor.reorderSlides}
             onDuplicateSlide={editor.duplicateSlide}
@@ -342,15 +333,7 @@ export default function SlideEditorScreen() {
         onClose={() => editor.closePanel()}
       />
 
-      <BlockInserter
-        visible={isBlockInserterOpen}
-        infographicData={report?.infographicData ?? null}
-        accentColor={accentColor}
-        onInsertBlock={editor.addBlock}
-        onClose={() => { editor.closePanel(); setActiveToolTab('canvas'); }}
-      />
-
-      {/* FIX 1: onRewriteBullets + onRewriteSingleBullet now passed */}
+      {/* Part 29: AIEditPanel — no blocks tab, same as Part 28 */}
       <AIEditPanel
         visible={isAIPanelOpen}
         isProcessing={state.isAIProcessing}
@@ -370,7 +353,7 @@ export default function SlideEditorScreen() {
         onSuggestLayout={editor.aiSuggestLayout}
         onApplyLayoutSuggestion={editor.applyLayoutSuggestion}
         onDismissLayoutSuggestion={editor.dismissLayoutSuggestion}
-        onClose={() => { editor.closePanel(); setActiveToolTab('canvas'); }}
+        onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
 
       <DesignPanel
@@ -388,7 +371,18 @@ export default function SlideEditorScreen() {
           editor.closePanel();
           setTimeout(() => editor.openColorPicker({ scope }), 250);
         }}
-        onClose={() => { editor.closePanel(); setActiveToolTab('canvas'); }}
+        onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
+      />
+
+      {/* Part 29: Template Library Panel */}
+      <TemplateLibrary
+        visible={isTemplateOpen}
+        currentTheme={presentation.theme}
+        activeSlideIndex={state.activeSlideIndex}
+        presentationId={presentation.id}
+        onApplyTemplate={editor.applyTemplate}
+        onInsertTemplate={editor.insertTemplate}
+        onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
 
     </LinearGradient>

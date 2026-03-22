@@ -1,5 +1,12 @@
 // src/types/editor.ts
-// Part 28 — Slide Canvas Editor: All type definitions
+// Part 29 — FULL REWRITE
+// Changes from Part 28:
+//   1. Removed BlockInserter/EditorTool 'blocks' — blocks tab is gone
+//   2. Added InlineBlockPosition for placing blocks inside slide canvas
+//   3. Added SlideTemplate & TemplateCategory for the 20+ template library
+//   4. EditorTool: 'blocks' → removed, now 'template' added
+//   5. EditorPanel: 'block_inserter' removed, 'template_library' added
+//   6. AdditionalBlock now carries optional position: InlineBlockPosition
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type {
@@ -11,10 +18,6 @@ import type {
 
 // ─── Editable Fields ──────────────────────────────────────────────────────────
 
-/**
- * Every text field in a PresentationSlide that the editor can modify.
- * Maps directly to the field keys on PresentationSlide.
- */
 export type EditableFieldKey =
   | 'title'
   | 'subtitle'
@@ -27,17 +30,12 @@ export type EditableFieldKey =
 
 export type TextAlignment = 'left' | 'center' | 'right';
 
-/**
- * Per-field formatting overrides stored alongside slide content.
- * All fields are optional — absent means "use theme default".
- */
 export interface FieldFormatting {
   bold?:       boolean;
   italic?:     boolean;
   /**
    * Font scale multiplier relative to the theme default.
-   * Range: 0.7 (smaller) → 1.0 (default) → 2.0 (larger).
-   * Steps: [0.7, 0.8, 0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0]
+   * Range: 0.7 → 2.0
    */
   fontScale?:  number;
   alignment?:  TextAlignment;
@@ -48,9 +46,24 @@ export interface FieldFormatting {
 /** Map of EditableFieldKey → its formatting overrides for one slide */
 export type SlideFieldFormats = Partial<Record<EditableFieldKey, FieldFormatting>>;
 
+// ─── Inline Block Position ────────────────────────────────────────────────────
+// Blocks can now be positioned INSIDE the slide canvas, not just stacked below.
+// position: 'inline' = old stacked-below behaviour (default, backward-compat)
+// position: 'overlay' = absolutely placed inside the 320×180 slide canvas
+
+export type InlineBlockPositionType = 'inline' | 'overlay';
+
+export interface InlineBlockPosition {
+  type:   InlineBlockPositionType;
+  /** For overlay: 0–1 fraction of slide width  (default 0.05) */
+  xFrac?: number;
+  /** For overlay: 0–1 fraction of slide height (default 0.5) */
+  yFrac?: number;
+  /** For overlay: 0–1 fraction of slide width  (default 0.9) */
+  wFrac?: number;
+}
+
 // ─── Additional Blocks ────────────────────────────────────────────────────────
-// Blocks are appended below the main layout content of a slide.
-// They can be dragged/reordered and deleted independently of the layout.
 
 export type AdditionalBlockType =
   | 'image'
@@ -69,23 +82,27 @@ export interface ImageBlock {
   id:           string;
   uri:          string;
   caption?:     string;
-  aspectRatio?: number; // width / height
+  aspectRatio?: number;
+  /** Part 29: inline positioning */
+  position?:   InlineBlockPosition;
 }
 
 export interface ChartBlock {
-  type:  'chart';
-  id:    string;
-  chart: InfographicChart;
+  type:     'chart';
+  id:       string;
+  chart:    InfographicChart;
+  position?: InlineBlockPosition;
 }
 
 export interface StatBlock {
-  type:   'stat';
-  id:     string;
-  value:  string;
-  label:  string;
-  unit?:  string;
-  color?: string;
-  trend?: 'up' | 'down' | 'flat';
+  type:     'stat';
+  id:       string;
+  value:    string;
+  label:    string;
+  unit?:    string;
+  color?:   string;
+  trend?:   'up' | 'down' | 'flat';
+  position?: InlineBlockPosition;
 }
 
 export interface QuoteBlock {
@@ -93,29 +110,33 @@ export interface QuoteBlock {
   id:            string;
   text:          string;
   attribution?:  string;
+  position?:    InlineBlockPosition;
 }
 
 export interface DividerBlock {
-  type:   'divider';
-  id:     string;
-  style:  DividerStyle;
-  color?: string;
+  type:     'divider';
+  id:       string;
+  style:    DividerStyle;
+  color?:   string;
+  position?: InlineBlockPosition;
 }
 
 export interface SpacerBlock {
-  type:   'spacer';
-  id:     string;
+  type:     'spacer';
+  id:       string;
   /** Height in logical pixels (dp) */
-  height: number;
+  height:   number;
+  position?: InlineBlockPosition;
 }
 
 export interface IconBlock {
   type:      'icon';
   id:        string;
-  iconName:  string; // Ionicons name
+  iconName:  string;
   size:      number;
   color?:    string;
   label?:    string;
+  position?: InlineBlockPosition;
 }
 
 export type AdditionalBlock =
@@ -129,23 +150,13 @@ export type AdditionalBlock =
 
 // ─── Per-Slide Editor Overlay ─────────────────────────────────────────────────
 
-/**
- * All editor-specific data for a single slide.
- * Stored in the `editor_data` JSONB array in Supabase (one entry per slide,
- * indexed to match the `slides` array).
- */
 export interface SlideEditorData {
-  /** Per-field text formatting overrides */
   fieldFormats?:     SlideFieldFormats;
-  /** Extra content blocks appended below the main layout */
   additionalBlocks?: AdditionalBlock[];
-  /** Background color override (replaces theme background for this slide) */
   backgroundColor?:  string;
-  /** Spacing density for this slide */
   spacing?:          SpacingLevel;
 }
 
-/** A PresentationSlide enriched with optional editor overlay data */
 export interface EditableSlide extends PresentationSlide {
   editorData?: SlideEditorData;
 }
@@ -160,7 +171,6 @@ export interface AIRewriteOption {
   description: string;
   icon:        string;
   gradient:    readonly [string, string];
-  /** Credit cost per rewrite */
   cost:        number;
 }
 
@@ -182,15 +192,17 @@ export interface FontOption {
   id:          FontFamily;
   label:       string;
   description: string;
-  /** React Native fontFamily value */
   rnFont:      string;
-  /** pptxgenjs font name (for PPTX export) */
   pptxFont:    string;
 }
 
 // ─── Editor UI State ──────────────────────────────────────────────────────────
 
-export type EditorTool = 'select' | 'design' | 'blocks' | 'ai';
+/**
+ * Part 29: removed 'blocks' tool tab.
+ * Now: select | design | ai | template
+ */
+export type EditorTool = 'select' | 'design' | 'ai' | 'template';
 
 export type EditorPanel =
   | 'none'
@@ -202,17 +214,15 @@ export type EditorPanel =
   | 'theme_switcher'
   | 'font_picker'
   | 'spacing'
-  | 'block_inserter'
   | 'icon_picker'
   | 'chart_picker'
   | 'stat_picker'
   | 'ai_rewrite'
   | 'ai_generate_slide'
-  | 'ai_layout_suggest';
+  | 'ai_layout_suggest'
+  | 'block_inserter'      // kept for inline-block insertion access from canvas
+  | 'template_library';   // Part 29: new template library panel
 
-/**
- * Context passed to the color picker so it knows what it's coloring.
- */
 export type ColorPickerTarget =
   | { scope: 'slide_bg' }
   | { scope: 'accent' }
@@ -234,21 +244,74 @@ export interface SlideEditorState {
   isAIProcessing:      boolean;
   aiProcessingLabel:   string;
   layoutSuggestion:    AILayoutSuggestion | null;
-  /**
-   * Undo/redo stacks — each entry is a snapshot of the full slides array.
-   * Max depth: 20 steps.
-   */
   undoStack:           EditableSlide[][];
   redoStack:           EditableSlide[][];
 }
 
 // ─── Saved Editor Payload ─────────────────────────────────────────────────────
 
-/** Shape written to / read from Supabase presentations table */
 export interface SavedEditorPayload {
-  slides:        EditableSlide[];
-  /** Parallel array — index i = editor data for slide i */
-  editor_data:   SlideEditorData[];
-  font_family:   FontFamily;
+  slides:         EditableSlide[];
+  editor_data:    SlideEditorData[];
+  font_family:    FontFamily;
   ai_edits_count: number;
+}
+
+// ─── Part 29: Template Library ────────────────────────────────────────────────
+
+export type TemplateCategory =
+  | 'business'
+  | 'pitch_deck'
+  | 'academic'
+  | 'creative'
+  | 'minimal'
+  | 'data_driven'
+  | 'storytelling'
+  | 'corporate';
+
+export interface SlideTemplateSlide {
+  layout:            SlideLayout;
+  title:             string;
+  subtitle?:         string;
+  body?:             string;
+  bullets?:          string[];
+  stats?:            Array<{ value: string; label: string; color?: string }>;
+  quote?:            string;
+  quoteAttribution?: string;
+  sectionTag?:       string;
+  badgeText?:        string;
+  speakerNotes?:     string;
+  /** Relative accent color — will be remapped to chosen theme primary */
+  accentColor?:      string;
+  icon?:             string;
+}
+
+/**
+ * A complete slide template: 1 or more pre-designed slides that can be
+ * inserted into the active deck.
+ */
+export interface SlideTemplate {
+  id:           string;
+  name:         string;
+  description:  string;
+  category:     TemplateCategory;
+  /** Icon shown in the library grid */
+  icon:         string;
+  /** Gradient used for the card header */
+  gradient:     readonly [string, string];
+  /** Tag shown on card e.g. "Popular", "New" */
+  tag?:         string;
+  /** Number of slides in this template */
+  slideCount:   number;
+  /** The actual slide definitions */
+  slides:       SlideTemplateSlide[];
+  /** Suggested theme to pair with this template */
+  suggestedTheme?: PresentationTheme;
+}
+
+export interface TemplateCategoryMeta {
+  id:    TemplateCategory;
+  label: string;
+  emoji: string;
+  description: string;
 }

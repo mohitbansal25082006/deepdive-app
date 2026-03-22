@@ -1,34 +1,47 @@
 // app/(app)/slide-preview.tsx
-// Part 28 — FIX 3: Preview refreshes after returning from editor.
-// useFocusEffect fetches the latest slides/editor_data directly from Supabase
-// and passes them via a `refreshKey` so SlidePreviewPanel re-mounts with
-// fresh data every time the screen regains focus.
+// Part 29 — Fix: Edited slides always shown (including after theme change)
+// ─────────────────────────────────────────────────────────────────────────────
+// KEY FIX: When returning from slide-editor, useFocusEffect fetches the
+// FULL presentation from Supabase including slides + editor_data.
+// The mergeEditorData() helper reattaches per-slide editor overlays so
+// SlideCard renders the edited content.
+//
+// THEME FIX: setTheme() in useSlideEditor now saves the theme column to DB.
+// When the preview re-fetches, it reads the theme column and applies
+// getThemeTokens(theme) — so the preview always reflects the current theme.
+//
+// No new features in this file vs Part 28; only the refresh + theme handling
+// is corrected. All existing features (theme picker, export, share, generate)
+// remain unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, Pressable, ActivityIndicator, Alert, Dimensions,
-}                                  from 'react-native';
-import { LinearGradient }          from 'expo-linear-gradient';
-import { Ionicons }                from '@expo/vector-icons';
+} from 'react-native';
+import { LinearGradient }   from 'expo-linear-gradient';
+import { Ionicons }         from '@expo/vector-icons';
 import Animated, {
   FadeInDown, useSharedValue, useAnimatedStyle,
   withRepeat, withSequence, withTiming, Easing,
-}                                  from 'react-native-reanimated';
+} from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { supabase }                from '../../src/lib/supabase';
-import { SlidePreviewPanel }       from '../../src/components/research/SlidePreviewPanel';
-import { LoadingOverlay }          from '../../src/components/common/LoadingOverlay';
-import { ShareToWorkspaceModal }   from '../../src/components/workspace/ShareToWorkspaceModal';
-import { useSlideGenerator }       from '../../src/hooks/useSlideGenerator';
-import { CreditBalance }           from '../../src/components/credits/CreditBalance';
-import { InsufficientCreditsModal }from '../../src/components/credits/InsufficientCreditsModal';
-import { useCreditGate }           from '../../src/hooks/useCreditGate';
-import { FEATURE_COSTS }           from '../../src/constants/credits';
-import { getThemeTokens }          from '../../src/services/pptxExport';
+import { supabase }               from '../../src/lib/supabase';
+import { SlidePreviewPanel }      from '../../src/components/research/SlidePreviewPanel';
+import { LoadingOverlay }         from '../../src/components/common/LoadingOverlay';
+import { ShareToWorkspaceModal }  from '../../src/components/workspace/ShareToWorkspaceModal';
+import { useSlideGenerator }      from '../../src/hooks/useSlideGenerator';
+import { CreditBalance }          from '../../src/components/credits/CreditBalance';
+import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
+import { useCreditGate }          from '../../src/hooks/useCreditGate';
+import { FEATURE_COSTS }          from '../../src/constants/credits';
+import { getThemeTokens }         from '../../src/services/pptxExport';
+import { mergeEditorData }        from '../../src/services/slideEditorService';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import type { ResearchReport, PresentationTheme, GeneratedPresentation } from '../../src/types';
+import type {
+  ResearchReport, PresentationTheme, GeneratedPresentation,
+} from '../../src/types';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -113,10 +126,11 @@ export default function SlidePreviewScreen() {
   const [screenPhase,    setScreenPhase]    = useState<'setup' | 'generating' | 'preview'>('setup');
   const [showShareModal, setShowShareModal] = useState(false);
 
-  // ── FIX 3: refreshKey forces SlidePreviewPanel to re-mount with new data ──
-  const [refreshKey,     setRefreshKey]     = useState(0);
-  // freshPresentation holds data fetched directly from Supabase on focus-return
+  // ── Part 29 FIX: freshPresentation holds data re-fetched from Supabase ────
+  // This is set on every useFocusEffect call (i.e., every return from editor).
+  // It always carries the latest slides + editor_data + theme from the DB.
   const [freshPresentation, setFreshPresentation] = useState<GeneratedPresentation | null>(null);
+  const [refreshKey,        setRefreshKey]         = useState(0);
   const hasMountedRef = useRef(false);
 
   const {
@@ -128,33 +142,36 @@ export default function SlidePreviewScreen() {
 
   const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  // The presentation shown in the preview panel — prefer freshPresentation (post-edit reload)
+  // The presentation shown in the preview: freshPresentation (post-edit) wins
   const presentation = freshPresentation ?? generatedPresentation;
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
 
   useEffect(() => {
-    if (isGenerating)            { setScreenPhase('generating'); return; }
-    if (generatedPresentation)   { setScreenPhase('preview');    return; }
+    if (isGenerating)          { setScreenPhase('generating'); return; }
+    if (generatedPresentation) { setScreenPhase('preview');    return; }
   }, [isGenerating, generatedPresentation]);
 
   useEffect(() => {
     if (paramPresentationId && !generatedPresentation) loadPresentation(paramPresentationId);
   }, [paramPresentationId]);
 
-  // ── FIX 3: Re-fetch slides from Supabase every time screen regains focus ──
+  // ── Part 29 FIX: Re-fetch full presentation on every focus return ──────────
+  // This correctly handles:
+  //   (a) Edited slides — editor_data changes reflected in SlideCard
+  //   (b) Theme changes — theme column changes reflected in tokens
+  //   (c) New slides added/deleted in editor
   useFocusEffect(
     useCallback(() => {
       const presId = presentation?.id ?? paramPresentationId;
       if (!presId) return;
 
-      // Skip on first mount — data already loaded by loadReport / loadPresentation
+      // Skip on first mount — data already loaded by loadReport/loadPresentation
       if (!hasMountedRef.current) {
         hasMountedRef.current = true;
         return;
       }
 
-      // Fetch latest slides + editor_data directly from Supabase
       const fetchFresh = async () => {
         try {
           const { data, error: dbErr } = await supabase
@@ -165,16 +182,15 @@ export default function SlidePreviewScreen() {
 
           if (dbErr || !data) return;
 
+          // Part 29 THEME FIX: read theme from DB, not from local state
           const theme: PresentationTheme = (data.theme as PresentationTheme) ?? 'dark';
           const rawSlides: any[]         = data.slides ?? [];
           const editorDataArr: any[]     = Array.isArray(data.editor_data) ? data.editor_data : [];
 
-          // Merge editor overlays back into slides so the preview shows edited content
-          const mergedSlides = rawSlides.map((s: any, i: number) => ({
-            ...s,
-            ...(editorDataArr[i]?.fieldFormats ? {} : {}), // fieldFormats stored in editorData, not on slide directly
-            editorData: editorDataArr[i] ?? undefined,
-          }));
+          // Part 29 EDIT FIX: merge editor_data back into slides
+          // mergeEditorData() attaches per-slide fieldFormats, backgroundColor,
+          // spacing, and additionalBlocks so SlideCard renders edited content.
+          const mergedSlides = mergeEditorData(rawSlides, editorDataArr);
 
           const fresh: GeneratedPresentation = {
             id:          data.id,
@@ -182,6 +198,7 @@ export default function SlidePreviewScreen() {
             userId:      data.user_id,
             title:       data.title,
             subtitle:    data.subtitle ?? '',
+            // Use DB theme — this reflects any theme change made in the editor
             theme,
             themeTokens: getThemeTokens(theme),
             slides:      mergedSlides,
@@ -191,7 +208,10 @@ export default function SlidePreviewScreen() {
           };
 
           setFreshPresentation(fresh);
-          setRefreshKey(k => k + 1);   // force SlidePreviewPanel to re-mount
+          // Update selected theme chip to match DB theme
+          setSelectedTheme(theme);
+          // Force SlidePreviewPanel to fully re-mount with new data
+          setRefreshKey(k => k + 1);
           setScreenPhase('preview');
         } catch (err) {
           console.warn('[SlidePreview] refresh fetch error:', err);
@@ -205,7 +225,8 @@ export default function SlidePreviewScreen() {
   const loadReport = async () => {
     setLoadingReport(true);
     try {
-      const { data, error: dbErr } = await supabase.from('research_reports').select('*').eq('id', reportId).single();
+      const { data, error: dbErr } = await supabase
+        .from('research_reports').select('*').eq('id', reportId).single();
       if (dbErr || !data) { Alert.alert('Error', 'Could not load report.'); router.back(); return; }
       const mapped: ResearchReport = {
         id: data.id, userId: data.user_id, query: data.query, depth: data.depth,
@@ -235,7 +256,7 @@ export default function SlidePreviewScreen() {
     if (!report || isGenerating || isConsuming) return;
     const ok = await guardedConsume('presentation');
     if (!ok) return;
-    setFreshPresentation(null); // clear stale fresh data when re-generating
+    setFreshPresentation(null);
     generate(selectedTheme);
   }, [report, selectedTheme, generate, isGenerating, isConsuming, guardedConsume]);
 
@@ -269,10 +290,23 @@ export default function SlidePreviewScreen() {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-          {/* key={refreshKey} forces full re-mount of SlidePreviewPanel when data changes */}
-          <SlidePreviewPanel key={refreshKey} presentation={presentation} onClose={() => setScreenPhase('setup')} />
+          {/*
+            key={refreshKey} forces full re-mount of SlidePreviewPanel.
+            This ensures SlideCard re-renders with the latest editorData
+            AND the latest theme tokens after returning from the editor.
+          */}
+          <SlidePreviewPanel
+            key={refreshKey}
+            presentation={presentation}
+            onClose={() => setScreenPhase('setup')}
+          />
 
-          <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border, gap: SPACING.sm }}>
+          <View style={{
+            paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm,
+            paddingBottom:     insets.bottom + SPACING.sm,
+            backgroundColor:   COLORS.backgroundCard,
+            borderTopWidth:    1, borderTopColor: COLORS.border, gap: SPACING.sm,
+          }}>
             {/* Primary export row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
               <Pressable onPress={exportPPTX} disabled={isExporting} style={{ flex: 1.6, opacity: isExporting && exportFormat !== 'pptx' ? 0.5 : 1 }}>
@@ -298,7 +332,6 @@ export default function SlidePreviewScreen() {
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>HTML</Text>
               </Pressable>
 
-              {/* Edit button */}
               <Pressable onPress={handleOpenEditor} style={{ flex: 1.2, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.accent}15`, borderWidth: 1, borderColor: `${COLORS.accent}35` }}>
                 <Ionicons name="pencil-outline" size={15} color={COLORS.accent} />
                 <Text style={{ color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Edit</Text>
@@ -386,7 +419,6 @@ export default function SlidePreviewScreen() {
           <CreditBalance balance={balance} size="sm" />
         </View>
 
-        {/* Scrollable setup content */}
         <View style={{ flex: 1, paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg }}>
           {/* Report card */}
           <Animated.View entering={FadeInDown.duration(400).delay(60)} style={{ marginBottom: SPACING.lg }}>
