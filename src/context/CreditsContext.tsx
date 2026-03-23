@@ -1,23 +1,19 @@
 // src/context/CreditsContext.tsx
-// Part 24 (Fix v7) — Two critical fixes:
+// Part 32 UPDATE — Added Supabase Realtime subscription for user_credits balance.
 //
-// FIX 1 (features showing not enough credits):
-//   consume() now fetches a FRESH balance from the DB before attempting deduction.
-//   Previously it used the stale React state `balance` which could be 0 even
-//   after a successful purchase. Now the RPC always has the real current balance.
+// NEW in Part 32:
+//   When admin adjusts credits via the admin dashboard, user_credits.balance is
+//   updated in the DB. Supabase Realtime fires an UPDATE event on the row.
+//   This context now listens for that event and instantly updates the balance
+//   shown in the app's header pill — no restart or manual refresh required.
 //
-// FIX 2 (polling forever on failed payment):
-//   pollCheckOrder now checks result.payment_failed and immediately stops with
-//   a clear "payment was declined" error — no more 30s of useless polling.
+//   Result: admin adds 100 credits → user's balance pill updates in ~1 second.
 //
-// FIX 3 (Part 31 — admin credit adjustments not reflected in app balance):
-//   loadTransactions() now ALSO refreshes the live balance from DB after fetching
-//   transactions. Previously, when an admin added/deducted credits via the admin
-//   dashboard, the transaction appeared in history but the balance shown in the
-//   app header was still the old cached value.
-//   Root cause: loadTransactions() and loadBalance() were completely independent.
-//   The user saw the new transaction but the balance never re-fetched.
-//   Fix: call fetchUserCredits() inside loadTransactions() so both always sync.
+// KEPT from Part 31 Fix 3:
+//   loadTransactions() still also refreshes balance from DB after fetching
+//   transactions (belt-and-suspenders approach in case Realtime is delayed).
+//
+// All Part 24–31 logic preserved unchanged.
 
 import React, {
   createContext, useContext, useEffect, useState,
@@ -40,6 +36,7 @@ import {
   clearBalanceCache,
 }                         from '../lib/creditStorage';
 import { FEATURE_COSTS }  from '../constants/credits';
+import { supabase }       from '../lib/supabase';
 import type {
   CreditTransaction,
   CreditFeature,
@@ -90,6 +87,53 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   const loadedRef  = useRef(false);
   const loadingRef = useRef(false);
 
+  // ── Part 32: Realtime subscription ref for user_credits ───────────────────
+  const creditChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  // ── Realtime: subscribe to user_credits balance changes ───────────────────
+  // Fires instantly when admin (or any RPC) updates user_credits.balance.
+  // Filter: `user_id=eq.${userId}` — only this user's row.
+  // SECURITY: Supabase RLS ensures the user can only receive events for their
+  //           own user_credits row (SELECT policy: user_id = auth.uid()).
+
+  const setupCreditRealtime = useCallback((userId: string) => {
+    if (creditChannelRef.current) {
+      supabase.removeChannel(creditChannelRef.current);
+      creditChannelRef.current = null;
+    }
+
+    const channel = supabase
+      .channel(`user_credits_${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event:  'UPDATE',
+          schema: 'public',
+          table:  'user_credits',
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          if (payload.new && typeof payload.new === 'object') {
+            const newBalance = (payload.new as any).balance;
+            if (typeof newBalance === 'number') {
+              setBalance(newBalance);
+              cacheBalance(userId, newBalance);
+            }
+          }
+        },
+      )
+      .subscribe();
+
+    creditChannelRef.current = channel;
+  }, []);
+
+  const teardownCreditRealtime = useCallback(() => {
+    if (creditChannelRef.current) {
+      supabase.removeChannel(creditChannelRef.current);
+      creditChannelRef.current = null;
+    }
+  }, []);
+
   // ── Load balance ──────────────────────────────────────────────────────────
 
   const loadBalance = useCallback(async (showRefreshing = false) => {
@@ -118,11 +162,14 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user]);
 
+  // ── On user change: load balance + start realtime ─────────────────────────
+
   useEffect(() => {
     if (user) {
       loadedRef.current  = false;
       loadingRef.current = false;
       loadBalance();
+      setupCreditRealtime(user.id);   // Part 32: start listening for balance changes
     } else {
       setBalance(0);
       setTransactions([]);
@@ -131,25 +178,18 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       loadedRef.current  = false;
       loadingRef.current = false;
       clearBalanceCache();
+      teardownCreditRealtime();        // Part 32: clean up on sign out
     }
+
+    return () => {
+      // Part 32: clean up realtime channel when userId changes or component unmounts
+      teardownCreditRealtime();
+    };
   }, [user?.id]);
 
   const refresh = useCallback(() => loadBalance(true), [loadBalance]);
 
-  // ── Load transactions ─────────────────────────────────────────────────────
-  // FIX 3: After fetching transactions, ALSO refresh the balance from DB.
-  //
-  // WHY: The admin dashboard can add or deduct credits at any time.
-  // That updates user_credits.balance in Supabase, and inserts a transaction row.
-  // When the user opens their transaction history screen, they call loadTransactions().
-  // Previously this only fetched transactions — the balance shown in the header
-  // was still the old cached value because loadBalance() was never called.
-  //
-  // Now loadTransactions() always fetches a fresh balance from DB as well,
-  // so the balance and transaction list are always in sync after viewing history.
-  //
-  // Performance: fetchUserCredits() is a single lightweight DB read.
-  // The balance update runs in the background (non-blocking) after transactions load.
+  // ── Load transactions (also refreshes balance — Part 31 Fix 3) ────────────
 
   const loadTransactions = useCallback(async () => {
     if (!user) return;
@@ -164,49 +204,39 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       setTxLoading(false);
     }
 
-    // FIX 3: Refresh live balance from DB after loading transactions.
-    // This catches any admin-side adjustments that happened since last app open.
-    // Runs after setTxLoading(false) so it never delays the transaction list render.
-    // Uses a separate try/catch so a balance fetch failure never hides transactions.
+    // Belt-and-suspenders: also refresh balance from DB.
+    // Realtime usually beats this, but it handles delayed events and offline reconnect.
     if (user) {
       try {
         const credits = await fetchUserCredits(user.id);
         setBalance(credits.balance);
         cacheBalance(user.id, credits.balance);
       } catch (err) {
-        // Non-fatal — balance will still show the last known value
         console.warn('[Credits] Balance refresh after loadTransactions failed:', err);
       }
     }
   }, [user]);
 
   // ── Consume credits ───────────────────────────────────────────────────────
-  // FIX 1: Always fetch fresh balance from DB before consuming.
-  // This guarantees we never deduct from a stale 0 balance in context state.
 
   const consume = useCallback(async (feature: CreditFeature): Promise<boolean> => {
     if (!user) return false;
     const cost = FEATURE_COSTS[feature];
 
-    // Always get the real current balance from DB first
     let currentBalance = balance;
     try {
       const fresh = await fetchUserCredits(user.id);
       currentBalance = fresh.balance;
-      // Update state + cache so UI reflects this
       setBalance(currentBalance);
       cacheBalance(user.id, currentBalance);
     } catch (fetchErr) {
-      // Network error — fall through with cached/state balance
       console.warn('[Credits] consume: could not fetch fresh balance, using cached:', fetchErr);
     }
 
-    // Client-side check before hitting the RPC
     if (currentBalance < cost) {
       return false;
     }
 
-    // Optimistic deduction
     setBalance(prev => Math.max(0, prev - cost));
 
     try {
@@ -215,7 +245,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       cacheBalance(user.id, newBalance);
       return true;
     } catch (err) {
-      // Rollback optimistic deduction
       setBalance(currentBalance);
       cacheBalance(user.id, currentBalance);
 
@@ -228,8 +257,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   }, [user, balance]);
 
   // ── Poll for payment confirmation ─────────────────────────────────────────
-  // FIX 2: Returns 'paid' | 'failed' | 'timeout' so the caller
-  // knows exactly why polling stopped.
 
   const pollCheckOrder = useCallback(async (
     razorpayOrderId: string,
@@ -248,9 +275,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       try {
         const result = await checkOrderAndAddCredits(user.id, razorpayOrderId);
 
-        // Payment was definitively declined — stop immediately
         if (result.payment_failed) {
-          console.log(`[Credits] Payment declined on poll ${i + 1}. Reason: ${result.fail_reason ?? 'unknown'}`);
           return 'failed';
         }
 
@@ -270,13 +295,8 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
               : (pack.credits + (pack.bonusCredits ?? 0)),
           }));
 
-          console.log(`[Credits] ✓ Credits added on poll ${i + 1}. New balance: ${result.balance}`);
           return 'paid';
         }
-
-        console.log(
-          `[Credits] Poll ${i + 1}/${MAX_ATTEMPTS}: order_status=${result.order_status ?? 'unknown'}, payments=${result.payment_count ?? '?'}`,
-        );
       } catch (err) {
         console.warn(`[Credits] Poll ${i + 1}/${MAX_ATTEMPTS} error:`, err);
       }
@@ -292,7 +312,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
 
     const prevBalance = balance;
 
-    // 1. Create order
     setPurchaseState({ phase: 'creating_order', selectedPack: pack });
     let orderData;
     try {
@@ -303,7 +322,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // 2. Build checkout URL
     let checkoutUrl: string;
     try {
       checkoutUrl = buildCheckoutUrl(orderData, user.email ?? '', profile?.full_name ?? 'Researcher');
@@ -313,7 +331,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // 3. Open browser
     setPurchaseState(prev => ({ ...prev, phase: 'opening_browser', orderId: orderData.order_id }));
     try {
       await WebBrowser.openBrowserAsync(checkoutUrl, {
@@ -325,7 +342,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       console.warn('[Credits] Browser error:', err);
     }
 
-    // 4. Poll for confirmation
     setPurchaseState(prev => ({ ...prev, phase: 'polling' }));
 
     const pollResult = await pollCheckOrder(orderData.order_id, pack, prevBalance);
@@ -345,12 +361,10 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
           'If you completed the payment, your credits will be added automatically within 1 minute. ' +
           'Pull down to refresh on this screen to check your balance.',
       }));
-      // Fallback refreshes for webhook-added credits
       setTimeout(() => { if (user) loadBalance(false); }, 20_000);
       setTimeout(() => { if (user) loadBalance(false); }, 60_000);
     }
 
-    // Always do a final balance refresh after any purchase attempt
     await loadBalance(false);
   }, [user, profile, balance, pollCheckOrder, loadBalance]);
 

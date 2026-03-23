@@ -1,6 +1,9 @@
 // src/types/index.ts
 // DeepDive AI — Complete Type Definitions
-// Parts 1–25 — All types in one file
+// Parts 1–32 — All types in one file
+//
+// Part 32 change: Added `account_status?` to Profile interface.
+// All other types are identical to Part 25.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
@@ -16,6 +19,15 @@ export interface Profile {
   profile_completed:   boolean;
   created_at:          string;
   updated_at:          string;
+  // Part 32: admin-controlled status field.
+  // 'active'    — default, normal access
+  // 'suspended' — locked by admin, AccountSuspendedScreen shown
+  // 'flagged'   — review marker only, user retains full access
+  // 'deleted'   — set by admin DELETE route immediately before auth.deleteUser()
+  //               triggers AccountDeletedScreen via Realtime UPDATE event
+  // Optional (?) so existing Profile objects without this column still type-check.
+  // Column was added by schema_part31_complete.sql — always present on new rows.
+  account_status?:     'active' | 'suspended' | 'flagged' | 'deleted';
 }
 
 export interface AuthUser {
@@ -77,34 +89,18 @@ export interface ResearchPlan {
 // ─── Part 25: Source Trust Scoring ───────────────────────────────────────────
 
 export type SourceBias =
-  | 'left'
-  | 'center-left'
-  | 'center'
-  | 'center-right'
-  | 'right'
-  | 'financial'
-  | 'technical'
-  | 'academic'
-  | 'government'
-  | 'unknown';
+  | 'left' | 'center-left' | 'center' | 'center-right' | 'right'
+  | 'financial' | 'technical' | 'academic' | 'government' | 'unknown';
 
-/** Tier 1 = Authoritative · Tier 2 = Credible · Tier 3 = General · Tier 4 = Unverified */
 export type SourceTrustTier = 1 | 2 | 3 | 4;
 
 export interface SourceTrustScore {
-  /** 0–10 overall credibility */
   credibilityScore: number;
-  /** Political / editorial stance */
   bias:             SourceBias;
-  /** Numeric tier (1 = best) */
   tier:             SourceTrustTier;
-  /** Human-readable tier label */
   tierLabel:        string;
-  /** Estimated domain authority 0–100 */
   domainAuthority:  number;
-  /** True when domain is in curated database */
   isVerified:       boolean;
-  /** Descriptive tags e.g. ['academic', 'peer-reviewed'] */
   tags:             string[];
 }
 
@@ -120,30 +116,9 @@ export interface DepthSearchConfig {
 }
 
 export const DEPTH_SEARCH_CONFIG: Record<ResearchDepth, DepthSearchConfig> = {
-  quick: {
-    resultsPerQuery: 8,
-    maxQueries:      4,
-    followUpQueries: 0,
-    newsQueries:     0,
-    minSources:      20,
-    maxSources:      40,
-  },
-  deep: {
-    resultsPerQuery: 12,
-    maxQueries:      8,
-    followUpQueries: 3,
-    newsQueries:     2,
-    minSources:      60,
-    maxSources:      130,
-  },
-  expert: {
-    resultsPerQuery: 15,
-    maxQueries:      12,
-    followUpQueries: 5,
-    newsQueries:     4,
-    minSources:      120,
-    maxSources:      260,
-  },
+  quick:  { resultsPerQuery: 8,  maxQueries: 4,  followUpQueries: 0, newsQueries: 0, minSources: 20,  maxSources: 40  },
+  deep:   { resultsPerQuery: 12, maxQueries: 8,  followUpQueries: 3, newsQueries: 2, minSources: 60,  maxSources: 130 },
+  expert: { resultsPerQuery: 15, maxQueries: 12, followUpQueries: 5, newsQueries: 4, minSources: 120, maxSources: 260 },
 };
 
 // ─── Web Search Results ───────────────────────────────────────────────────────
@@ -157,7 +132,6 @@ export interface SearchResult {
   position:    number;
   thumbnail?:  string;
   imageUrl?:   string;
-  /** Part 25: attached by sourceTrustScorer after each search */
   trustScore?: SourceTrustScore;
 }
 
@@ -207,7 +181,7 @@ export interface FactCheckOutput {
   notes:            string;
 }
 
-// ─── Report (final output) ────────────────────────────────────────────────────
+// ─── Report ───────────────────────────────────────────────────────────────────
 
 export interface Citation {
   id:          string;
@@ -216,7 +190,6 @@ export interface Citation {
   source:      string;
   date?:       string;
   snippet:     string;
-  /** Part 25: trust score for this citation source */
   trustScore?: SourceTrustScore;
 }
 
@@ -345,7 +318,7 @@ export type ResearchStatus =
   | 'fact_checking' | 'generating' | 'visualizing'
   | 'writing_paper' | 'completed' | 'failed';
 
-// ─── Part 2: Conversation (legacy) ───────────────────────────────────────────
+// ─── Part 2: Conversation ─────────────────────────────────────────────────────
 
 export interface ConversationMessage {
   id:        string;
@@ -363,8 +336,6 @@ export interface OrchestratorCallbacks {
   onStepDetail:  (agent: AgentName, detail: string) => void;
   onComplete:    (report: ResearchReport) => void;
   onError:       (message: string) => void;
-
-  // Part 21: Streaming report section callbacks
   onSectionStart?:    (sectionIndex: number, sectionTitle: string) => void;
   onSectionToken?:    (sectionIndex: number, token: string) => void;
   onSectionComplete?: (sectionIndex: number, section: ReportSection) => void;
@@ -496,7 +467,7 @@ export interface SlideAgentOutput {
   slides:               Omit<PresentationSlide, 'slideNumber'>[];
 }
 
-// ─── Part 6: AI Research Assistant Chat (RAG Pipeline) ───────────────────────
+// ─── Part 6: AI Research Assistant Chat (RAG) ────────────────────────────────
 
 export type AssistantMode =
   | 'general' | 'beginner' | 'compare' | 'contradictions'
@@ -632,17 +603,17 @@ export interface PodcastTurn {
 }
 
 export interface PodcastScript {
-  turns:                     PodcastTurn[];
-  totalWords:                number;
-  estimatedDurationMinutes:  number;
+  turns:                    PodcastTurn[];
+  totalWords:               number;
+  estimatedDurationMinutes: number;
 }
 
 export interface PodcastConfig {
-  hostVoice:              PodcastVoice;
-  guestVoice:             PodcastVoice;
-  hostName:               string;
-  guestName:              string;
-  targetDurationMinutes:  number;
+  hostVoice:             PodcastVoice;
+  guestVoice:            PodcastVoice;
+  hostName:              string;
+  guestName:             string;
+  targetDurationMinutes: number;
 }
 
 export interface PodcastVoicePreset {
@@ -675,9 +646,7 @@ export interface Podcast {
   exportCount:        number;
   createdAt:          string;
   completedAt?:       string;
-  /** Part 25: Supabase Storage signed URLs (same length as audioSegmentPaths) */
   audioStorageUrls?:  (string | null)[];
-  /** Part 25: true when all segments have been uploaded to cloud */
   audioAllUploaded?:  boolean;
 }
 
@@ -748,13 +717,13 @@ export interface DebatePerspective {
 }
 
 export interface DebateModerator {
-  summary:          string;
-  argumentsFor:     string[];
-  argumentsAgainst: string[];
-  neutralConclusion:string;
-  consensusPoints:  string[];
-  keyTensions:      string[];
-  balancedVerdict:  string;
+  summary:           string;
+  argumentsFor:      string[];
+  argumentsAgainst:  string[];
+  neutralConclusion: string;
+  consensusPoints:   string[];
+  keyTensions:       string[];
+  balancedVerdict:   string;
 }
 
 export interface DebateSession {
@@ -795,7 +764,7 @@ export interface DebateGenerationState {
   error:            string | null;
 }
 
-export interface DebateConfig { agentRoles?: DebateAgentRole[]; }
+export interface DebateConfig       { agentRoles?: DebateAgentRole[]; }
 
 export interface DebateOrchestratorCallbacks {
   onAgentProgressUpdate: (progress: DebateAgentProgressItem[]) => void;
@@ -809,38 +778,25 @@ export interface DebateOrchestratorCallbacks {
 
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
-// Part 18: Extended with new activity actions
 export type WorkspaceActivityAction =
   | 'workspace_created'       | 'workspace_updated'
   | 'report_added'            | 'report_removed'
   | 'member_joined'           | 'member_left'         | 'member_removed'
   | 'member_role_changed'     | 'comment_added'       | 'comment_resolved'
-  | 'ownership_transferred'
-  | 'member_blocked'
-  | 'debate_shared'
-  | 'presentation_shared'
-  | 'academic_paper_shared'
-  | 'podcast_shared'
-  | 'chat_mention'
-  | 'report_pinned'
-  | 'report_unpinned'
-  | 'comment_reply_added'
-  | 'access_request_sent'
-  | 'access_request_approved'
-  | 'access_request_denied';
+  | 'ownership_transferred'   | 'member_blocked'
+  | 'debate_shared'           | 'presentation_shared'
+  | 'academic_paper_shared'   | 'podcast_shared'
+  | 'chat_mention'            | 'report_pinned'       | 'report_unpinned'
+  | 'comment_reply_added'     | 'access_request_sent'
+  | 'access_request_approved' | 'access_request_denied';
 
 // ─── Part 11: Workspace Settings & Accent Colors ──────────────────────────────
 
-export type WorkspaceAccentColor =
-  | 'purple' | 'blue' | 'green' | 'orange' | 'pink' | 'cyan';
+export type WorkspaceAccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'pink' | 'cyan';
 
 export const WORKSPACE_ACCENT_COLORS: Record<WorkspaceAccentColor, string> = {
-  purple: '#6C63FF',
-  blue:   '#3B82F6',
-  green:  '#10B981',
-  orange: '#F59E0B',
-  pink:   '#EC4899',
-  cyan:   '#06B6D4',
+  purple: '#6C63FF', blue: '#3B82F6', green: '#10B981',
+  orange: '#F59E0B', pink: '#EC4899', cyan: '#06B6D4',
 };
 
 export interface WorkspaceSettings {
@@ -1273,7 +1229,6 @@ export interface DebateVoiceState {
 
 export interface PodcastAudioCloudSync {
   podcastId:        string;
-  /** Supabase Storage signed URLs indexed same as audioSegmentPaths. null = failed. */
   cloudUrls:        (string | null)[];
   uploadedAt:       string;
   allUploaded:      boolean;

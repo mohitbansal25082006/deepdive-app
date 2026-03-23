@@ -1,10 +1,16 @@
 // app/(auth)/signin.tsx
-// Sign In screen.
-// UPDATED: When user tries to sign in with an unverified account,
-// instead of showing "resend verification email" we now:
-// 1. Show a banner explaining they need to verify with a code
-// 2. Offer a button that resends the OTP and shows the OTP input screen
-// 3. After OTP verified → navigate to profile-setup or home directly
+// Part 32 UPDATE — Shows a "Account Suspended" banner when a suspended
+// user attempts to sign in.
+//
+// NEW in Part 32:
+//   After a successful Supabase signInWithPassword, we check the user's
+//   profile.account_status before navigating. If suspended:
+//   - Sign them back out immediately
+//   - Show a red "Account Suspended" banner with support contact info
+//   This prevents a suspended user from briefly accessing the app while
+//   the Realtime overlay loads.
+//
+// All Part 1–31 logic (OTP flow, unverified banner, etc.) preserved unchanged.
 
 import React, { useState, useRef } from 'react';
 import {
@@ -16,36 +22,39 @@ import {
   ScrollView,
   Alert,
   TextInput,
+  Linking,
 } from 'react-native';
-import { router } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { router }              from 'expo-router';
+import { LinearGradient }      from 'expo-linear-gradient';
+import { Ionicons }            from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, SlideInRight } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '../../src/lib/supabase';
-import { AnimatedInput } from '../../src/components/common/AnimatedInput';
-import { GradientButton } from '../../src/components/common/GradientButton';
-import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
+import { SafeAreaView }        from 'react-native-safe-area-context';
+import { supabase }            from '../../src/lib/supabase';
+import { AnimatedInput }       from '../../src/components/common/AnimatedInput';
+import { GradientButton }      from '../../src/components/common/GradientButton';
+import { LoadingOverlay }      from '../../src/components/common/LoadingOverlay';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
-const OTP_LENGTH = 8;
+const OTP_LENGTH     = 8;
+const SUPPORT_EMAIL  = 'support@deepdiveai.com';
 
 export default function SignInScreen() {
-  // 'signin' = normal login form
-  // 'otp'    = OTP verification screen (shown when email not confirmed)
   const [step, setStep] = useState<'signin' | 'otp'>('signin');
 
   // Sign in fields
-  const [email, setEmail] = useState('');
+  const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [loading,  setLoading]  = useState(false);
+  const [errors,   setErrors]   = useState<{ email?: string; password?: string }>({});
+
+  // Banner states
   const [showUnverifiedBanner, setShowUnverifiedBanner] = useState(false);
-  const [sendingOtp, setSendingOtp] = useState(false);
+  const [showSuspendedBanner,  setShowSuspendedBanner]  = useState(false);
+  const [sendingOtp,           setSendingOtp]           = useState(false);
 
   // OTP fields
-  const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill(''));
-  const [otpError, setOtpError] = useState('');
+  const [otp,       setOtp]       = useState<string[]>(Array(OTP_LENGTH).fill(''));
+  const [otpError,  setOtpError]  = useState('');
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
   const otpRefs = useRef<Array<TextInput | null>>(Array(OTP_LENGTH).fill(null));
@@ -60,10 +69,10 @@ export default function SignInScreen() {
 
   const validate = () => {
     const e: typeof errors = {};
-    if (!email) e.email = 'Email is required';
-    else if (!/\S+@\S+\.\S+/.test(email)) e.email = 'Enter a valid email';
-    if (!password) e.password = 'Password is required';
-    else if (password.length < 6) e.password = 'Password must be at least 6 characters';
+    if (!email)                           e.email    = 'Email is required';
+    else if (!/\S+@\S+\.\S+/.test(email)) e.email    = 'Enter a valid email';
+    if (!password)                        e.password = 'Password is required';
+    else if (password.length < 6)         e.password = 'Password must be at least 6 characters';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -72,10 +81,11 @@ export default function SignInScreen() {
   const handleSignIn = async () => {
     if (!validate()) return;
     setShowUnverifiedBanner(false);
+    setShowSuspendedBanner(false);
     setLoading(true);
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
+      email:    email.trim().toLowerCase(),
       password,
     });
 
@@ -85,7 +95,6 @@ export default function SignInScreen() {
         error.message.toLowerCase().includes('email not confirmed') ||
         error.message.toLowerCase().includes('email_not_confirmed')
       ) {
-        // Show the unverified banner instead of old "resend email" approach
         setShowUnverifiedBanner(true);
       } else if (
         error.message.toLowerCase().includes('invalid login') ||
@@ -99,12 +108,23 @@ export default function SignInScreen() {
     }
 
     if (data.user) {
+      // ── Part 32: Check account_status before navigating ──────────────────
       try {
         const { data: profileData } = await supabase
           .from('profiles')
-          .select('profile_completed')
+          .select('profile_completed, account_status')
           .eq('id', data.user.id)
           .single();
+
+        // If suspended — sign out immediately and show suspended banner
+        if (profileData?.account_status === 'suspended') {
+          await supabase.auth.signOut();
+          setLoading(false);
+          setShowSuspendedBanner(true);
+          return;
+        }
+
+        // Normal routing (flagged accounts still have full access)
         if (profileData?.profile_completed) {
           router.replace('/(app)/(tabs)/home');
         } else {
@@ -119,13 +139,12 @@ export default function SignInScreen() {
   };
 
   // ── Send OTP to unverified account ────────────────────────────────────────
-  // Called when user taps "Send Verification Code" in the banner
   const handleSendVerificationOtp = async () => {
     setSendingOtp(true);
     setShowUnverifiedBanner(false);
 
     const { error } = await supabase.auth.resend({
-      type: 'signup',
+      type:  'signup',
       email: email.trim().toLowerCase(),
     });
 
@@ -137,7 +156,6 @@ export default function SignInScreen() {
       return;
     }
 
-    // OTP sent — show the OTP input screen
     setOtp(Array(OTP_LENGTH).fill(''));
     setOtpError('');
     setStep('otp');
@@ -146,7 +164,7 @@ export default function SignInScreen() {
   // ── OTP digit handlers ────────────────────────────────────────────────────
   const handleOtpChange = (value: string, index: number) => {
     const digit = value.replace(/[^0-9]/g, '').slice(-1);
-    const next = [...otp];
+    const next  = [...otp];
     next[index] = digit;
     setOtp(next);
     setOtpError('');
@@ -157,7 +175,7 @@ export default function SignInScreen() {
 
   const handleOtpKeyPress = (key: string, index: number) => {
     if (key === 'Backspace' && !otp[index] && index > 0) {
-      const next = [...otp];
+      const next      = [...otp];
       next[index - 1] = '';
       setOtp(next);
       otpRefs.current[index - 1]?.focus();
@@ -177,7 +195,7 @@ export default function SignInScreen() {
     const { data, error } = await supabase.auth.verifyOtp({
       email: email.trim().toLowerCase(),
       token: code,
-      type: 'signup',
+      type:  'signup',
     });
 
     setVerifying(false);
@@ -187,14 +205,22 @@ export default function SignInScreen() {
       return;
     }
 
-    // Verified — sign them in and navigate
     if (data.user) {
       try {
         const { data: profileData } = await supabase
           .from('profiles')
-          .select('profile_completed')
+          .select('profile_completed, account_status')
           .eq('id', data.user.id)
           .single();
+
+        if (profileData?.account_status === 'suspended') {
+          await supabase.auth.signOut();
+          setVerifying(false);
+          setStep('signin');
+          setShowSuspendedBanner(true);
+          return;
+        }
+
         if (profileData?.profile_completed) {
           router.replace('/(app)/(tabs)/home');
         } else {
@@ -206,14 +232,14 @@ export default function SignInScreen() {
     }
   };
 
-  // ── Resend OTP from OTP screen ────────────────────────────────────────────
+  // ── Resend OTP ────────────────────────────────────────────────────────────
   const handleResendOtp = async () => {
     setResending(true);
     setOtp(Array(OTP_LENGTH).fill(''));
     setOtpError('');
 
     const { error } = await supabase.auth.resend({
-      type: 'signup',
+      type:  'signup',
       email: email.trim().toLowerCase(),
     });
 
@@ -243,15 +269,11 @@ export default function SignInScreen() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              <TouchableOpacity
-                onPress={() => setStep('signin')}
-                style={{ marginBottom: SPACING.xl }}
-              >
+              <TouchableOpacity onPress={() => setStep('signin')} style={{ marginBottom: SPACING.xl }}>
                 <Ionicons name="arrow-back" size={24} color={COLORS.textSecondary} />
               </TouchableOpacity>
 
               <Animated.View entering={SlideInRight.duration(400)}>
-                {/* Icon */}
                 <LinearGradient
                   colors={['#FF6584', '#FF8E53']}
                   style={{
@@ -266,22 +288,13 @@ export default function SignInScreen() {
                   <Ionicons name="shield-checkmark" size={36} color="#FFF" />
                 </LinearGradient>
 
-                <Text style={{
-                  color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600',
-                  letterSpacing: 2, textTransform: 'uppercase', marginBottom: SPACING.sm,
-                }}>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 2, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
                   Verify Account
                 </Text>
-                <Text style={{
-                  color: COLORS.textPrimary, fontSize: FONTS.sizes['3xl'],
-                  fontWeight: '800', letterSpacing: -0.5, marginBottom: SPACING.sm,
-                }}>
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes['3xl'], fontWeight: '800', letterSpacing: -0.5, marginBottom: SPACING.sm }}>
                   Enter Code
                 </Text>
-                <Text style={{
-                  color: COLORS.textSecondary, fontSize: FONTS.sizes.base,
-                  lineHeight: 24, marginBottom: SPACING.xl,
-                }}>
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, lineHeight: 24, marginBottom: SPACING.xl }}>
                   We sent an 8-digit code to{'\n'}
                   <Text style={{ color: COLORS.primary, fontWeight: '600' }}>
                     {email.trim().toLowerCase()}
@@ -290,10 +303,7 @@ export default function SignInScreen() {
 
                 {/* OTP boxes — 2 rows of 4 */}
                 <View style={{ marginBottom: SPACING.sm }}>
-                  <View style={{
-                    flexDirection: 'row', justifyContent: 'space-between',
-                    marginBottom: SPACING.sm,
-                  }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
                     {otp.slice(0, 4).map((digit, index) => (
                       <TextInput
                         key={index}
@@ -304,17 +314,7 @@ export default function SignInScreen() {
                         keyboardType="number-pad"
                         maxLength={1}
                         selectTextOnFocus
-                        style={{
-                          width: 64, height: 68,
-                          borderRadius: RADIUS.md,
-                          backgroundColor: COLORS.backgroundCard,
-                          borderWidth: digit ? 1.5 : 1,
-                          borderColor: digit ? COLORS.primary : COLORS.border,
-                          color: COLORS.textPrimary,
-                          fontSize: FONTS.sizes.xl,
-                          fontWeight: '700',
-                          textAlign: 'center',
-                        }}
+                        style={{ width: 64, height: 68, borderRadius: RADIUS.md, backgroundColor: COLORS.backgroundCard, borderWidth: digit ? 1.5 : 1, borderColor: digit ? COLORS.primary : COLORS.border, color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '700', textAlign: 'center' }}
                       />
                     ))}
                   </View>
@@ -331,17 +331,7 @@ export default function SignInScreen() {
                           keyboardType="number-pad"
                           maxLength={1}
                           selectTextOnFocus
-                          style={{
-                            width: 64, height: 68,
-                            borderRadius: RADIUS.md,
-                            backgroundColor: COLORS.backgroundCard,
-                            borderWidth: digit ? 1.5 : 1,
-                            borderColor: digit ? COLORS.primary : COLORS.border,
-                            color: COLORS.textPrimary,
-                            fontSize: FONTS.sizes.xl,
-                            fontWeight: '700',
-                            textAlign: 'center',
-                          }}
+                          style={{ width: 64, height: 68, borderRadius: RADIUS.md, backgroundColor: COLORS.backgroundCard, borderWidth: digit ? 1.5 : 1, borderColor: digit ? COLORS.primary : COLORS.border, color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '700', textAlign: 'center' }}
                         />
                       );
                     })}
@@ -349,52 +339,29 @@ export default function SignInScreen() {
                 </View>
 
                 {otpError ? (
-                  <Text style={{
-                    color: COLORS.error, fontSize: FONTS.sizes.xs,
-                    marginBottom: SPACING.md, marginLeft: 4,
-                  }}>
+                  <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.xs, marginBottom: SPACING.md, marginLeft: 4 }}>
                     {otpError}
                   </Text>
-                ) : (
-                  <View style={{ height: SPACING.md }} />
-                )}
+                ) : <View style={{ height: SPACING.md }} />}
 
-                <View style={{
-                  backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.md,
-                  padding: SPACING.md, marginBottom: SPACING.xl,
-                  borderWidth: 1, borderColor: `${COLORS.primary}20`,
-                  flexDirection: 'row', alignItems: 'flex-start',
-                }}>
-                  <Ionicons name="information-circle-outline" size={16} color={COLORS.primary}
-                    style={{ marginRight: 8, marginTop: 1 }} />
-                  <Text style={{
-                    color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18,
-                  }}>
+                <View style={{ backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.xl, borderWidth: 1, borderColor: `${COLORS.primary}20`, flexDirection: 'row', alignItems: 'flex-start' }}>
+                  <Ionicons name="information-circle-outline" size={16} color={COLORS.primary} style={{ marginRight: 8, marginTop: 1 }} />
+                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18 }}>
                     The code expires in 1 hour. Check your spam folder if you don't see it.
                   </Text>
                 </View>
 
-                <GradientButton
-                  title="Verify & Sign In"
-                  onPress={handleVerifyOtp}
-                  loading={verifying}
-                />
+                <GradientButton title="Verify & Sign In" onPress={handleVerifyOtp} loading={verifying} />
 
                 <TouchableOpacity
                   onPress={handleResendOtp}
                   disabled={resending}
-                  style={{
-                    alignItems: 'center', marginTop: SPACING.xl,
-                    flexDirection: 'row', justifyContent: 'center',
-                  }}
+                  style={{ alignItems: 'center', marginTop: SPACING.xl, flexDirection: 'row', justifyContent: 'center' }}
                 >
-                  <Ionicons name="refresh-outline" size={16} color={COLORS.textSecondary}
-                    style={{ marginRight: 6 }} />
+                  <Ionicons name="refresh-outline" size={16} color={COLORS.textSecondary} style={{ marginRight: 6 }} />
                   <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm }}>
                     {resending ? 'Sending...' : "Didn't receive it? "}
-                    {!resending && (
-                      <Text style={{ color: COLORS.primary, fontWeight: '600' }}>Resend Code</Text>
-                    )}
+                    {!resending && <Text style={{ color: COLORS.primary, fontWeight: '600' }}>Resend Code</Text>}
                   </Text>
                 </TouchableOpacity>
               </Animated.View>
@@ -427,52 +394,86 @@ export default function SignInScreen() {
             </TouchableOpacity>
 
             <Animated.View entering={FadeIn.duration(600)}>
-              <Text style={{
-                color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600',
-                letterSpacing: 2, textTransform: 'uppercase', marginBottom: SPACING.sm,
-              }}>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 2, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
                 Welcome Back
               </Text>
-              <Text style={{
-                color: COLORS.textPrimary, fontSize: FONTS.sizes['3xl'],
-                fontWeight: '800', letterSpacing: -0.5, marginBottom: SPACING.sm,
-              }}>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes['3xl'], fontWeight: '800', letterSpacing: -0.5, marginBottom: SPACING.sm }}>
                 Sign In
               </Text>
-              <Text style={{
-                color: COLORS.textSecondary, fontSize: FONTS.sizes.base,
-                marginBottom: SPACING['2xl'],
-              }}>
+              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, marginBottom: SPACING['2xl'] }}>
                 Continue your research journey
               </Text>
             </Animated.View>
 
-            {/* Account not verified banner — new OTP style */}
+            {/* ── Part 32: Account Suspended Banner ──────────────────────── */}
+            {showSuspendedBanner && (
+              <Animated.View
+                entering={FadeInDown.duration(400)}
+                style={{
+                  backgroundColor: 'rgba(239,68,68,0.08)',
+                  borderRadius:    RADIUS.lg,
+                  padding:         SPACING.md,
+                  marginBottom:    SPACING.xl,
+                  borderWidth:     1,
+                  borderColor:     'rgba(239,68,68,0.3)',
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
+                  <Ionicons name="ban" size={20} color="#EF4444" style={{ marginRight: 10, marginTop: 1 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#EF4444', fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 4 }}>
+                      Account Suspended
+                    </Text>
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18 }}>
+                      Your account has been suspended by our team. Please contact support if you believe this is a mistake.
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setShowSuspendedBanner(false)} style={{ marginLeft: 8 }}>
+                    <Ionicons name="close" size={16} color={COLORS.textMuted} />
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=Account%20Suspension%20Review`)}
+                  style={{
+                    backgroundColor: '#EF4444',
+                    borderRadius:    RADIUS.md,
+                    paddingVertical:   10,
+                    paddingHorizontal: 16,
+                    flexDirection:   'row',
+                    alignItems:      'center',
+                    justifyContent:  'center',
+                    gap:             8,
+                  }}
+                >
+                  <Ionicons name="mail-outline" size={16} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+                    Contact Support
+                  </Text>
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
+            {/* Account not verified banner */}
             {showUnverifiedBanner && (
               <Animated.View
                 entering={FadeInDown.duration(400)}
                 style={{
                   backgroundColor: `${COLORS.warning}15`,
-                  borderRadius: RADIUS.lg,
-                  padding: SPACING.md,
-                  marginBottom: SPACING.xl,
-                  borderWidth: 1,
-                  borderColor: `${COLORS.warning}40`,
+                  borderRadius:    RADIUS.lg,
+                  padding:         SPACING.md,
+                  marginBottom:    SPACING.xl,
+                  borderWidth:     1,
+                  borderColor:     `${COLORS.warning}40`,
                 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
-                  <Ionicons name="warning" size={20} color={COLORS.warning}
-                    style={{ marginRight: 10, marginTop: 1 }} />
+                  <Ionicons name="warning" size={20} color={COLORS.warning} style={{ marginRight: 10, marginTop: 1 }} />
                   <View style={{ flex: 1 }}>
-                    <Text style={{
-                      color: COLORS.warning, fontSize: FONTS.sizes.sm,
-                      fontWeight: '700', marginBottom: 4,
-                    }}>
+                    <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 4 }}>
                       Account Not Verified
                     </Text>
-                    <Text style={{
-                      color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18,
-                    }}>
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18 }}>
                       Your account hasn't been verified yet. We'll send a{' '}
                       <Text style={{ color: COLORS.textPrimary, fontWeight: '600' }}>
                         6-digit verification code
@@ -480,10 +481,7 @@ export default function SignInScreen() {
                       {' '}to your email to complete verification.
                     </Text>
                   </View>
-                  <TouchableOpacity
-                    onPress={() => setShowUnverifiedBanner(false)}
-                    style={{ marginLeft: 8 }}
-                  >
+                  <TouchableOpacity onPress={() => setShowUnverifiedBanner(false)} style={{ marginLeft: 8 }}>
                     <Ionicons name="close" size={16} color={COLORS.textMuted} />
                   </TouchableOpacity>
                 </View>
@@ -491,21 +489,10 @@ export default function SignInScreen() {
                 <TouchableOpacity
                   onPress={handleSendVerificationOtp}
                   disabled={sendingOtp}
-                  style={{
-                    backgroundColor: COLORS.primary,
-                    borderRadius: RADIUS.md,
-                    paddingVertical: 10,
-                    paddingHorizontal: 16,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 8,
-                  }}
+                  style={{ backgroundColor: COLORS.primary, borderRadius: RADIUS.md, paddingVertical: 10, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
                 >
                   <Ionicons name="shield-checkmark-outline" size={16} color="#FFF" />
-                  <Text style={{
-                    color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700',
-                  }}>
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
                     {sendingOtp ? 'Sending Code...' : 'Send Verification Code'}
                   </Text>
                 </TouchableOpacity>
@@ -519,6 +506,7 @@ export default function SignInScreen() {
                 onChangeText={(text) => {
                   setEmail(text);
                   setShowUnverifiedBanner(false);
+                  setShowSuspendedBanner(false);
                 }}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -549,11 +537,7 @@ export default function SignInScreen() {
 
               <View style={{ flexDirection: 'row', alignItems: 'center', marginVertical: SPACING.xl }}>
                 <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
-                <Text style={{
-                  color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginHorizontal: SPACING.md,
-                }}>
-                  or
-                </Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginHorizontal: SPACING.md }}>or</Text>
                 <View style={{ flex: 1, height: 1, backgroundColor: COLORS.border }} />
               </View>
 

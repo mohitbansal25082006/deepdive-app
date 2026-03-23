@@ -1,74 +1,91 @@
 // src/context/AuthContext.tsx
+// Part 32 UPDATE (v3) — Fixed account deletion detection.
 //
-// FIX: Profile setup screen showing every time app is opened.
+// PROBLEM WITH v2:
+//   Subscribing to postgres_changes DELETE events on profiles is unreliable.
+//   When auth.admin.deleteUser() is called server-side, Supabase invalidates
+//   the user's JWT immediately. By the time the cascade DELETE reaches the
+//   profiles table, Realtime has already dropped the user's connection because
+//   their token is invalid. The DELETE event is never delivered.
 //
-// ROOT CAUSE — race condition:
-//   onAuthStateChange fires INITIAL_SESSION → setLoading(false) runs
-//   synchronously → index.tsx useEffect triggers immediately.
-//   At that exact moment profile=null and profileLoading=false because
-//   fetchProfile is deferred in setTimeout and hasn't started yet.
-//   index.tsx sees (session=true, profile=null, profileLoading=false)
-//   and incorrectly routes to profile-setup every single time.
+// FIX in v3:
+//   The admin DELETE API now sets account_status = 'deleted' FIRST (UPDATE),
+//   THEN deletes the auth user after 800ms. The UPDATE event is delivered
+//   reliably because the JWT is still valid at that point.
 //
-// FIX:
-//   Set profileLoading=true SYNCHRONOUSLY inside onAuthStateChange
-//   BEFORE the setTimeout. This way index.tsx sees profileLoading=true
-//   and waits (returns early) until fetchProfile finishes and sets
-//   the real profile data, then routes correctly based on profile_completed.
+//   AuthContext now handles account_status === 'deleted' in the UPDATE handler:
+//   - Sets accountDeleted = true and accountDeletedRef = true
+//   - Clears profile state
+//   - Signs out from Supabase (triggers SIGNED_OUT)
+//   - SIGNED_OUT handler skips onboarding redirect (accountDeletedRef = true)
+//   - app/(app)/_layout.tsx shows <AccountDeletedScreen /> overlay
 //
-// FIX (logout redirect):
-//   When signOut() is called the user is on a deep app screen
-//   (e.g. /(app)/(tabs)/home) so index.tsx is NOT mounted and its
-//   useEffect never fires — therefore no redirect happens.
-//   Fix: call router.replace('/(auth)/onboarding') directly inside
-//   signOut() after clearing state, so the redirect always fires
-//   regardless of which screen the user is currently on.
+//   The DELETE postgres_changes subscription has been REMOVED — it is
+//   unreliable and no longer needed with this approach.
+//
+// All Part 1–31 logic preserved unchanged.
 
 import React, {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   ReactNode,
 } from 'react';
-import { AppState, AppStateStatus } from 'react-native';
-import { Session, User } from '@supabase/supabase-js';
-import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
-import { Profile } from '../types';
+import { AppState, AppStateStatus }    from 'react-native';
+import { Session, User }               from '@supabase/supabase-js';
+import { router }                      from 'expo-router';
+import { supabase }                    from '../lib/supabase';
+import type { Profile }                from '../types';
 
 interface AuthContextType {
-  session: Session | null;
-  user: User | null;
-  profile: Profile | null;
-  loading: boolean;
-  profileLoading: boolean;
-  refreshProfile: () => Promise<void>;
-  signOut: () => Promise<void>;
+  session:           Session | null;
+  user:              User | null;
+  profile:           Profile | null;
+  loading:           boolean;
+  profileLoading:    boolean;
+  accountDeleted:    boolean;          // true when admin set account_status='deleted'
+  refreshProfile:    () => Promise<void>;
+  signOut:           () => Promise<void>;
+  clearDeletedState: () => void;       // called by AccountDeletedScreen CTA
 }
 
 const AuthContext = createContext<AuthContextType>({
-  session: null,
-  user: null,
-  profile: null,
-  loading: true,
-  profileLoading: false,
-  refreshProfile: async () => {},
-  signOut: async () => {},
+  session:           null,
+  user:              null,
+  profile:           null,
+  loading:           true,
+  profileLoading:    false,
+  accountDeleted:    false,
+  refreshProfile:    async () => {},
+  signOut:           async () => {},
+  clearDeletedState: () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [session,        setSession]        = useState<Session | null>(null);
+  const [user,           setUser]           = useState<User | null>(null);
+  const [profile,        setProfile]        = useState<Profile | null>(null);
+  const [loading,        setLoading]        = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
 
-  // fetchProfile is always called outside onAuthStateChange (via setTimeout)
-  // to avoid the Supabase internal lock deadlock.
+  // accountDeleted: set to true when the server-side UPDATE event fires with
+  // account_status = 'deleted'. In-memory only — no persistence needed because
+  // once deleted, sign-in fails at the Supabase level.
+  const [accountDeleted, setAccountDeleted] = useState(false);
+
+  // Ref so the synchronous SIGNED_OUT handler can read the latest value
+  // without stale closure issues (useState setter updates are async).
+  const accountDeletedRef = useRef(false);
+
+  // One Realtime channel for profile UPDATE events (suspension + deletion).
+  // DELETE event subscription removed — see header comment for why.
+  const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  // ── fetchProfile ───────────────────────────────────────────────────────────
+
   const fetchProfile = async (userId: string) => {
-    // Note: we do NOT set profileLoading=true here because it is already
-    // set synchronously in onAuthStateChange before this is called.
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -95,28 +112,97 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // ── signOut ────────────────────────────────────────────────────────────────
+
   const signOut = async () => {
-    // Clear local state first so UI updates immediately
     setSession(null);
     setUser(null);
     setProfile(null);
     setProfileLoading(false);
-
-    // Sign out from Supabase
     await supabase.auth.signOut();
+    // Only route to onboarding for voluntary sign-outs.
+    // Deletion: accountDeletedRef is already true → skip routing.
+    if (!accountDeletedRef.current) {
+      router.replace('/(auth)/onboarding');
+    }
+  };
 
-    // Redirect to onboarding — index.tsx is NOT mounted when the user is
-    // deep inside the app, so its useEffect won't fire. We must navigate
-    // here explicitly to guarantee the redirect always happens.
+  // ── clearDeletedState — called by AccountDeletedScreen "Go to Sign In" ─────
+
+  const clearDeletedState = () => {
+    accountDeletedRef.current = false;
+    setAccountDeleted(false);
     router.replace('/(auth)/onboarding');
   };
+
+  // ── Realtime profile subscription ─────────────────────────────────────────
+  // Handles UPDATE events only:
+  //   • account_status = 'suspended' → isSuspended overlay in _layout
+  //   • account_status = 'deleted'   → accountDeleted overlay in _layout
+  //   • any other profile change     → reflects in local profile state
+
+  const setupRealtimeProfile = (userId: string) => {
+    if (realtimeChannelRef.current) {
+      supabase.removeChannel(realtimeChannelRef.current);
+      realtimeChannelRef.current = null;
+    }
+
+    const channel = supabase
+      .channel(`profile_changes_${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event:  'UPDATE',
+          schema: 'public',
+          table:  'profiles',
+          filter: `id=eq.${userId}`,
+        },
+        (payload) => {
+          if (!payload.new || typeof payload.new !== 'object') return;
+
+          const updated = payload.new as Profile & { account_status?: string };
+
+          // ── Account deleted by admin ──────────────────────────────────────
+          // The admin DELETE route sets account_status='deleted' before
+          // deleting the auth user. We catch it here as a reliable UPDATE event.
+          // Cast to string first so TypeScript doesn't complain if the type
+          // union doesn't yet include 'deleted' in a stale build cache.
+          if ((updated.account_status as string) === 'deleted') {
+            // Set ref synchronously so SIGNED_OUT handler sees it immediately
+            accountDeletedRef.current = true;
+            setAccountDeleted(true);
+            setProfile(null);
+
+            // Sign out from Supabase client to clear the local session.
+            // SIGNED_OUT event will fire — accountDeletedRef=true prevents
+            // the handler from redirecting to onboarding.
+            supabase.auth.signOut().catch(() => {});
+            return;
+          }
+
+          // ── Normal profile update (suspension, flag, name change, etc.) ───
+          setProfile((prev) =>
+            prev ? { ...prev, ...updated } : updated,
+          );
+        },
+      )
+      .subscribe();
+
+    realtimeChannelRef.current = channel;
+  };
+
+  const teardownRealtimeProfile = () => {
+    if (realtimeChannelRef.current) {
+      supabase.removeChannel(realtimeChannelRef.current);
+      realtimeChannelRef.current = null;
+    }
+  };
+
+  // ── Auth state listener ────────────────────────────────────────────────────
 
   useEffect(() => {
     let mounted = true;
 
-    // CRITICAL: This callback must stay SYNCHRONOUS.
-    // Never use async here or await any Supabase method inside —
-    // doing so deadlocks the auth lock and breaks signIn/updateUser.
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, newSession) => {
@@ -128,6 +214,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setProfile(null);
         setProfileLoading(false);
         setLoading(false);
+        teardownRealtimeProfile();
+
+        // If accountDeletedRef is true, the sign-out was triggered by our own
+        // supabase.auth.signOut() call inside the DELETE Realtime handler.
+        // The AccountDeletedScreen overlay is already showing — do NOT redirect.
+        if (!accountDeletedRef.current) {
+          router.replace('/(auth)/onboarding');
+        }
         return;
       }
 
@@ -136,16 +230,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(newSession?.user ?? null);
 
         if (newSession?.user) {
-          // ── KEY FIX ──────────────────────────────────────────────────────
-          // Set profileLoading=true HERE, synchronously, before setTimeout.
-          // index.tsx checks (session && profileLoading) and returns early,
-          // so it waits for the real profile data before making any routing
-          // decision. Without this, index.tsx sees profile=null immediately
-          // and wrongly redirects to profile-setup on every app open.
+          // Set profileLoading=true synchronously (Part 31 race condition fix)
           setProfileLoading(true);
           const uid = newSession.user.id;
           setTimeout(() => {
-            if (mounted) fetchProfile(uid);
+            if (mounted) {
+              fetchProfile(uid).then(() => {
+                if (mounted) setupRealtimeProfile(uid);
+              });
+            }
           }, 0);
         } else {
           setProfileLoading(false);
@@ -160,19 +253,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(newSession?.user ?? null);
 
       if (newSession?.user) {
-        // Same fix for all other events — set loading true before setTimeout
         setProfileLoading(true);
         const uid = newSession.user.id;
         setTimeout(() => {
-          if (mounted) fetchProfile(uid);
+          if (mounted) {
+            fetchProfile(uid).then(() => {
+              if (mounted) setupRealtimeProfile(uid);
+            });
+          }
         }, 0);
       } else {
         setProfile(null);
         setProfileLoading(false);
+        teardownRealtimeProfile();
       }
     });
 
-    // Triggers the INITIAL_SESSION event above
     supabase.auth.getSession().catch((err) => {
       console.error('getSession error:', err);
       if (mounted) {
@@ -194,12 +290,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       mounted = false;
       subscription.unsubscribe();
       appStateSub.remove();
+      teardownRealtimeProfile();
     };
   }, []);
 
   return (
     <AuthContext.Provider
-      value={{ session, user, profile, loading, profileLoading, refreshProfile, signOut }}
+      value={{
+        session, user, profile, loading, profileLoading,
+        accountDeleted,
+        refreshProfile, signOut, clearDeletedState,
+      }}
     >
       {children}
     </AuthContext.Provider>

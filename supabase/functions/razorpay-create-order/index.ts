@@ -1,5 +1,7 @@
 // supabase/functions/razorpay-create-order/index.ts
 // Part 24 — Creates a Razorpay order and saves it to the DB.
+// Part 32 UPDATE — Sets is_test = true when using a Razorpay test key (rzp_test_*).
+//                  This lets the admin dashboard toggle between live and test orders.
 //
 // Deploy:
 //   supabase functions deploy razorpay-create-order --no-verify-jwt
@@ -24,11 +26,17 @@ const CORS = {
 // ─── Pack definitions (must match src/constants/credits.ts) ──────────────────
 // Hardcoded server-side to prevent tampering.
 
-const PACK_DEFINITIONS: Record<string, { credits: number; bonusCredits: number; amountPaise: number; name: string; description: string }> = {
-  'starter_99':    { credits: 50,   bonusCredits: 0,   amountPaise: 9900,  name: 'Starter',    description: '50 credits — perfect for getting started'       },
-  'popular_249':   { credits: 150,  bonusCredits: 20,  amountPaise: 24900, name: 'Popular',    description: '170 credits (150 + 20 bonus)'                   },
-  'pro_499':       { credits: 350,  bonusCredits: 50,  amountPaise: 49900, name: 'Pro Pack',   description: '400 credits (350 + 50 bonus) — best value'      },
-  'unlimited_999': { credits: 1000, bonusCredits: 200, amountPaise: 99900, name: 'Power User', description: '1200 credits (1000 + 200 bonus) — heavy researchers' },
+const PACK_DEFINITIONS: Record<string, {
+  credits: number;
+  bonusCredits: number;
+  amountPaise: number;
+  name: string;
+  description: string;
+}> = {
+  'starter_99':    { credits: 50,   bonusCredits: 0,   amountPaise: 9900,  name: 'Starter',    description: '50 credits — perfect for getting started'              },
+  'popular_249':   { credits: 150,  bonusCredits: 20,  amountPaise: 24900, name: 'Popular',    description: '170 credits (150 + 20 bonus)'                          },
+  'pro_499':       { credits: 350,  bonusCredits: 50,  amountPaise: 49900, name: 'Pro Pack',   description: '400 credits (350 + 50 bonus) — best value'             },
+  'unlimited_999': { credits: 1000, bonusCredits: 200, amountPaise: 99900, name: 'Power User', description: '1200 credits (1000 + 200 bonus) — heavy researchers'   },
 };
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -97,7 +105,7 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  // ── Validate pack ────────────────────────────────────────────────────────────
+  // ── Validate pack ─────────────────────────────────────────────────────────────
 
   const pack = PACK_DEFINITIONS[pack_id];
   if (!pack) {
@@ -107,9 +115,9 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  const totalCredits  = pack.credits + pack.bonusCredits;
+  const totalCredits = pack.credits + pack.bonusCredits;
 
-  // ── Create Razorpay order ─────────────────────────────────────────────────
+  // ── Razorpay credentials ───────────────────────────────────────────────────
 
   const razorpayKeyId  = Deno.env.get('RAZORPAY_KEY_ID');
   const razorpaySecret = Deno.env.get('RAZORPAY_SECRET');
@@ -121,6 +129,14 @@ Deno.serve(async (req: Request) => {
       headers: { ...CORS, 'Content-Type': 'application/json' },
     });
   }
+
+  // Part 32: detect test mode from the key prefix.
+  // rzp_test_* = test key, rzp_live_* = live key.
+  // This flag is stored on the DB row so the admin dashboard can filter
+  // test orders out of revenue stats while still being able to view them.
+  const isTestOrder = razorpayKeyId.startsWith('rzp_test_');
+
+  // ── Create Razorpay order ─────────────────────────────────────────────────
 
   const receipt = `deepdive_${user_id.slice(0, 8)}_${Date.now()}`;
 
@@ -139,6 +155,7 @@ Deno.serve(async (req: Request) => {
         user_id:  user_id,
         pack_id,
         app_name: 'DeepDive AI',
+        is_test:  String(isTestOrder),
       },
     }),
   });
@@ -154,7 +171,10 @@ Deno.serve(async (req: Request) => {
 
   const rzpOrder = await rzpResponse.json();
 
-  // ── Save order to DB ─────────────────────────────────────────────────────
+  // ── Save order to DB via RPC ──────────────────────────────────────────────
+  // The existing RPC (create_razorpay_order_row) inserts the core order row.
+  // After it runs we patch is_test in a separate UPDATE — this way the RPC
+  // signature doesn't need to change and old rows are unaffected.
 
   const { error: dbError } = await supabase.rpc('create_razorpay_order_row', {
     p_user_id:           user_id,
@@ -166,10 +186,25 @@ Deno.serve(async (req: Request) => {
 
   if (dbError) {
     // Non-fatal — log but proceed; the payment can still work
-    console.warn('DB order save failed:', dbError.message);
+    console.warn('DB order save (RPC) failed:', dbError.message);
   }
 
-  // ── Return order details to app ──────────────────────────────────────────
+  // Part 32: stamp is_test on the row we just created.
+  // Only runs when isTestOrder = true (no-op for live orders since the column
+  // defaults to false). Non-fatal — a failure here doesn't break payment flow.
+  if (isTestOrder) {
+    const { error: testFlagError } = await supabase
+      .from('razorpay_orders')
+      .update({ is_test: true })
+      .eq('razorpay_order_id', rzpOrder.id);
+
+    if (testFlagError) {
+      // Non-fatal — order still works; just won't be filtered in admin dashboard
+      console.warn('Could not set is_test flag on order row:', testFlagError.message);
+    }
+  }
+
+  // ── Return order details to app ───────────────────────────────────────────
 
   return new Response(
     JSON.stringify({
@@ -180,6 +215,7 @@ Deno.serve(async (req: Request) => {
       credits:     totalCredits,
       pack_name:   pack.name,
       description: pack.description,
+      is_test:     isTestOrder,       // Part 32: exposed so app can show a test badge if needed
     }),
     {
       status:  200,
