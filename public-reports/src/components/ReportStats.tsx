@@ -1,7 +1,8 @@
 // src/components/ReportStats.tsx
-// Public-Reports — Stats strip: sources, reliability, citations, sections
+// Public-Reports — Stats strip: sources, reliability, citations, source quality
 
 import type { PublicReport } from '@/types/report';
+import { computeTrustSummary, getScoreColor, getScoreLabel } from '@/lib/sourceTrustScorer';
 
 interface ReportStatsProps {
   report: PublicReport;
@@ -14,32 +15,28 @@ function getReliabilityColor(score: number): string {
   return '#EF4444';
 }
 
-function getReliabilityLabel(score: number): string {
-  if (score >= 8) return 'High';
-  if (score >= 6) return 'Good';
-  if (score >= 4) return 'Moderate';
-  return 'Low';
-}
-
 interface StatTileProps {
-  icon:    React.ReactNode;
-  value:   string;
-  label:   string;
-  color?:  string;
-  delay?:  number;
+  icon:   React.ReactNode;
+  value:  string;
+  label:  string;
+  sub?:   string;
+  color?: string;
+  delay?: number;
 }
 
-function StatTile({ icon, value, label, color, delay = 0 }: StatTileProps) {
+function StatTile({ icon, value, label, sub, color, delay = 0 }: StatTileProps) {
   return (
     <div
       className="flex flex-col items-center gap-1.5 p-3 rounded-xl flex-1 min-w-0 animate-fade-in-up"
       style={{
-        background:       'var(--bg-card)',
-        border:           '1px solid var(--border)',
-        animationDelay:   `${delay}ms`,
+        background:      'var(--bg-card)',
+        border:          '1px solid var(--border)',
+        borderTopWidth:  '2px',
+        borderTopColor:  color ?? 'var(--brand, #6C63FF)',
+        animationDelay:  `${delay}ms`,
       }}
     >
-      <div style={{ color: color ?? 'var(--brand)' }}>{icon}</div>
+      <div style={{ color: color ?? 'var(--brand, #6C63FF)' }}>{icon}</div>
       <span
         className="font-extrabold text-base leading-none"
         style={{ color: color ?? 'var(--text-primary)' }}
@@ -52,31 +49,24 @@ function StatTile({ icon, value, label, color, delay = 0 }: StatTileProps) {
       >
         {label}
       </span>
+      {sub && (
+        <span className="text-xs text-center leading-none" style={{ color: color ?? 'var(--text-muted)', opacity: 0.7 }}>
+          {sub}
+        </span>
+      )}
     </div>
   );
 }
 
 export default function ReportStats({ report }: ReportStatsProps) {
   const reliabilityColor = getReliabilityColor(report.reliabilityScore);
-  const reliabilityLabel = getReliabilityLabel(report.reliabilityScore);
 
-  // Compute avg trust score from citations if available
-  const avgTrustScore =
-    report.citations.length > 0
-      ? Math.round(
-          report.citations.reduce(
-            (s, c) => s + (c.trustScore?.credibilityScore ?? 5),
-            0,
-          ) / report.citations.length * 10,
-        ) / 10
-      : null;
-
-  const getTrustColor = (score: number) => {
-    if (score >= 8) return '#10B981';
-    if (score >= 6) return '#6C63FF';
-    if (score >= 4) return '#F59E0B';
-    return '#EF4444';
-  };
+  // Compute avg source quality from enriched citations
+  const summary       = computeTrustSummary(report.citations);
+  const avgQuality    = summary.avgScore;
+  const qualityColor  = avgQuality > 0 ? getScoreColor(avgQuality) : null;
+  const qualityLabel  = avgQuality > 0 ? getScoreLabel(avgQuality) : null;
+  const hqPct         = summary.highQualityPercent;
 
   return (
     <div className="flex gap-2 flex-wrap" role="region" aria-label="Report statistics">
@@ -94,7 +84,7 @@ export default function ReportStats({ report }: ReportStatsProps) {
         icon={<LinkIcon />}
         value={String(report.citations.length)}
         label="Citations"
-        color="var(--brand)"
+        color="#6C63FF"
         delay={120}
       />
 
@@ -102,7 +92,7 @@ export default function ReportStats({ report }: ReportStatsProps) {
       <StatTile
         icon={<ShieldIcon />}
         value={`${report.reliabilityScore}/10`}
-        label={`${reliabilityLabel} reliability`}
+        label="Reliability"
         color={reliabilityColor}
         delay={180}
       />
@@ -112,17 +102,18 @@ export default function ReportStats({ report }: ReportStatsProps) {
         icon={<LayersIcon />}
         value={String(report.sections.length)}
         label="Sections"
-        color="var(--text-secondary)"
+        color="rgba(255,255,255,0.5)"
         delay={240}
       />
 
-      {/* Source quality (if trust data available) */}
-      {avgTrustScore !== null && (
+      {/* Source quality — only shown when citations have trust scores */}
+      {qualityColor && avgQuality > 0 && (
         <StatTile
           icon={<StarIcon />}
-          value={`${avgTrustScore}/10`}
-          label="Src quality"
-          color={getTrustColor(avgTrustScore)}
+          value={`${avgQuality}/10`}
+          label={`${qualityLabel} quality`}
+          sub={hqPct > 0 ? `${hqPct}% verified` : undefined}
+          color={qualityColor}
           delay={300}
         />
       )}

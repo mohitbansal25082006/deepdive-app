@@ -3,22 +3,26 @@
 //
 // POST /api/public-chat
 // Body: { shareId, question, history }
-//
-// Returns { limitReached: true } with status 200 (not 429) when limit is hit
-// so the client can show SignupWall gracefully without triggering an error state.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getClientIp, checkRateLimit, recordUsage } from '@/lib/rateLimiter';
 import { getPublicAnswer }    from '@/lib/ragPublic';
-import { supabaseServer }     from '@/lib/supabase-server';
+import { createSupabaseServer } from '@/lib/supabase-server';
 import type { PublicReport, PublicChatRequest } from '@/types/report';
 
-export const runtime = 'nodejs';
+export const runtime   = 'nodejs';
+export const dynamic   = 'force-dynamic';
+export const revalidate = 0;
 
-// ── Load report for RAG context ───────────────────────────────────────────────
+const NO_CACHE = { 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache' };
+
+// ── Load report ───────────────────────────────────────────────────────────────
 
 async function loadReportForChat(shareId: string): Promise<PublicReport | null> {
-  const { data, error } = await supabaseServer.rpc('get_report_by_share_id', {
+  // Fresh client per request
+  const supabase = createSupabaseServer();
+
+  const { data, error } = await supabase.rpc('get_report_by_share_id', {
     p_share_id: shareId,
   });
 
@@ -59,67 +63,57 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400, headers: NO_CACHE });
   }
 
   const { shareId, question, history = [] } = body;
 
   if (!shareId || typeof shareId !== 'string' || shareId.length > 20) {
-    return NextResponse.json({ error: 'Invalid shareId' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid shareId' }, { status: 400, headers: NO_CACHE });
   }
 
   if (!question || typeof question !== 'string') {
-    return NextResponse.json({ error: 'Question is required' }, { status: 400 });
+    return NextResponse.json({ error: 'Question is required' }, { status: 400, headers: NO_CACHE });
   }
 
   const trimmedQuestion = question.trim().slice(0, 500);
   if (trimmedQuestion.length < 2) {
-    return NextResponse.json({ error: 'Question too short' }, { status: 400 });
+    return NextResponse.json({ error: 'Question too short' }, { status: 400, headers: NO_CACHE });
   }
 
   const cleanHistory = (Array.isArray(history) ? history : [])
     .slice(-6)
     .filter(
       (m): m is { role: 'user' | 'assistant'; content: string } =>
-        m &&
-        typeof m === 'object' &&
+        m && typeof m === 'object' &&
         (m.role === 'user' || m.role === 'assistant') &&
-        typeof m.content === 'string'
+        typeof m.content === 'string',
     )
     .map(m => ({ role: m.role, content: m.content.slice(0, 1000) }));
 
-  // 2. Rate limit check
+  // 2. Rate limit — fresh check every time
   const ip = getClientIp(request);
   const { allowed, questionsUsed, questionsMax, limitReached } =
     await checkRateLimit(ip, shareId);
 
-  // Return 200 with limitReached=true (not 429) so the client can
-  // show SignupWall without triggering the catch/error branch in ChatWidget.
+  // Return 200 with limitReached=true so client shows SignupWall (not error state)
   if (!allowed || limitReached) {
     return NextResponse.json(
-      {
-        answer:        '',
-        limitReached:  true,
-        questionsUsed,
-        questionsMax,
-      },
-      {
-        status: 200,
-        headers: { 'Cache-Control': 'no-store' },
-      }
+      { answer: '', limitReached: true, questionsUsed, questionsMax },
+      { status: 200, headers: NO_CACHE },
     );
   }
 
-  // 3. Load report
+  // 3. Load report (for RAG context)
   const report = await loadReportForChat(shareId);
   if (!report) {
     return NextResponse.json(
       { error: 'Report not found or no longer public' },
-      { status: 404 }
+      { status: 404, headers: NO_CACHE },
     );
   }
 
-  // 4. Generate answer
+  // 4. Generate RAG answer
   let answer: string;
   try {
     const result = await getPublicAnswer({
@@ -132,39 +126,26 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error('[public-chat] RAG error:', err);
     return NextResponse.json(
-      {
-        error:        'Failed to generate answer. Please try again.',
-        limitReached: false,
-        questionsUsed,
-        questionsMax,
-      },
-      { status: 500 }
+      { error: 'Failed to generate answer. Please try again.', limitReached: false, questionsUsed, questionsMax },
+      { status: 500, headers: NO_CACHE },
     );
   }
 
   // 5. Record usage AFTER successful answer
-  const newCount        = await recordUsage(ip, shareId);
-  const nowLimitReached = newCount >= questionsMax;
+  const newCount = await recordUsage(ip, shareId);
+
+  // IMPORTANT: Always return limitReached: false with the answer, even when
+  // newCount === questionsMax. The SignupWall should appear only when the user
+  // tries to send the NEXT question (which checkRateLimit will block).
+  // Returning limitReached: true here causes the wall to appear the instant
+  // the 3rd answer is rendered, before the user can even read it.
 
   return NextResponse.json(
-    {
-      answer,
-      limitReached:  nowLimitReached,
-      questionsUsed: newCount,
-      questionsMax,
-    },
-    {
-      status: 200,
-      headers: { 'Cache-Control': 'no-store' },
-    }
+    { answer, limitReached: false, questionsUsed: newCount, questionsMax },
+    { status: 200, headers: NO_CACHE },
   );
 }
 
-// ── GET — health check ─────────────────────────────────────────────────────────
-
 export async function GET() {
-  return NextResponse.json(
-    { status: 'ok', service: 'DeepDive AI Public Chat' },
-    { status: 200 }
-  );
+  return NextResponse.json({ status: 'ok', service: 'DeepDive AI Public Chat' });
 }

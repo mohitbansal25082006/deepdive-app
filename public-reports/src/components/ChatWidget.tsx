@@ -113,7 +113,11 @@ export default function ChatWidget({
         const used    = typeof data.questionsUsed === 'number' && data.questionsUsed > 0
           ? data.questionsUsed
           : 0;
-        const limited = data.limitReached === true; // strict equality, not truthy
+        // Only show SignupWall on refresh if server EXPLICITLY confirms limit reached
+        // AND the user has already used MORE than the max (i.e. truly exhausted).
+        // When questionsUsed === questionsMax, they used exactly the last question —
+        // they should see a disabled input, not the wall, until they try again.
+        const limited = data.limitReached === true && used > 0;
 
         setQuestionsUsed(used);
         if (limited) setLimitReached(true);
@@ -199,9 +203,10 @@ export default function ChatWidget({
       };
       setMessages(prev => [...prev, assistantMsg]);
 
-      if (data.questionsUsed >= questionsMax) {
-        setLimitReached(true);
-      }
+      // DO NOT trigger SignupWall here even when questionsUsed === questionsMax.
+      // The user must be able to read their answer fully first.
+      // limitReached will be set on the NEXT send attempt when the server
+      // returns limitReached: true for the 4th question.
 
       setSuggestions(
         SUGGESTED_QUESTIONS

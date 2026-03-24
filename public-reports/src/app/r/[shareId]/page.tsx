@@ -17,6 +17,7 @@ import StatCards              from '@/components/StatCards';
 import ChatWidget             from '@/components/ChatWidget';
 import DeepDiveBanner         from '@/components/DeepDiveBanner';
 import type { PublicReport }  from '@/types/report';
+import { enrichCitations, computeTrustSummary, getScoreColor, TIER_LABELS, TIER_COLORS, BIAS_LABELS } from '@/lib/sourceTrustScorer';
 
 // ── generateMetadata ──────────────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@ async function fetchReport(shareId: string): Promise<PublicReport | null> {
     sections:          Array.isArray(row.sections)           ? row.sections           : [],
     keyFindings:       Array.isArray(row.key_findings)       ? row.key_findings       : [],
     futurePredictions: Array.isArray(row.future_predictions) ? row.future_predictions : [],
-    citations:         Array.isArray(row.citations)          ? row.citations          : [],
+    citations:         enrichCitations(Array.isArray(row.citations) ? [...row.citations] : []),
     statistics:        Array.isArray(row.statistics)         ? row.statistics         : [],
     sourcesCount:      row.sources_count      ?? 0,
     reliabilityScore:  row.reliability_score  ?? 0,
@@ -288,7 +289,7 @@ function BottomCTA({ report, playStoreUrl }: { report: PublicReport; playStoreUr
         </div>
 
         <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
-          Free to start · 20 credits on signup · No credit card required
+          Free to start · 50 credits on signup · No credit card required
         </p>
       </div>
     </div>
