@@ -1,0 +1,251 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ─── CSS Variables — DeepDive AI Dark Theme ─────────────────────────────── */
+:root {
+  /* Core backgrounds — mirroring the app's COLORS */
+  --bg-base:       #0A0A1A;
+  --bg-card:       #12122A;
+  --bg-elevated:   #1A1A35;
+  --bg-overlay:    rgba(10, 10, 26, 0.96);
+ 
+  /* Primary brand */
+  --brand:         #6C63FF;
+  --brand-50:      rgba(108, 99, 255, 0.05);
+  --brand-15:      rgba(108, 99, 255, 0.15);
+  --brand-25:      rgba(108, 99, 255, 0.25);
+  --brand-50-solid: rgba(108, 99, 255, 0.5);
+ 
+  /* Text */
+  --text-primary:   #FFFFFF;
+  --text-secondary: rgba(255, 255, 255, 0.80);
+  --text-muted:     rgba(255, 255, 255, 0.45);
+ 
+  /* Semantic */
+  --success:   #10B981;
+  --warning:   #F59E0B;
+  --error:     #EF4444;
+  --info:      #3B82F6;
+ 
+  /* Borders */
+  --border:    rgba(255, 255, 255, 0.08);
+  --border-md: rgba(255, 255, 255, 0.12);
+ 
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+}
+ 
+/* ─── Base Reset ─────────────────────────────────────────────────────────── */
+ 
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+ 
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+ 
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-body, system-ui, sans-serif);
+  min-height: 100vh;
+}
+ 
+/* ─── Selection ──────────────────────────────────────────────────────────── */
+ 
+::selection {
+  background-color: var(--brand-25);
+  color: var(--text-primary);
+}
+ 
+/* ─── Scrollbar ──────────────────────────────────────────────────────────── */
+ 
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--border-md); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+ 
+/* ─── Typography utilities ───────────────────────────────────────────────── */
+ 
+.text-gradient {
+  background: linear-gradient(135deg, #6C63FF 0%, #A78BFA 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+ 
+.text-gradient-warm {
+  background: linear-gradient(135deg, #F59E0B 0%, #EF4444 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+ 
+/* ─── Card utilities ─────────────────────────────────────────────────────── */
+ 
+.card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+ 
+.card-elevated {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-lg);
+}
+ 
+.card-brand {
+  background: linear-gradient(135deg, #1A1A35 0%, #12122A 100%);
+  border: 1px solid var(--brand-25);
+  border-radius: var(--radius-xl);
+}
+ 
+/* ─── Prose (markdown content) ───────────────────────────────────────────── */
+ 
+.prose-report {
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+}
+ 
+.prose-report p     { margin-bottom: 1em; }
+.prose-report strong { color: var(--text-primary); font-weight: 700; }
+.prose-report em    { color: var(--text-secondary); }
+.prose-report a     {
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prose-report a:hover { opacity: 0.8; }
+ 
+/* ─── Animations ─────────────────────────────────────────────────────────── */
+ 
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+ 
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+ 
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+ 
+@keyframes dotBounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40%           { transform: translateY(-6px); opacity: 1; }
+}
+ 
+.animate-fade-in-up {
+  animation: fadeInUp 0.45s ease-out both;
+}
+ 
+.animate-fade-in {
+  animation: fadeIn 0.35s ease-out both;
+}
+ 
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 25%,
+    var(--bg-card) 50%,
+    var(--bg-elevated) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+ 
+/* Staggered children */
+.stagger-children > * { animation: fadeInUp 0.45s ease-out both; }
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.10s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.20s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.30s; }
+ 
+/* ─── Depth badge colors ─────────────────────────────────────────────────── */
+ 
+.depth-quick     { color: #10B981; border-color: rgba(16,185,129,0.3); background: rgba(16,185,129,0.1); }
+.depth-deep      { color: #6C63FF; border-color: rgba(108,99,255,0.3); background: rgba(108,99,255,0.1); }
+.depth-expert    { color: #F59E0B; border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.1); }
+ 
+/* ─── Trust tier colors ──────────────────────────────────────────────────── */
+ 
+.trust-tier-1 { color: #10B981; }
+.trust-tier-2 { color: #6C63FF; }
+.trust-tier-3 { color: #F59E0B; }
+.trust-tier-4 { color: rgba(255,255,255,0.4); }
+ 
+/* ─── Chat typing dots ───────────────────────────────────────────────────── */
+ 
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: dotBounce 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.30s; }
+ 
+/* ─── Focus ring ─────────────────────────────────────────────────────────── */
+ 
+.focus-ring:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+ 
+/* ─── Noise overlay ──────────────────────────────────────────────────────── */
+ 
+.noise-overlay {
+  position: relative;
+}
+.noise-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  border-radius: inherit;
+}
+ 
