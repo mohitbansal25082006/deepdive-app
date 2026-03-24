@@ -1,10 +1,11 @@
 -- =============================================================================
 -- schema_part33.sql
--- DeepDive AI — Part 33: Shareable Public Report Pages
+-- DeepDive AI — Part 33: Shareable Public Report Pages (with Rate Limit Fix)
 --
 -- Run in Supabase SQL Editor (Dashboard → SQL Editor → New Query → Run)
 -- Safe to re-run — all statements use IF NOT EXISTS / CREATE OR REPLACE.
 -- Does NOT modify any existing tables or policies from Parts 1–32.
+-- Includes the rate limiter fix that ensures check_chat_limit always returns one row.
 -- =============================================================================
 
 -- ─── 1. public_share_links ────────────────────────────────────────────────────
@@ -250,6 +251,11 @@ GRANT EXECUTE ON FUNCTION public.increment_share_view(TEXT) TO authenticated;
 -- Returns whether the visitor (by ip_hash) has reached the 3-question limit
 -- for this share_id, and how many questions they have used so far.
 -- Auto-resets if the window is older than 24 hours.
+--
+-- FIX: Now ALWAYS returns exactly one row. When no usage row exists → returns
+-- { questions_used: 0, limit_reached: false }. When window expired → resets and
+-- returns { questions_used: 0, limit_reached: false }. When within window →
+-- returns actual count and whether limit is hit.
 
 CREATE OR REPLACE FUNCTION public.check_chat_limit(
   p_ip_hash  TEXT,
@@ -267,19 +273,26 @@ SET search_path = public
 AS $$
 DECLARE
   v_row public.public_chat_usage%ROWTYPE;
+  v_found BOOLEAN := FALSE;
 BEGIN
+  -- Try to find an existing usage row
   SELECT * INTO v_row
   FROM public.public_chat_usage
   WHERE ip_hash  = p_ip_hash
     AND share_id = p_share_id;
 
-  -- No row yet → zero usage
-  IF NOT FOUND THEN
-    RETURN QUERY SELECT 0::INTEGER, FALSE, NOW();
+  v_found := FOUND;
+
+  -- Case 1: No row exists yet → brand new visitor, 0 questions used
+  IF NOT v_found THEN
+    RETURN QUERY SELECT
+      0::INTEGER   AS questions_used,
+      FALSE        AS limit_reached,
+      NOW()        AS window_start;
     RETURN;
   END IF;
 
-  -- Window expired (> 24 hours) → treat as fresh
+  -- Case 2: Row exists but window has expired (> 24 hours) → reset
   IF NOW() > v_row.window_start + INTERVAL '24 hours' THEN
     UPDATE public.public_chat_usage
     SET question_count = 0,
@@ -288,14 +301,17 @@ BEGIN
     WHERE ip_hash  = p_ip_hash
       AND share_id = p_share_id;
 
-    RETURN QUERY SELECT 0::INTEGER, FALSE, NOW();
+    RETURN QUERY SELECT
+      0::INTEGER   AS questions_used,
+      FALSE        AS limit_reached,
+      NOW()        AS window_start;
     RETURN;
   END IF;
 
-  RETURN QUERY
-  SELECT
-    v_row.question_count,
-    (v_row.question_count >= p_limit),
+  -- Case 3: Active window — return real count
+  RETURN QUERY SELECT
+    v_row.question_count                    AS questions_used,
+    (v_row.question_count >= p_limit)       AS limit_reached,
     v_row.window_start;
 END;
 $$;
@@ -449,7 +465,9 @@ BEGIN
   RAISE NOTICE '✅ Part 33 schema migration completed successfully';
   RAISE NOTICE '   Tables: public_share_links, public_chat_usage';
   RAISE NOTICE '   RPCs: get_or_create_share_link, get_report_by_share_id,';
-  RAISE NOTICE '         increment_share_view, check_chat_limit,';
+  RAISE NOTICE '         increment_share_view, check_chat_limit (patched),';
   RAISE NOTICE '         record_chat_usage, match_report_chunks_public,';
   RAISE NOTICE '         delete_share_link';
+  RAISE NOTICE '   View: user_share_links';
+  RAISE NOTICE '   Rate limit fix: check_chat_limit always returns 1 row';
 END $$;
