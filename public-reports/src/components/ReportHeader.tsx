@@ -1,6 +1,8 @@
-// src/components/ReportHeader.tsx
-// Public-Reports — Report header with title, depth badge, meta, owner info
+// Public-Reports/src/components/ReportHeader.tsx
+// Part 34 update: added clickable topic tag chips (→ /topic/[tag])
+// All Part 33 behaviour preserved exactly.
 
+import Link             from 'next/link';
 import type { PublicReport } from '@/types/report';
 
 interface ReportHeaderProps {
@@ -41,17 +43,20 @@ export default function ReportHeader({ report }: ReportHeaderProps) {
   const modeTag = MODE_CONFIG[report.researchMode ?? 'standard'];
   const dateStr = report.completedAt ?? report.createdAt;
 
+  const hasTags = Array.isArray(report.tags) && report.tags.length > 0;
+
   return (
     <header className="animate-fade-in-up" style={{ animationDelay: '0.05s' }}>
+
       {/* ── Top meta row ── */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {/* Depth badge */}
         <span
           className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border"
           style={{
-            color:            depth.color,
-            background:       depth.bg,
-            borderColor:      depth.border,
+            color:       depth.color,
+            background:  depth.bg,
+            borderColor: depth.border,
           }}
         >
           <span>{depth.icon}</span>
@@ -107,12 +112,38 @@ export default function ReportHeader({ report }: ReportHeaderProps) {
         {report.title}
       </h1>
 
+      {/* ── Part 34: Topic tag chips ── */}
+      {hasTags && (
+        <div
+          className="flex flex-wrap gap-2 mb-5"
+          aria-label="Topic tags"
+        >
+          {report.tags.slice(0, 5).map(tag => (
+            <Link
+              key={tag}
+              href={`/topic/${encodeURIComponent(tag.toLowerCase())}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-all hover:opacity-80"
+              style={{
+                background:     'rgba(108,99,255,0.1)',
+                border:         '1px solid rgba(108,99,255,0.25)',
+                color:          '#A78BFA',
+                textDecoration: 'none',
+              }}
+              title={`Browse all #${tag} research`}
+            >
+              <TagIcon />
+              {tag}
+            </Link>
+          ))}
+        </div>
+      )}
+
       {/* ── Query chip ── */}
       <div
         className="flex items-start gap-2 mb-5 p-3 rounded-xl"
         style={{
-          background:  'var(--bg-elevated)',
-          border:      '1px solid var(--border)',
+          background: 'var(--bg-elevated)',
+          border:     '1px solid var(--border)',
         }}
       >
         <SearchIcon className="flex-shrink-0 mt-0.5" />
@@ -120,8 +151,10 @@ export default function ReportHeader({ report }: ReportHeaderProps) {
           className="text-sm leading-relaxed"
           style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}
         >
-          <span style={{ color: 'var(--text-secondary)', fontStyle: 'normal', fontWeight: 600 }}>Query: </span>
-          "{report.query}"
+          <span style={{ color: 'var(--text-secondary)', fontStyle: 'normal', fontWeight: 600 }}>
+            Query:{' '}
+          </span>
+          &ldquo;{report.query}&rdquo;
         </p>
       </div>
 
@@ -163,7 +196,6 @@ export default function ReportHeader({ report }: ReportHeaderProps) {
           className="flex items-center gap-2 mt-4 pt-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
-          {/* Avatar */}
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold"
             style={{
@@ -207,6 +239,16 @@ function GlobeIcon() {
       <circle cx="12" cy="12" r="10"/>
       <line x1="2" y1="12" x2="22" y2="12"/>
       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+    </svg>
+  );
+}
+
+function TagIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+      <line x1="7" y1="7" x2="7.01" y2="7"/>
     </svg>
   );
 }

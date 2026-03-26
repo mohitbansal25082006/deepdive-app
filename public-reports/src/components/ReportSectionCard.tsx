@@ -1,17 +1,27 @@
-// src/components/ReportSectionCard.tsx
-// Public-Reports — Collapsible section card
-// Fixed: removed Ionicons-style string references (outline icons don't exist in browser)
-// Uses clean numbered bubbles instead of emoji/icon names
-
 'use client';
+// Public-Reports/src/components/ReportSectionCard.tsx
+// Part 34 updates:
+//   1. Each article element gets an `id` anchor for TableOfContents scroll-spy
+//   2. SectionReactions appended at the bottom of every expanded section
+//   3. New props: shareId, initialReactions
+// All Part 33 behaviour preserved exactly.
 
-import { useState } from 'react';
-import type { ReportSection, Citation } from '@/types/report';
+import { useState }           from 'react';
+import type { ReportSection, Citation, ReactionEmoji } from '@/types/report';
+import { getSectionAnchorId } from '@/lib/readTime';
+import SectionReactions        from '@/components/SectionReactions';
 
 interface ReportSectionCardProps {
-  section:   ReportSection;
-  citations: Citation[];
-  index:     number;
+  section:    ReportSection;
+  citations:  Citation[];
+  index:      number;
+  /** Part 34: share link ID — passed through to SectionReactions */
+  shareId?:   string;
+  /**
+   * Part 34: pre-fetched reaction counts from the server.
+   * Shape: { [emoji]: { count: number; hasReacted: boolean } }
+   */
+  initialReactions?: Partial<Record<ReactionEmoji, { count: number; hasReacted: boolean }>>;
 }
 
 const SECTION_ACCENT_COLORS = [
@@ -22,6 +32,8 @@ export default function ReportSectionCard({
   section,
   citations,
   index,
+  shareId,
+  initialReactions,
 }: ReportSectionCardProps) {
   const [expanded, setExpanded] = useState(index < 2);
 
@@ -31,16 +43,26 @@ export default function ReportSectionCard({
     .map(id => citations.find(c => c.id === id))
     .filter(Boolean) as Citation[];
 
+  // Part 34: derive the anchor ID for the TOC IntersectionObserver
+  const anchorId = getSectionAnchorId(section, index);
+
+  // The sectionId used for reactions — prefer section.id, fallback to anchorId
+  const reactionSectionId = section.id || anchorId;
+
   return (
-    <div
+    <article
+      id={anchorId}                   /* ← Part 34: scroll-spy anchor */
       className="rounded-2xl overflow-hidden animate-fade-in-up"
       style={{
         background:      'var(--bg-card)',
-        border:          `1px solid var(--border)`,
+        border:          'var(--border)',
+        borderStyle:     'solid',
+        borderWidth:     '1px',
         borderLeftWidth: '3px',
         borderLeftColor: expanded ? accentColor : 'var(--border)',
         animationDelay:  `${index * 60}ms`,
         transition:      'border-left-color 0.2s ease',
+        scrollMarginTop: '80px',      /* account for sticky header when scrolling to anchor */
       }}
     >
       {/* ── Header ── */}
@@ -48,6 +70,7 @@ export default function ReportSectionCard({
         onClick={() => setExpanded(v => !v)}
         className="w-full flex items-center gap-3 px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
         aria-expanded={expanded}
+        aria-controls={`section-body-${anchorId}`}
       >
         {/* Number bubble */}
         <div
@@ -90,6 +113,7 @@ export default function ReportSectionCard({
           strokeLinejoin="round"
           className="flex-shrink-0 transition-transform duration-200"
           style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+          aria-hidden="true"
         >
           <polyline points="6 9 12 15 18 9"/>
         </svg>
@@ -97,9 +121,13 @@ export default function ReportSectionCard({
 
       {/* ── Body ── */}
       {expanded && (
-        <div className="px-5 pb-5">
+        <div
+          id={`section-body-${anchorId}`}
+          className="px-5 pb-5"
+        >
           <div className="mb-4" style={{ height: '1px', background: 'var(--border)' }} />
 
+          {/* Main content */}
           {section.content && (
             <p
               className="text-sm leading-relaxed mb-4"
@@ -111,13 +139,14 @@ export default function ReportSectionCard({
 
           {/* Bullets */}
           {section.bullets && section.bullets.length > 0 && (
-            <ul className="space-y-2 mb-4">
+            <ul className="space-y-2 mb-4" role="list">
               {section.bullets.map((bullet, i) => (
                 <li key={i} className="flex items-start gap-2.5 text-sm"
                     style={{ color: 'var(--text-secondary)' }}>
                   <span
                     className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-2"
                     style={{ background: accentColor }}
+                    aria-hidden="true"
                   />
                   <span className="leading-relaxed">{bullet}</span>
                 </li>
@@ -125,7 +154,7 @@ export default function ReportSectionCard({
             </ul>
           )}
 
-          {/* Section stats */}
+          {/* Section statistics */}
           {section.statistics && section.statistics.length > 0 && (
             <div className="space-y-2 mb-4">
               <p className="text-xs font-bold uppercase tracking-widest mb-2"
@@ -156,7 +185,7 @@ export default function ReportSectionCard({
 
           {/* Citations */}
           {sectionCitations.length > 0 && (
-            <div>
+            <div className="mb-1">
               <p className="text-xs font-bold uppercase tracking-widest mb-2"
                  style={{ color: 'var(--text-muted)' }}>
                 {sectionCitations.length} Source{sectionCitations.length > 1 ? 's' : ''}
@@ -173,22 +202,15 @@ export default function ReportSectionCard({
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-opacity hover:opacity-70"
                       style={{
-                        background:  'var(--bg-elevated)',
-                        border:      '1px solid var(--border)',
-                        color:       'var(--text-muted)',
-                        maxWidth:    '180px',
+                        background:     'var(--bg-elevated)',
+                        border:         '1px solid var(--border)',
+                        color:          'var(--text-muted)',
+                        maxWidth:       '180px',
                         textDecoration: 'none',
                       }}
                       title={c.title}
                     >
-                      {/* External link icon */}
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
-                           stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-                           strokeLinejoin="round" className="flex-shrink-0">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                        <polyline points="15 3 21 3 21 9"/>
-                        <line x1="10" y1="14" x2="21" y2="3"/>
-                      </svg>
+                      <ExternalLinkIcon />
                       <span className="truncate">{hostname}</span>
                     </a>
                   );
@@ -196,8 +218,31 @@ export default function ReportSectionCard({
               </div>
             </div>
           )}
+
+          {/* ── Part 34: Section reactions ── */}
+          {shareId && (
+            <SectionReactions
+              shareId={shareId}
+              sectionId={reactionSectionId}
+              initial={initialReactions}
+            />
+          )}
         </div>
       )}
-    </div>
+    </article>
+  );
+}
+
+/* ── Icon ────────────────────────────────────────────────────────────────── */
+
+function ExternalLinkIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+         strokeLinejoin="round" className="flex-shrink-0">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+      <polyline points="15 3 21 3 21 9"/>
+      <line x1="10" y1="14" x2="21" y2="3"/>
+    </svg>
   );
 }

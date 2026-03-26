@@ -1,5 +1,5 @@
 // app/(app)/research-report.tsx
-// Part 33 — Header redesigned to fix congestion
+// Part 34 — Enhanced Public Share Modal with Publish/Unpublish Toggle
 //
 // HEADER REDESIGN:
 //   Row 1: Back button | Report title (truncated) | Chevron
@@ -7,7 +7,14 @@
 //   This removes the squeeze and gives each element breathing room.
 //   FIXED: Header now properly fixed with independent scrolling content
 //
-// All other functionality from Part 25/33 preserved unchanged.
+// ENHANCEMENTS:
+//   - Public share now supports publish/unpublish toggle
+//   - Status shows "Published" or "Unpublished" with appropriate styling
+//   - Toggle switch with confirmation for unpublishing
+//   - Preserves share ID when unpublished
+//   - Re-publish button when link exists but is unpublished
+//
+// All other functionality preserved unchanged.
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -111,25 +118,69 @@ function ActionBtn({ icon, onPress, active, activeColor, loading, badge, disable
   );
 }
 
-// ── Public Share Modal ─────────────────────────────────────────────────────────
+// ── Public Share Modal (Enhanced with Publish/Unpublish Toggle) ─────────────────
 
 interface PublicShareModalProps {
-  visible:   boolean;
-  shareUrl:  string | null;
-  isLoading: boolean;
-  onClose:   () => void;
-  onCopy:    () => void;
-  onOpen:    () => void;
-  onShare:   () => void;
+  visible:    boolean;
+  shareUrl:   string | null;
+  shareId:    string | null;
+  isActive:   boolean;          // Part 34: whether link is currently published
+  isLoading:  boolean;
+  isToggling: boolean;          // Part 34: toggling publish state
+  onClose:    () => void;
+  onCopy:     () => void;
+  onOpen:     () => void;
+  onShare:    () => void;
+  onPublish:  () => Promise<void>;   // Part 34
+  onUnpublish: () => Promise<void>;  // Part 34
 }
 
 function PublicShareModal({
-  visible, shareUrl, isLoading, onClose, onCopy, onOpen, onShare,
+  visible,
+  shareUrl,
+  shareId,
+  isActive,
+  isLoading,
+  isToggling,
+  onClose,
+  onCopy,
+  onOpen,
+  onShare,
+  onPublish,
+  onUnpublish,
 }: PublicShareModalProps) {
   const insets = useSafeAreaInsets();
 
+  const handleToggle = async (newValue: boolean) => {
+    if (newValue) {
+      // Re-publish
+      await onPublish();
+    } else {
+      // Unpublish — confirm first
+      Alert.alert(
+        'Unpublish Report?',
+        'The public URL will return 404 until you re-publish. Your share link will be preserved so the same URL works again when you re-enable it.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Unpublish',
+            style: 'destructive',
+            onPress: onUnpublish,
+          },
+        ],
+      );
+    }
+  };
+
+  const hasLink = !!shareId;
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
       <Pressable
         style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}
         onPress={onClose}
@@ -138,50 +189,133 @@ function PublicShareModal({
           <LinearGradient
             colors={['#1A1A35', '#0A0A1A']}
             style={{
-              borderTopLeftRadius: 28, borderTopRightRadius: 28,
-              paddingBottom: insets.bottom + SPACING.lg,
-              borderTopWidth: 1, borderColor: `${COLORS.primary}40`,
+              borderTopLeftRadius:  28,
+              borderTopRightRadius: 28,
+              paddingBottom:        insets.bottom + SPACING.lg,
+              borderTopWidth:       1,
+              borderColor:          `${COLORS.primary}40`,
             }}
           >
+            {/* Handle */}
             <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
 
+            {/* Header */}
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}>
-                  <Ionicons name="globe-outline" size={18} color="#FFF" />
+                <LinearGradient
+                  colors={isActive ? [COLORS.success, `${COLORS.success}CC`] : ['#6C63FF', '#8B5CF6']}
+                  style={{ width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Ionicons name={isActive ? 'globe' : 'globe-outline'} size={18} color="#FFF" />
                 </LinearGradient>
                 <View>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Public Report Link</Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Anyone with the link can view this report</Text>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                    Public Report Link
+                  </Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                    {isActive ? '● Live — anyone with the link can view' : '○ Unpublished — link returns 404'}
+                  </Text>
                 </View>
               </View>
-              <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+              <Pressable
+                onPress={onClose}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}
+              >
                 <Ionicons name="close" size={16} color={COLORS.textMuted} />
               </Pressable>
             </View>
 
             <View style={{ paddingHorizontal: SPACING.lg }}>
+
+              {/* ── Part 34: Publish / Unpublish Toggle ── */}
               <View style={{
-                backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
-                padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1,
-                borderColor: shareUrl ? `${COLORS.primary}30` : COLORS.border,
-                minHeight: 56, justifyContent: 'center',
+                flexDirection:   'row',
+                alignItems:      'center',
+                justifyContent:  'space-between',
+                backgroundColor: isActive ? `${COLORS.success}12` : COLORS.backgroundElevated,
+                borderRadius:    RADIUS.lg,
+                padding:         SPACING.md,
+                marginBottom:    SPACING.md,
+                borderWidth:     1,
+                borderColor:     isActive ? `${COLORS.success}30` : COLORS.border,
+              }}>
+                <View style={{ flex: 1, marginRight: SPACING.md }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    {/* Status dot */}
+                    <View style={{
+                      width:           8,
+                      height:          8,
+                      borderRadius:    4,
+                      backgroundColor: isActive ? COLORS.success : COLORS.textMuted,
+                    }} />
+                    <Text style={{
+                      color:      isActive ? COLORS.success : COLORS.textMuted,
+                      fontSize:   FONTS.sizes.sm,
+                      fontWeight: '700',
+                    }}>
+                      {isActive ? 'Published' : 'Unpublished'}
+                    </Text>
+                    {isToggling && <ActivityIndicator size="small" color={COLORS.primary} />}
+                  </View>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
+                    {isActive
+                      ? 'Visitors can view this report · toggle off to hide it'
+                      : 'Report is hidden · toggle on to make it public again'}
+                  </Text>
+                </View>
+                <Switch
+                  value={isActive}
+                  onValueChange={handleToggle}
+                  disabled={isToggling || isLoading}
+                  trackColor={{
+                    false: COLORS.backgroundCard,
+                    true:  `${COLORS.success}60`,
+                  }}
+                  thumbColor={isActive ? COLORS.success : COLORS.textMuted}
+                  ios_backgroundColor={COLORS.backgroundCard}
+                />
+              </View>
+
+              {/* URL display box */}
+              <View style={{
+                backgroundColor: COLORS.backgroundElevated,
+                borderRadius:    RADIUS.lg,
+                padding:         SPACING.md,
+                marginBottom:    SPACING.md,
+                borderWidth:     1,
+                borderColor:     shareUrl && isActive ? `${COLORS.primary}30` : COLORS.border,
+                minHeight:       56,
+                justifyContent:  'center',
               }}>
                 {isLoading ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                     <ActivityIndicator size="small" color={COLORS.primary} />
                     <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Generating share link…</Text>
                   </View>
-                ) : shareUrl ? (
-                  <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontFamily: 'monospace' }} numberOfLines={2} selectable>
+                ) : shareUrl && isActive ? (
+                  <Text
+                    style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontFamily: 'monospace' }}
+                    numberOfLines={2}
+                    selectable
+                  >
                     {shareUrl}
                   </Text>
+                ) : shareUrl && !isActive ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Ionicons name="eye-off-outline" size={16} color={COLORS.textMuted} />
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
+                      Link is unpublished · toggle to re-enable
+                    </Text>
+                  </View>
                 ) : (
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Tap an option below to generate your link</Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
+                    Toggle the switch above to generate your public link
+                  </Text>
                 )}
               </View>
 
+              {/* Info banner */}
               <View style={{
                 flexDirection: 'row', alignItems: 'flex-start', gap: 8,
                 backgroundColor: `${COLORS.info}10`, borderRadius: RADIUS.md,
@@ -190,49 +324,110 @@ function PublicShareModal({
               }}>
                 <Ionicons name="information-circle-outline" size={16} color={COLORS.info} style={{ marginTop: 1 }} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18 }}>
-                  Visitors get <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>3 free AI questions</Text> about this report, then they're prompted to download DeepDive AI.
+                  Visitors get{' '}
+                  <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>3 free AI questions</Text>
+                  {' '}about this report, then they&apos;re prompted to download DeepDive AI.
                 </Text>
               </View>
 
-              <View style={{ gap: SPACING.sm }}>
-                <Pressable onPress={onCopy}
-                  style={({ pressed }) => [{
-                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                    opacity: pressed ? 0.85 : 1,
-                    backgroundColor: shareUrl ? COLORS.primary : COLORS.backgroundElevated,
-                    borderWidth: 1, borderColor: shareUrl ? 'transparent' : COLORS.border,
-                  }]}>
-                  <Ionicons name="copy-outline" size={18} color={shareUrl ? '#FFF' : COLORS.textMuted} />
-                  <Text style={{ color: shareUrl ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                    {shareUrl ? 'Copy Link' : 'Generate & Copy Link'}
-                  </Text>
-                </Pressable>
-
-                <Pressable onPress={onShare}
-                  style={({ pressed }) => [{
-                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                    opacity: pressed ? 0.85 : 1,
-                    backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border,
-                  }]}>
-                  <Ionicons name="share-social-outline" size={18} color={COLORS.textSecondary} />
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>Share via…</Text>
-                </Pressable>
-
-                {shareUrl && (
-                  <Pressable onPress={onOpen}
+              {/* Action buttons — only shown when active */}
+              {isActive && (
+                <View style={{ gap: SPACING.sm }}>
+                  {/* Copy Link */}
+                  <Pressable
+                    onPress={onCopy}
                     style={({ pressed }) => [{
                       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
                       gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
                       opacity: pressed ? 0.85 : 1,
-                      backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border,
-                    }]}>
-                    <Ionicons name="open-outline" size={18} color={COLORS.textSecondary} />
-                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>Preview in Browser</Text>
+                      backgroundColor: shareUrl ? COLORS.primary : COLORS.backgroundElevated,
+                      borderWidth: 1,
+                      borderColor: shareUrl ? 'transparent' : COLORS.border,
+                    }]}
+                  >
+                    <Ionicons name="copy-outline" size={18} color={shareUrl ? '#FFF' : COLORS.textMuted} />
+                    <Text style={{ color: shareUrl ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                      Copy Link
+                    </Text>
                   </Pressable>
-                )}
-              </View>
+
+                  {/* Share via */}
+                  <Pressable
+                    onPress={onShare}
+                    style={({ pressed }) => [{
+                      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                      gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
+                      opacity: pressed ? 0.85 : 1,
+                      backgroundColor: COLORS.backgroundElevated,
+                      borderWidth: 1, borderColor: COLORS.border,
+                    }]}
+                  >
+                    <Ionicons name="share-social-outline" size={18} color={COLORS.textSecondary} />
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>
+                      Share via…
+                    </Text>
+                  </Pressable>
+
+                  {/* Preview in browser */}
+                  {shareUrl && (
+                    <Pressable
+                      onPress={onOpen}
+                      style={({ pressed }) => [{
+                        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                        gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
+                        opacity: pressed ? 0.85 : 1,
+                        backgroundColor: COLORS.backgroundElevated,
+                        borderWidth: 1, borderColor: COLORS.border,
+                      }]}
+                    >
+                      <Ionicons name="open-outline" size={18} color={COLORS.textSecondary} />
+                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>
+                        Preview in Browser
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              )}
+
+              {/* When unpublished — show a re-publish shortcut */}
+              {!isActive && hasLink && (
+                <Pressable
+                  onPress={() => handleToggle(true)}
+                  disabled={isToggling}
+                  style={({ pressed }) => [{
+                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
+                    opacity: pressed || isToggling ? 0.7 : 1,
+                    backgroundColor: COLORS.primary,
+                  }]}
+                >
+                  {isToggling
+                    ? <ActivityIndicator size="small" color="#FFF" />
+                    : <Ionicons name="globe-outline" size={18} color="#FFF" />
+                  }
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                    Re-publish Report
+                  </Text>
+                </Pressable>
+              )}
+
+              {/* First-time publish (no link yet) */}
+              {!hasLink && !isLoading && (
+                <Pressable
+                  onPress={() => handleToggle(true)}
+                  style={({ pressed }) => [{
+                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
+                    opacity: pressed ? 0.85 : 1,
+                    backgroundColor: COLORS.primary,
+                  }]}
+                >
+                  <Ionicons name="globe-outline" size={18} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                    Generate & Publish Link
+                  </Text>
+                </Pressable>
+              )}
             </View>
           </LinearGradient>
         </Pressable>
@@ -546,11 +741,11 @@ export default function ResearchReportScreen() {
                 activeColor={assistant.isEmbedded && !showChat ? COLORS.success : COLORS.primary}
               />
 
-              {/* Public share */}
+              {/* Public share - Updated to show active state based on isActive */}
               <ActionBtn
-                icon={publicShare.shareId ? 'globe' : 'globe-outline'}
+                icon={publicShare.isActive ? 'globe' : 'globe-outline'}
                 onPress={() => setShowPublicShare(true)}
-                active={!!publicShare.shareId}
+                active={publicShare.isActive}
                 activeColor={COLORS.success}
                 loading={publicShare.isLoading}
               />
@@ -679,30 +874,35 @@ export default function ResearchReportScreen() {
                     <ReportSectionCard key={section.id ?? i} section={section} citations={report.citations} index={i} />
                   ))}
 
-                  {/* Public share promo card */}
+                  {/* Public share promo card - Updated to show isActive status */}
                   <View style={{ marginBottom: SPACING.lg }}>
                     <Pressable onPress={() => setShowPublicShare(true)}>
-                      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: publicShare.shareId ? `${COLORS.success}50` : `${COLORS.primary}25` }}>
+                      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: publicShare.isActive ? `${COLORS.success}50` : `${COLORS.primary}25` }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
-                          <LinearGradient colors={publicShare.shareId ? [COLORS.success, `${COLORS.success}BB`] : ['#6C63FF', '#4A42CC']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
-                            <Ionicons name={publicShare.shareId ? 'globe' : 'globe-outline'} size={22} color="#FFF" />
+                          <LinearGradient colors={publicShare.isActive ? [COLORS.success, `${COLORS.success}BB`] : ['#6C63FF', '#4A42CC']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
+                            <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={22} color="#FFF" />
                           </LinearGradient>
                           <View style={{ flex: 1 }}>
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                               <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
-                                {publicShare.shareId ? 'Public Link Active' : 'Share as Public Page'}
+                                {publicShare.isActive ? 'Public Link Active' : (publicShare.shareId ? 'Unpublished' : 'Share as Public Page')}
                               </Text>
-                              {publicShare.shareId && (
+                              {publicShare.isActive && (
                                 <View style={{ backgroundColor: `${COLORS.success}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}40` }}>
                                   <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>LIVE</Text>
                                 </View>
                               )}
+                              {publicShare.shareId && !publicShare.isActive && (
+                                <View style={{ backgroundColor: `${COLORS.warning}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.warning}40` }}>
+                                  <Text style={{ color: COLORS.warning, fontSize: 9, fontWeight: '700' }}>UNPUBLISHED</Text>
+                                </View>
+                              )}
                             </View>
                             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                              {publicShare.shareId ? 'Anyone with the link can read this · 3 free AI questions for visitors' : 'Generate a public URL · Visitors get 3 free AI questions · Great for sharing'}
+                              {publicShare.isActive ? 'Anyone with the link can read this · 3 free AI questions for visitors' : (publicShare.shareId ? 'Link is hidden · Tap to re-publish' : 'Generate a public URL · Visitors get 3 free AI questions · Great for sharing')}
                             </Text>
                           </View>
-                          <Ionicons name="chevron-forward" size={18} color={publicShare.shareId ? COLORS.success : COLORS.primary} />
+                          <Ionicons name="chevron-forward" size={18} color={publicShare.isActive ? COLORS.success : COLORS.primary} />
                         </View>
                       </LinearGradient>
                     </Pressable>
@@ -930,14 +1130,21 @@ export default function ResearchReportScreen() {
 
       <CitationModal visible={showCitations} citations={report.citations} onClose={() => setShowCitations(false)} />
       <ShareSheet visible={showShareSheet} report={report} onClose={() => setShowShareSheet(false)} />
+      
+      {/* Enhanced Public Share Modal with all required props */}
       <PublicShareModal
         visible={showPublicShare}
         shareUrl={publicShare.shareUrl}
+        shareId={publicShare.shareId}
+        isActive={publicShare.isActive}
         isLoading={publicShare.isLoading}
+        isToggling={publicShare.isToggling}
         onClose={() => setShowPublicShare(false)}
         onCopy={handlePublicShareCopy}
         onOpen={handlePublicShareOpen}
         onShare={handlePublicShareNative}
+        onPublish={publicShare.publishReport}
+        onUnpublish={publicShare.unpublishReport}
       />
 
       {/* Report Details Modal */}
@@ -998,14 +1205,14 @@ export default function ResearchReportScreen() {
                     ))}
                   </View>
 
-                  {/* Public share row */}
+                  {/* Public share row - Updated to show isActive status */}
                   <Pressable onPress={() => { setShowReportDetails(false); setTimeout(() => setShowPublicShare(true), 300); }}
-                    style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: publicShare.shareId ? `${COLORS.success}30` : COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    <Ionicons name={publicShare.shareId ? 'globe' : 'globe-outline'} size={16} color={publicShare.shareId ? COLORS.success : COLORS.textMuted} />
+                    style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: publicShare.isActive ? `${COLORS.success}30` : COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={16} color={publicShare.isActive ? COLORS.success : COLORS.textMuted} />
                     <View style={{ flex: 1 }}>
                       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 }}>Public Link</Text>
-                      <Text style={{ color: publicShare.shareId ? COLORS.success : COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-                        {publicShare.shareId ? `Active · /r/${publicShare.shareId}` : 'Not generated · Tap to create'}
+                      <Text style={{ color: publicShare.isActive ? COLORS.success : COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
+                        {publicShare.isActive ? `Active · /r/${publicShare.shareId}` : (publicShare.shareId ? 'Unpublished · Tap to manage' : 'Not generated · Tap to create')}
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />

@@ -1,13 +1,17 @@
 'use client';
-
-// src/app/r/[shareId]/CopyLinkIsland.tsx
-// Tiny client island — just the copy-link button in the navbar.
-// Extracted from page.tsx because 'use client' cannot appear mid-file
-// in a server component module.
-
+// Public-Reports/src/app/r/[shareId]/CopyLinkIsland.tsx
+// Part 34 update: increments share_count via Supabase when user copies the link.
+// All Part 33 behaviour preserved.
 import { useState } from 'react';
+import { supabaseClient } from '@/lib/supabase-client';
 
-export function CopyLinkIsland({ url }: { url: string }) {
+interface Props {
+  url: string;
+  /** Part 34: pass shareId so we can track copies as shares */
+  shareId?: string;
+}
+
+export function CopyLinkIsland({ url, shareId }: Props) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -15,6 +19,19 @@ export function CopyLinkIsland({ url }: { url: string }) {
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+
+      // Part 34: increment share_count (fire-and-forget, non-blocking)
+      if (shareId) {
+        // Wrap in void + async IIFE so .catch() works on a real Promise
+        void (async () => {
+          try {
+            await supabaseClient
+              .rpc('increment_share_count', { p_share_id: shareId });
+          } catch {
+            /* silent */
+          }
+        })();
+      }
     } catch {
       // clipboard API unavailable — silent fail
     }
@@ -25,9 +42,9 @@ export function CopyLinkIsland({ url }: { url: string }) {
       onClick={handleCopy}
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all hover:opacity-80"
       style={{
-        background:  copied ? 'rgba(16,185,129,0.15)' : 'var(--bg-elevated)',
-        border:      '1px solid ' + (copied ? 'rgba(16,185,129,0.4)' : 'var(--border)'),
-        color:       copied ? '#10B981' : 'var(--text-secondary)',
+        background: copied ? 'rgba(16,185,129,0.15)' : 'var(--bg-elevated)',
+        border: '1px solid ' + (copied ? 'rgba(16,185,129,0.4)' : 'var(--border)'),
+        color: copied ? '#10B981' : 'var(--text-secondary)',
       }}
       aria-label={copied ? 'Copied!' : 'Copy share link'}
     >

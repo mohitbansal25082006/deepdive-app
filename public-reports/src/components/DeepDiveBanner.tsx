@@ -1,7 +1,7 @@
 // src/components/DeepDiveBanner.tsx
 // Public-Reports — Sticky branding + download CTA banner
 // - App Store: greyed out "Coming Soon" (no redirect)
-// - Play Store: redirects to NEXT_PUBLIC_PLAY_STORE_URL
+// - Play Store: redirects to NEXT_PUBLIC_DEEPDIVE_PLAY_STORE_URL
 
 'use client';
 
@@ -15,7 +15,7 @@ export default function DeepDiveBanner() {
     return () => clearTimeout(t);
   }, []);
 
-  const playStoreUrl = process.env.NEXT_PUBLIC_PLAY_STORE_URL ?? '#';
+  const playStoreUrl = process.env.NEXT_PUBLIC_DEEPDIVE_PLAY_STORE_URL ?? '#';
 
   return (
     <div
@@ -100,20 +100,6 @@ export default function DeepDiveBanner() {
                 <path d="M3 18.5v-13c0-.83.95-1.3 1.6-.8l11 6.5c.6.35.6 1.25 0 1.6l-11 6.5c-.65.5-1.6.03-1.6-.8z"/>
               </svg>
               <span>Google Play</span>
-            </a>
-
-            {/* Research CTA */}
-            <a
-              href="/"
-              className="hidden sm:flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold transition-opacity hover:opacity-90"
-              style={{
-                background:     'rgba(255,255,255,0.08)',
-                border:         '1px solid rgba(255,255,255,0.15)',
-                color:          'var(--text-secondary)',
-                textDecoration: 'none',
-              }}
-            >
-              Research Now →
             </a>
           </div>
         </div>

@@ -34,6 +34,8 @@ async function loadReportForChat(shareId: string): Promise<PublicReport | null> 
     reportId:          row.report_id,
     shareLinkId:       row.share_link_id,
     viewCount:         row.view_count         ?? 0,
+    shareCount:        row.share_count        ?? 0,   // Part 34
+    tags:              Array.isArray(row.tags) ? row.tags : [],  // Part 34
     query:             row.query,
     depth:             row.depth,
     title:             row.title              ?? row.query,
