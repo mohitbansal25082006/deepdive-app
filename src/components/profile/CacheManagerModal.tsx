@@ -1,5 +1,5 @@
 // src/components/profile/CacheManagerModal.tsx
-// Part 23 — FULLY UPDATED.
+// Part 23 — FULLY UPDATED + Mobile Optimised
 //
 // CHANGES from Part 22:
 //   1. "Cache Podcast Audio" toggle — when on, audio segments are downloaded
@@ -9,8 +9,10 @@
 //   3. Per-type breakdown shows audio sub-stat for podcasts.
 //   4. Items tab shows AUDIO badge on podcasts that have audio cached.
 //   5. "Cache All" button caches all recent completed content at once.
+//   6. FIX: Header close button no longer clips outside screen on small devices.
+//      Header layout uses flex properly with minWidth: 0 on the title block.
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -108,9 +110,9 @@ function TypeRow({ type, count, bytes, audioCount, audioBytesForType, formatByte
       <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: `${cfg.color}18`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${cfg.color}30`, flexShrink: 0 }}>
         <Ionicons name={cfg.icon as any} size={17} color={cfg.color} />
       </View>
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>{cfg.label}</Text>
-        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
+        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }} numberOfLines={2}>
           {count} item{count !== 1 ? 's' : ''} · {formatBytes(bytes)}
           {type === 'podcast' && (audioCount ?? 0) > 0 ? ` · ${audioCount} with audio (${formatBytes(audioBytesForType ?? 0)})` : ''}
         </Text>
@@ -299,24 +301,61 @@ export function CacheManagerModal({ visible, onClose }: CacheManagerModalProps) 
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
 
         <View style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: SHEET_MAX_H, borderTopWidth: 1, borderTopColor: COLORS.border, paddingBottom: insets.bottom }}>
+
           {/* Handle */}
           <View style={{ alignItems: 'center', paddingTop: SPACING.sm, marginBottom: SPACING.sm }}>
             <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border }} />
           </View>
 
-          {/* Header */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.md, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <LinearGradient colors={['#29B6F6', '#0085D2']} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
+          {/* ── FIX: Header ─────────────────────────────────────────────────
+              Root row: no gap, use paddingHorizontal on the container.
+              Left block (icon + titles) gets flex:1 + minWidth:0 so it
+              shrinks instead of pushing the close button off-screen.
+              Close button is flexShrink:0 with a fixed size so it never
+              clips on any phone width.
+          ─────────────────────────────────────────────────────────────────── */}
+          <View style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: SPACING.xl,
+            paddingBottom: SPACING.md,
+            borderBottomWidth: 1,
+            borderBottomColor: COLORS.border,
+          }}>
+            {/* Left: icon + title block — must shrink on narrow screens */}
+            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: SPACING.sm }}>
+              <LinearGradient
+                colors={['#29B6F6', '#0085D2']}
+                style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+              >
                 <Ionicons name="cloud-offline-outline" size={16} color="#FFF" />
               </LinearGradient>
-              <View>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>Cache Manager</Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{summary || 'Loading…'}</Text>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800' }} numberOfLines={1}>
+                  Cache Manager
+                </Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }} numberOfLines={1}>
+                  {summary || 'Loading…'}
+                </Text>
               </View>
             </View>
-            <TouchableOpacity onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+
+            {/* Right: close button — fixed size, never shrinks */}
+            <TouchableOpacity
+              onPress={onClose}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                backgroundColor: COLORS.backgroundElevated,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                flexShrink: 0,
+              }}
+            >
               <Ionicons name="close" size={17} color={COLORS.textMuted} />
             </TouchableOpacity>
           </View>
@@ -338,7 +377,11 @@ export function CacheManagerModal({ visible, onClose }: CacheManagerModalProps) 
               <ActivityIndicator size="large" color={COLORS.primary} />
             </View>
           ) : (
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: SPACING.xl, paddingBottom: SPACING.xl }} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: SPACING.xl, paddingBottom: SPACING.xl }}
+              keyboardShouldPersistTaps="handled"
+            >
 
               {/* ══ OVERVIEW TAB ══ */}
               {activeTab === 'overview' && (
@@ -398,19 +441,24 @@ export function CacheManagerModal({ visible, onClose }: CacheManagerModalProps) 
 
                   {/* Auto-cache toggle */}
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border }}>
-                    <View style={{ flex: 1, marginRight: SPACING.md }}>
+                    <View style={{ flex: 1, minWidth: 0, marginRight: SPACING.md }}>
                       <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>Auto-Cache Content</Text>
                       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
                         Automatically save new reports, podcasts, debates, papers and slides for offline use
                       </Text>
                     </View>
-                    <Switch value={settings?.autoCache ?? true} onValueChange={toggleAutoCache} trackColor={{ false: COLORS.border, true: `${COLORS.primary}80` }} thumbColor={settings?.autoCache ? COLORS.primary : COLORS.textMuted} />
+                    <Switch
+                      value={settings?.autoCache ?? true}
+                      onValueChange={toggleAutoCache}
+                      trackColor={{ false: COLORS.border, true: `${COLORS.primary}80` }}
+                      thumbColor={settings?.autoCache ? COLORS.primary : COLORS.textMuted}
+                    />
                   </View>
 
-                  {/* Part 23: Cache Audio toggle */}
+                  {/* Cache Audio toggle */}
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: audioCacheOn ? `${COLORS.success}40` : COLORS.border }}>
-                    <View style={{ flex: 1, marginRight: SPACING.md }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                    <View style={{ flex: 1, minWidth: 0, marginRight: SPACING.md }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
                         <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>Cache Podcast Audio</Text>
                         <View style={{ backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}30` }}>
                           <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>NEW</Text>
@@ -420,7 +468,12 @@ export function CacheManagerModal({ visible, onClose }: CacheManagerModalProps) 
                         Download audio segments for full offline playback. Each podcast may use 5–25 MB. Requires more storage.
                       </Text>
                     </View>
-                    <Switch value={audioCacheOn} onValueChange={handleToggleAudioCache} trackColor={{ false: COLORS.border, true: `${COLORS.success}80` }} thumbColor={audioCacheOn ? COLORS.success : COLORS.textMuted} />
+                    <Switch
+                      value={audioCacheOn}
+                      onValueChange={handleToggleAudioCache}
+                      trackColor={{ false: COLORS.border, true: `${COLORS.success}80` }}
+                      thumbColor={audioCacheOn ? COLORS.success : COLORS.textMuted}
+                    />
                   </View>
 
                   {/* Expiry picker */}

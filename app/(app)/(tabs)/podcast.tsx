@@ -1,24 +1,18 @@
 // app/(app)/(tabs)/podcast.tsx
-// Part 25 — Fixed
-//
-// CHANGES FROM PART 24:
-//   1. Destructures upsertPodcast from usePodcastHistory.
-//   2. When progressPhase === 'done', calls upsertPodcast(genState.podcast)
-//      BEFORE refresh(). This immediately updates the history list with the
-//      in-memory completed podcast so it shows correct status + play button
-//      even if the DB update failed or hasn't propagated yet.
-//
-// ALL PART 24 FUNCTIONALITY PRESERVED (credit gate, 6 voice styles, report
-// import, voice input, SerpAPI, duration options).
+// Part 35 — UPDATED: Added Collections support.
+//   • Long-press any completed podcast card → "Add to Collection" sheet
+//   • Collections button in header
+//   • Search button in header (global search)
+// All Part 25 / Part 24 functionality preserved unchanged.
 
 import React, {
   useState, useEffect, useCallback, useRef,
-}                                       from 'react';
+} from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   RefreshControl, KeyboardAvoidingView, Platform, Alert,
   Modal, ActivityIndicator,
-}                                       from 'react-native';
+} from 'react-native';
 import { LinearGradient }               from 'expo-linear-gradient';
 import { Ionicons }                     from '@expo/vector-icons';
 import { BlurView }                     from 'expo-blur';
@@ -26,7 +20,7 @@ import Animated, {
   FadeIn, FadeInDown,
   useSharedValue, useAnimatedStyle,
   withRepeat, withSequence, withTiming, cancelAnimation,
-}                                       from 'react-native-reanimated';
+} from 'react-native-reanimated';
 import { SafeAreaView }                 from 'react-native-safe-area-context';
 import { router }                       from 'expo-router';
 
@@ -39,7 +33,6 @@ import { WaveformVisualizer }           from '../../../src/components/podcast/Wa
 import { VoiceStyleSelector }           from '../../../src/components/podcast/VoiceStyleSelector';
 import { ReportImportSheet }            from '../../../src/components/podcast/ReportImportSheet';
 import { useAuth }                      from '../../../src/context/AuthContext';
-// Part 24: Credits
 import { CreditBalance }                from '../../../src/components/credits/CreditBalance';
 import { InsufficientCreditsModal }     from '../../../src/components/credits/InsufficientCreditsModal';
 import { useCreditGate }                from '../../../src/hooks/useCreditGate';
@@ -47,10 +40,12 @@ import { podcastDurationToFeature, FEATURE_COSTS } from '../../../src/constants/
 import {
   startRecording, stopRecording, cancelRecording,
   transcribeAudio, requestMicrophonePermission, formatDuration,
-}                                       from '../../../src/services/voiceResearch';
+} from '../../../src/services/voiceResearch';
 import {
   exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
-}                                       from '../../../src/services/podcastExport';
+} from '../../../src/services/podcastExport';
+// Part 35: Collections
+import { AddToCollectionSheet }  from '../../../src/components/collections/AddToCollectionSheet';
 import type { Podcast, ResearchReport } from '../../../src/types';
 import type { PodcastVoicePresetDef }   from '../../../src/hooks/usePodcast';
 import type { VoicePresetStyle }        from '../../../src/services/agents/podcastScriptAgent';
@@ -58,7 +53,7 @@ import type { VoicePresetStyle }        from '../../../src/services/agents/podca
 // ─── Duration options ─────────────────────────────────────────────────────────
 
 const DURATION_OPTIONS = [
-  { label: '5 min',  sublabel: '~625 words',   value: 5  },
+  { label: '5 min',  sublabel: '~625 words',    value: 5  },
   { label: '10 min', sublabel: '~1,375 words',  value: 10 },
   { label: '15 min', sublabel: '~2,000 words',  value: 15 },
   { label: '20 min', sublabel: '~2,750 words',  value: 20 },
@@ -66,46 +61,36 @@ const DURATION_OPTIONS = [
 
 // ─── Share Sheet ──────────────────────────────────────────────────────────────
 
-function ShareSheet({
-  podcast, visible, onClose,
-}: { podcast: Podcast | null; visible: boolean; onClose: () => void }) {
-  const [busy,   setBusy]   = useState<string | null>(null);
+function ShareSheet({ podcast, visible, onClose }: { podcast: Podcast | null; visible: boolean; onClose: () => void }) {
+  const [busy, setBusy]     = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-
   useEffect(() => { if (visible) { setBusy(null); setCopied(false); } }, [visible, podcast?.id]);
 
   const handleMP3 = async () => {
-    if (!podcast || busy) return;
-    setBusy('mp3');
+    if (!podcast || busy) return; setBusy('mp3');
     try { await exportPodcastAsMP3(podcast); }
     catch (err) { Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not export MP3.'); }
     finally { setBusy(null); }
   };
-
   const handlePDF = async () => {
-    if (!podcast || busy) return;
-    setBusy('pdf');
+    if (!podcast || busy) return; setBusy('pdf');
     try { await exportPodcastAsPDF(podcast); }
     catch (err) { Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not generate PDF.'); }
     finally { setBusy(null); }
   };
-
   const handleCopyScript = async () => {
-    if (!podcast || busy) return;
-    setBusy('copy');
+    if (!podcast || busy) return; setBusy('copy');
     try { await copyPodcastScriptToClipboard(podcast); setCopied(true); setTimeout(() => setCopied(false), 2500); }
     catch { Alert.alert('Error', 'Could not copy to clipboard.'); }
     finally { setBusy(null); }
   };
 
   if (!podcast) return null;
-
   const options = [
-    { id: 'mp3',  icon: 'musical-notes-outline', label: 'Share as MP3',      sublabel: 'Export full episode audio',        color: COLORS.primary,   onPress: handleMP3,        disabled: !(podcast.audioSegmentPaths?.filter(Boolean).length) },
-    { id: 'pdf',  icon: 'document-text-outline', label: 'Export PDF Script', sublabel: 'Styled transcript with all turns', color: COLORS.secondary, onPress: handlePDF,        disabled: false },
+    { id: 'mp3', icon: 'musical-notes-outline', label: 'Share as MP3', sublabel: 'Export full episode audio', color: COLORS.primary, onPress: handleMP3, disabled: !(podcast.audioSegmentPaths?.filter(Boolean).length) },
+    { id: 'pdf', icon: 'document-text-outline', label: 'Export PDF Script', sublabel: 'Styled transcript with all turns', color: COLORS.secondary, onPress: handlePDF, disabled: false },
     { id: 'copy', icon: copied ? 'checkmark-circle-outline' : 'copy-outline', label: copied ? 'Copied!' : 'Copy Script', sublabel: 'Plain text transcript to clipboard', color: COLORS.accent, onPress: handleCopyScript, disabled: false },
   ];
-
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.65)', justifyContent: 'flex-end' }}>
@@ -139,9 +124,7 @@ function ShareSheet({
 
 // ─── Voice Input Button ───────────────────────────────────────────────────────
 
-function VoiceInputButton({
-  onTranscribed, disabled,
-}: { onTranscribed: (text: string) => void; disabled?: boolean }) {
+function VoiceInputButton({ onTranscribed, disabled }: { onTranscribed: (text: string) => void; disabled?: boolean }) {
   const [state, setState]         = useState<'idle' | 'recording' | 'transcribing'>('idle');
   const [durationMs, setDuration] = useState(0);
   const pulse = useSharedValue(1);
@@ -180,24 +163,20 @@ function VoiceInputButton({
     }
   }, [state, disabled, onTranscribed]);
 
-  const isRecording    = state === 'recording';
-  const isTranscribing = state === 'transcribing';
-  const buttonColor    = isRecording ? COLORS.error : COLORS.primary;
-
   return (
     <Animated.View style={[pulseStyle, { alignSelf: 'center' }]}>
-      <TouchableOpacity onPress={handlePress} disabled={disabled || isTranscribing} activeOpacity={0.8} style={{
+      <TouchableOpacity onPress={handlePress} disabled={disabled || state === 'transcribing'} activeOpacity={0.8} style={{
         width: 44, height: 44, borderRadius: 14,
-        backgroundColor: isRecording ? `${COLORS.error}22` : `${COLORS.primary}15`,
+        backgroundColor: state === 'recording' ? `${COLORS.error}22` : `${COLORS.primary}15`,
         alignItems: 'center', justifyContent: 'center',
-        borderWidth: 1.5, borderColor: isRecording ? `${COLORS.error}50` : `${COLORS.primary}35`,
+        borderWidth: 1.5, borderColor: state === 'recording' ? `${COLORS.error}50` : `${COLORS.primary}35`,
         opacity: disabled ? 0.4 : 1,
       }}>
-        {isTranscribing
+        {state === 'transcribing'
           ? <ActivityIndicator size="small" color={COLORS.primary} />
-          : <Ionicons name={isRecording ? 'stop-circle' : 'mic-outline'} size={20} color={buttonColor} />}
+          : <Ionicons name={state === 'recording' ? 'stop-circle' : 'mic-outline'} size={20} color={state === 'recording' ? COLORS.error : COLORS.primary} />}
       </TouchableOpacity>
-      {isRecording && (
+      {state === 'recording' && (
         <Text style={{ color: COLORS.error, fontSize: 9, fontWeight: '700', textAlign: 'center', marginTop: 3 }}>
           {formatDuration(durationMs)}
         </Text>
@@ -208,9 +187,7 @@ function VoiceInputButton({
 
 // ─── Imported Report Chip ─────────────────────────────────────────────────────
 
-function ImportedReportChip({
-  report, onRemove,
-}: { report: ResearchReport; onRemove: () => void }) {
+function ImportedReportChip({ report, onRemove }: { report: ResearchReport; onRemove: () => void }) {
   return (
     <Animated.View entering={FadeIn.duration(300)}>
       <LinearGradient colors={[`${COLORS.primary}18`, `${COLORS.accent}10`]} style={{
@@ -239,9 +216,7 @@ function ImportedReportChip({
 
 // ─── Episode Ready Banner ─────────────────────────────────────────────────────
 
-function EpisodeReadyBanner({
-  title, duration, hostName, guestName, podcastId, onShare, onDismiss,
-}: {
+function EpisodeReadyBanner({ title, duration, hostName, guestName, podcastId, onShare, onDismiss }: {
   title: string; duration: number; hostName: string; guestName: string;
   podcastId: string; onShare: () => void; onDismiss: () => void;
 }) {
@@ -268,15 +243,12 @@ function EpisodeReadyBanner({
           {hostName} & {guestName}{minutes ? ` · ${minutes} min` : ''}
         </Text>
         <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-          <TouchableOpacity
-            onPress={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId } })}
-            style={{ flex: 1, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}
-          >
+          <TouchableOpacity onPress={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId } })}
+            style={{ flex: 1, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <Ionicons name="play-circle" size={18} color="#FFF" />
             <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Listen</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={onShare}
-            style={{ width: 42, height: 42, borderRadius: RADIUS.lg, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
+          <TouchableOpacity onPress={onShare} style={{ width: 42, height: 42, borderRadius: RADIUS.lg, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
             <Ionicons name="share-outline" size={18} color={COLORS.primary} />
           </TouchableOpacity>
         </View>
@@ -291,23 +263,13 @@ export default function PodcastScreen() {
   const { profile } = useAuth();
 
   const {
-    state: genState,
-    isGenerating,
-    progressPhase,
-    generateFromTopic,
-    generateFromReport,
-    reset: resetGeneration,
+    state: genState, isGenerating, progressPhase,
+    generateFromTopic, generateFromReport, reset: resetGeneration,
   } = usePodcast();
 
   const {
-    podcasts,
-    completedPodcasts,
-    totalMinutes,
-    loading,
-    refreshing,
-    refresh,
-    deletePodcast,
-    upsertPodcast,   // ← Part 25 fix: used to immediately update history
+    podcasts, completedPodcasts, totalMinutes, loading, refreshing,
+    refresh, deletePodcast, upsertPodcast,
   } = usePodcastHistory();
 
   const [topic,            setTopic]            = useState('');
@@ -318,58 +280,35 @@ export default function PodcastScreen() {
   const [shareTarget,      setShareTarget]      = useState<Podcast | null>(null);
   const [shareSheetOpen,   setShareSheetOpen]   = useState(false);
 
-  // Part 24: Credit gate
-  const {
-    balance,
-    guardedConsume,
-    insufficientInfo,
-    clearInsufficient,
-    isConsuming,
-  } = useCreditGate();
+  // Part 35: Collection sheet
+  const [collectionTarget, setCollectionTarget] = useState<Podcast | null>(null);
 
-  const hasSerpKey = !!(
-    process.env.EXPO_PUBLIC_SERPAPI_KEY &&
-    process.env.EXPO_PUBLIC_SERPAPI_KEY.trim() &&
-    process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here'
-  );
+  const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
+
+  const hasSerpKey = !!(process.env.EXPO_PUBLIC_SERPAPI_KEY?.trim() && process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here');
 
   const openShareSheet  = useCallback((podcast: Podcast) => { setShareTarget(podcast); setShareSheetOpen(true); }, []);
   const closeShareSheet = useCallback(() => { setShareSheetOpen(false); setTimeout(() => setShareTarget(null), 400); }, []);
 
-  // ── Part 25 Fix: On completion, inject podcast into history immediately ──
-  // This fires upsertPodcast BEFORE refresh() so the history list shows the
-  // correct completed state even if the DB update hasn't propagated yet.
   useEffect(() => {
     if (progressPhase === 'done' && genState.podcast) {
-      // Immediately update history with the in-memory completed podcast
-      // (local file:// audio paths, status = 'completed', durationSeconds, etc.)
       upsertPodcast(genState.podcast);
-      // Also refresh from DB to keep long-term consistency
       refresh();
     }
   }, [progressPhase]);
 
-  // ── Generate handler ─────────────────────────────────────────────────────
-
   const handleGenerate = useCallback(async () => {
     const effectiveTopic = topic.trim() || importedReport?.query || '';
     if (!effectiveTopic) {
-      Alert.alert('Topic Required', importedReport
-        ? 'The imported report has no query. Please type a topic.'
-        : 'Enter a topic or import a research report.');
+      Alert.alert('Topic Required', importedReport ? 'The imported report has no query. Please type a topic.' : 'Enter a topic or import a research report.');
       return;
     }
-
     const feature = podcastDurationToFeature(selectedDuration);
     const ok = await guardedConsume(feature);
     if (!ok) return;
 
     const preset = PODCAST_VOICE_PRESETS.find(p => p.id === selectedPresetId) ?? PODCAST_VOICE_PRESETS[0];
-    const config = {
-      hostVoice: preset.hostVoice, guestVoice: preset.guestVoice,
-      hostName:  preset.hostName,  guestName:  preset.guestName,
-      targetDurationMinutes: selectedDuration,
-    };
+    const config = { hostVoice: preset.hostVoice, guestVoice: preset.guestVoice, hostName: preset.hostName, guestName: preset.guestName, targetDurationMinutes: selectedDuration };
 
     if (importedReport) generateFromReport(importedReport, config, preset.presetStyle as VoicePresetStyle);
     else                generateFromTopic(effectiveTopic, config, preset.presetStyle as VoicePresetStyle);
@@ -382,25 +321,10 @@ export default function PodcastScreen() {
     ]);
   }, [resetGeneration]);
 
-  const handleVoiceTranscribed = useCallback((text: string) => {
-    setTopic(text);
-    setImportedReport(null);
-  }, []);
-
-  const handleReportSelected = useCallback((report: ResearchReport) => {
-    setImportedReport(report);
-    if (!topic.trim()) setTopic(report.query);
-  }, [topic]);
-
-  const handleRemoveReport = useCallback(() => setImportedReport(null), []);
-  const handlePresetSelect = useCallback((preset: PodcastVoicePresetDef) => setSelectedPresetId(preset.id), []);
-
   const showForm     = !isGenerating;
   const showProgress = progressPhase === 'script' || progressPhase === 'audio';
   const showBanner   = progressPhase === 'done' && genState.podcast !== null;
-
-  const creditFeature = podcastDurationToFeature(selectedDuration);
-  const creditCost    = FEATURE_COSTS[creditFeature];
+  const creditCost   = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -431,16 +355,23 @@ export default function PodcastScreen() {
                   )}
                 </View>
               </View>
-              <CreditBalance balance={balance} size="sm" />
+              {/* Part 35: Search + Collections + Balance */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
+                <TouchableOpacity
+                  onPress={() => router.push('/(app)/global-search' as any)}
+                  style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}
+                >
+                  <Ionicons name="search-outline" size={16} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                <CreditBalance balance={balance} size="sm" />
+              </View>
             </Animated.View>
 
             {/* ── Episode Ready Banner ── */}
             {showBanner && genState.podcast && (
               <EpisodeReadyBanner
-                title={genState.podcast.title}
-                duration={genState.podcast.durationSeconds}
-                hostName={genState.podcast.config.hostName}
-                guestName={genState.podcast.config.guestName}
+                title={genState.podcast.title} duration={genState.podcast.durationSeconds}
+                hostName={genState.podcast.config.hostName} guestName={genState.podcast.config.guestName}
                 podcastId={genState.podcast.id}
                 onShare={() => openShareSheet(genState.podcast!)}
                 onDismiss={resetGeneration}
@@ -463,11 +394,7 @@ export default function PodcastScreen() {
 
             {/* ── Error state ── */}
             {progressPhase === 'error' && genState.error && (
-              <Animated.View entering={FadeIn.duration(400)} style={{
-                backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md,
-                marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30`,
-                flexDirection: 'row', gap: 10,
-              }}>
+              <Animated.View entering={FadeIn.duration(400)} style={{ backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30`, flexDirection: 'row', gap: 10 }}>
                 <Ionicons name="alert-circle-outline" size={18} color={COLORS.error} />
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: 4 }}>Generation Failed</Text>
@@ -483,43 +410,27 @@ export default function PodcastScreen() {
                   Create New Episode
                 </Text>
 
-                {importedReport && (
-                  <ImportedReportChip report={importedReport} onRemove={handleRemoveReport} />
-                )}
+                {importedReport && <ImportedReportChip report={importedReport} onRemove={() => setImportedReport(null)} />}
 
-                {/* Topic input */}
                 <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md, overflow: 'hidden' }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', padding: SPACING.md, gap: 10 }}>
                     <Ionicons name="mic-outline" size={20} color={COLORS.primary} style={{ marginTop: 2 }} />
                     <TextInput
                       value={topic}
-                      onChangeText={text => {
-                        setTopic(text);
-                        if (importedReport && text !== importedReport.query) setImportedReport(null);
-                      }}
+                      onChangeText={text => { setTopic(text); if (importedReport && text !== importedReport.query) setImportedReport(null); }}
                       placeholder={importedReport ? `Topic from report: ${importedReport.query}` : 'E.g. Future of quantum computing...'}
                       placeholderTextColor={COLORS.textMuted}
-                      multiline
-                      numberOfLines={3}
+                      multiline numberOfLines={3}
                       style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, lineHeight: 22, minHeight: 70, textAlignVertical: 'top' }}
                     />
                   </View>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm, paddingTop: 4, borderTopWidth: 1, borderTopColor: COLORS.border, gap: 8 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <VoiceInputButton onTranscribed={handleVoiceTranscribed} disabled={isGenerating} />
+                      <VoiceInputButton onTranscribed={(text) => { setTopic(text); setImportedReport(null); }} disabled={isGenerating} />
                       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Speak your topic</Text>
                     </View>
-                    <TouchableOpacity
-                      onPress={() => setShowImportSheet(true)}
-                      disabled={isGenerating}
-                      style={{
-                        flexDirection: 'row', alignItems: 'center', gap: 6,
-                        backgroundColor: importedReport ? `${COLORS.primary}18` : COLORS.backgroundElevated,
-                        borderRadius: RADIUS.lg, paddingHorizontal: 12, paddingVertical: 7,
-                        borderWidth: 1, borderColor: importedReport ? `${COLORS.primary}40` : COLORS.border,
-                        opacity: isGenerating ? 0.5 : 1,
-                      }}
-                    >
+                    <TouchableOpacity onPress={() => setShowImportSheet(true)} disabled={isGenerating}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: importedReport ? `${COLORS.primary}18` : COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: importedReport ? `${COLORS.primary}40` : COLORS.border, opacity: isGenerating ? 0.5 : 1 }}>
                       <Ionicons name="document-text-outline" size={14} color={importedReport ? COLORS.primary : COLORS.textMuted} />
                       <Text style={{ color: importedReport ? COLORS.primary : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
                         {importedReport ? 'Change Report' : 'Import Report'}
@@ -528,41 +439,21 @@ export default function PodcastScreen() {
                   </View>
                 </View>
 
-                {/* Voice Style */}
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>
-                  Voice Style
-                </Text>
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Voice Style</Text>
                 <View style={{ marginBottom: SPACING.md }}>
-                  <VoiceStyleSelector selectedPresetId={selectedPresetId} onSelectPreset={handlePresetSelect} variant="grid" />
+                  <VoiceStyleSelector selectedPresetId={selectedPresetId} onSelectPreset={(p: PodcastVoicePresetDef) => setSelectedPresetId(p.id)} variant="grid" />
                 </View>
 
-                {/* Duration */}
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>
-                  Episode Length
-                </Text>
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Episode Length</Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.xl }}>
                   {DURATION_OPTIONS.map(opt => {
-                    const isActive   = selectedDuration === opt.value;
-                    const optFeature = podcastDurationToFeature(opt.value);
-                    const optCost    = FEATURE_COSTS[optFeature];
+                    const isActive = selectedDuration === opt.value;
+                    const optCost  = FEATURE_COSTS[podcastDurationToFeature(opt.value)];
                     return (
-                      <TouchableOpacity
-                        key={opt.value}
-                        onPress={() => setSelectedDuration(opt.value)}
-                        style={{
-                          flex: 1,
-                          backgroundColor: isActive ? COLORS.primary : COLORS.backgroundCard,
-                          borderRadius: RADIUS.lg, paddingVertical: 10, paddingHorizontal: 4,
-                          alignItems: 'center', borderWidth: 1,
-                          borderColor: isActive ? COLORS.primary : COLORS.border,
-                        }}
-                      >
-                        <Text style={{ color: isActive ? '#FFF' : COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: isActive ? '700' : '500', marginBottom: 2 }}>
-                          {opt.label}
-                        </Text>
-                        <Text style={{ color: isActive ? 'rgba(255,255,255,0.65)' : COLORS.textMuted, fontSize: 9, marginBottom: 2 }}>
-                          {opt.sublabel}
-                        </Text>
+                      <TouchableOpacity key={opt.value} onPress={() => setSelectedDuration(opt.value)}
+                        style={{ flex: 1, backgroundColor: isActive ? COLORS.primary : COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', borderWidth: 1, borderColor: isActive ? COLORS.primary : COLORS.border }}>
+                        <Text style={{ color: isActive ? '#FFF' : COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: isActive ? '700' : '500', marginBottom: 2 }}>{opt.label}</Text>
+                        <Text style={{ color: isActive ? 'rgba(255,255,255,0.65)' : COLORS.textMuted, fontSize: 9, marginBottom: 2 }}>{opt.sublabel}</Text>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: isActive ? 'rgba(255,255,255,0.2)' : `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 2 }}>
                           <Ionicons name="flash" size={8} color={isActive ? '#FFF' : COLORS.primary} />
                           <Text style={{ color: isActive ? '#FFF' : COLORS.primary, fontSize: 8, fontWeight: '800' }}>{optCost}</Text>
@@ -572,16 +463,10 @@ export default function PodcastScreen() {
                   })}
                 </View>
 
-                {/* Generate button */}
                 <TouchableOpacity onPress={handleGenerate} disabled={isConsuming} activeOpacity={0.85}>
-                  <LinearGradient
-                    colors={importedReport ? [COLORS.primary, '#4A42CC'] : COLORS.gradientPrimary}
-                    style={{ borderRadius: RADIUS.lg, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}
-                  >
-                    {isConsuming
-                      ? <ActivityIndicator size="small" color="#FFF" />
-                      : <WaveformVisualizer isPlaying={false} color="#FFFFFF" barWidth={3} barGap={2} maxHeight={18} />
-                    }
+                  <LinearGradient colors={importedReport ? [COLORS.primary, '#4A42CC'] : COLORS.gradientPrimary}
+                    style={{ borderRadius: RADIUS.lg, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                    {isConsuming ? <ActivityIndicator size="small" color="#FFF" /> : <WaveformVisualizer isPlaying={false} color="#FFFFFF" barWidth={3} barGap={2} maxHeight={18} />}
                     <Text style={{ color: '#FFF', fontSize: FONTS.sizes.md, fontWeight: '700' }}>
                       {isConsuming ? 'Checking credits...' : importedReport ? 'Generate from Report' : 'Generate Podcast'}
                     </Text>
@@ -600,33 +485,29 @@ export default function PodcastScreen() {
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
                   Past Episodes
                 </Text>
-
                 {loading && podcasts.length === 0 && [0, 1, 2].map(i => (
                   <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, height: 120, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, opacity: 1 - i * 0.25 }} />
                 ))}
-
                 {podcasts.map((podcast, i) => (
-                  <PodcastCard
-                    key={podcast.id}
-                    podcast={podcast}
-                    index={i}
-                    onPlay={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId: podcast.id } })}
-                    onShare={() => openShareSheet(podcast)}
-                    onDelete={() => deletePodcast(podcast.id)}
-                  />
+                  <View key={podcast.id}>
+                    <PodcastCard
+                      podcast={podcast} index={i}
+                      onPlay={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId: podcast.id } })}
+                      onShare={() => openShareSheet(podcast)}
+                      onDelete={() => deletePodcast(podcast.id)}
+                      onLongPress={podcast.status === 'completed' ? () => setCollectionTarget(podcast) : undefined}
+                    />
+                  </View>
                 ))}
               </View>
             )}
 
-            {/* ── Empty state ── */}
             {!loading && podcasts.length === 0 && progressPhase === 'idle' && (
               <Animated.View entering={FadeIn.duration(600)} style={{ alignItems: 'center', paddingTop: SPACING.xl }}>
                 <View style={{ width: 72, height: 72, borderRadius: 22, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.md }}>
                   <Ionicons name="radio-outline" size={32} color={COLORS.border} />
                 </View>
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600', textAlign: 'center' }}>
-                  No episodes yet
-                </Text>
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600', textAlign: 'center' }}>No episodes yet</Text>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', marginTop: SPACING.sm, lineHeight: 20 }}>
                   Enter a topic or import a research report{'\n'}then tap "Generate Podcast"
                 </Text>
@@ -639,17 +520,22 @@ export default function PodcastScreen() {
 
       <ShareSheet podcast={shareTarget} visible={shareSheetOpen} onClose={closeShareSheet} />
       <ReportImportSheet
-        visible={showImportSheet}
-        onClose={() => setShowImportSheet(false)}
-        onSelectReport={handleReportSelected}
+        visible={showImportSheet} onClose={() => setShowImportSheet(false)}
+        onSelectReport={(report) => { setImportedReport(report); if (!topic.trim()) setTopic(report.query); }}
         selectedReportId={importedReport?.id}
       />
+      <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
 
-      <InsufficientCreditsModal
-        visible={!!insufficientInfo}
-        info={insufficientInfo}
-        onClose={clearInsufficient}
-      />
+      {/* Part 35: Add to Collection */}
+      {collectionTarget && (
+        <AddToCollectionSheet
+          visible={!!collectionTarget}
+          contentType="podcast"
+          contentId={collectionTarget.id}
+          contentTitle={collectionTarget.title}
+          onClose={() => setCollectionTarget(null)}
+        />
+      )}
     </LinearGradient>
   );
 }

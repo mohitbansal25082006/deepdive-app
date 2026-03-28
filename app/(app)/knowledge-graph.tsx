@@ -60,8 +60,6 @@ export default function KnowledgeGraphScreen() {
           knowledgeGraph:   data.knowledge_graph  ?? undefined,
           infographicData:  data.infographic_data ?? undefined,
           sourceImages:     data.source_images    ?? [],
-          isPublic:         data.is_public        ?? false,
-          publicToken:      data.public_token      ?? undefined,
           createdAt:        data.created_at,
           completedAt:      data.completed_at,
         });

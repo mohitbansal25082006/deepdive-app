@@ -1,11 +1,14 @@
 // app/(app)/(tabs)/profile.tsx
-// Part 27 — UPDATED: Added Insights entry row + Referral & Share-to-Earn section.
+// Part 28 — UPDATED: Added Collections section (mirrors History header pattern).
 //
-// Changes from Part 24 version:
-//   1. StatsCard now uses the redesigned version (4 metric tiles + insights CTA)
-//   2. New "Your Insights" SettingsRow added under the stats card
-//   3. New "Refer & Earn" section with ReferralCard above Credits & Billing
-//   4. All other sections (Credits, Notifications, Cache, Sign Out) unchanged
+// Changes from Part 27:
+//   1. ManageCollectionsSheet + AddToCollectionSheet imported
+//   2. useCollections hook wired for live preview counts
+//   3. New "Your Collections" section between StatsCard and Refer & Earn
+//      ─ CollectionsPreviewCard shows up to 3 collections as tappable chips
+//      ─ "Manage All" opens ManageCollectionsSheet (same sheet as History)
+//      ─ "+ New" shortcut jumps straight into create view
+//   4. All other sections (Credits, Preferences, Cache, Sign Out) unchanged
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -20,10 +23,10 @@ import {
   Modal,
   Image,
   KeyboardAvoidingView,
+  BackHandler,
 } from 'react-native';
 import { LinearGradient }     from 'expo-linear-gradient';
 import { Ionicons }           from '@expo/vector-icons';
-import { BlurView }           from 'expo-blur';
 import * as ImagePicker       from 'expo-image-picker';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView }       from 'react-native-safe-area-context';
@@ -31,6 +34,7 @@ import { router }             from 'expo-router';
 
 import { useAuth }            from '../../../src/context/AuthContext';
 import { useCredits }         from '../../../src/context/CreditsContext';
+import { useCollections }     from '../../../src/hooks/useCollections';
 import { Avatar }             from '../../../src/components/common/Avatar';
 import { AnimatedInput }      from '../../../src/components/common/AnimatedInput';
 import { GradientButton }     from '../../../src/components/common/GradientButton';
@@ -38,6 +42,7 @@ import { LoadingOverlay }     from '../../../src/components/common/LoadingOverla
 import { StatsCard }          from '../../../src/components/profile/StatsCard';
 import { CacheManagerModal }  from '../../../src/components/profile/CacheManagerModal';
 import { ReferralCard }       from '../../../src/components/profile/ReferralCard';
+import { ManageCollectionsSheet } from '../../../src/components/collections/ManageCollectionsSheet';
 import { useStats }           from '../../../src/hooks/useStats';
 import { useProfile }         from '../../../src/hooks/useProfile';
 import {
@@ -71,15 +76,38 @@ const DEFAULT_STATS: UserStats = {
   academicPapersGenerated: 0, totalPodcasts: 0, totalDebates: 0,
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Platform helpers ─────────────────────────────────────────────────────────
+
+const IS_IOS     = Platform.OS === 'ios';
+const IS_ANDROID = Platform.OS === 'android';
 
 async function openAppSettings(): Promise<void> {
   try {
-    if (Platform.OS === 'ios') await Linking.openURL('app-settings:');
+    if (IS_IOS) await Linking.openURL('app-settings:');
     else await Linking.openSettings();
   } catch {
     Alert.alert('Cannot Open Settings', 'Please enable notifications manually in device Settings.');
   }
+}
+
+// ─── SectionHeader ────────────────────────────────────────────────────────────
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <Text
+      style={{
+        color:         COLORS.textSecondary,
+        fontSize:      FONTS.sizes.sm,
+        fontWeight:    '600',
+        letterSpacing: 0.8,
+        textTransform: 'uppercase',
+        marginBottom:  SPACING.sm,
+        marginTop:     SPACING.lg,
+      }}
+    >
+      {label}
+    </Text>
+  );
 }
 
 // ─── SettingsRow ──────────────────────────────────────────────────────────────
@@ -129,8 +157,8 @@ function SettingsRow({
         </Text>
         {sublabel ? (
           <Text style={{
-            color:    COLORS.textMuted,
-            fontSize: FONTS.sizes.xs,
+            color:     COLORS.textMuted,
+            fontSize:  FONTS.sizes.xs,
             marginTop: 2,
           }}>
             {sublabel}
@@ -142,6 +170,214 @@ function SettingsRow({
         : onPress
         ? <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
         : null}
+    </TouchableOpacity>
+  );
+}
+
+// ─── CollectionsPreviewCard ────────────────────────────────────────────────────
+// Shows up to 3 collection chips + count badge, with Manage + New actions.
+
+interface CollectionsPreviewCardProps {
+  onManage: () => void;
+}
+
+function CollectionsPreviewCard({ onManage }: CollectionsPreviewCardProps) {
+  const { collections, isLoading, refresh } = useCollections();
+
+  useEffect(() => { refresh(); }, []);
+
+  const preview     = collections.slice(0, 3);
+  const overflowCount = Math.max(0, collections.length - 3);
+
+  return (
+    <TouchableOpacity
+      onPress={onManage}
+      activeOpacity={0.85}
+      style={{
+        backgroundColor: COLORS.backgroundCard,
+        borderRadius:    RADIUS.xl,
+        borderWidth:     1,
+        borderColor:     COLORS.border,
+        overflow:        'hidden',
+        marginBottom:    SPACING.sm,
+      }}
+    >
+      {/* Card header */}
+      <LinearGradient
+        colors={['#1A1A35', '#12122A']}
+        style={{
+          flexDirection:  'row',
+          alignItems:     'center',
+          padding:        SPACING.md,
+          paddingBottom:  SPACING.sm,
+        }}
+      >
+        <LinearGradient
+          colors={COLORS.gradientPrimary as [string, string]}
+          style={{
+            width:          36, height: 36, borderRadius: 10,
+            alignItems:     'center', justifyContent: 'center',
+            marginRight:    SPACING.sm,
+          }}
+        >
+          <Ionicons name="folder" size={17} color="#FFF" />
+        </LinearGradient>
+
+        <View style={{ flex: 1 }}>
+          <Text style={{
+            color:      COLORS.textPrimary,
+            fontSize:   FONTS.sizes.base,
+            fontWeight: '700',
+          }}>
+            My Collections
+          </Text>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
+            {isLoading
+              ? 'Loading…'
+              : collections.length === 0
+              ? 'No collections yet'
+              : `${collections.length} collection${collections.length !== 1 ? 's' : ''}`}
+          </Text>
+        </View>
+
+        {/* Manage button */}
+        <TouchableOpacity
+          onPress={onManage}
+          activeOpacity={0.8}
+          hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+          style={{
+            flexDirection:     'row',
+            alignItems:        'center',
+            gap:               4,
+            backgroundColor:   `${COLORS.primary}18`,
+            borderRadius:      RADIUS.full,
+            paddingHorizontal: 11,
+            paddingVertical:   6,
+            borderWidth:       1,
+            borderColor:       `${COLORS.primary}35`,
+          }}
+        >
+          <Ionicons name="settings-outline" size={12} color={COLORS.primary} />
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+            Manage
+          </Text>
+        </TouchableOpacity>
+      </LinearGradient>
+
+      {/* Collection chips */}
+      <View style={{
+        paddingHorizontal: SPACING.md,
+        paddingTop:        SPACING.sm,
+        paddingBottom:     SPACING.md,
+      }}>
+        {collections.length === 0 && !isLoading ? (
+          /* Empty nudge */
+          <TouchableOpacity
+            onPress={onManage}
+            activeOpacity={0.8}
+            style={{
+              flexDirection:   'row',
+              alignItems:      'center',
+              gap:              8,
+              backgroundColor: `${COLORS.primary}08`,
+              borderRadius:    RADIUS.lg,
+              padding:         SPACING.md,
+              borderWidth:     1,
+              borderColor:     `${COLORS.primary}20`,
+              borderStyle:     'dashed',
+            }}
+          >
+            <View style={{
+              width:           32, height: 32, borderRadius: 9,
+              backgroundColor: `${COLORS.primary}15`,
+              alignItems:      'center', justifyContent: 'center',
+            }}>
+              <Ionicons name="add" size={18} color={COLORS.primary} />
+            </View>
+            <View>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
+                Create your first collection
+              </Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
+                Organise reports, podcasts, papers and more
+              </Text>
+            </View>
+          </TouchableOpacity>
+        ) : (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {preview.map(col => (
+              <TouchableOpacity
+                key={col.id}
+                onPress={() => {
+                  router.push({
+                    pathname: '/(app)/collection-detail' as any,
+                    params:   { collectionId: col.id },
+                  });
+                }}
+                activeOpacity={0.8}
+                style={{
+                  flexDirection:     'row',
+                  alignItems:        'center',
+                  gap:               6,
+                  backgroundColor:   `${col.color}18`,
+                  borderRadius:      RADIUS.full,
+                  paddingHorizontal: 12,
+                  paddingVertical:   7,
+                  borderWidth:       1,
+                  borderColor:       `${col.color}35`,
+                }}
+              >
+                <Ionicons name={col.icon as any} size={13} color={col.color} />
+                <Text
+                  style={{
+                    color:     col.color,
+                    fontSize:  FONTS.sizes.xs,
+                    fontWeight:'700',
+                  }}
+                  numberOfLines={1}
+                >
+                  {col.name}
+                </Text>
+                {(col.itemCount ?? 0) > 0 && (
+                  <View style={{
+                    backgroundColor: `${col.color}25`,
+                    borderRadius:    RADIUS.full,
+                    paddingHorizontal: 5,
+                    paddingVertical:  1,
+                  }}>
+                    <Text style={{ color: col.color, fontSize: 10, fontWeight: '700' }}>
+                      {col.itemCount}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            ))}
+
+            {/* Overflow badge */}
+            {overflowCount > 0 && (
+              <TouchableOpacity
+                onPress={onManage}
+                activeOpacity={0.8}
+                style={{
+                  flexDirection:     'row',
+                  alignItems:        'center',
+                  gap:               5,
+                  backgroundColor:   COLORS.backgroundElevated,
+                  borderRadius:      RADIUS.full,
+                  paddingHorizontal: 12,
+                  paddingVertical:   7,
+                  borderWidth:       1,
+                  borderColor:       COLORS.border,
+                }}
+              >
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                  +{overflowCount} more
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -159,11 +395,11 @@ function CreditsCard() {
       <LinearGradient
         colors={['#1A1A35', '#12122A']}
         style={{
-          borderRadius:  RADIUS.xl,
-          padding:       SPACING.lg,
-          marginBottom:  SPACING.sm,
-          borderWidth:   1,
-          borderColor:   `${accentColor}35`,
+          borderRadius: RADIUS.xl,
+          padding:      SPACING.lg,
+          marginBottom: SPACING.sm,
+          borderWidth:  1,
+          borderColor:  `${accentColor}35`,
         }}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
@@ -172,7 +408,7 @@ function CreditsCard() {
               ? [COLORS.error, '#CC0000']
               : isLow
               ? [COLORS.warning, '#E67E22']
-              : COLORS.gradientPrimary
+              : COLORS.gradientPrimary as [string, string]
             }
             style={{
               width: 38, height: 38, borderRadius: 11,
@@ -247,11 +483,11 @@ function CreditsCard() {
 // ─── Cache summary type ───────────────────────────────────────────────────────
 
 interface CacheSummary {
-  totalItems:   number;
-  totalBytes:   number;
-  limitBytes:   number;
-  percentUsed:  number;
-  autoCache:    boolean;
+  totalItems:  number;
+  totalBytes:  number;
+  limitBytes:  number;
+  percentUsed: number;
+  autoCache:   boolean;
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -266,14 +502,29 @@ export default function ProfileScreen() {
   const [cacheSummary,         setCacheSummary]         = useState<CacheSummary | null>(null);
   const [cacheModalVisible,    setCacheModalVisible]    = useState(false);
 
+  // Collections sheet
+  const [collectionsVisible, setCollectionsVisible] = useState(false);
+
   // Edit profile modal
   const [editModalVisible, setEditModalVisible] = useState(false);
-  const [editName,         setEditName]         = useState(profile?.full_name     || '');
-  const [editBio,          setEditBio]          = useState(profile?.bio           || '');
-  const [editOccupation,   setEditOccupation]   = useState(profile?.occupation    || '');
+  const [editName,         setEditName]         = useState(profile?.full_name  || '');
+  const [editBio,          setEditBio]          = useState(profile?.bio        || '');
+  const [editOccupation,   setEditOccupation]   = useState(profile?.occupation || '');
   const [editAvatarUri,    setEditAvatarUri]    = useState<string | null>(null);
 
-  // ── Load notification state ──────────────────────────────────────────────
+  // ── Android back button: close edit modal or collections sheet ────────────
+  useEffect(() => {
+    if (!IS_ANDROID) return;
+    const handler = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (editModalVisible)    { setEditModalVisible(false);    return true; }
+      if (collectionsVisible)  { setCollectionsVisible(false);  return true; }
+      if (cacheModalVisible)   { setCacheModalVisible(false);   return true; }
+      return false;
+    });
+    return () => handler.remove();
+  }, [editModalVisible, collectionsVisible, cacheModalVisible]);
+
+  // ── Load notification state ───────────────────────────────────────────────
 
   useEffect(() => {
     (async () => {
@@ -287,7 +538,7 @@ export default function ProfileScreen() {
     })();
   }, []);
 
-  // ── Load cache stats ─────────────────────────────────────────────────────
+  // ── Load cache stats ──────────────────────────────────────────────────────
 
   const loadCacheStats = useCallback(async () => {
     try {
@@ -309,8 +560,12 @@ export default function ProfileScreen() {
 
   useEffect(() => { loadCacheStats(); }, [loadCacheStats]);
 
-  const handleCacheModalClose  = useCallback(() => { setCacheModalVisible(false); loadCacheStats(); }, [loadCacheStats]);
-  const handleAutoCacheToggle  = useCallback(async (value: boolean) => {
+  const handleCacheModalClose = useCallback(() => {
+    setCacheModalVisible(false);
+    loadCacheStats();
+  }, [loadCacheStats]);
+
+  const handleAutoCacheToggle = useCallback(async (value: boolean) => {
     await setAutoCache(value);
     setCacheSummary(prev => prev ? { ...prev, autoCache: value } : null);
   }, []);
@@ -326,13 +581,17 @@ export default function ProfileScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Clear Cache', style: 'destructive',
-          onPress: async () => { await clearAllCache(); await loadCacheStats(); Alert.alert('Done', 'Offline cache cleared.'); },
+          onPress: async () => {
+            await clearAllCache();
+            await loadCacheStats();
+            Alert.alert('Done', 'Offline cache cleared.');
+          },
         },
-      ]
+      ],
     );
   }, [cacheSummary, loadCacheStats]);
 
-  // ── Edit profile ─────────────────────────────────────────────────────────
+  // ── Edit profile ──────────────────────────────────────────────────────────
 
   const openEditModal = () => {
     setEditName(profile?.full_name || '');
@@ -344,7 +603,9 @@ export default function ProfileScreen() {
 
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) { Alert.alert('Permission needed', 'Please allow access to photos.'); return; }
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Please allow access to photos.'); return;
+    }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.8,
     });
@@ -371,7 +632,7 @@ export default function ProfileScreen() {
     setEditAvatarUri(null);
   };
 
-  // ── Notifications ────────────────────────────────────────────────────────
+  // ── Notifications ─────────────────────────────────────────────────────────
 
   const handleNotifSwitch = async (value: boolean) => {
     if (notifLoading || !user) return;
@@ -384,7 +645,10 @@ export default function ProfileScreen() {
         } else {
           Alert.alert('Enable Notifications', 'Tap "Open Settings" to allow them.', [
             { text: 'Not Now', style: 'cancel' },
-            { text: 'Open Settings', onPress: async () => { await openAppSettings(); setNotificationsEnabled(true); } },
+            {
+              text: 'Open Settings',
+              onPress: async () => { await openAppSettings(); setNotificationsEnabled(true); },
+            },
           ]);
         }
       } else {
@@ -405,7 +669,7 @@ export default function ProfileScreen() {
     ]);
   };
 
-  // ── Derived values ───────────────────────────────────────────────────────
+  // ── Derived values ────────────────────────────────────────────────────────
 
   const safeStats: UserStats = { ...DEFAULT_STATS, ...stats };
 
@@ -419,7 +683,7 @@ export default function ProfileScreen() {
       : `${cacheSummary.totalItems} items · ${formatBytes(cacheSummary.totalBytes)} / ${formatBytes(cacheSummary.limitBytes)} (${Math.round(cacheSummary.percentUsed)}%)`
     : 'Loading…';
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <View style={{ flex: 1 }}>
@@ -430,13 +694,15 @@ export default function ProfileScreen() {
           <ScrollView
             contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 110 }}
             showsVerticalScrollIndicator={false}
+            // Android overscroll glow fix
+            overScrollMode={IS_ANDROID ? 'never' : 'auto'}
           >
-            {/* ── Profile header ─────────────────────────────────────────── */}
+            {/* ── Profile header ──────────────────────────────────────────── */}
             <Animated.View
               entering={FadeIn.duration(600)}
               style={{
-                alignItems:   'center',
-                paddingTop:   SPACING.lg,
+                alignItems:    'center',
+                paddingTop:    SPACING.lg,
                 paddingBottom: SPACING.xl,
               }}
             >
@@ -456,8 +722,8 @@ export default function ProfileScreen() {
               </Text>
               {profile?.occupation && (
                 <Text style={{
-                  color:    COLORS.textSecondary,
-                  fontSize: FONTS.sizes.sm,
+                  color:     COLORS.textSecondary,
+                  fontSize:  FONTS.sizes.sm,
                   marginTop: 3,
                 }}>
                   {profile.occupation}
@@ -473,7 +739,7 @@ export default function ProfileScreen() {
                   paddingVertical:   8,
                   flexDirection:     'row',
                   alignItems:        'center',
-                  gap:                6,
+                  gap:               6,
                   borderWidth:       1,
                   borderColor:       `${COLORS.primary}30`,
                 }}
@@ -486,43 +752,30 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </Animated.View>
 
-            {/* ── Redesigned stats card (Part 27) ────────────────────────── */}
+            {/* ── Stats card ──────────────────────────────────────────────── */}
             <Animated.View entering={FadeInDown.duration(400).delay(50)}>
               <StatsCard stats={safeStats} />
             </Animated.View>
 
-            {/* ── Refer & Earn (Part 27) ──────────────────────────────────── */}
+            {/* ══════════════════════════════════════════════════════════════
+                YOUR COLLECTIONS  (Part 28 addition)
+                Live preview card + full ManageCollectionsSheet on "Manage"
+            ══════════════════════════════════════════════════════════════ */}
+            <Animated.View entering={FadeInDown.duration(400).delay(70)}>
+              <SectionHeader label="Your Collections" />
+              <CollectionsPreviewCard onManage={() => setCollectionsVisible(true)} />
+            </Animated.View>
+
+            {/* ── Refer & Earn ─────────────────────────────────────────────── */}
             <Animated.View entering={FadeInDown.duration(400).delay(80)}>
-              <Text style={{
-                color:         COLORS.textSecondary,
-                fontSize:      FONTS.sizes.sm,
-                fontWeight:    '600',
-                letterSpacing: 0.8,
-                textTransform: 'uppercase',
-                marginBottom:  SPACING.sm,
-                marginTop:     SPACING.lg,
-              }}>
-                Refer &amp; Earn
-              </Text>
+              <SectionHeader label="Refer &amp; Earn" />
               <ReferralCard />
             </Animated.View>
 
-            {/* ── Credits & Billing ─────────────────────────────────────────── */}
+            {/* ── Credits & Billing ──────────────────────────────────────────── */}
             <Animated.View entering={FadeInDown.duration(400).delay(110)}>
-              <Text style={{
-                color:         COLORS.textSecondary,
-                fontSize:      FONTS.sizes.sm,
-                fontWeight:    '600',
-                letterSpacing: 0.8,
-                textTransform: 'uppercase',
-                marginBottom:  SPACING.sm,
-                marginTop:     SPACING.lg,
-              }}>
-                Credits &amp; Billing
-              </Text>
-
+              <SectionHeader label="Credits &amp; Billing" />
               <CreditsCard />
-
               <SettingsRow
                 icon="receipt-outline"
                 label="Transaction History"
@@ -539,19 +792,9 @@ export default function ProfileScreen() {
               />
             </Animated.View>
 
-            {/* ── Preferences ─────────────────────────────────────────────── */}
+            {/* ── Preferences ──────────────────────────────────────────────── */}
             <Animated.View entering={FadeInDown.duration(400).delay(140)}>
-              <Text style={{
-                color:         COLORS.textSecondary,
-                fontSize:      FONTS.sizes.sm,
-                fontWeight:    '600',
-                letterSpacing: 0.8,
-                textTransform: 'uppercase',
-                marginBottom:  SPACING.sm,
-                marginTop:     SPACING.lg,
-              }}>
-                Preferences
-              </Text>
+              <SectionHeader label="Preferences" />
               <SettingsRow
                 icon="notifications-outline"
                 label="Push Notifications"
@@ -575,19 +818,9 @@ export default function ProfileScreen() {
               />
             </Animated.View>
 
-            {/* ── Offline & Cache ──────────────────────────────────────────── */}
+            {/* ── Offline & Cache ───────────────────────────────────────────── */}
             <Animated.View entering={FadeInDown.duration(400).delay(170)}>
-              <Text style={{
-                color:         COLORS.textSecondary,
-                fontSize:      FONTS.sizes.sm,
-                fontWeight:    '600',
-                letterSpacing: 0.8,
-                textTransform: 'uppercase',
-                marginBottom:  SPACING.sm,
-                marginTop:     SPACING.lg,
-              }}>
-                Offline &amp; Cache
-              </Text>
+              <SectionHeader label="Offline &amp; Cache" />
 
               <SettingsRow
                 icon="cloud-offline-outline"
@@ -606,7 +839,7 @@ export default function ProfileScreen() {
                         borderRadius: 3, overflow: 'hidden',
                       }}>
                         <View style={{
-                          width:           `${Math.min(100, cacheSummary.percentUsed)}%`,
+                          width:           `${Math.min(100, cacheSummary.percentUsed)}%` as any,
                           height:          '100%',
                           backgroundColor: cachePercentColor,
                           borderRadius:    3,
@@ -662,15 +895,25 @@ export default function ProfileScreen() {
                 alignItems:      'flex-start',
                 gap:              10,
               }}>
-                <Ionicons name="information-circle-outline" size={17} color={COLORS.info} style={{ marginTop: 1, flexShrink: 0 }} />
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 18, flex: 1 }}>
+                <Ionicons
+                  name="information-circle-outline"
+                  size={17}
+                  color={COLORS.info}
+                  style={{ marginTop: 1, flexShrink: 0 }}
+                />
+                <Text style={{
+                  color:      COLORS.textMuted,
+                  fontSize:   FONTS.sizes.xs,
+                  lineHeight: 18,
+                  flex:       1,
+                }}>
                   When offline, DeepDive AI shows all cached content — reports, podcasts, debates, papers and slides.{'\n\n'}
                   Workspace &amp; Teams features require an internet connection.
                 </Text>
               </View>
             </Animated.View>
 
-            {/* ── Sign out ─────────────────────────────────────────────────── */}
+            {/* ── Sign out ──────────────────────────────────────────────────── */}
             <Animated.View entering={FadeInDown.duration(400).delay(220)}>
               <TouchableOpacity
                 onPress={handleSignOut}
@@ -682,7 +925,7 @@ export default function ProfileScreen() {
                   flexDirection:   'row',
                   alignItems:      'center',
                   justifyContent:  'center',
-                  gap:              8,
+                  gap:             8,
                   borderWidth:     1,
                   borderColor:     `${COLORS.error}25`,
                 }}
@@ -700,18 +943,18 @@ export default function ProfileScreen() {
             </Animated.View>
 
             <Text style={{
-              color:    COLORS.textMuted,
-              fontSize: FONTS.sizes.xs,
+              color:     COLORS.textMuted,
+              fontSize:  FONTS.sizes.xs,
               textAlign: 'center',
               marginTop: SPACING.xl,
             }}>
-              DeepDive AI · v1.27.0
+              DeepDive AI · v1.28.0
             </Text>
           </ScrollView>
         </SafeAreaView>
       </LinearGradient>
 
-      {/* ── Edit Profile Modal ────────────────────────────────────────────── */}
+      {/* ── Edit Profile Modal ──────────────────────────────────────────────── */}
       <Modal
         visible={editModalVisible}
         animationType="slide"
@@ -719,29 +962,31 @@ export default function ProfileScreen() {
         statusBarTranslucent
         onRequestClose={() => setEditModalVisible(false)}
       >
-        <BlurView
-          intensity={20}
-          style={{
-            flex:              1,
-            backgroundColor:   'rgba(10,10,26,0.7)',
-            justifyContent:    'flex-end',
-          }}
-        >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        {/* Pure View fallback — BlurView has no effect on Android without native setup */}
+        <View style={{
+          flex:            1,
+          backgroundColor: 'rgba(10,10,26,0.75)',
+          justifyContent:  'flex-end',
+        }}>
+          <KeyboardAvoidingView
+            behavior={IS_IOS ? 'padding' : 'height'}
+            keyboardVerticalOffset={IS_IOS ? 0 : 20}
+          >
             <View style={{
-              backgroundColor:    COLORS.backgroundCard,
+              backgroundColor:      COLORS.backgroundCard,
               borderTopLeftRadius:  30,
               borderTopRightRadius: 30,
-              padding:             SPACING.xl,
-              borderTopWidth:      1,
-              borderTopColor:      COLORS.border,
-              maxHeight:           '90%',
+              padding:              SPACING.xl,
+              paddingBottom:        IS_IOS ? SPACING.xl + 34 : SPACING.xl,
+              borderTopWidth:       1,
+              borderTopColor:       COLORS.border,
+              maxHeight:            '90%',
             }}>
               <View style={{
-                flexDirection:   'row',
-                justifyContent:  'space-between',
-                alignItems:      'center',
-                marginBottom:    SPACING.xl,
+                flexDirection:  'row',
+                justifyContent: 'space-between',
+                alignItems:     'center',
+                marginBottom:   SPACING.xl,
               }}>
                 <Text style={{
                   color:      COLORS.textPrimary,
@@ -750,7 +995,10 @@ export default function ProfileScreen() {
                 }}>
                   Edit Profile
                 </Text>
-                <TouchableOpacity onPress={() => setEditModalVisible(false)}>
+                <TouchableOpacity
+                  onPress={() => setEditModalVisible(false)}
+                  hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                >
                   <Ionicons name="close" size={24} color={COLORS.textSecondary} />
                 </TouchableOpacity>
               </View>
@@ -758,10 +1006,11 @@ export default function ProfileScreen() {
               <ScrollView
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                overScrollMode={IS_ANDROID ? 'never' : 'auto'}
               >
                 {/* Avatar picker */}
                 <View style={{ alignItems: 'center', marginBottom: SPACING.xl }}>
-                  <TouchableOpacity onPress={pickImage}>
+                  <TouchableOpacity onPress={pickImage} activeOpacity={0.85}>
                     {editAvatarUri ? (
                       <View>
                         <Image
@@ -772,10 +1021,9 @@ export default function ProfileScreen() {
                           }}
                         />
                         <View style={{
-                          position:        'absolute',
-                          bottom:           0, right: 0,
+                          position: 'absolute', bottom: 0, right: 0,
                           backgroundColor: COLORS.primary,
-                          borderRadius:    16, padding: 6,
+                          borderRadius: 16, padding: 6,
                         }}>
                           <Ionicons name="camera" size={14} color="#FFF" />
                         </View>
@@ -784,10 +1032,9 @@ export default function ProfileScreen() {
                       <View>
                         <Avatar url={profile?.avatar_url} name={profile?.full_name} size={90} />
                         <View style={{
-                          position:        'absolute',
-                          bottom:           0, right: 0,
+                          position: 'absolute', bottom: 0, right: 0,
                           backgroundColor: COLORS.primary,
-                          borderRadius:    16, padding: 6,
+                          borderRadius: 16, padding: 6,
                         }}>
                           <Ionicons name="camera" size={14} color="#FFF" />
                         </View>
@@ -828,13 +1075,21 @@ export default function ProfileScreen() {
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
-        </BlurView>
+        </View>
       </Modal>
 
-      {/* ── Cache Manager Modal ───────────────────────────────────────────── */}
+      {/* ── Cache Manager Modal ─────────────────────────────────────────────── */}
       <CacheManagerModal
         visible={cacheModalVisible}
         onClose={handleCacheModalClose}
+      />
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          Manage Collections Sheet  (same sheet as History tab header)
+      ══════════════════════════════════════════════════════════════════════ */}
+      <ManageCollectionsSheet
+        visible={collectionsVisible}
+        onClose={() => setCollectionsVisible(false)}
       />
     </View>
   );

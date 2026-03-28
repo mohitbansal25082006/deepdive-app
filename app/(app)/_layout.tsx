@@ -1,6 +1,8 @@
 // app/(app)/_layout.tsx
-// Part 32 UPDATE (v3) — AccountDeletedScreen overlay refined.
-// All Part 1–31 logic preserved unchanged.
+// Part 35 FIX — global-search changed from modal presentation to regular
+// slide_from_bottom animation. This prevents the screen freeze that occurred
+// when navigating from inside a modal to another screen.
+// All Part 32 logic preserved unchanged.
 
 import { useEffect, useRef }               from 'react';
 import { View, Animated }                  from 'react-native';
@@ -19,7 +21,6 @@ export default function AppLayout() {
   const { user, profile, profileLoading, accountDeleted } = useAuth();
   const pathname                                          = usePathname();
 
-  // ── Offline fade animation ────────────────────────────────────────────────
   const offlineFade = useRef(new Animated.Value(0)).current;
   const prevOffline = useRef(false);
 
@@ -36,7 +37,6 @@ export default function AppLayout() {
     }
   }, [isOffline, isConnecting]);
 
-  // ── Notification tap handler ──────────────────────────────────────────────
   useEffect(() => {
     const unsubscribe = registerNotificationTapHandler((href) => {
       router.push(href as any);
@@ -44,7 +44,6 @@ export default function AppLayout() {
     return unsubscribe;
   }, []);
 
-  // ── Onboarding gate ───────────────────────────────────────────────────────
   const onboardingChecked = useRef(false);
 
   useEffect(() => {
@@ -58,32 +57,21 @@ export default function AppLayout() {
       try {
         const status = await checkOnboardingStatus(user.id);
         if (!status.onboardingCompleted) {
-          setTimeout(() => {
-            router.replace('/(app)/onboarding-flow' as any);
-          }, 80);
+          setTimeout(() => { router.replace('/(app)/onboarding-flow' as any); }, 80);
         }
       } catch (err) {
         console.warn('[AppLayout] Onboarding check error:', err);
       }
     };
-
     runCheck();
   }, [user?.id, profile?.profile_completed, profileLoading, pathname]);
 
-  // ── Part 32: account status flags ────────────────────────────────────────
-  // accountDeleted: set by AuthContext when Realtime UPDATE fires with
-  //                 account_status = 'deleted' (admin deleted the account)
-  // isSuspended:    set when admin sets account_status = 'suspended'
   const isDeleted   = accountDeleted;
   const isSuspended = !isDeleted && profile?.account_status === 'suspended';
-
-  // Block all stack interactions for any admin action or offline state
   const blockInteractions = (isOffline && !isConnecting) || isSuspended || isDeleted;
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-
-      {/* ── Main stack (always mounted so state is preserved) ────────────── */}
       <Animated.View
         style={{ flex: 1 }}
         pointerEvents={blockInteractions ? 'none' : 'auto'}
@@ -130,6 +118,21 @@ export default function AppLayout() {
           <Stack.Screen name="transaction-history" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="knowledge-base"      options={{ animation: 'slide_from_right' }} />
 
+          {/*
+            Part 35: global-search is a REGULAR screen (NOT modal) so that
+            router.push() from within it doesn't cause a modal-stack freeze.
+            It slides up from the bottom like a modal visually but is a
+            standard stack screen underneath.
+          */}
+          <Stack.Screen
+            name="global-search"
+            options={{ animation: 'slide_from_bottom' }}
+          />
+          <Stack.Screen
+            name="collection-detail"
+            options={{ animation: 'slide_from_right' }}
+          />
+
           <Stack.Screen
             name="onboarding-flow"
             options={{ animation: 'fade', gestureEnabled: false }}
@@ -141,56 +144,24 @@ export default function AppLayout() {
         </Stack>
       </Animated.View>
 
-      {/* ── Account Deleted overlay (zIndex 10000 — highest) ─────────────────
-           Shown when admin permanently deleted this account.
-           accountDeleted is set by AuthContext when Realtime delivers the
-           UPDATE with account_status='deleted' (while JWT is still valid).
-           The "Go to Sign In" button calls clearDeletedState() which resets
-           the flag and routes to onboarding.
-      ──────────────────────────────────────────────────────────────────────── */}
       {isDeleted && (
-        <View
-          style={{
-            position: 'absolute',
-            top: 0, left: 0, right: 0, bottom: 0,
-            zIndex: 10000,
-          }}
-          pointerEvents="auto"
-        >
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10000 }} pointerEvents="auto">
           <AccountDeletedScreen />
         </View>
       )}
 
-      {/* ── Account Suspended overlay (zIndex 9999) ────────────────────────
-           Shown when profile.account_status === 'suspended'.
-           Clears automatically when admin unsuspends (Realtime UPDATE fires).
-           Hidden if the account is deleted (isDeleted check above).
-      ──────────────────────────────────────────────────────────────────────── */}
       {isSuspended && (
-        <View
-          style={{
-            position: 'absolute',
-            top: 0, left: 0, right: 0, bottom: 0,
-            zIndex: 9999,
-          }}
-          pointerEvents="auto"
-        >
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999 }} pointerEvents="auto">
           <AccountSuspendedScreen />
         </View>
       )}
 
-      {/* ── Offline overlay (zIndex 9998) ──────────────────────────────────── */}
       <Animated.View
         pointerEvents={isOffline && !isConnecting ? 'auto' : 'none'}
-        style={{
-          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-          opacity:  offlineFade,
-          zIndex:   9998,
-        }}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: offlineFade, zIndex: 9998 }}
       >
         {(isOffline || prevOffline.current) && <OfflineScreen />}
       </Animated.View>
-
     </View>
   );
 }

@@ -1,5 +1,6 @@
 // src/components/podcast/PodcastCard.tsx
 // Part 8 — Updated: added onShare prop and share button on completed cards.
+// Part 35 — Updated: added optional onLongPress prop for collection support.
 
 import React                                   from 'react';
 import { View, Text, TouchableOpacity, Alert } from 'react-native';
@@ -56,11 +57,12 @@ function StatusBadge({ status }: { status: Podcast['status'] }) {
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface PodcastCardProps {
-  podcast:  Podcast;
-  index:    number;
-  onPlay:   () => void;
-  onShare:  () => void;   // NEW
-  onDelete: () => void;
+  podcast:      Podcast;
+  index:        number;
+  onPlay:       () => void;
+  onShare:      () => void;
+  onDelete:     () => void;
+  onLongPress?: () => void;   // Part 35: optional long-press for collections
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -71,6 +73,7 @@ export function PodcastCard({
   onPlay,
   onShare,
   onDelete,
+  onLongPress,
 }: PodcastCardProps) {
   const isCompleted  = podcast.status === 'completed';
   const isFailed     = podcast.status === 'failed';
@@ -89,6 +92,10 @@ export function PodcastCard({
     );
   };
 
+  // If a custom onLongPress is provided (e.g. Add to Collection), use it;
+  // otherwise fall back to the delete confirmation.
+  const handleLongPress = onLongPress ?? handleDeletePress;
+
   return (
     <Animated.View
       entering={FadeInDown.duration(400).delay(index * 50)}
@@ -96,7 +103,7 @@ export function PodcastCard({
     >
       <TouchableOpacity
         onPress={isCompleted ? onPlay : undefined}
-        onLongPress={handleDeletePress}
+        onLongPress={handleLongPress}
         activeOpacity={isCompleted ? 0.75 : 1}
         style={{
           backgroundColor: COLORS.backgroundCard,
