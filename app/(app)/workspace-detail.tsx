@@ -1,14 +1,19 @@
 // app/(app)/workspace-detail.tsx
 // Part 17 UPDATE — Added Team Chat button in the top bar (chatbubbles icon).
-// Navigates to workspace-chat screen passing workspaceId, name, and userRole.
-// Chat button shows an unread badge when there are unread messages.
-// Only owners and editors see an active chat icon (viewers see it greyed out
-// and still navigate but hit the locked screen in workspace-chat.tsx).
+// Part 14 FIX — handleOpenSharedContent now correctly passes sharerName and sharedAt
+//               so the AcademicPaperViewer attribution banner renders properly.
 //
-// Changes from Part 16:
-//   • useWorkspaceChatUnread hook wired to show badge on chat icon
-//   • "Chat" button added to topBarRight actions
-//   • Navigation to workspace-chat screen
+// ROOT CAUSE of broken academic paper UI:
+//   handleOpenSharedContent was passing contentType and contentId but NOT
+//   sharerName or sharedAt. The workspace-shared-viewer received undefined for
+//   both, so the AttributionBanner showed "Shared in workspace" with no date,
+//   and more critically the AcademicPaperViewer had no sharer attribution at all.
+//   Additionally, the params key was "contentTitle" (unused) instead of the
+//   correct "sharerName" and "sharedAt" keys expected by useLocalSearchParams
+//   in workspace-shared-viewer.tsx.
+//
+// FIX: Pass item.sharerName and item.sharedAt through router params.
+// Everything else (chat, pinning, debate, podcast) is unchanged from Part 17.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -93,7 +98,7 @@ export default function WorkspaceDetailScreen() {
     deny:    denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
-  const sharing       = useWorkspaceSharing(id ?? null);
+  const sharing        = useWorkspaceSharing(id ?? null);
   const podcastSharing = usePodcastSharing(id ?? null);
   const debateSharing  = useDebateSharing(id ?? null);
 
@@ -132,7 +137,6 @@ export default function WorkspaceDetailScreen() {
   useEffect(() => {
     if (!id || !isEditor) return;
     getChatUnreadCount(id).then(count => setChatUnread(count));
-    // Poll every 30s as a lightweight fallback
     const interval = setInterval(async () => {
       const count = await getChatUnreadCount(id);
       setChatUnread(count);
@@ -179,7 +183,7 @@ export default function WorkspaceDetailScreen() {
   // ── Part 17: Open chat ─────────────────────────────────────────────────────
   const openChat = useCallback(() => {
     if (!id) return;
-    setChatUnread(0); // optimistically clear badge
+    setChatUnread(0);
     router.push({
       pathname: '/(app)/workspace-chat' as any,
       params: {
@@ -190,18 +194,21 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id, workspace?.name, userRole]);
 
-  // ── Open shared content ────────────────────────────────────────────────────
+  // ── FIX: Open shared content — now correctly passes sharerName & sharedAt ──
+  // Previously this passed "contentTitle" (a key not read by workspace-shared-viewer)
+  // and omitted sharerName/sharedAt entirely, breaking the attribution banner
+  // and leaving the academic paper viewer with no sharer info.
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({
       pathname: '/(app)/workspace-shared-viewer' as any,
       params:   {
-        workspaceId:  id,
-        contentType:  item.contentType,
-        contentId:    item.contentId,
-        contentTitle: item.title,
+        contentType: item.contentType,
+        contentId:   item.contentId,
+        sharerName:  item.sharerName  ?? '',
+        sharedAt:    item.sharedAt    ?? '',
       },
     });
-  }, [id]);
+  }, []);
 
   const handleOpenSharedPodcast = useCallback((podcast: SharedPodcast) => {
     router.push({
@@ -340,7 +347,6 @@ export default function WorkspaceDetailScreen() {
             )}
           </View>
           <View style={styles.topBarRight}>
-            {/* Part 17: Chat button — shown for editors/owners with unread badge */}
             {isEditor && (
               <TouchableOpacity
                 onPress={openChat}
@@ -391,7 +397,7 @@ export default function WorkspaceDetailScreen() {
           </Animated.View>
         )}
 
-        {/* ── Part 17: Chat CTA banner (for editors — shown when chatUnread > 0) ── */}
+        {/* ── Part 17: Chat CTA banner ── */}
         {isEditor && chatUnread > 0 && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.chatCTABanner}>
             <Ionicons name="chatbubbles" size={15} color={COLORS.primary} />
@@ -479,7 +485,6 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
-              {/* Part 17: Quick chat CTA for editors in feed tab */}
               {isEditor && (
                 <Animated.View entering={FadeInDown.duration(400).delay(50)}>
                   <TouchableOpacity onPress={openChat} style={styles.chatFeedCta} activeOpacity={0.8}>
@@ -577,11 +582,11 @@ export default function WorkspaceDetailScreen() {
 
               {totalSharedCount > 0 && (
                 <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
-                  <FilterChip label={`All (${totalSharedCount})`}         icon="apps-outline"    active />
-                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`}   icon="easel-outline"   />}
-                  {paperCount        > 0 && <FilterChip label={`Papers (${paperCount})`}          icon="school-outline"  />}
-                  {podcastCount      > 0 && <FilterChip label={`Podcasts (${podcastCount})`}      icon="mic-outline"     />}
-                  {debateCount       > 0 && <FilterChip label={`Debates (${debateCount})`}        icon="people-outline"  />}
+                  <FilterChip label={`All (${totalSharedCount})`}        icon="apps-outline"   active />
+                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`}  icon="easel-outline"  />}
+                  {paperCount        > 0 && <FilterChip label={`Papers (${paperCount})`}         icon="school-outline" />}
+                  {podcastCount      > 0 && <FilterChip label={`Podcasts (${podcastCount})`}     icon="mic-outline"    />}
+                  {debateCount       > 0 && <FilterChip label={`Debates (${debateCount})`}       icon="people-outline" />}
                 </Animated.View>
               )}
 
@@ -670,7 +675,6 @@ export default function WorkspaceDetailScreen() {
                 </TouchableOpacity>
               )}
 
-              {/* Part 17: Chat entry point in Members tab */}
               {isEditor && (
                 <TouchableOpacity onPress={openChat} style={styles.chatMembersEntryBtn} activeOpacity={0.8}>
                   <View style={styles.chatMembersEntryIcon}>
@@ -800,12 +804,10 @@ const styles = StyleSheet.create({
   topBarRight:  { flexDirection: 'row', gap: 6 },
   iconBtn:      { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
 
-  // Part 17: Chat button
   chatBtn:      { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
   chatBadge:    { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.error, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3, borderWidth: 2, borderColor: COLORS.background },
   chatBadgeText:{ color: '#FFF', fontSize: 8, fontWeight: '800' },
 
-  // Part 17: Chat CTA banner
   chatCTABanner:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: SPACING.xl, marginBottom: SPACING.xs, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.primary}25` },
   chatCTAText:      { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1, marginLeft: 8 },
   chatCTABtn:       { backgroundColor: COLORS.primary, borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 5 },
@@ -832,8 +834,7 @@ const styles = StyleSheet.create({
   addReportCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginBottom: SPACING.sm },
   addReportCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
 
-  // Part 17: Chat CTA in feed
-  chatFeedCta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  chatFeedCta:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
   chatFeedCtaLeft:  { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
   chatFeedCtaIcon:  { width: 40, height: 40, borderRadius: 13, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   chatFeedCtaTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
@@ -842,7 +843,6 @@ const styles = StyleSheet.create({
   chatFeedBadge:    { backgroundColor: COLORS.error, borderRadius: RADIUS.full, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
   chatFeedBadgeText:{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '800' },
 
-  // Part 17: Chat entry in Members tab
   chatMembersEntryBtn:   { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
   chatMembersEntryIcon:  { width: 38, height: 38, borderRadius: 12, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   chatMembersEntryTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
