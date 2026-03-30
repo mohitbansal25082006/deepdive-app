@@ -1,8 +1,7 @@
 // app/(app)/_layout.tsx
-// Part 35 FIX — global-search changed from modal presentation to regular
-// slide_from_bottom animation. This prevents the screen freeze that occurred
-// when navigating from inside a modal to another screen.
-// All Part 32 logic preserved unchanged.
+// Part 36 PATCH — Registered feed-report-view screen.
+// All Part 36 screens (user-profile, followers, explore-researchers) + all
+// Part 35 / Part 34 / Part 33 / Part 32 screens preserved.
 
 import { useEffect, useRef }               from 'react';
 import { View, Animated }                  from 'react-native';
@@ -66,8 +65,8 @@ export default function AppLayout() {
     runCheck();
   }, [user?.id, profile?.profile_completed, profileLoading, pathname]);
 
-  const isDeleted   = accountDeleted;
-  const isSuspended = !isDeleted && profile?.account_status === 'suspended';
+  const isDeleted         = accountDeleted;
+  const isSuspended       = !isDeleted && profile?.account_status === 'suspended';
   const blockInteractions = (isOffline && !isConnecting) || isSuspended || isDeleted;
 
   return (
@@ -85,62 +84,65 @@ export default function AppLayout() {
         >
           <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
 
+          {/* ── Research ── */}
           <Stack.Screen name="research-input"    options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
           <Stack.Screen name="research-progress" />
           <Stack.Screen name="research-report"   />
+          <Stack.Screen name="knowledge-graph"   options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="public-report"     options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
 
-          <Stack.Screen name="knowledge-graph" options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="public-report"   options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
+          {/* ── Presentations ── */}
+          <Stack.Screen name="slide-preview"     options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="slide-editor"      options={{ animation: 'slide_from_right' }} />
 
-          <Stack.Screen name="slide-preview"   options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="slide-editor"    options={{ animation: 'slide_from_right' }} />
-
-          <Stack.Screen name="bookmarks"       options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="compare-reports" options={{ animation: 'slide_from_right' }} />
+          {/* ── Legacy ── */}
+          <Stack.Screen name="bookmarks"         options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="compare-reports"   options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="edit-profile" />
 
-          <Stack.Screen name="academic-paper"  options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="podcast-player"  options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="debate-detail"   options={{ animation: 'slide_from_right' }} />
+          {/* ── Content formats ── */}
+          <Stack.Screen name="academic-paper"    options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="podcast-player"    options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="debate-detail"     options={{ animation: 'slide_from_right' }} />
 
+          {/* ── Workspace ── */}
           <Stack.Screen name="workspace-detail"   options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-members"  options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-settings" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-report"   options={{ animation: 'slide_from_right' }} />
-
           <Stack.Screen name="workspace-shared-viewer"         options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-podcast-player" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-debate"         options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="workspace-chat"    options={{ animation: 'slide_from_right' }} />
 
-          <Stack.Screen name="workspace-chat" options={{ animation: 'slide_from_right' }} />
-
+          {/* ── Credits ── */}
           <Stack.Screen name="credits-store"       options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
           <Stack.Screen name="transaction-history" options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="knowledge-base"      options={{ animation: 'slide_from_right' }} />
 
-          {/*
-            Part 35: global-search is a REGULAR screen (NOT modal) so that
-            router.push() from within it doesn't cause a modal-stack freeze.
-            It slides up from the bottom like a modal visually but is a
-            standard stack screen underneath.
-          */}
+          {/* ── Knowledge Base ── */}
+          <Stack.Screen name="knowledge-base"     options={{ animation: 'slide_from_right' }} />
+
+          {/* ── Search & Collections ── */}
+          <Stack.Screen name="global-search"      options={{ animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="collection-detail"  options={{ animation: 'slide_from_right' }} />
+
+          {/* ── Onboarding & Insights ── */}
+          <Stack.Screen name="onboarding-flow"    options={{ animation: 'fade', gestureEnabled: false }} />
+          <Stack.Screen name="insights"           options={{ animation: 'slide_from_right' }} />
+
+          {/* ════════════════════════════════════════
+              Part 36 — Social screens
+          ════════════════════════════════════════ */}
+          <Stack.Screen name="user-profile"           options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="followers"              options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="explore-researchers"    options={{ animation: 'slide_from_right' }} />
+
+          {/* ── Feed report viewer (view-only, no edit controls) ── */}
           <Stack.Screen
-            name="global-search"
-            options={{ animation: 'slide_from_bottom' }}
-          />
-          <Stack.Screen
-            name="collection-detail"
+            name="feed-report-view"
             options={{ animation: 'slide_from_right' }}
           />
 
-          <Stack.Screen
-            name="onboarding-flow"
-            options={{ animation: 'fade', gestureEnabled: false }}
-          />
-          <Stack.Screen
-            name="insights"
-            options={{ animation: 'slide_from_right' }}
-          />
         </Stack>
       </Animated.View>
 

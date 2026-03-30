@@ -1,9 +1,10 @@
 // src/types/index.ts
 // DeepDive AI — Complete Type Definitions
-// Parts 1–32 — All types in one file
+// Parts 1–36 — All types in one file
 //
-// Part 32 change: Added `account_status?` to Profile interface.
-// All other types are identical to Part 25.
+// Part 36 change: Added `is_public?`, `follower_count?`, `following_count?`
+// to Profile interface for the Social & Discovery feature.
+// All other types are identical to Part 32.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
@@ -20,14 +21,13 @@ export interface Profile {
   created_at:          string;
   updated_at:          string;
   // Part 32: admin-controlled status field.
-  // 'active'    — default, normal access
-  // 'suspended' — locked by admin, AccountSuspendedScreen shown
-  // 'flagged'   — review marker only, user retains full access
-  // 'deleted'   — set by admin DELETE route immediately before auth.deleteUser()
-  //               triggers AccountDeletedScreen via Realtime UPDATE event
-  // Optional (?) so existing Profile objects without this column still type-check.
-  // Column was added by schema_part31_complete.sql — always present on new rows.
   account_status?:     'active' | 'suspended' | 'flagged' | 'deleted';
+  // Part 36: Social & Discovery fields.
+  // Optional (?) so existing Profile objects without these columns still type-check.
+  // Added by schema_part36.sql.
+  is_public?:          boolean;
+  follower_count?:     number;
+  following_count?:    number;
 }
 
 export interface AuthUser {

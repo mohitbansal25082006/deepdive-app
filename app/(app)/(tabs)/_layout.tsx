@@ -1,22 +1,31 @@
 // app/(app)/(tabs)/_layout.tsx
-// Part 10: Added Workspace tab between History and Podcast.
-// 6 tabs total: Research | History | Workspace | Podcast | Debate | Profile
+// Part 36B — UPDATED: Added "Feed" tab between History and Teams.
+// 7 tabs total: Research | History | Feed | Teams | Podcast | Debate | Profile
+//
+// The Feed tab icon shows a small unread dot when hasNew is true.
+// All Part 10–35 tabs and logic preserved unchanged.
 
-import { Tabs }                 from 'expo-router';
-import { View, Text, Platform } from 'react-native';
-import { Ionicons }             from '@expo/vector-icons';
-import { BlurView }             from 'expo-blur';
-import { useSafeAreaInsets }    from 'react-native-safe-area-context';
-import { COLORS, FONTS }        from '../../../src/constants/theme';
+import { Tabs }                   from 'expo-router';
+import { View, Text, Platform }   from 'react-native';
+import { Ionicons }               from '@expo/vector-icons';
+import { BlurView }               from 'expo-blur';
+import { useSafeAreaInsets }      from 'react-native-safe-area-context';
+import { useAuth }                from '../../../src/context/AuthContext';
+import { useFollowingFeed }       from '../../../src/hooks/useFollowingFeed';
+import { COLORS, FONTS }          from '../../../src/constants/theme';
+
+// ─── Tab icon ─────────────────────────────────────────────────────────────────
 
 function TabIcon({
   name,
   focused,
   label,
+  badgeDot,
 }: {
-  name:    keyof typeof Ionicons.glyphMap;
-  focused: boolean;
-  label:   string;
+  name:      keyof typeof Ionicons.glyphMap;
+  focused:   boolean;
+  label:     string;
+  badgeDot?: boolean;
 }) {
   return (
     <View style={{
@@ -38,11 +47,28 @@ function TabIcon({
         <View style={{ height: 8 }} />
       )}
 
-      <Ionicons
-        name={focused ? name : (`${name}-outline` as any)}
-        size={20}
-        color={focused ? COLORS.primary : COLORS.textMuted}
-      />
+      {/* Icon with optional unread dot */}
+      <View style={{ position: 'relative' }}>
+        <Ionicons
+          name={focused ? name : (`${name}-outline` as any)}
+          size={20}
+          color={focused ? COLORS.primary : COLORS.textMuted}
+        />
+        {/* Unread dot — only when tab is not focused */}
+        {badgeDot && !focused && (
+          <View style={{
+            position:        'absolute',
+            top:             -2,
+            right:           -2,
+            width:           8,
+            height:          8,
+            borderRadius:    4,
+            backgroundColor: COLORS.error,
+            borderWidth:     1.5,
+            borderColor:     COLORS.background,
+          }} />
+        )}
+      </View>
 
       <Text
         numberOfLines={1}
@@ -60,9 +86,15 @@ function TabIcon({
   );
 }
 
+// ─── Layout ───────────────────────────────────────────────────────────────────
+
 export default function TabsLayout() {
-  const insets        = useSafeAreaInsets();
-  const tabBarHeight  = 64 + insets.bottom;
+  const insets       = useSafeAreaInsets();
+  const tabBarHeight = 64 + insets.bottom;
+  const { user }     = useAuth();
+
+  // Feed "hasNew" — drives the unread dot on the Feed tab
+  const { hasNew } = useFollowingFeed(user?.id ?? null);
 
   return (
     <Tabs
@@ -101,7 +133,7 @@ export default function TabsLayout() {
         },
       }}
     >
-      {/* ── Research ── */}
+      {/* ── 1. Research ── */}
       <Tabs.Screen
         name="home"
         options={{
@@ -111,7 +143,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── History ── */}
+      {/* ── 2. History ── */}
       <Tabs.Screen
         name="history"
         options={{
@@ -121,7 +153,22 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── Workspace (NEW — Part 10) ── */}
+      {/* ── 3. Feed (NEW — Part 36) ── */}
+      <Tabs.Screen
+        name="feed"
+        options={{
+          tabBarIcon: ({ focused }) => (
+            <TabIcon
+              name="newspaper"
+              focused={focused}
+              label="Feed"
+              badgeDot={hasNew}
+            />
+          ),
+        }}
+      />
+
+      {/* ── 4. Teams (Workspace — Part 10) ── */}
       <Tabs.Screen
         name="workspace"
         options={{
@@ -131,7 +178,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── Podcast (Part 8) ── */}
+      {/* ── 5. Podcast (Part 8) ── */}
       <Tabs.Screen
         name="podcast"
         options={{
@@ -141,7 +188,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── Debate (Part 9) ── */}
+      {/* ── 6. Debate (Part 9) ── */}
       <Tabs.Screen
         name="debate"
         options={{
@@ -151,7 +198,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── Profile ── */}
+      {/* ── 7. Profile ── */}
       <Tabs.Screen
         name="profile"
         options={{

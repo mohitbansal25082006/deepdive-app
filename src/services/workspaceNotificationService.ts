@@ -1,25 +1,29 @@
 // src/services/workspaceNotificationService.ts
 // Part 18D — Full workspace notification service.
-//
-// Notifications fired:
-//   • @mention in chat           (suppressed on that chat screen)
-//   • New chat message           (suppressed on that chat screen)
-//   • Reply to your message      (suppressed on that chat screen)
-//   • Report added to workspace
-//   • Comment added
-//   • Member joined
-//   • Shared content (presentation/paper/podcast/debate/document)
-//   • Member removed
-//   • Member blocked
-//   • Role changed
-//   • Ownership transferred
+// Part 36 FIX — Lazy-loads expo-notifications to prevent PushNotificationIOS
+// invariant violation crash in Expo Go.
 
 import { Platform } from 'react-native';
-import * as Notifications from 'expo-notifications';
 import { supabase } from '../lib/supabase';
 import { getNotificationsEnabled, getPermissionStatus } from '../lib/notifications';
 import { isOnChatScreen } from '../lib/screenState';
 import { WorkspaceNotificationPreferences } from '../types';
+
+// ─── Lazy loader ──────────────────────────────────────────────────────────────
+
+let _N: typeof import('expo-notifications') | null = null;
+
+function getNotifs(): typeof import('expo-notifications') | null {
+  if (_N) return _N;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    _N = require('expo-notifications') as typeof import('expo-notifications');
+    return _N;
+  } catch {
+    console.warn('[WorkspaceNotif] expo-notifications not available (Expo Go?).');
+    return null;
+  }
+}
 
 // ─── Android channels ─────────────────────────────────────────────────────────
 
@@ -29,19 +33,23 @@ const CH_WORKSPACE = 'workspace_updates';
 
 async function ensureChannels(): Promise<void> {
   if (Platform.OS !== 'android') return;
-  await Notifications.setNotificationChannelAsync(CH_MENTION, {
-    name: 'Mentions', importance: Notifications.AndroidImportance.MAX,
-    vibrationPattern: [0, 300, 100, 300], lightColor: '#6C63FF', sound: 'default',
-  });
-  await Notifications.setNotificationChannelAsync(CH_CHAT, {
-    name: 'Team Chat', importance: Notifications.AndroidImportance.HIGH, sound: 'default',
-  });
-  await Notifications.setNotificationChannelAsync(CH_WORKSPACE, {
-    name: 'Workspace Updates', importance: Notifications.AndroidImportance.DEFAULT, sound: 'default',
-  });
+  const N = getNotifs();
+  if (!N) return;
+  try {
+    await N.setNotificationChannelAsync(CH_MENTION, {
+      name: 'Mentions', importance: N.AndroidImportance.MAX,
+      vibrationPattern: [0, 300, 100, 300], lightColor: '#6C63FF', sound: 'default',
+    });
+    await N.setNotificationChannelAsync(CH_CHAT, {
+      name: 'Team Chat', importance: N.AndroidImportance.HIGH, sound: 'default',
+    });
+    await N.setNotificationChannelAsync(CH_WORKSPACE, {
+      name: 'Workspace Updates', importance: N.AndroidImportance.DEFAULT, sound: 'default',
+    });
+  } catch (e) {
+    console.warn('[WorkspaceNotif] ensureChannels error:', e);
+  }
 }
-
-// ─── Master switch ────────────────────────────────────────────────────────────
 
 async function globallyEnabled(): Promise<boolean> {
   const [enabled, status] = await Promise.all([
@@ -49,8 +57,6 @@ async function globallyEnabled(): Promise<boolean> {
   ]);
   return enabled && status === 'granted';
 }
-
-// ─── Per-workspace preference check ──────────────────────────────────────────
 
 type PrefKey = keyof Omit<WorkspaceNotificationPreferences,
   'id' | 'userId' | 'workspaceId' | 'createdAt' | 'updatedAt'>;
@@ -77,30 +83,29 @@ async function canNotify(workspaceId: string, prefKey: PrefKey): Promise<boolean
   } catch { return true; }
 }
 
-// ─── Scheduler ────────────────────────────────────────────────────────────────
-
 async function schedule(
   title: string, body: string,
   data: Record<string, unknown>,
   channel = CH_WORKSPACE,
 ): Promise<void> {
+  const N = getNotifs();
+  if (!N) return;
   await ensureChannels();
   try {
-    await Notifications.scheduleNotificationAsync({
+    await N.scheduleNotificationAsync({
       content: {
         title, body, data, sound: true,
         ...(Platform.OS === 'android' ? { channelId: channel } : {}),
       },
       trigger: null,
     });
-    const cur = await Notifications.getBadgeCountAsync();
-    await Notifications.setBadgeCountAsync(cur + 1);
+    const cur = await N.getBadgeCountAsync();
+    await N.setBadgeCountAsync(cur + 1);
   } catch (err) {
-    console.warn('[WorkspaceNotif]', err);
+    console.warn('[WorkspaceNotif] schedule error:', err);
   }
 }
 
-// ─── 1. @Mention in chat ──────────────────────────────────────────────────────
 export async function notifyMention(params: {
   workspaceId: string; workspaceName: string;
   mentionerName: string; messagePreview: string;
@@ -115,7 +120,6 @@ export async function notifyMention(params: {
   );
 }
 
-// ─── 2. New chat message (only when NOT on that chat screen) ──────────────────
 export async function notifyChatMessage(params: {
   workspaceId: string; workspaceName: string;
   senderName: string; messagePreview: string;
@@ -130,7 +134,6 @@ export async function notifyChatMessage(params: {
   );
 }
 
-// ─── 3. Reply to your message ─────────────────────────────────────────────────
 export async function notifyReply(params: {
   workspaceId: string; workspaceName: string;
   replierName: string; replyPreview: string; messageId: string;
@@ -145,7 +148,6 @@ export async function notifyReply(params: {
   );
 }
 
-// ─── 4. Report added ──────────────────────────────────────────────────────────
 export async function notifyReportAdded(params: {
   workspaceId: string; workspaceName: string;
   reportTitle: string; adderName: string; reportId: string;
@@ -158,7 +160,6 @@ export async function notifyReportAdded(params: {
   );
 }
 
-// ─── 5. Comment added ─────────────────────────────────────────────────────────
 export async function notifyCommentAdded(params: {
   workspaceId: string; workspaceName: string;
   commenterName: string; commentPreview: string;
@@ -171,7 +172,6 @@ export async function notifyCommentAdded(params: {
   );
 }
 
-// ─── 6. Member joined ─────────────────────────────────────────────────────────
 export async function notifyMemberJoined(params: {
   workspaceId: string; workspaceName: string; memberName: string;
 }): Promise<void> {
@@ -183,7 +183,6 @@ export async function notifyMemberJoined(params: {
   );
 }
 
-// ─── 7. Shared content ────────────────────────────────────────────────────────
 export async function notifySharedContent(params: {
   workspaceId: string; workspaceName: string; sharerName: string;
   contentType: 'presentation' | 'academic_paper' | 'podcast' | 'debate' | 'document';
@@ -204,7 +203,6 @@ export async function notifySharedContent(params: {
   );
 }
 
-// ─── 8. Member removed ────────────────────────────────────────────────────────
 export async function notifyMemberRemoved(params: {
   workspaceId: string; workspaceName: string;
   removedName: string; removedByName: string;
@@ -217,7 +215,6 @@ export async function notifyMemberRemoved(params: {
   );
 }
 
-// ─── 9. Member blocked ────────────────────────────────────────────────────────
 export async function notifyMemberBlocked(params: {
   workspaceId: string; workspaceName: string;
   blockedName: string; blockedByName: string;
@@ -230,7 +227,6 @@ export async function notifyMemberBlocked(params: {
   );
 }
 
-// ─── 10. Role changed ────────────────────────────────────────────────────────
 export async function notifyRoleChanged(params: {
   workspaceId: string; workspaceName: string;
   targetName: string; newRole: string; changedByName: string;
@@ -244,7 +240,6 @@ export async function notifyRoleChanged(params: {
   );
 }
 
-// ─── 11. Ownership transferred ────────────────────────────────────────────────
 export async function notifyOwnershipTransferred(params: {
   workspaceId: string; workspaceName: string;
   newOwnerName: string; previousOwner: string;
@@ -256,8 +251,6 @@ export async function notifyOwnershipTransferred(params: {
     { type: 'workspace_ownership_transferred', workspaceId: params.workspaceId },
   );
 }
-
-// ─── Preferences CRUD ────────────────────────────────────────────────────────
 
 export async function getWorkspaceNotifPrefs(
   workspaceId: string,
