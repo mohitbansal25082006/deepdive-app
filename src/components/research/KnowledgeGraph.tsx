@@ -1,16 +1,8 @@
 // src/components/research/KnowledgeGraph.tsx
-// Advanced Interactive Knowledge Graph — v4
+// Advanced Interactive Knowledge Graph — v5
 //
-// Fixes vs v3:
-//  1. Fullscreen modal no longer closes when panning/zooming — root causes fixed:
-//     (a) onPanResponderTerminationRequest now returns FALSE so iOS native
-//         gesture recognizers cannot steal the responder mid-gesture.
-//     (b) FullscreenModal is hoisted out of the render function into a stable
-//         component so it never unmounts/remounts mid-gesture.
-//     (c) onMoveShouldSetPanResponderCapture replaced with the non-capturing
-//         version so child touchables (close button etc.) still work.
-//  2. SVG export button correctly labels the export as "SVG" (real vector file).
-//  3. Pan tracking and pinch-zoom behaviour unchanged from v3.
+// Changes vs v4:
+//  • Export feature removed entirely (SVG / PDF buttons, state, handlers).
 
 import React, {
   useEffect, useRef, useState, useMemo, useCallback,
@@ -18,10 +10,8 @@ import React, {
 import {
   View, Text, TouchableOpacity, ScrollView,
   Dimensions, PanResponder, TextInput, Modal,
-  Alert, ActivityIndicator,
 } from 'react-native';
 import Svg, { Circle, Line, Text as SvgText, G } from 'react-native-svg';
-import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -35,10 +25,6 @@ import type {
   KnowledgeGraphCluster,
   ExtendedKnowledgeGraph,
 } from '../../services/agents/knowledgeGraphAgent';
-import {
-  exportGraphAsSVG,
-  exportGraphAsPDF,
-} from '../../services/graphExportService';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -207,7 +193,7 @@ function GraphCanvas({
   selectedNode, visibleIds, matches, connectedIds,
   colorMap, onNodePress,
 }: CanvasProps) {
-  const nodeMap = useMemo(() => new Map(layoutNodes.map(n => [n.id, n])), [layoutNodes]);
+  const nodeMap  = useMemo(() => new Map(layoutNodes.map(n => [n.id, n])), [layoutNodes]);
   const getColor = (n: KnowledgeGraphNode) => colorMap.get(n.id) ?? NODE_TYPE_COLORS[n.type] ?? '#6C63FF';
 
   const vbX = -ox / scale;
@@ -302,64 +288,18 @@ function GraphCanvas({
 // ─── Zoom control bar ─────────────────────────────────────────────────────────
 
 interface ZoomBarProps {
-  scale:          number;
-  isFS:           boolean;
-  isExporting:    boolean;
-  showExportMenu: boolean;
-  onZoomIn:       () => void;
-  onZoomOut:      () => void;
-  onReset:        () => void;
-  onExpand:       () => void;
-  onExportToggle: () => void;
-  onExportSVG:    () => void;
-  onExportPDF:    () => void;
-  bottom?:        number;
+  scale:    number;
+  isFS:     boolean;
+  onZoomIn: () => void;
+  onZoomOut:() => void;
+  onReset:  () => void;
+  onExpand: () => void;
+  bottom?:  number;
 }
 
-function ZoomBar({
-  scale, isFS, isExporting, showExportMenu,
-  onZoomIn, onZoomOut, onReset, onExpand,
-  onExportToggle, onExportSVG, onExportPDF,
-  bottom = 12,
-}: ZoomBarProps) {
+function ZoomBar({ scale, isFS, onZoomIn, onZoomOut, onReset, onExpand, bottom = 12 }: ZoomBarProps) {
   return (
     <View style={{ position: 'absolute', bottom, right: 10, gap: 6, alignItems: 'center' }}>
-      {showExportMenu && (
-        <View style={{
-          backgroundColor: COLORS.backgroundCard,
-          borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border,
-          overflow: 'hidden', marginBottom: 2, ...SHADOWS.medium,
-        }}>
-          <TouchableOpacity onPress={onExportSVG} style={{
-            flexDirection: 'row', alignItems: 'center', gap: 8,
-            paddingHorizontal: 14, paddingVertical: 11,
-            borderBottomWidth: 1, borderBottomColor: COLORS.border,
-          }}>
-            <Ionicons name="code-slash-outline" size={15} color={COLORS.primary}/>
-            <View>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>SVG</Text>
-              <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>Vector · real .svg file</Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onExportPDF} style={{
-            flexDirection: 'row', alignItems: 'center', gap: 8,
-            paddingHorizontal: 14, paddingVertical: 11,
-          }}>
-            <Ionicons name="document-outline" size={15} color={COLORS.primary}/>
-            <View>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>PDF</Text>
-              <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>1800×1800 · print quality</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      <TouchableOpacity onPress={onExportToggle} style={ctrlBtn} disabled={isExporting}>
-        {isExporting
-          ? <ActivityIndicator size="small" color={COLORS.primary}/>
-          : <Ionicons name="share-outline" size={15} color={COLORS.primary}/>}
-      </TouchableOpacity>
-
       <TouchableOpacity onPress={onExpand} style={ctrlBtn}>
         <Ionicons name={isFS ? 'contract-outline' : 'expand-outline'} size={15} color={COLORS.textSecondary}/>
       </TouchableOpacity>
@@ -399,30 +339,14 @@ const ctrlBtn: object = {
 };
 
 // ─── Hook: gesture state + pan responder ──────────────────────────────────────
-//
-// KEY FIXES vs v3:
-//
-// (A) onPanResponderTerminationRequest returns FALSE.
-//     This is the critical fix for the modal-closing bug. When this returns
-//     true (the default), the iOS native gesture recognizer can "steal" the
-//     responder at any time — which the Modal interprets as a swipe-dismiss
-//     gesture and closes. Returning false means once we own the gesture, we
-//     keep it until the user lifts their fingers.
-//
-// (B) onMoveShouldSetPanResponder (non-capture) is used instead of
-//     onMoveShouldSetPanResponderCapture so child touchables (close button,
-//     export menu) still receive tap events normally.
-//
-// (C) onStartShouldSetPanResponderCapture remains false so taps on buttons
-//     inside the canvas area are not intercepted.
 
 function useGestures(
-  scaleRef:    React.MutableRefObject<number>,
-  oxRef:       React.MutableRefObject<number>,
-  oyRef:       React.MutableRefObject<number>,
-  setScale:    (s: number | ((p: number) => number)) => void,
-  setOx:       (v: number | ((p: number) => number)) => void,
-  setOy:       (v: number | ((p: number) => number)) => void,
+  scaleRef: React.MutableRefObject<number>,
+  oxRef:    React.MutableRefObject<number>,
+  oyRef:    React.MutableRefObject<number>,
+  setScale: (s: number | ((p: number) => number)) => void,
+  setOx:    (v: number | ((p: number) => number)) => void,
+  setOy:    (v: number | ((p: number) => number)) => void,
 ) {
   const lastPan       = useRef({ x: 0, y: 0 });
   const lastPinchDist = useRef<number | null>(null);
@@ -431,25 +355,18 @@ function useGestures(
 
   return useRef(
     PanResponder.create({
-      // Only intercept moves with meaningful displacement (avoids eating taps)
-      onMoveShouldSetPanResponder: (_evt, gs) => {
-        return Math.abs(gs.dx) > 2 || Math.abs(gs.dy) > 2;
-      },
+      onMoveShouldSetPanResponder: (_evt, gs) =>
+        Math.abs(gs.dx) > 2 || Math.abs(gs.dy) > 2,
       onStartShouldSetPanResponder:        () => true,
       onStartShouldSetPanResponderCapture: () => false,
       onMoveShouldSetPanResponderCapture:  () => false,
+      onPanResponderTerminationRequest:    () => false,
 
-      // ── CRITICAL: Never yield the responder once we have it ──────────────
-      // Returning false here is what prevents the Modal from interpreting
-      // a pan gesture as a swipe-to-dismiss on iOS.
-      onPanResponderTerminationRequest: () => false,
-
-      onPanResponderGrant: (evt, gs) => {
+      onPanResponderGrant: (_evt, gs) => {
         isGesturing.current   = true;
         lastPan.current       = { x: gs.dx, y: gs.dy };
         lastPinchDist.current = null;
 
-        // Double-tap zoom in
         const now = Date.now();
         if (now - lastTap.current < 280) {
           setScale(prev => clamp(prev + ZOOM_STEP * 2, MIN_SCALE, MAX_SCALE));
@@ -461,7 +378,6 @@ function useGestures(
         const touches = evt.nativeEvent.touches;
 
         if (touches.length >= 2) {
-          // ── Pinch-to-zoom ──────────────────────────────────────────────
           const t0 = touches[0], t1 = touches[1];
           const d  = ptDist(t0.pageX, t0.pageY, t1.pageX, t1.pageY);
           if (lastPinchDist.current !== null && lastPinchDist.current > 0) {
@@ -472,7 +388,6 @@ function useGestures(
           lastPinchDist.current = d;
           lastPan.current = { x: gs.dx, y: gs.dy };
         } else {
-          // ── Single-finger pan ──────────────────────────────────────────
           lastPinchDist.current = null;
           const dxFrame = gs.dx - lastPan.current.x;
           const dyFrame = gs.dy - lastPan.current.y;
@@ -495,70 +410,56 @@ function useGestures(
   ).current;
 }
 
-// ─── Fullscreen canvas content (hoisted out of KnowledgeGraphView) ────────────
-//
-// IMPORTANT: This must be defined OUTSIDE of KnowledgeGraphView.
-// If defined as a nested component (like the old FullscreenModal), React
-// creates a new component type on every render, causing React to unmount +
-// remount the entire subtree on every state change — killing the PanResponder
-// mid-gesture and making the modal appear to "close".
+// ─── Fullscreen Modal (hoisted — must stay outside KnowledgeGraphView) ────────
 
 interface FullscreenContentProps {
-  visible:        boolean;
-  graph:          KnowledgeGraphType | ExtendedKnowledgeGraph;
-  extended:       ExtendedKnowledgeGraph;
-  fsLayoutNodes:  KnowledgeGraphNode[];
-  fsW:            number;
-  fsH:            number;
-  scale:          number;
-  ox:             number;
-  oy:             number;
-  selectedNode:   KnowledgeGraphNode | null;
-  visibleIds:     Set<string>;
-  matches:        Set<string>;
-  connectedIds:   Set<string>;
-  colorMap:       Map<string, string>;
-  insets:         { top: number; bottom: number; left: number; right: number };
-  ready:          boolean;
-  isExporting:    boolean;
-  showExportMenu: boolean;
-  searchQuery:    string;
-  fsPanHandlers:  object;
-  getColor:       (n: KnowledgeGraphNode) => string;
-  onClose:        () => void;
-  onNodePress:    (n: KnowledgeGraphNode) => void;
-  onZoomIn:       () => void;
-  onZoomOut:      () => void;
-  onReset:        () => void;
-  onExpand:       () => void;
-  onExportToggle: () => void;
-  onExportSVG:    () => void;
-  onExportPDF:    () => void;
-  onSearchChange: (q: string) => void;
-  onDeselectNode: () => void;
+  visible:       boolean;
+  graph:         KnowledgeGraphType | ExtendedKnowledgeGraph;
+  extended:      ExtendedKnowledgeGraph;
+  fsLayoutNodes: KnowledgeGraphNode[];
+  fsW:           number;
+  fsH:           number;
+  scale:         number;
+  ox:            number;
+  oy:            number;
+  selectedNode:  KnowledgeGraphNode | null;
+  visibleIds:    Set<string>;
+  matches:       Set<string>;
+  connectedIds:  Set<string>;
+  colorMap:      Map<string, string>;
+  insets:        { top: number; bottom: number; left: number; right: number };
+  ready:         boolean;
+  searchQuery:   string;
+  fsPanHandlers: object;
+  getColor:      (n: KnowledgeGraphNode) => string;
+  onClose:       () => void;
+  onNodePress:   (n: KnowledgeGraphNode) => void;
+  onZoomIn:      () => void;
+  onZoomOut:     () => void;
+  onReset:       () => void;
+  onExpand:      () => void;
+  onSearchChange:(q: string) => void;
+  onDeselectNode:() => void;
 }
 
 function FullscreenModal({
   visible, graph, extended, fsLayoutNodes, fsW, fsH,
   scale, ox, oy,
   selectedNode, visibleIds, matches, connectedIds,
-  colorMap, insets, ready, isExporting, showExportMenu,
-  searchQuery, fsPanHandlers, getColor,
+  colorMap, insets, ready, searchQuery, fsPanHandlers, getColor,
   onClose, onNodePress, onZoomIn, onZoomOut, onReset, onExpand,
-  onExportToggle, onExportSVG, onExportPDF, onSearchChange, onDeselectNode,
+  onSearchChange, onDeselectNode,
 }: FullscreenContentProps) {
   return (
     <Modal
       visible={visible}
       animationType="fade"
       statusBarTranslucent
-      // On Android the hardware back button triggers this.
-      // We handle it by closing cleanly rather than letting the OS swipe-dismiss.
       onRequestClose={onClose}
     >
       <View style={{ flex: 1, backgroundColor: '#08081C' }}>
 
-        {/* Header — outside the pan responder area so buttons stay tappable */}
+        {/* Header */}
         <View style={{
           paddingTop: insets.top + 6, paddingBottom: SPACING.sm,
           paddingHorizontal: SPACING.md,
@@ -598,7 +499,7 @@ function FullscreenModal({
           </View>
         </View>
 
-        {/* Canvas — this is the gesture area */}
+        {/* Canvas */}
         <View style={{ flex: 1 }} {...fsPanHandlers}>
           {ready && (
             <GraphCanvas
@@ -610,13 +511,10 @@ function FullscreenModal({
               colorMap={colorMap} onNodePress={onNodePress}
             />
           )}
-
           <ZoomBar
-            scale={scale} isFS isExporting={isExporting} showExportMenu={showExportMenu}
-            onZoomIn={onZoomIn} onZoomOut={onZoomOut} onReset={onReset}
-            onExpand={onExpand}
-            onExportToggle={onExportToggle}
-            onExportSVG={onExportSVG} onExportPDF={onExportPDF}
+            scale={scale} isFS
+            onZoomIn={onZoomIn} onZoomOut={onZoomOut}
+            onReset={onReset} onExpand={onExpand}
             bottom={insets.bottom + 12}
           />
         </View>
@@ -625,7 +523,7 @@ function FullscreenModal({
         {selectedNode && (
           <View style={{
             position: 'absolute',
-            bottom: insets.bottom + 12, left: 12, right: 80,
+            bottom: insets.bottom + 12, left: 12, right: 60,
             backgroundColor: 'rgba(16,14,36,0.97)',
             borderRadius: RADIUS.xl, padding: SPACING.md,
             borderWidth: 1, borderColor: `${getColor(selectedNode)}40`,
@@ -637,7 +535,10 @@ function FullscreenModal({
               <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1 }}>
                 {selectedNode.label}
               </Text>
-              <View style={{ backgroundColor: `${getColor(selectedNode)}20`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2 }}>
+              <View style={{
+                backgroundColor: `${getColor(selectedNode)}20`,
+                borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2,
+              }}>
                 <Text style={{ color: getColor(selectedNode), fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>
                   {selectedNode.type}
                 </Text>
@@ -711,8 +612,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
   const [hiddenClusters, setHiddenClusters] = useState<Set<string>>(new Set());
   const [filterType,     setFilterType]     = useState<string | null>(null);
   const [isFullscreen,   setIsFullscreen]   = useState(false);
-  const [isExporting,    setIsExporting]    = useState(false);
-  const [showExportMenu, setShowExportMenu] = useState(false);
   const [ready,          setReady]          = useState(false);
 
   // ── Layouts ───────────────────────────────────────────────────────────────
@@ -798,12 +697,12 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
       .map(id => nm.get(id)).filter(Boolean) as KnowledgeGraphNode[];
   }, [selectedNode, adjacency, layoutNodes]);
 
-  // ── Two separate PanResponder instances ───────────────────────────────────
+  // ── Pan responders ────────────────────────────────────────────────────────
 
   const inlinePan = useGestures(scaleRef, oxRef, oyRef, setScale, setOx, setOy);
   const fsPan     = useGestures(scaleRef, oxRef, oyRef, setScale, setOx, setOy);
 
-  // ── Zoom buttons ──────────────────────────────────────────────────────────
+  // ── Zoom ──────────────────────────────────────────────────────────────────
 
   const zoomIn    = useCallback(() => setScale(prev => clamp(prev + ZOOM_STEP, MIN_SCALE, MAX_SCALE)), []);
   const zoomOut   = useCallback(() => setScale(prev => clamp(prev - ZOOM_STEP, MIN_SCALE, MAX_SCALE)), []);
@@ -811,7 +710,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
 
   const handleExpand = useCallback(() => {
     setIsFullscreen(v => !v);
-    setShowExportMenu(false);
     resetView();
   }, [resetView]);
 
@@ -819,22 +717,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
     setIsFullscreen(false);
     resetView();
   }, [resetView]);
-
-  // ── Export ────────────────────────────────────────────────────────────────
-
-  const doExportSVG = useCallback(async () => {
-    setShowExportMenu(false); setIsExporting(true);
-    try { await exportGraphAsSVG(graph); }
-    catch (e) { Alert.alert('Export failed', e instanceof Error ? e.message : String(e)); }
-    finally { setIsExporting(false); }
-  }, [graph]);
-
-  const doExportPDF = useCallback(async () => {
-    setShowExportMenu(false); setIsExporting(true);
-    try { await exportGraphAsPDF(graph); }
-    catch (e) { Alert.alert('Export failed', e instanceof Error ? e.message : String(e)); }
-    finally { setIsExporting(false); }
-  }, [graph]);
 
   // ── Node press ────────────────────────────────────────────────────────────
 
@@ -844,7 +726,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
   }, [onNodePress]);
 
   const handleDeselectNode = useCallback(() => setSelectedNode(null), []);
-  const handleExportToggle = useCallback(() => setShowExportMenu(v => !v), []);
 
   const sentimentMeta = selectedNode ? {
     label: (selectedNode as any).sentiment ?? 'neutral',
@@ -876,8 +757,13 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
           </TouchableOpacity>
         )}
         {matches.size > 0 && (
-          <View style={{ backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, marginLeft: 8 }}>
-            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{matches.size}</Text>
+          <View style={{
+            backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full,
+            paddingHorizontal: 8, paddingVertical: 2, marginLeft: 8,
+          }}>
+            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+              {matches.size}
+            </Text>
           </View>
         )}
       </View>
@@ -927,11 +813,9 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
           />
         )}
         <ZoomBar
-          scale={scale} isFS={false} isExporting={isExporting} showExportMenu={showExportMenu}
-          onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetView}
-          onExpand={handleExpand}
-          onExportToggle={handleExportToggle}
-          onExportSVG={doExportSVG} onExportPDF={doExportPDF}
+          scale={scale} isFS={false}
+          onZoomIn={zoomIn} onZoomOut={zoomOut}
+          onReset={resetView} onExpand={handleExpand}
         />
       </View>
 
@@ -962,13 +846,19 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
                   {selectedNode.label}
                 </Text>
-                <View style={{ backgroundColor: `${getColor(selectedNode)}20`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2 }}>
+                <View style={{
+                  backgroundColor: `${getColor(selectedNode)}20`,
+                  borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2,
+                }}>
                   <Text style={{ color: getColor(selectedNode), fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>
                     {selectedNode.type}
                   </Text>
                 </View>
                 {sentimentMeta && (
-                  <View style={{ backgroundColor: `${sentimentMeta.color}20`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2 }}>
+                  <View style={{
+                    backgroundColor: `${sentimentMeta.color}20`,
+                    borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2,
+                  }}>
                     <Text style={{ color: sentimentMeta.color, fontSize: 9, fontWeight: '700' }}>
                       {sentimentMeta.label}
                     </Text>
@@ -981,7 +871,11 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
                 </Text>
               )}
             </View>
-            <TouchableOpacity onPress={() => setSelectedNode(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ marginLeft: SPACING.sm }}>
+            <TouchableOpacity
+              onPress={() => setSelectedNode(null)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{ marginLeft: SPACING.sm }}
+            >
               <Ionicons name="close" size={18} color={COLORS.textMuted}/>
             </TouchableOpacity>
           </View>
@@ -989,14 +883,20 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Importance</Text>
             <View style={{ flex: 1, height: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: 2, overflow: 'hidden' }}>
-              <View style={{ width: `${selectedNode.weight * 10}%`, height: '100%', backgroundColor: getColor(selectedNode), borderRadius: 2 }}/>
+              <View style={{
+                width: `${selectedNode.weight * 10}%`, height: '100%',
+                backgroundColor: getColor(selectedNode), borderRadius: 2,
+              }}/>
             </View>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{selectedNode.weight}/10</Text>
           </View>
 
           {selectedConns.length > 0 && (
             <View>
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+              <Text style={{
+                color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
+                fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6,
+              }}>
                 {selectedConns.length} Connected
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
@@ -1022,7 +922,10 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
       {/* Cluster legend */}
       {clusters.length > 0 && (
         <View style={{ marginTop: SPACING.sm }}>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+          <Text style={{
+            color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
+            fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6,
+          }}>
             Clusters
           </Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -1044,7 +947,10 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
                   }}
                 >
                   <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: c.color }}/>
-                  <Text style={{ color: hidden ? COLORS.textMuted : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                  <Text style={{
+                    color: hidden ? COLORS.textMuted : COLORS.textSecondary,
+                    fontSize: FONTS.sizes.xs, fontWeight: '600',
+                  }}>
                     {c.label}
                   </Text>
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{c.nodeIds.length}</Text>
@@ -1057,7 +963,10 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
 
       {/* Edge type legend */}
       <View style={{ marginTop: SPACING.sm }}>
-        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+        <Text style={{
+          color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
+          fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6,
+        }}>
           Edge Types
         </Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
@@ -1076,7 +985,7 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         </View>
       </View>
 
-      {/* Fullscreen Modal — hoisted outside render so it never remounts mid-gesture */}
+      {/* Fullscreen Modal */}
       <FullscreenModal
         visible={isFullscreen}
         graph={graph}
@@ -1094,8 +1003,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         colorMap={colorMap}
         insets={insets}
         ready={ready}
-        isExporting={isExporting}
-        showExportMenu={showExportMenu}
         searchQuery={searchQuery}
         fsPanHandlers={fsPan.panHandlers}
         getColor={getColor}
@@ -1105,9 +1012,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         onZoomOut={zoomOut}
         onReset={resetView}
         onExpand={handleExpand}
-        onExportToggle={handleExportToggle}
-        onExportSVG={doExportSVG}
-        onExportPDF={doExportPDF}
         onSearchChange={setSearchQuery}
         onDeselectNode={handleDeselectNode}
       />
