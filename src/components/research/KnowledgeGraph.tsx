@@ -1,345 +1,1116 @@
 // src/components/research/KnowledgeGraph.tsx
-// Interactive SVG-based knowledge graph using a radial force-directed layout.
-// Uses d3-force for physics simulation + react-native-svg for rendering.
+// Advanced Interactive Knowledge Graph — v4
+//
+// Fixes vs v3:
+//  1. Fullscreen modal no longer closes when panning/zooming — root causes fixed:
+//     (a) onPanResponderTerminationRequest now returns FALSE so iOS native
+//         gesture recognizers cannot steal the responder mid-gesture.
+//     (b) FullscreenModal is hoisted out of the render function into a stable
+//         component so it never unmounts/remounts mid-gesture.
+//     (c) onMoveShouldSetPanResponderCapture replaced with the non-capturing
+//         version so child touchables (close button etc.) still work.
+//  2. SVG export button correctly labels the export as "SVG" (real vector file).
+//  3. Pan tracking and pinch-zoom behaviour unchanged from v3.
 
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, {
+  useEffect, useRef, useState, useMemo, useCallback,
+} from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView,
-  Dimensions, ActivityIndicator, PanResponder,
-  GestureResponderEvent, PanResponderGestureState,
+  Dimensions, PanResponder, TextInput, Modal,
+  Alert, ActivityIndicator,
 } from 'react-native';
-import Svg, { Circle, Line, Text as SvgText, G, Defs, RadialGradient, Stop, Marker, Path } from 'react-native-svg';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn } from 'react-native-reanimated';
-import { KnowledgeGraph as KnowledgeGraphType, KnowledgeGraphNode, KnowledgeGraphEdge } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import Svg, { Circle, Line, Text as SvgText, G } from 'react-native-svg';
+import { LinearGradient }    from 'expo-linear-gradient';
+import { Ionicons }          from '@expo/vector-icons';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  KnowledgeGraph as KnowledgeGraphType,
+  KnowledgeGraphNode,
+  KnowledgeGraphEdge,
+} from '../../types';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import type {
+  KnowledgeGraphCluster,
+  ExtendedKnowledgeGraph,
+} from '../../services/agents/knowledgeGraphAgent';
+import {
+  exportGraphAsSVG,
+  exportGraphAsPDF,
+} from '../../services/graphExportService';
 
-const { width: SCREEN_W } = Dimensions.get('window');
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
-// Node colors by type
-const NODE_COLORS: Record<string, [string, string]> = {
-  root:      ['#6C63FF', '#8B5CF6'],
-  primary:   ['#4FACFE', '#00F2FE'],
-  secondary: ['#43E97B', '#38F9D7'],
-  concept:   ['#FF6584', '#FF8E53'],
-  company:   ['#FA709A', '#FEE140'],
-  trend:     ['#F093FB', '#F5576C'],
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const CLUSTER_FALLBACK = [
+  '#6C63FF', '#00D4AA', '#FF6584', '#F9CB42',
+  '#4FACFE', '#F093FB', '#43E97B', '#FF8E53',
+];
+
+const NODE_TYPE_COLORS: Record<string, string> = {
+  root:      '#6C63FF',
+  primary:   '#4FACFE',
+  secondary: '#43E97B',
+  concept:   '#F093FB',
+  company:   '#FA709A',
+  trend:     '#F9CB42',
 };
 
-const NODE_SIZES: Record<string, number> = {
-  root:      36,
-  primary:   26,
-  secondary: 20,
-  concept:   18,
-  company:   22,
-  trend:     20,
+const NODE_TYPE_SIZE: Record<string, number> = {
+  root:      34,
+  primary:   24,
+  secondary: 17,
+  concept:   16,
+  company:   20,
+  trend:     18,
 };
 
-// Very lightweight force simulation — no d3 import needed
-function runForceSimulation(
+const EDGE_DASH: Record<string, string> = {
+  causal:       '0',
+  hierarchical: '0',
+  associative:  '4,3',
+  comparative:  '6,3',
+  temporal:     '2,4',
+};
+
+const SENTIMENT_COLORS: Record<string, string> = {
+  positive: '#43E97B',
+  neutral:  '#A0A0C0',
+  negative: '#FF4757',
+};
+
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 5.0;
+const ZOOM_STEP = 0.35;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function resolveId(ep: string | KnowledgeGraphNode): string {
+  return typeof ep === 'string' ? ep : ep.id;
+}
+function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+function ptDist(ax: number, ay: number, bx: number, by: number) {
+  return Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2);
+}
+
+// ─── Force simulation ─────────────────────────────────────────────────────────
+
+function runForceLayout(
   rawNodes: KnowledgeGraphNode[],
   rawEdges: KnowledgeGraphEdge[],
-  width: number,
-  height: number,
-  iterations = 250
+  clusters: KnowledgeGraphCluster[],
+  W: number, H: number,
+  iters = 320,
 ): KnowledgeGraphNode[] {
-  // Clone nodes with initial positions in a circle
-  const nodes: KnowledgeGraphNode[] = rawNodes.map((n, i) => {
-    const angle = (2 * Math.PI * i) / rawNodes.length;
-    const radius = n.type === 'root' ? 0 : n.type === 'primary' ? 120 : 220;
+  const clusterNodeMap = new Map<string, string>();
+  clusters.forEach(c => c.nodeIds.forEach(id => clusterNodeMap.set(id, c.id)));
+  const clusterIds   = clusters.map(c => c.id);
+  const sectorSize   = clusterIds.length > 0 ? (2 * Math.PI) / clusterIds.length : Math.PI;
+  const clusterAngle = new Map<string, number>(
+    clusterIds.map((id, i) => [id, i * sectorSize - Math.PI / 2])
+  );
+
+  const nodes: KnowledgeGraphNode[] = rawNodes.map(n => {
+    const cId   = clusterNodeMap.get(n.id) ?? null;
+    const ang   = cId ? (clusterAngle.get(cId) ?? 0) : Math.random() * Math.PI * 2;
+    const baseR = n.type === 'root' ? 0 : n.type === 'primary' ? 120 : 230;
+    const j     = (Math.random() - 0.5) * 80;
     return {
       ...n,
-      x: width / 2 + radius * Math.cos(angle),
-      y: height / 2 + radius * Math.sin(angle),
-      vx: 0,
-      vy: 0,
+      x: W / 2 + (baseR + j) * Math.cos(ang + (Math.random() - 0.5) * 0.8),
+      y: H / 2 + (baseR + j) * Math.sin(ang + (Math.random() - 0.5) * 0.8),
+      vx: 0, vy: 0,
     };
   });
 
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
-
-  // Build edge list with resolved node refs
   const edges = rawEdges.map(e => ({
-    source: nodeMap.get(typeof e.source === 'string' ? e.source : e.source.id),
-    target: nodeMap.get(typeof e.target === 'string' ? e.target : e.target.id),
+    src: nodeMap.get(resolveId(e.source)),
+    tgt: nodeMap.get(resolveId(e.target)),
     strength: e.strength ?? 0.5,
-  })).filter(e => e.source && e.target);
+  })).filter(e => e.src && e.tgt) as {
+    src: KnowledgeGraphNode; tgt: KnowledgeGraphNode; strength: number;
+  }[];
 
-  const LINK_DIST = 110;
-  const REPULSION = 2500;
-  const DAMPING   = 0.85;
-  const ALPHA     = 0.3;
+  for (let iter = 0; iter < iters; iter++) {
+    const alpha = 0.3 * (1 - iter / iters);
 
-  for (let iter = 0; iter < iterations; iter++) {
-    const alpha = ALPHA * (1 - iter / iterations);
-
-    // Repulsion between all node pairs
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j];
-        const dx = (b.x ?? 0) - (a.x ?? 0);
-        const dy = (b.y ?? 0) - (a.y ?? 0);
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = (REPULSION * alpha) / (dist * dist);
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        a.vx! -= fx; a.vy! -= fy;
-        b.vx! += fx; b.vy! += fy;
+        const dx = (b.x ?? 0) - (a.x ?? 0), dy = (b.y ?? 0) - (a.y ?? 0);
+        const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+        const f  = (3200 * alpha) / (d * d);
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        a.vx! -= fx; a.vy! -= fy; b.vx! += fx; b.vy! += fy;
       }
     }
 
-    // Attraction along edges
     for (const e of edges) {
-      if (!e.source || !e.target) continue;
-      const dx = (e.target.x ?? 0) - (e.source.x ?? 0);
-      const dy = (e.target.y ?? 0) - (e.source.y ?? 0);
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const delta = (dist - LINK_DIST) * alpha * e.strength;
-      const fx = (dx / dist) * delta;
-      const fy = (dy / dist) * delta;
-      e.source.vx! += fx; e.source.vy! += fy;
-      e.target.vx! -= fx; e.target.vy! -= fy;
+      const dx = (e.tgt.x ?? 0) - (e.src.x ?? 0), dy = (e.tgt.y ?? 0) - (e.src.y ?? 0);
+      const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+      const delta = (d - 110) * alpha * e.strength;
+      const fx = (dx / d) * delta, fy = (dy / d) * delta;
+      e.src.vx! += fx; e.src.vy! += fy; e.tgt.vx! -= fx; e.tgt.vy! -= fy;
     }
 
-    // Gravity toward center
-    for (const n of nodes) {
-      if (n.type === 'root') { n.x = width / 2; n.y = height / 2; continue; }
-      n.vx! += ((width  / 2) - (n.x ?? 0)) * 0.015 * alpha;
-      n.vy! += ((height / 2) - (n.y ?? 0)) * 0.015 * alpha;
-    }
+    const ctr = new Map<string, { x: number; y: number; n: number }>();
+    nodes.forEach(nd => {
+      const cId = clusterNodeMap.get(nd.id); if (!cId) return;
+      const c   = ctr.get(cId) ?? { x: 0, y: 0, n: 0 };
+      c.x += nd.x ?? 0; c.y += nd.y ?? 0; c.n++;
+      ctr.set(cId, c);
+    });
+    nodes.forEach(nd => {
+      if (nd.type === 'root') return;
+      const cId = clusterNodeMap.get(nd.id); if (!cId) return;
+      const c   = ctr.get(cId); if (!c || c.n < 2) return;
+      nd.vx! += ((c.x / c.n) - (nd.x ?? 0)) * 0.014 * alpha * 22;
+      nd.vy! += ((c.y / c.n) - (nd.y ?? 0)) * 0.014 * alpha * 22;
+    });
 
-    // Apply velocity with damping
     for (const n of nodes) {
-      if (n.type === 'root') continue;
-      n.vx! *= DAMPING;
-      n.vy! *= DAMPING;
-      n.x = (n.x ?? 0) + (n.vx ?? 0);
-      n.y = (n.y ?? 0) + (n.vy ?? 0);
-      // Clamp to canvas
-      n.x = Math.max(50, Math.min(width  - 50, n.x));
-      n.y = Math.max(50, Math.min(height - 50, n.y));
+      if (n.type === 'root') { n.x = W / 2; n.y = H / 2; continue; }
+      n.vx! += ((W / 2) - (n.x ?? 0)) * 0.01 * alpha;
+      n.vy! += ((H / 2) - (n.y ?? 0)) * 0.01 * alpha;
+      n.vx! *= 0.82; n.vy! *= 0.82;
+      n.x = clamp((n.x ?? 0) + (n.vx ?? 0), 50, W - 50);
+      n.y = clamp((n.y ?? 0) + (n.vy ?? 0), 50, H - 50);
     }
   }
-
   return nodes;
 }
 
-interface Props {
-  graph: KnowledgeGraphType;
-  height?: number;
-  onNodePress?: (node: KnowledgeGraphNode) => void;
+// ─── SVG Canvas ───────────────────────────────────────────────────────────────
+
+interface CanvasProps {
+  graph:        KnowledgeGraphType | ExtendedKnowledgeGraph;
+  layoutNodes:  KnowledgeGraphNode[];
+  W:            number;
+  H:            number;
+  scale:        number;
+  ox:           number;
+  oy:           number;
+  selectedNode: KnowledgeGraphNode | null;
+  visibleIds:   Set<string>;
+  matches:      Set<string>;
+  connectedIds: Set<string>;
+  colorMap:     Map<string, string>;
+  onNodePress:  (n: KnowledgeGraphNode) => void;
 }
 
-export function KnowledgeGraphView({ graph, height = 480, onNodePress }: Props) {
-  const canvasW = SCREEN_W - SPACING.lg * 2;
-  const canvasH = height;
+function GraphCanvas({
+  graph, layoutNodes, W, H,
+  scale, ox, oy,
+  selectedNode, visibleIds, matches, connectedIds,
+  colorMap, onNodePress,
+}: CanvasProps) {
+  const nodeMap = useMemo(() => new Map(layoutNodes.map(n => [n.id, n])), [layoutNodes]);
+  const getColor = (n: KnowledgeGraphNode) => colorMap.get(n.id) ?? NODE_TYPE_COLORS[n.type] ?? '#6C63FF';
 
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [scale, setScale]   = useState(1);
-  const [selectedNode, setSelectedNode] = useState<KnowledgeGraphNode | null>(null);
+  const vbX = -ox / scale;
+  const vbY = -oy / scale;
+  const vbW =  W  / scale;
+  const vbH =  H  / scale;
 
-  // Run layout once
-  const layoutNodes = useMemo(
-    () => runForceSimulation(graph.nodes, graph.edges, canvasW, canvasH),
-    [graph.nodes.length, graph.edges.length]
-  );
-
-  const nodeMap = useMemo(
-    () => new Map(layoutNodes.map(n => [n.id, n])),
-    [layoutNodes]
-  );
-
-  // Pan
-  const lastPan = useRef({ x: 0, y: 0 });
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder:  () => true,
-      onPanResponderGrant: (_, gs) => {
-        lastPan.current = { x: gs.dx, y: gs.dy };
-      },
-      onPanResponderMove: (_, gs) => {
-        setOffset(prev => ({
-          x: prev.x + (gs.dx - lastPan.current.x),
-          y: prev.y + (gs.dy - lastPan.current.y),
-        }));
-        lastPan.current = { x: gs.dx, y: gs.dy };
-      },
-    })
-  ).current;
-
-  const handleNodePress = (node: KnowledgeGraphNode) => {
-    setSelectedNode(prev => (prev?.id === node.id ? null : node));
-    onNodePress?.(node);
-  };
-
-  // Build edges
-  const renderedEdges = graph.edges.map((edge, i) => {
-    const srcId = typeof edge.source === 'string' ? edge.source : edge.source.id;
-    const tgtId = typeof edge.target === 'string' ? edge.target : edge.target.id;
-    const src   = nodeMap.get(srcId);
-    const tgt   = nodeMap.get(tgtId);
+  const edgeEls = graph.edges.map((edge, i) => {
+    const srcId = resolveId(edge.source), tgtId = resolveId(edge.target);
+    if (!visibleIds.has(srcId) || !visibleIds.has(tgtId)) return null;
+    const src = nodeMap.get(srcId), tgt = nodeMap.get(tgtId);
     if (!src?.x || !tgt?.x) return null;
-    const opacity = 0.15 + edge.strength * 0.35;
+
+    const isHL  = selectedNode?.id === srcId || selectedNode?.id === tgtId;
+    const isDim = !!selectedNode && !isHL;
+    const cat   = ((edge as any).category ?? 'associative') as string;
+    const dash  = EDGE_DASH[cat] ?? '4,3';
+    const op    = isDim ? 0.04 : isHL ? 0.95 : 0.18 + edge.strength * 0.3;
+    const sw    = Math.max(0.4,
+      (cat === 'causal' || cat === 'hierarchical'
+        ? 0.5 + edge.strength * 2
+        : 0.5 + edge.strength * 1.2) / scale
+    );
+
     return (
-      <Line
-        key={`e-${i}`}
-        x1={src.x} y1={src.y}
-        x2={tgt.x} y2={tgt.y}
-        stroke={`rgba(108,99,255,${opacity})`}
-        strokeWidth={0.5 + edge.strength * 1.5}
+      <Line key={`e${i}`}
+        x1={src.x} y1={src.y} x2={tgt.x} y2={tgt.y}
+        stroke={isHL ? getColor(src) : `rgba(160,160,200,${op})`}
+        strokeWidth={sw}
+        strokeDasharray={dash === '0' ? undefined : dash}
+        strokeOpacity={op}
       />
     );
   });
 
-  // Build nodes
-  const renderedNodes = layoutNodes.map((node) => {
-    const r      = NODE_SIZES[node.type] ?? 18;
-    const colors = NODE_COLORS[node.type] ?? NODE_COLORS.concept;
-    const isSelected = selectedNode?.id === node.id;
-    const cx = node.x ?? 0;
-    const cy = node.y ?? 0;
+  const nodeEls = layoutNodes.filter(n => visibleIds.has(n.id)).map(node => {
+    const baseR = NODE_TYPE_SIZE[node.type] ?? 18;
+    const isSel = selectedNode?.id === node.id;
+    const isCon = connectedIds.has(node.id);
+    const isDim = !!selectedNode && !isSel && !isCon;
+    const isMat = matches.size > 0 && matches.has(node.id);
+    const r     = baseR * (isMat ? 1.35 : 1);
+    const color = getColor(node);
+    const cx    = node.x ?? 0, cy = node.y ?? 0;
+    const fs    = (node.type === 'root' ? 11 : node.type === 'primary' ? 10 : 8.5) / scale;
 
     return (
-      <G key={node.id} onPress={() => handleNodePress(node)}>
-        {/* Glow ring when selected */}
-        {isSelected && (
-          <Circle
-            cx={cx} cy={cy}
-            r={r + 10}
-            fill={`${colors[0]}20`}
-            stroke={colors[0]}
-            strokeWidth={1.5}
-          />
+      <G key={node.id} onPress={() => onNodePress(node)} opacity={isDim ? 0.1 : 1}>
+        {(isSel || isMat) && (
+          <Circle cx={cx} cy={cy} r={r + 10 / scale}
+            fill={`${color}18`} stroke={color} strokeWidth={1.2 / scale}/>
         )}
-        {/* Main circle */}
-        <Circle
-          cx={cx} cy={cy}
-          r={r}
-          fill={colors[0]}
-          opacity={isSelected ? 1 : 0.85}
-        />
-        {/* Inner lighter circle */}
-        <Circle
-          cx={cx - r * 0.25} cy={cy - r * 0.25}
-          r={r * 0.35}
-          fill="rgba(255,255,255,0.2)"
-        />
-        {/* Label */}
+        {isCon && !isSel && (
+          <Circle cx={cx} cy={cy} r={r + 7 / scale}
+            fill="none" stroke={color}
+            strokeWidth={0.8 / scale}
+            strokeDasharray={`${3 / scale},${2 / scale}`}
+            opacity={0.55}/>
+        )}
+        <Circle cx={cx} cy={cy} r={r} fill={color} opacity={isSel ? 1 : 0.88}/>
+        <Circle cx={cx - r * 0.27} cy={cy - r * 0.27} r={r * 0.32}
+          fill="rgba(255,255,255,0.18)"/>
         <SvgText
-          x={cx}
-          y={cy + r + 14}
+          x={cx} y={cy + r + 13 / scale}
           textAnchor="middle"
-          fontSize={node.type === 'root' ? 11 : 9}
-          fontWeight={node.type === 'root' ? 'bold' : 'normal'}
-          fill="rgba(255,255,255,0.8)"
+          fontSize={fs}
+          fontWeight={node.type === 'root' || node.type === 'primary' ? 'bold' : 'normal'}
+          fill={isDim ? 'rgba(160,160,180,0.2)' : 'rgba(220,220,240,0.93)'}
         >
-          {node.label.length > 16 ? node.label.slice(0, 15) + '…' : node.label}
+          {node.label.length > 20 ? node.label.slice(0, 19) + '…' : node.label}
         </SvgText>
       </G>
     );
   });
 
   return (
-    <View>
-      {/* Graph canvas */}
-      <View
-        style={{
-          width: canvasW, height: canvasH,
-          backgroundColor: '#0D0D25',
-          borderRadius: RADIUS.xl,
-          overflow: 'hidden',
-          borderWidth: 1, borderColor: COLORS.border,
-        }}
-        {...panResponder.panHandlers}
-      >
-        <Svg
-          width={canvasW} height={canvasH}
-          viewBox={`${-offset.x / scale} ${-offset.y / scale} ${canvasW / scale} ${canvasH / scale}`}
-        >
-          {/* Background grid */}
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Line
-              key={`hg-${i}`}
-              x1={0} y1={i * (canvasH / 7)}
-              x2={canvasW} y2={i * (canvasH / 7)}
-              stroke="rgba(108,99,255,0.04)" strokeWidth={1}
-            />
-          ))}
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Line
-              key={`vg-${i}`}
-              x1={i * (canvasW / 7)} y1={0}
-              x2={i * (canvasW / 7)} y2={canvasH}
-              stroke="rgba(108,99,255,0.04)" strokeWidth={1}
-            />
-          ))}
-          {renderedEdges}
-          {renderedNodes}
-        </Svg>
-      </View>
+    <Svg width={W} height={H} viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}>
+      {Array.from({ length: 10 }).map((_, i) => (
+        <Line key={`hg${i}`} x1={0} y1={i * (H / 9)} x2={W} y2={i * (H / 9)}
+          stroke="rgba(108,99,255,0.03)" strokeWidth={1}/>
+      ))}
+      {Array.from({ length: 10 }).map((_, i) => (
+        <Line key={`vg${i}`} x1={i * (W / 9)} y1={0} x2={i * (W / 9)} y2={H}
+          stroke="rgba(108,99,255,0.03)" strokeWidth={1}/>
+      ))}
+      <G>{edgeEls}</G>
+      <G>{nodeEls}</G>
+    </Svg>
+  );
+}
 
-      {/* Selected node info card */}
-      {selectedNode && (
-        <Animated.View
-          entering={FadeIn.duration(300)}
-          style={{
-            backgroundColor: COLORS.backgroundCard,
-            borderRadius: RADIUS.lg,
-            padding: SPACING.md,
-            marginTop: SPACING.sm,
-            borderWidth: 1,
-            borderColor: `${NODE_COLORS[selectedNode.type]?.[0] ?? COLORS.primary}50`,
-            borderLeftWidth: 3,
-            borderLeftColor: NODE_COLORS[selectedNode.type]?.[0] ?? COLORS.primary,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
-            <View style={{
-              backgroundColor: `${NODE_COLORS[selectedNode.type]?.[0] ?? COLORS.primary}20`,
-              borderRadius: RADIUS.sm, paddingHorizontal: 8, paddingVertical: 3, marginRight: 8,
-            }}>
-              <Text style={{
-                color: NODE_COLORS[selectedNode.type]?.[0] ?? COLORS.primary,
-                fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase',
-              }}>
-                {selectedNode.type}
-              </Text>
+// ─── Zoom control bar ─────────────────────────────────────────────────────────
+
+interface ZoomBarProps {
+  scale:          number;
+  isFS:           boolean;
+  isExporting:    boolean;
+  showExportMenu: boolean;
+  onZoomIn:       () => void;
+  onZoomOut:      () => void;
+  onReset:        () => void;
+  onExpand:       () => void;
+  onExportToggle: () => void;
+  onExportSVG:    () => void;
+  onExportPDF:    () => void;
+  bottom?:        number;
+}
+
+function ZoomBar({
+  scale, isFS, isExporting, showExportMenu,
+  onZoomIn, onZoomOut, onReset, onExpand,
+  onExportToggle, onExportSVG, onExportPDF,
+  bottom = 12,
+}: ZoomBarProps) {
+  return (
+    <View style={{ position: 'absolute', bottom, right: 10, gap: 6, alignItems: 'center' }}>
+      {showExportMenu && (
+        <View style={{
+          backgroundColor: COLORS.backgroundCard,
+          borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border,
+          overflow: 'hidden', marginBottom: 2, ...SHADOWS.medium,
+        }}>
+          <TouchableOpacity onPress={onExportSVG} style={{
+            flexDirection: 'row', alignItems: 'center', gap: 8,
+            paddingHorizontal: 14, paddingVertical: 11,
+            borderBottomWidth: 1, borderBottomColor: COLORS.border,
+          }}>
+            <Ionicons name="code-slash-outline" size={15} color={COLORS.primary}/>
+            <View>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>SVG</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>Vector · real .svg file</Text>
             </View>
-            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', flex: 1 }}>
-              {selectedNode.label}
-            </Text>
-          </View>
-          {selectedNode.description && (
-            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18 }}>
-              {selectedNode.description}
-            </Text>
-          )}
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 6 }}>
-            Importance: {'●'.repeat(Math.round(selectedNode.weight / 2))}{'○'.repeat(5 - Math.round(selectedNode.weight / 2))}
-          </Text>
-        </Animated.View>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onExportPDF} style={{
+            flexDirection: 'row', alignItems: 'center', gap: 8,
+            paddingHorizontal: 14, paddingVertical: 11,
+          }}>
+            <Ionicons name="document-outline" size={15} color={COLORS.primary}/>
+            <View>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>PDF</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>1800×1800 · print quality</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
       )}
 
-      {/* Legend */}
-      <ScrollView
-        horizontal showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ gap: 8, paddingVertical: SPACING.sm }}
-      >
-        {Object.entries(NODE_COLORS).map(([type, [color]]) => (
-          <View key={type} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textTransform: 'capitalize' }}>
-              {type}
+      <TouchableOpacity onPress={onExportToggle} style={ctrlBtn} disabled={isExporting}>
+        {isExporting
+          ? <ActivityIndicator size="small" color={COLORS.primary}/>
+          : <Ionicons name="share-outline" size={15} color={COLORS.primary}/>}
+      </TouchableOpacity>
+
+      <TouchableOpacity onPress={onExpand} style={ctrlBtn}>
+        <Ionicons name={isFS ? 'contract-outline' : 'expand-outline'} size={15} color={COLORS.textSecondary}/>
+      </TouchableOpacity>
+
+      <View style={{ width: 34, height: 1, backgroundColor: COLORS.border, marginVertical: 1 }}/>
+
+      <TouchableOpacity onPress={onZoomIn}
+        style={[ctrlBtn, scale >= MAX_SCALE && { opacity: 0.35 }]}
+        disabled={scale >= MAX_SCALE}>
+        <Ionicons name="add" size={19} color={COLORS.textSecondary}/>
+      </TouchableOpacity>
+
+      <View style={[ctrlBtn, { backgroundColor: 'rgba(8,8,26,0.92)' }]}>
+        <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '800' }}>
+          {Math.round(scale * 100)}%
+        </Text>
+      </View>
+
+      <TouchableOpacity onPress={onZoomOut}
+        style={[ctrlBtn, scale <= MIN_SCALE && { opacity: 0.35 }]}
+        disabled={scale <= MIN_SCALE}>
+        <Ionicons name="remove" size={19} color={COLORS.textSecondary}/>
+      </TouchableOpacity>
+
+      <TouchableOpacity onPress={onReset} style={ctrlBtn}>
+        <Ionicons name="locate-outline" size={14} color={COLORS.textMuted}/>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const ctrlBtn: object = {
+  width: 34, height: 34, borderRadius: 10,
+  backgroundColor: 'rgba(8,8,26,0.92)',
+  alignItems: 'center', justifyContent: 'center',
+  borderWidth: 1, borderColor: 'rgba(42,42,74,0.95)',
+};
+
+// ─── Hook: gesture state + pan responder ──────────────────────────────────────
+//
+// KEY FIXES vs v3:
+//
+// (A) onPanResponderTerminationRequest returns FALSE.
+//     This is the critical fix for the modal-closing bug. When this returns
+//     true (the default), the iOS native gesture recognizer can "steal" the
+//     responder at any time — which the Modal interprets as a swipe-dismiss
+//     gesture and closes. Returning false means once we own the gesture, we
+//     keep it until the user lifts their fingers.
+//
+// (B) onMoveShouldSetPanResponder (non-capture) is used instead of
+//     onMoveShouldSetPanResponderCapture so child touchables (close button,
+//     export menu) still receive tap events normally.
+//
+// (C) onStartShouldSetPanResponderCapture remains false so taps on buttons
+//     inside the canvas area are not intercepted.
+
+function useGestures(
+  scaleRef:    React.MutableRefObject<number>,
+  oxRef:       React.MutableRefObject<number>,
+  oyRef:       React.MutableRefObject<number>,
+  setScale:    (s: number | ((p: number) => number)) => void,
+  setOx:       (v: number | ((p: number) => number)) => void,
+  setOy:       (v: number | ((p: number) => number)) => void,
+) {
+  const lastPan       = useRef({ x: 0, y: 0 });
+  const lastPinchDist = useRef<number | null>(null);
+  const lastTap       = useRef(0);
+  const isGesturing   = useRef(false);
+
+  return useRef(
+    PanResponder.create({
+      // Only intercept moves with meaningful displacement (avoids eating taps)
+      onMoveShouldSetPanResponder: (_evt, gs) => {
+        return Math.abs(gs.dx) > 2 || Math.abs(gs.dy) > 2;
+      },
+      onStartShouldSetPanResponder:        () => true,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponderCapture:  () => false,
+
+      // ── CRITICAL: Never yield the responder once we have it ──────────────
+      // Returning false here is what prevents the Modal from interpreting
+      // a pan gesture as a swipe-to-dismiss on iOS.
+      onPanResponderTerminationRequest: () => false,
+
+      onPanResponderGrant: (evt, gs) => {
+        isGesturing.current   = true;
+        lastPan.current       = { x: gs.dx, y: gs.dy };
+        lastPinchDist.current = null;
+
+        // Double-tap zoom in
+        const now = Date.now();
+        if (now - lastTap.current < 280) {
+          setScale(prev => clamp(prev + ZOOM_STEP * 2, MIN_SCALE, MAX_SCALE));
+        }
+        lastTap.current = now;
+      },
+
+      onPanResponderMove: (evt, gs) => {
+        const touches = evt.nativeEvent.touches;
+
+        if (touches.length >= 2) {
+          // ── Pinch-to-zoom ──────────────────────────────────────────────
+          const t0 = touches[0], t1 = touches[1];
+          const d  = ptDist(t0.pageX, t0.pageY, t1.pageX, t1.pageY);
+          if (lastPinchDist.current !== null && lastPinchDist.current > 0) {
+            const ratio    = d / lastPinchDist.current;
+            const newScale = clamp(scaleRef.current * ratio, MIN_SCALE, MAX_SCALE);
+            setScale(newScale);
+          }
+          lastPinchDist.current = d;
+          lastPan.current = { x: gs.dx, y: gs.dy };
+        } else {
+          // ── Single-finger pan ──────────────────────────────────────────
+          lastPinchDist.current = null;
+          const dxFrame = gs.dx - lastPan.current.x;
+          const dyFrame = gs.dy - lastPan.current.y;
+          setOx(prev => prev + dxFrame);
+          setOy(prev => prev + dyFrame);
+          lastPan.current = { x: gs.dx, y: gs.dy };
+        }
+      },
+
+      onPanResponderRelease: () => {
+        isGesturing.current   = false;
+        lastPinchDist.current = null;
+      },
+
+      onPanResponderTerminate: () => {
+        isGesturing.current   = false;
+        lastPinchDist.current = null;
+      },
+    })
+  ).current;
+}
+
+// ─── Fullscreen canvas content (hoisted out of KnowledgeGraphView) ────────────
+//
+// IMPORTANT: This must be defined OUTSIDE of KnowledgeGraphView.
+// If defined as a nested component (like the old FullscreenModal), React
+// creates a new component type on every render, causing React to unmount +
+// remount the entire subtree on every state change — killing the PanResponder
+// mid-gesture and making the modal appear to "close".
+
+interface FullscreenContentProps {
+  visible:        boolean;
+  graph:          KnowledgeGraphType | ExtendedKnowledgeGraph;
+  extended:       ExtendedKnowledgeGraph;
+  fsLayoutNodes:  KnowledgeGraphNode[];
+  fsW:            number;
+  fsH:            number;
+  scale:          number;
+  ox:             number;
+  oy:             number;
+  selectedNode:   KnowledgeGraphNode | null;
+  visibleIds:     Set<string>;
+  matches:        Set<string>;
+  connectedIds:   Set<string>;
+  colorMap:       Map<string, string>;
+  insets:         { top: number; bottom: number; left: number; right: number };
+  ready:          boolean;
+  isExporting:    boolean;
+  showExportMenu: boolean;
+  searchQuery:    string;
+  fsPanHandlers:  object;
+  getColor:       (n: KnowledgeGraphNode) => string;
+  onClose:        () => void;
+  onNodePress:    (n: KnowledgeGraphNode) => void;
+  onZoomIn:       () => void;
+  onZoomOut:      () => void;
+  onReset:        () => void;
+  onExpand:       () => void;
+  onExportToggle: () => void;
+  onExportSVG:    () => void;
+  onExportPDF:    () => void;
+  onSearchChange: (q: string) => void;
+  onDeselectNode: () => void;
+}
+
+function FullscreenModal({
+  visible, graph, extended, fsLayoutNodes, fsW, fsH,
+  scale, ox, oy,
+  selectedNode, visibleIds, matches, connectedIds,
+  colorMap, insets, ready, isExporting, showExportMenu,
+  searchQuery, fsPanHandlers, getColor,
+  onClose, onNodePress, onZoomIn, onZoomOut, onReset, onExpand,
+  onExportToggle, onExportSVG, onExportPDF, onSearchChange, onDeselectNode,
+}: FullscreenContentProps) {
+  return (
+    <Modal
+      visible={visible}
+      animationType="fade"
+      statusBarTranslucent
+      // On Android the hardware back button triggers this.
+      // We handle it by closing cleanly rather than letting the OS swipe-dismiss.
+      onRequestClose={onClose}
+    >
+      <View style={{ flex: 1, backgroundColor: '#08081C' }}>
+
+        {/* Header — outside the pan responder area so buttons stay tappable */}
+        <View style={{
+          paddingTop: insets.top + 6, paddingBottom: SPACING.sm,
+          paddingHorizontal: SPACING.md,
+          flexDirection: 'row', alignItems: 'center', gap: 10,
+          borderBottomWidth: 1, borderBottomColor: COLORS.border,
+        }}>
+          <TouchableOpacity onPress={onClose} style={ctrlBtn}>
+            <Ionicons name="close" size={18} color={COLORS.textSecondary}/>
+          </TouchableOpacity>
+
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+              {extended.topicTitle ?? 'Knowledge Graph'}
+            </Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+              {graph.nodes.length} nodes · {graph.edges.length} edges · Pinch zoom · Drag pan
             </Text>
           </View>
+
+          <View style={{
+            flexDirection: 'row', alignItems: 'center',
+            backgroundColor: COLORS.backgroundElevated,
+            borderRadius: RADIUS.full, paddingHorizontal: 10, height: 34,
+            borderWidth: 1, borderColor: COLORS.border, flex: 1, maxWidth: 180,
+          }}>
+            <Ionicons name="search-outline" size={13} color={COLORS.textMuted} style={{ marginRight: 5 }}/>
+            <TextInput
+              style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.xs, paddingVertical: 0 }}
+              placeholder="Search…" placeholderTextColor={COLORS.textMuted}
+              value={searchQuery} onChangeText={onSearchChange}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => onSearchChange('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={13} color={COLORS.textMuted}/>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
+        {/* Canvas — this is the gesture area */}
+        <View style={{ flex: 1 }} {...fsPanHandlers}>
+          {ready && (
+            <GraphCanvas
+              graph={graph} layoutNodes={fsLayoutNodes}
+              W={fsW} H={fsH}
+              scale={scale} ox={ox} oy={oy}
+              selectedNode={selectedNode}
+              visibleIds={visibleIds} matches={matches} connectedIds={connectedIds}
+              colorMap={colorMap} onNodePress={onNodePress}
+            />
+          )}
+
+          <ZoomBar
+            scale={scale} isFS isExporting={isExporting} showExportMenu={showExportMenu}
+            onZoomIn={onZoomIn} onZoomOut={onZoomOut} onReset={onReset}
+            onExpand={onExpand}
+            onExportToggle={onExportToggle}
+            onExportSVG={onExportSVG} onExportPDF={onExportPDF}
+            bottom={insets.bottom + 12}
+          />
+        </View>
+
+        {/* Selected node overlay */}
+        {selectedNode && (
+          <View style={{
+            position: 'absolute',
+            bottom: insets.bottom + 12, left: 12, right: 80,
+            backgroundColor: 'rgba(16,14,36,0.97)',
+            borderRadius: RADIUS.xl, padding: SPACING.md,
+            borderWidth: 1, borderColor: `${getColor(selectedNode)}40`,
+            borderLeftWidth: 3, borderLeftColor: getColor(selectedNode),
+            ...SHADOWS.large,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: getColor(selectedNode) }}/>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1 }}>
+                {selectedNode.label}
+              </Text>
+              <View style={{ backgroundColor: `${getColor(selectedNode)}20`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2 }}>
+                <Text style={{ color: getColor(selectedNode), fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>
+                  {selectedNode.type}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={onDeselectNode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={16} color={COLORS.textMuted}/>
+              </TouchableOpacity>
+            </View>
+            {selectedNode.description && (
+              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 17, marginBottom: 6 }}>
+                {selectedNode.description}
+              </Text>
+            )}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Importance</Text>
+              <View style={{ flex: 1, height: 3, backgroundColor: COLORS.backgroundElevated, borderRadius: 2, overflow: 'hidden' }}>
+                <View style={{ width: `${selectedNode.weight * 10}%`, height: '100%', backgroundColor: getColor(selectedNode), borderRadius: 2 }}/>
+              </View>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{selectedNode.weight}/10</Text>
+            </View>
+          </View>
+        )}
+
+        {!selectedNode && (
+          <View style={{ position: 'absolute', bottom: insets.bottom + 14, left: 14 }}>
+            <Text style={{ color: 'rgba(160,160,200,0.28)', fontSize: 11 }}>
+              Pinch to zoom · Drag to pan · Double-tap to zoom in
+            </Text>
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export interface KnowledgeGraphViewProps {
+  graph:        KnowledgeGraphType | ExtendedKnowledgeGraph;
+  height?:      number;
+  onNodePress?: (node: KnowledgeGraphNode) => void;
+}
+
+export function KnowledgeGraphView({ graph, height = 500, onNodePress }: KnowledgeGraphViewProps) {
+  const extended = graph as ExtendedKnowledgeGraph;
+  const clusters = extended.clusters ?? [];
+  const insets   = useSafeAreaInsets();
+
+  const canvasW = SCREEN_W - SPACING.lg * 2;
+  const canvasH = height;
+  const fsW     = SCREEN_W;
+  const fsH     = SCREEN_H;
+
+  // ── Shared transform state ────────────────────────────────────────────────
+
+  const [scale, setScale] = useState(1);
+  const [ox,    setOx]    = useState(0);
+  const [oy,    setOy]    = useState(0);
+
+  const scaleRef = useRef(scale);
+  const oxRef    = useRef(ox);
+  const oyRef    = useRef(oy);
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+  useEffect(() => { oxRef.current    = ox;    }, [ox]);
+  useEffect(() => { oyRef.current    = oy;    }, [oy]);
+
+  // ── UI state ──────────────────────────────────────────────────────────────
+
+  const [selectedNode,   setSelectedNode]   = useState<KnowledgeGraphNode | null>(null);
+  const [searchQuery,    setSearchQuery]    = useState('');
+  const [hiddenClusters, setHiddenClusters] = useState<Set<string>>(new Set());
+  const [filterType,     setFilterType]     = useState<string | null>(null);
+  const [isFullscreen,   setIsFullscreen]   = useState(false);
+  const [isExporting,    setIsExporting]    = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [ready,          setReady]          = useState(false);
+
+  // ── Layouts ───────────────────────────────────────────────────────────────
+
+  const layoutNodes = useMemo(
+    () => runForceLayout(graph.nodes, graph.edges, clusters, canvasW, canvasH),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [graph.nodes.length, graph.edges.length, canvasW, canvasH]
+  );
+
+  const fsLayoutNodes = useMemo(
+    () => runForceLayout(graph.nodes, graph.edges, clusters, fsW, fsH),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [graph.nodes.length, graph.edges.length, fsW, fsH]
+  );
+
+  useEffect(() => {
+    const t = setTimeout(() => setReady(true), 80);
+    return () => clearTimeout(t);
+  }, [layoutNodes]);
+
+  // ── Color map ─────────────────────────────────────────────────────────────
+
+  const colorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    clusters.forEach((c, i) =>
+      c.nodeIds.forEach(id =>
+        m.set(id, c.color ?? CLUSTER_FALLBACK[i % CLUSTER_FALLBACK.length])
+      )
+    );
+    return m;
+  }, [clusters]);
+
+  const getColor = useCallback(
+    (n: KnowledgeGraphNode) => colorMap.get(n.id) ?? NODE_TYPE_COLORS[n.type] ?? '#6C63FF',
+    [colorMap]
+  );
+
+  // ── Adjacency ─────────────────────────────────────────────────────────────
+
+  const adjacency = useMemo(() => {
+    const m = new Map<string, string[]>();
+    graph.edges.forEach(e => {
+      const s = resolveId(e.source), t = resolveId(e.target);
+      if (!m.has(s)) m.set(s, []); if (!m.has(t)) m.set(t, []);
+      m.get(s)!.push(t); m.get(t)!.push(s);
+    });
+    return m;
+  }, [graph.edges]);
+
+  // ── Search / filter ───────────────────────────────────────────────────────
+
+  const matches = useMemo(() => {
+    if (!searchQuery.trim()) return new Set<string>();
+    const q = searchQuery.toLowerCase();
+    return new Set(layoutNodes.filter(n =>
+      n.label.toLowerCase().includes(q) ||
+      (n.description ?? '').toLowerCase().includes(q)
+    ).map(n => n.id));
+  }, [searchQuery, layoutNodes]);
+
+  const isVisible = useCallback((n: KnowledgeGraphNode) => {
+    const cId = clusters.find(c => c.nodeIds.includes(n.id))?.id;
+    if (cId && hiddenClusters.has(cId)) return false;
+    if (filterType && n.type !== filterType) return false;
+    return true;
+  }, [clusters, hiddenClusters, filterType]);
+
+  const visibleIds = useMemo(
+    () => new Set(layoutNodes.filter(isVisible).map(n => n.id)),
+    [layoutNodes, isVisible]
+  );
+
+  const connectedIds = useMemo(
+    () => new Set(selectedNode ? (adjacency.get(selectedNode.id) ?? []) : []),
+    [selectedNode, adjacency]
+  );
+
+  const selectedConns = useMemo(() => {
+    if (!selectedNode) return [];
+    const nm = new Map(layoutNodes.map(n => [n.id, n]));
+    return (adjacency.get(selectedNode.id) ?? [])
+      .map(id => nm.get(id)).filter(Boolean) as KnowledgeGraphNode[];
+  }, [selectedNode, adjacency, layoutNodes]);
+
+  // ── Two separate PanResponder instances ───────────────────────────────────
+
+  const inlinePan = useGestures(scaleRef, oxRef, oyRef, setScale, setOx, setOy);
+  const fsPan     = useGestures(scaleRef, oxRef, oyRef, setScale, setOx, setOy);
+
+  // ── Zoom buttons ──────────────────────────────────────────────────────────
+
+  const zoomIn    = useCallback(() => setScale(prev => clamp(prev + ZOOM_STEP, MIN_SCALE, MAX_SCALE)), []);
+  const zoomOut   = useCallback(() => setScale(prev => clamp(prev - ZOOM_STEP, MIN_SCALE, MAX_SCALE)), []);
+  const resetView = useCallback(() => { setScale(1); setOx(0); setOy(0); }, []);
+
+  const handleExpand = useCallback(() => {
+    setIsFullscreen(v => !v);
+    setShowExportMenu(false);
+    resetView();
+  }, [resetView]);
+
+  const handleCloseFullscreen = useCallback(() => {
+    setIsFullscreen(false);
+    resetView();
+  }, [resetView]);
+
+  // ── Export ────────────────────────────────────────────────────────────────
+
+  const doExportSVG = useCallback(async () => {
+    setShowExportMenu(false); setIsExporting(true);
+    try { await exportGraphAsSVG(graph); }
+    catch (e) { Alert.alert('Export failed', e instanceof Error ? e.message : String(e)); }
+    finally { setIsExporting(false); }
+  }, [graph]);
+
+  const doExportPDF = useCallback(async () => {
+    setShowExportMenu(false); setIsExporting(true);
+    try { await exportGraphAsPDF(graph); }
+    catch (e) { Alert.alert('Export failed', e instanceof Error ? e.message : String(e)); }
+    finally { setIsExporting(false); }
+  }, [graph]);
+
+  // ── Node press ────────────────────────────────────────────────────────────
+
+  const handleNodePress = useCallback((node: KnowledgeGraphNode) => {
+    setSelectedNode(prev => prev?.id === node.id ? null : node);
+    onNodePress?.(node);
+  }, [onNodePress]);
+
+  const handleDeselectNode = useCallback(() => setSelectedNode(null), []);
+  const handleExportToggle = useCallback(() => setShowExportMenu(v => !v), []);
+
+  const sentimentMeta = selectedNode ? {
+    label: (selectedNode as any).sentiment ?? 'neutral',
+    color: SENTIMENT_COLORS[(selectedNode as any).sentiment ?? 'neutral'] ?? SENTIMENT_COLORS.neutral,
+  } : null;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
+
+  return (
+    <View>
+      {/* Search bar */}
+      <View style={{
+        flexDirection: 'row', alignItems: 'center',
+        backgroundColor: COLORS.backgroundElevated,
+        borderRadius: RADIUS.lg, paddingHorizontal: SPACING.sm,
+        marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, height: 40,
+      }}>
+        <Ionicons name="search-outline" size={16} color={COLORS.textMuted} style={{ marginRight: 8 }}/>
+        <TextInput
+          style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, paddingVertical: 0 }}
+          placeholder="Search nodes…" placeholderTextColor={COLORS.textMuted}
+          value={searchQuery} onChangeText={setSearchQuery} returnKeyType="search"
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="close-circle" size={16} color={COLORS.textMuted}/>
+          </TouchableOpacity>
+        )}
+        {matches.size > 0 && (
+          <View style={{ backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, marginLeft: 8 }}>
+            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{matches.size}</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Type filter chips */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 6, paddingBottom: SPACING.sm }}>
+        {(['root', 'primary', 'secondary', 'concept', 'company', 'trend'] as const).map(type => (
+          <TouchableOpacity key={type}
+            onPress={() => setFilterType(prev => prev === type ? null : type)}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 5,
+              paddingHorizontal: 10, paddingVertical: 5, borderRadius: RADIUS.full,
+              backgroundColor: filterType === type ? `${NODE_TYPE_COLORS[type]}25` : COLORS.backgroundElevated,
+              borderWidth: 1, borderColor: filterType === type ? NODE_TYPE_COLORS[type] : COLORS.border,
+            }}
+          >
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: NODE_TYPE_COLORS[type] }}/>
+            <Text style={{
+              color: filterType === type ? NODE_TYPE_COLORS[type] : COLORS.textMuted,
+              fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'capitalize',
+            }}>
+              {type}
+            </Text>
+          </TouchableOpacity>
         ))}
       </ScrollView>
 
-      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginTop: 4 }}>
-        Drag to pan · Tap a node to inspect
+      {/* Inline canvas */}
+      <View
+        style={{
+          width: canvasW, height: canvasH,
+          backgroundColor: '#08081C',
+          borderRadius: RADIUS.xl, overflow: 'hidden',
+          borderWidth: 1, borderColor: `${COLORS.primary}20`,
+        }}
+        {...inlinePan.panHandlers}
+      >
+        {ready && (
+          <GraphCanvas
+            graph={graph} layoutNodes={layoutNodes}
+            W={canvasW} H={canvasH}
+            scale={scale} ox={ox} oy={oy}
+            selectedNode={selectedNode}
+            visibleIds={visibleIds} matches={matches} connectedIds={connectedIds}
+            colorMap={colorMap} onNodePress={handleNodePress}
+          />
+        )}
+        <ZoomBar
+          scale={scale} isFS={false} isExporting={isExporting} showExportMenu={showExportMenu}
+          onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetView}
+          onExpand={handleExpand}
+          onExportToggle={handleExportToggle}
+          onExportSVG={doExportSVG} onExportPDF={doExportPDF}
+        />
+      </View>
+
+      {/* Gesture hint */}
+      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginTop: 6 }}>
+        Pinch to zoom · Drag to pan · Double-tap to zoom in · ⤢ expand full-screen
       </Text>
+
+      {/* Selected node detail */}
+      {selectedNode && (
+        <Animated.View entering={FadeInDown.duration(260).springify()} style={{
+          backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md,
+          marginTop: SPACING.sm, borderWidth: 1,
+          borderColor: `${getColor(selectedNode)}40`,
+          borderLeftWidth: 3, borderLeftColor: getColor(selectedNode),
+        }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
+            <View style={{
+              width: 36, height: 36, borderRadius: 12,
+              backgroundColor: `${getColor(selectedNode)}25`,
+              alignItems: 'center', justifyContent: 'center',
+              marginRight: SPACING.sm, flexShrink: 0,
+            }}>
+              <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: getColor(selectedNode) }}/>
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 3 }}>
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                  {selectedNode.label}
+                </Text>
+                <View style={{ backgroundColor: `${getColor(selectedNode)}20`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2 }}>
+                  <Text style={{ color: getColor(selectedNode), fontSize: 9, fontWeight: '700', textTransform: 'uppercase' }}>
+                    {selectedNode.type}
+                  </Text>
+                </View>
+                {sentimentMeta && (
+                  <View style={{ backgroundColor: `${sentimentMeta.color}20`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2 }}>
+                    <Text style={{ color: sentimentMeta.color, fontSize: 9, fontWeight: '700' }}>
+                      {sentimentMeta.label}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              {selectedNode.description && (
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 17 }}>
+                  {selectedNode.description}
+                </Text>
+              )}
+            </View>
+            <TouchableOpacity onPress={() => setSelectedNode(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ marginLeft: SPACING.sm }}>
+              <Ionicons name="close" size={18} color={COLORS.textMuted}/>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Importance</Text>
+            <View style={{ flex: 1, height: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: 2, overflow: 'hidden' }}>
+              <View style={{ width: `${selectedNode.weight * 10}%`, height: '100%', backgroundColor: getColor(selectedNode), borderRadius: 2 }}/>
+            </View>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{selectedNode.weight}/10</Text>
+          </View>
+
+          {selectedConns.length > 0 && (
+            <View>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+                {selectedConns.length} Connected
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                {selectedConns.slice(0, 8).map(cn => (
+                  <TouchableOpacity key={cn.id} onPress={() => handleNodePress(cn)} style={{
+                    flexDirection: 'row', alignItems: 'center', gap: 5,
+                    backgroundColor: COLORS.backgroundElevated,
+                    borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5,
+                    borderWidth: 1, borderColor: COLORS.border,
+                  }}>
+                    <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: getColor(cn) }}/>
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs }}>
+                      {cn.label.length > 14 ? cn.label.slice(0, 13) + '…' : cn.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </Animated.View>
+      )}
+
+      {/* Cluster legend */}
+      {clusters.length > 0 && (
+        <View style={{ marginTop: SPACING.sm }}>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+            Clusters
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {clusters.map(c => {
+              const hidden = hiddenClusters.has(c.id);
+              return (
+                <TouchableOpacity key={c.id}
+                  onPress={() => setHiddenClusters(prev => {
+                    const n = new Set(prev);
+                    n.has(c.id) ? n.delete(c.id) : n.add(c.id);
+                    return n;
+                  })}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center', gap: 6,
+                    backgroundColor: hidden ? COLORS.backgroundElevated : `${c.color}15`,
+                    borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 6,
+                    borderWidth: 1, borderColor: hidden ? COLORS.border : `${c.color}40`,
+                    opacity: hidden ? 0.5 : 1,
+                  }}
+                >
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: c.color }}/>
+                  <Text style={{ color: hidden ? COLORS.textMuted : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                    {c.label}
+                  </Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{c.nodeIds.length}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
+
+      {/* Edge type legend */}
+      <View style={{ marginTop: SPACING.sm }}>
+        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+          Edge Types
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          {[
+            { label: 'Causal',       dash: '─────', color: COLORS.primary   },
+            { label: 'Associative',  dash: '─ ─ ─', color: COLORS.textMuted },
+            { label: 'Comparative',  dash: '── ──', color: COLORS.warning   },
+            { label: 'Temporal',     dash: '· · ·', color: COLORS.info      },
+            { label: 'Hierarchical', dash: '─────', color: COLORS.success   },
+          ].map(e => (
+            <View key={e.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Text style={{ color: e.color, fontSize: 11, letterSpacing: 1 }}>{e.dash}</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{e.label}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+
+      {/* Fullscreen Modal — hoisted outside render so it never remounts mid-gesture */}
+      <FullscreenModal
+        visible={isFullscreen}
+        graph={graph}
+        extended={extended}
+        fsLayoutNodes={fsLayoutNodes}
+        fsW={fsW}
+        fsH={fsH}
+        scale={scale}
+        ox={ox}
+        oy={oy}
+        selectedNode={selectedNode}
+        visibleIds={visibleIds}
+        matches={matches}
+        connectedIds={connectedIds}
+        colorMap={colorMap}
+        insets={insets}
+        ready={ready}
+        isExporting={isExporting}
+        showExportMenu={showExportMenu}
+        searchQuery={searchQuery}
+        fsPanHandlers={fsPan.panHandlers}
+        getColor={getColor}
+        onClose={handleCloseFullscreen}
+        onNodePress={handleNodePress}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onReset={resetView}
+        onExpand={handleExpand}
+        onExportToggle={handleExportToggle}
+        onExportSVG={doExportSVG}
+        onExportPDF={doExportPDF}
+        onSearchChange={setSearchQuery}
+        onDeselectNode={handleDeselectNode}
+      />
     </View>
   );
 }

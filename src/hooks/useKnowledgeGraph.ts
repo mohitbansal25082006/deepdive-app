@@ -1,20 +1,29 @@
 // src/hooks/useKnowledgeGraph.ts
-// Fixed: accepts ResearchReport | null — safe on first render before data loads.
+// Updated for Part 4 Upgrade — handles ExtendedKnowledgeGraph with clusters.
+//
+// Changes vs original:
+//  • Calls runKnowledgeGraphAgent which now returns ExtendedKnowledgeGraph
+//  • Persists full extended graph (including clusters, topicTitle) to DB
+//  • Safe to call with null report (no crash on first render)
 
 import { useState, useCallback, useEffect } from 'react';
 import { Alert } from 'react-native';
-import { supabase } from '../lib/supabase';
-import { runKnowledgeGraphAgent } from '../services/agents/knowledgeGraphAgent';
-import { KnowledgeGraph, ResearchReport } from '../types';
+import { supabase }                 from '../lib/supabase';
+import { runKnowledgeGraphAgent }   from '../services/agents/knowledgeGraphAgent';
+import type { ExtendedKnowledgeGraph } from '../services/agents/knowledgeGraphAgent';
+import { ResearchReport }           from '../types';
 
 export function useKnowledgeGraph(report: ResearchReport | null) {
-  const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
+  const [graph,      setGraph]      = useState<ExtendedKnowledgeGraph | null>(null);
   const [generating, setGenerating] = useState(false);
 
-  // Sync graph whenever report loads / changes
+  // Sync from report whenever it loads / updates
   useEffect(() => {
     if (report?.knowledgeGraph) {
-      setGraph(report.knowledgeGraph);
+      // Cast: the DB value may already be an ExtendedKnowledgeGraph if generated
+      // by the new agent, or a plain KnowledgeGraph from the old agent.
+      // Either way, KnowledgeGraphView handles both gracefully.
+      setGraph(report.knowledgeGraph as unknown as ExtendedKnowledgeGraph);
     }
   }, [report?.id, report?.knowledgeGraph]);
 
@@ -24,10 +33,16 @@ export function useKnowledgeGraph(report: ResearchReport | null) {
     try {
       const newGraph = await runKnowledgeGraphAgent(report);
       setGraph(newGraph);
-      await supabase
+
+      // Persist to Supabase — store the full extended graph (clusters + topicTitle included)
+      const { error } = await supabase
         .from('research_reports')
         .update({ knowledge_graph: newGraph })
         .eq('id', report.id);
+
+      if (error) {
+        console.warn('[useKnowledgeGraph] Failed to persist graph:', error.message);
+      }
     } catch (err) {
       Alert.alert(
         'Graph Error',
