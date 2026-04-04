@@ -1,9 +1,10 @@
 // src/types/credits.ts
 // Part 24 — Monetization: Token/Credit system types
 // Part 31 — Added slide_ai_rewrite, slide_ai_generate, slide_ai_notes
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─── Credit Feature Costs ────────────────────────────────────────────────────
+// Part 38b — Added paper_ai_* feature types for Academic Paper Editor
+// Part 38e FIX — Added paper_ai_generate_citations (2 cr, single atomic deduction)
+//                Replaces the broken double-guardedConsume('paper_ai_fix_citations')
+//                pattern that caused duplicate transactions and wrong credit amounts.
 
 export type CreditFeature =
   // ── Core research ────────────────────────────────────────────────────────
@@ -19,25 +20,33 @@ export type CreditFeature =
   | 'academic_paper'
   | 'presentation'
   | 'debate'
-  // ── Part 31: Slide editor AI (per-operation, cheap) ───────────────────────
-  // These replace the incorrect 'research_quick' calls in useSlideEditor.ts.
-  // Previously every AI edit deducted 5 credits; now the correct amount is used.
-  | 'slide_ai_rewrite'    // 1 cr — rewrite a field, all bullets, or one bullet
-  | 'slide_ai_generate'   // 2 cr — generate a brand-new slide from description
-  | 'slide_ai_notes';     // 1 cr — generate speaker notes for a slide
+  // ── Slide editor AI (per-operation) ───────────────────────────────────────
+  | 'slide_ai_rewrite'    // 1 cr
+  | 'slide_ai_generate'   // 2 cr
+  | 'slide_ai_notes'      // 1 cr
+  // ── Part 38b: Academic Paper Editor AI (per-operation) ────────────────────
+  | 'paper_ai_expand'           // 2 cr — expand section
+  | 'paper_ai_shorten'          // 1 cr — shorten section
+  | 'paper_ai_formalize'        // 1 cr — formalize tone
+  | 'paper_ai_fix_citations'    // 1 cr — fix citation formatting
+  | 'paper_ai_counterargument'  // 2 cr — add counterargument
+  | 'paper_ai_regenerate'       // 3 cr — full rewrite
+  | 'paper_ai_subtitle'         // 1 cr — generate subsection title
+  // ── Part 38e FIX: Citation Manager AI generation ──────────────────────────
+  | 'paper_ai_generate_citations'; // 2 cr — AI citation generator (single atomic call)
 
 // ─── Credit Pack ─────────────────────────────────────────────────────────────
 
 export interface CreditPack {
-  id:             string;     // e.g. 'starter_99'
-  name:           string;     // e.g. 'Starter Pack'
-  credits:        number;     // e.g. 50
-  priceINR:       number;     // e.g. 99  (₹)
-  amountPaise:    number;     // priceINR * 100 (Razorpay uses paise)
-  tag?:           string;     // e.g. 'POPULAR', 'BEST VALUE'
-  bonusCredits?:  number;     // bonus on top (e.g. 10 bonus)
+  id:             string;
+  name:           string;
+  credits:        number;
+  priceINR:       number;
+  amountPaise:    number;
+  tag?:           string;
+  bonusCredits?:  number;
   description:    string;
-  iconName:       string;     // Ionicons name
+  iconName:       string;
   gradientColors: readonly [string, string];
 }
 
@@ -46,10 +55,10 @@ export interface CreditPack {
 export interface UserCredits {
   id:               string;
   userId:           string;
-  balance:          number;   // current credit balance
-  totalPurchased:   number;   // lifetime credits purchased
-  totalConsumed:    number;   // lifetime credits used
-  freeCreditsGiven: boolean;  // whether signup bonus was given
+  balance:          number;
+  totalPurchased:   number;
+  totalConsumed:    number;
+  freeCreditsGiven: boolean;
   createdAt:        string;
   updatedAt:        string;
 }
@@ -57,22 +66,22 @@ export interface UserCredits {
 // ─── Credit Transaction ───────────────────────────────────────────────────────
 
 export type CreditTransactionType =
-  | 'purchase'          // bought credits
-  | 'consume'           // used credits for a feature
-  | 'refund'            // refunded credits
-  | 'signup_bonus'      // free credits on signup
-  | 'admin_grant';      // manually granted by admin
+  | 'purchase'
+  | 'consume'
+  | 'refund'
+  | 'signup_bonus'
+  | 'admin_grant';
 
 export interface CreditTransaction {
   id:           string;
   userId:       string;
   type:         CreditTransactionType;
-  amount:       number;          // positive = credit added, negative = credit consumed
-  balanceAfter: number;          // balance after this transaction
-  feature?:     CreditFeature;   // which feature was used (for consume)
-  packId?:      string;          // which pack was purchased (for purchase)
-  orderId?:     string;          // Razorpay order ID (for purchase)
-  paymentId?:   string;          // Razorpay payment ID (for purchase)
+  amount:       number;
+  balanceAfter: number;
+  feature?:     CreditFeature;
+  packId?:      string;
+  orderId?:     string;
+  paymentId?:   string;
   description:  string;
   metadata?:    Record<string, unknown>;
   createdAt:    string;
@@ -88,15 +97,15 @@ export type RazorpayOrderStatus =
   | 'expired';
 
 export interface RazorpayOrder {
-  id:              string;       // our DB row id
+  id:              string;
   userId:          string;
   packId:          string;
-  razorpayOrderId: string;       // Razorpay's order ID (e.g. order_xxx)
-  amount:          number;       // in paise
-  currency:        string;       // 'INR'
+  razorpayOrderId: string;
+  amount:          number;
+  currency:        string;
   status:          RazorpayOrderStatus;
   creditsToAdd:    number;
-  paymentId?:      string;       // Razorpay payment ID — set after payment
+  paymentId?:      string;
   createdAt:       string;
   paidAt?:         string;
 }
@@ -105,9 +114,9 @@ export interface RazorpayOrder {
 
 export type PurchasePhase =
   | 'idle'
-  | 'creating_order'    // calling Edge Function to create Razorpay order
-  | 'opening_browser'   // opening expo-web-browser
-  | 'polling'           // browser closed, polling for credit update
+  | 'creating_order'
+  | 'opening_browser'
+  | 'polling'
   | 'success'
   | 'failed'
   | 'cancelled';
@@ -115,9 +124,9 @@ export type PurchasePhase =
 export interface PurchaseState {
   phase:         PurchasePhase;
   selectedPack:  CreditPack | null;
-  orderId?:      string;         // razorpay order id
+  orderId?:      string;
   error?:        string;
-  creditsAdded?: number;         // set on success
+  creditsAdded?: number;
 }
 
 // ─── Credits Hook State ───────────────────────────────────────────────────────

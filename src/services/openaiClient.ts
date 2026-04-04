@@ -1,6 +1,11 @@
 // src/services/openaiClient.ts
 // FIXED: Reads EXPO_PUBLIC_OPENAI_API_KEY (required for Expo client bundle).
 // Variables without EXPO_PUBLIC_ prefix are invisible to the React Native app.
+//
+// ADDED: `openaiClient` named export — a lightweight shim that mirrors the
+// OpenAI SDK's `client.chat.completions.create` interface so that callers
+// (e.g. paperEditorService.ts) can import { openaiClient } without pulling
+// in the full openai npm package.
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const MODEL = 'gpt-4o';
@@ -15,6 +20,26 @@ interface OpenAIResponse {
   error?: { message: string; type: string };
 }
 
+// ─── Shim types mirroring the OpenAI SDK surface used in the app ─────────────
+
+interface CreateChatCompletionParams {
+  model:       string;
+  max_tokens?: number;
+  temperature?: number;
+  messages:    ChatMessage[];
+}
+
+interface CreateChatCompletionResponse {
+  choices: Array<{
+    message: {
+      content: string | null;
+      role:    string;
+    };
+  }>;
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
 function getApiKey(): string {
   // Must be EXPO_PUBLIC_ prefixed for Expo to bundle it into the app
   const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
@@ -27,34 +52,29 @@ function getApiKey(): string {
   return key.trim();
 }
 
-export async function chatCompletion(
-  messages: ChatMessage[],
-  options: {
-    temperature?: number;
-    maxTokens?: number;
-    jsonMode?: boolean;
-  } = {}
-): Promise<string> {
+async function rawCreate(
+  params: CreateChatCompletionParams & { jsonMode?: boolean },
+): Promise<CreateChatCompletionResponse> {
   const apiKey = getApiKey();
 
   const body: Record<string, unknown> = {
-    model: MODEL,
-    messages,
-    temperature: options.temperature ?? 0.3,
-    max_tokens: options.maxTokens ?? 4096,
+    model:       params.model,
+    messages:    params.messages,
+    temperature: params.temperature ?? 0.3,
+    max_tokens:  params.max_tokens  ?? 4096,
   };
 
-  if (options.jsonMode) {
+  if (params.jsonMode) {
     body.response_format = { type: 'json_object' };
   }
 
   let response: Response;
   try {
     response = await fetch(OPENAI_API_URL, {
-      method: 'POST',
+      method:  'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization:  `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
     });
@@ -64,42 +84,81 @@ export async function chatCompletion(
 
   const data: OpenAIResponse = await response.json();
 
-  // Surface OpenAI API-level errors (wrong key, quota exceeded, etc.)
   if (!response.ok || data.error) {
     const errMsg = data.error?.message ?? `HTTP ${response.status}`;
     if (response.status === 401) {
-      throw new Error(`Invalid OpenAI API key. Check EXPO_PUBLIC_OPENAI_API_KEY in your .env file.`);
+      throw new Error('Invalid OpenAI API key. Check EXPO_PUBLIC_OPENAI_API_KEY in your .env file.');
     }
     if (response.status === 429) {
-      throw new Error(`OpenAI rate limit or quota exceeded. Check your OpenAI billing at platform.openai.com.`);
+      throw new Error('OpenAI rate limit or quota exceeded. Check your OpenAI billing at platform.openai.com.');
     }
     throw new Error(`OpenAI API error: ${errMsg}`);
   }
 
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Empty response from OpenAI');
+  return {
+    choices: (data.choices ?? []).map(c => ({
+      message: {
+        content: c.message?.content ?? null,
+        role:    'assistant',
+      },
+    })),
+  };
+}
 
+// ─── Named export: openaiClient shim ─────────────────────────────────────────
+// Matches the subset of the OpenAI SDK used across the codebase:
+//   openaiClient.chat.completions.create({ model, max_tokens, temperature, messages })
+
+export const openaiClient = {
+  chat: {
+    completions: {
+      create: (params: CreateChatCompletionParams): Promise<CreateChatCompletionResponse> =>
+        rawCreate(params),
+    },
+  },
+} as const;
+
+// ─── Named exports: functional helpers (unchanged public API) ─────────────────
+
+export async function chatCompletion(
+  messages: ChatMessage[],
+  options: {
+    temperature?: number;
+    maxTokens?:   number;
+    jsonMode?:    boolean;
+  } = {},
+): Promise<string> {
+  const result = await rawCreate({
+    model:       MODEL,
+    messages,
+    temperature: options.temperature,
+    max_tokens:  options.maxTokens,
+    jsonMode:    options.jsonMode,
+  });
+
+  const content = result.choices?.[0]?.message?.content;
+  if (!content) throw new Error('Empty response from OpenAI');
   return content;
 }
 
 export async function chatCompletionJSON<T>(
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number } = {}
+  options: { temperature?: number; maxTokens?: number } = {},
 ): Promise<T> {
   const raw = await chatCompletion(messages, { ...options, jsonMode: true });
 
   // Strip markdown code fences if the model adds them despite json mode
   const cleaned = raw
     .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/\s*```$/i, '')
+    .replace(/^```\s*/i,    '')
+    .replace(/\s*```$/i,    '')
     .trim();
 
   try {
     return JSON.parse(cleaned) as T;
   } catch {
     throw new Error(
-      `Failed to parse OpenAI JSON. Raw response: ${cleaned.slice(0, 300)}`
+      `Failed to parse OpenAI JSON. Raw response: ${cleaned.slice(0, 300)}`,
     );
   }
 }

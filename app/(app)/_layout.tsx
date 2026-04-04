@@ -1,7 +1,7 @@
 // app/(app)/_layout.tsx
-// Part 36 PATCH — Registered feed-report-view screen.
-// All Part 36 screens (user-profile, followers, explore-researchers) + all
-// Part 35 / Part 34 / Part 33 / Part 32 screens preserved.
+// Part 38 — Added paper-editor screen route.
+// Preserves all Part 36 logic: offline screen, suspended/deleted account guards,
+// onboarding check, notification tap handler, animated offline fade.
 
 import { useEffect, useRef }               from 'react';
 import { View, Animated }                  from 'react-native';
@@ -102,6 +102,8 @@ export default function AppLayout() {
 
           {/* ── Content formats ── */}
           <Stack.Screen name="academic-paper"    options={{ animation: 'slide_from_right' }} />
+          {/* Part 38: Inline academic paper editor */}
+          <Stack.Screen name="paper-editor"      options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="podcast-player"    options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="debate-detail"     options={{ animation: 'slide_from_right' }} />
 
@@ -130,18 +132,11 @@ export default function AppLayout() {
           <Stack.Screen name="onboarding-flow"    options={{ animation: 'fade', gestureEnabled: false }} />
           <Stack.Screen name="insights"           options={{ animation: 'slide_from_right' }} />
 
-          {/* ════════════════════════════════════════
-              Part 36 — Social screens
-          ════════════════════════════════════════ */}
-          <Stack.Screen name="user-profile"           options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="followers"              options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="explore-researchers"    options={{ animation: 'slide_from_right' }} />
-
-          {/* ── Feed report viewer (view-only, no edit controls) ── */}
-          <Stack.Screen
-            name="feed-report-view"
-            options={{ animation: 'slide_from_right' }}
-          />
+          {/* ── Social screens (Part 36) ── */}
+          <Stack.Screen name="user-profile"        options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="followers"           options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="explore-researchers" options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="feed-report-view"    options={{ animation: 'slide_from_right' }} />
 
         </Stack>
       </Animated.View>

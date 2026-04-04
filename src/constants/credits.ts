@@ -1,6 +1,12 @@
 // src/constants/credits.ts
 // Part 24 — All credit pack definitions, feature costs, and display helpers
 // Part 31 — Added slide_ai_rewrite, slide_ai_generate, slide_ai_notes entries
+// Part 38b — Added paper_ai_* entries for Academic Paper Editor AI tools
+// Part 38e FIX — Added paper_ai_generate_citations (2 cr).
+//                This single feature replaces the broken double-call to
+//                guardedConsume('paper_ai_fix_citations') in useCitationManager.
+//                One atomic 2-credit deduction instead of two separate 1-credit
+//                calls that raced against each other and caused duplicate transactions.
 
 import type { CreditPack, CreditFeature } from '../types/credits';
 
@@ -9,24 +15,37 @@ import type { CreditPack, CreditFeature } from '../types/credits';
 export const SIGNUP_BONUS_CREDITS = 50;
 
 // ─── Feature Credit Costs ────────────────────────────────────────────────────
-// These are checked BEFORE running any AI pipeline.
 
 export const FEATURE_COSTS: Record<CreditFeature, number> = {
+  // Research
   research_quick:  5,
   research_deep:   10,
   research_expert: 15,
+  // Podcast
   podcast_5min:    10,
   podcast_10min:   20,
   podcast_15min:   30,
   podcast_20min:   40,
+  // Content
   academic_paper:  25,
   presentation:    10,
   debate:          15,
-  // Part 31: slide editor AI operations (per-operation, cheap)
-  // Matches EDITOR_CREDIT_COSTS in src/constants/editor.ts
-  slide_ai_rewrite:  1,   // rewrite field / bullets / single bullet
-  slide_ai_generate: 2,   // generate a brand-new slide from description
-  slide_ai_notes:    1,   // generate speaker notes for a slide
+  // Slide editor AI
+  slide_ai_rewrite:  1,
+  slide_ai_generate: 2,
+  slide_ai_notes:    1,
+  // Part 38b: Academic Paper Editor AI (per-operation)
+  paper_ai_expand:          2,
+  paper_ai_shorten:         1,
+  paper_ai_formalize:       1,
+  paper_ai_fix_citations:   1,
+  paper_ai_counterargument: 2,
+  paper_ai_regenerate:      3,
+  paper_ai_subtitle:        1,
+  // Part 38e FIX: Citation Manager AI generator — single 2-credit deduction
+  // (previously was two separate 1-credit calls which caused race conditions
+  //  and duplicate transactions in the credit ledger)
+  paper_ai_generate_citations: 2,
 };
 
 // ─── Feature Labels ───────────────────────────────────────────────────────────
@@ -42,10 +61,19 @@ export const FEATURE_LABELS: Record<CreditFeature, string> = {
   academic_paper:  'Academic Paper',
   presentation:    'AI Presentation',
   debate:          'AI Debate',
-  // Part 31
   slide_ai_rewrite:  'AI Slide Rewrite',
   slide_ai_generate: 'AI Generate Slide',
   slide_ai_notes:    'AI Speaker Notes',
+  // Part 38b
+  paper_ai_expand:          'Paper AI — Expand',
+  paper_ai_shorten:         'Paper AI — Shorten',
+  paper_ai_formalize:       'Paper AI — Formalize',
+  paper_ai_fix_citations:   'Paper AI — Fix Citations',
+  paper_ai_counterargument: 'Paper AI — Add Counterargument',
+  paper_ai_regenerate:      'Paper AI — Regenerate Section',
+  paper_ai_subtitle:        'Paper AI — Generate Subsection Title',
+  // Part 38e FIX
+  paper_ai_generate_citations: 'Paper AI — Generate Citations',
 };
 
 // ─── Feature Icons ─────────────────────────────────────────────────────────────
@@ -61,10 +89,19 @@ export const FEATURE_ICONS: Record<CreditFeature, string> = {
   academic_paper:  'school-outline',
   presentation:    'easel-outline',
   debate:          'people-outline',
-  // Part 31
   slide_ai_rewrite:  'pencil-outline',
   slide_ai_generate: 'add-circle-outline',
   slide_ai_notes:    'document-text-outline',
+  // Part 38b
+  paper_ai_expand:          'expand-outline',
+  paper_ai_shorten:         'contract-outline',
+  paper_ai_formalize:       'business-outline',
+  paper_ai_fix_citations:   'link-outline',
+  paper_ai_counterargument: 'git-compare-outline',
+  paper_ai_regenerate:      'refresh-circle-outline',
+  paper_ai_subtitle:        'text-outline',
+  // Part 38e FIX
+  paper_ai_generate_citations: 'sparkles-outline',
 };
 
 // ─── Credit Packs ─────────────────────────────────────────────────────────────
@@ -119,23 +156,14 @@ export const CREDIT_PACKS: CreditPack[] = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Get total credits for a pack (base + bonus).
- */
 export function getTotalPackCredits(pack: CreditPack): number {
   return pack.credits + (pack.bonusCredits ?? 0);
 }
 
-/**
- * Price per credit in paise (for comparing value).
- */
 export function pricePerCredit(pack: CreditPack): number {
   return Math.round(pack.amountPaise / getTotalPackCredits(pack));
 }
 
-/**
- * Returns the CreditFeature key for a research depth string.
- */
 export function researchDepthToFeature(
   depth: 'quick' | 'deep' | 'expert',
 ): CreditFeature {
@@ -146,9 +174,6 @@ export function researchDepthToFeature(
   }
 }
 
-/**
- * Returns the CreditFeature key for a podcast duration (minutes).
- */
 export function podcastDurationToFeature(minutes: number): CreditFeature {
   if (minutes <= 5)  return 'podcast_5min';
   if (minutes <= 10) return 'podcast_10min';
@@ -156,21 +181,12 @@ export function podcastDurationToFeature(minutes: number): CreditFeature {
   return 'podcast_20min';
 }
 
-/**
- * Formats a credit amount for display: e.g. 50 → "50 cr"
- */
 export function formatCredits(n: number): string {
   return `${n} cr`;
 }
 
-/**
- * Formats INR amount: e.g. 249 → "₹249"
- */
 export function formatINR(amount: number): string {
   return `₹${amount}`;
 }
 
-// ─── Low Balance Threshold ────────────────────────────────────────────────────
-
-/** Show low-balance warning when credits fall below this */
 export const LOW_BALANCE_THRESHOLD = 10;
