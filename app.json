@@ -22,7 +22,6 @@
         "NSCameraUsageDescription": "DeepDive AI needs access to your camera for video meetings and profile photos.",
         "NSLocalNetworkUsageDescription": "DeepDive AI uses local network for WebRTC video calling in meetings.",
         "UIBackgroundModes": [
-          "audio",
           "voip"
         ],
         "NSBonjourServices": [

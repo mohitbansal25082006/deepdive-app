@@ -1,24 +1,55 @@
 // app/(app)/_layout.tsx
-// Part 38 — Added paper-editor screen route.
-// Preserves all Part 36 logic: offline screen, suspended/deleted account guards,
-// onboarding check, notification tap handler, animated offline fade.
+// Part 39 FIX v4:
+//
+// FIX 2 — Mini player play/pause does nothing when podcast-player screen is NOT mounted:
+//   ROOT CAUSE: MiniPlayerBus 'toggle' event was only subscribed in podcast-player.tsx.
+//   When that screen unmounts (user navigated away), no handler exists for 'toggle'.
+//
+//   SOLUTION: Subscribe to 'toggle' here in _layout.tsx (which is ALWAYS mounted
+//   while the app is running) and call the exported `toggleGlobalAudio()` function.
+//   This directly calls play/pause on globalHolder.sound — no React state needed.
+//
+//   When podcast-player.tsx IS mounted (and mini player is hidden), the screen's
+//   own subscription handles 'toggle'. But since the mini player is hidden when on
+//   the player screen, the user can't trigger 'toggle' from there anyway —
+//   so there's zero double-handling risk.
+//
+// FIX 3 — Lock screen / background audio removed:
+//   Audio session configured without staysActiveInBackground.
+//   UIBackgroundModes ["audio"] removed from app.json.
+//   The mini player (within-app navigation) is completely unaffected.
+//
+// All Part 32/36/38 logic preserved: offline, suspended, deleted, onboarding, social.
 
-import { useEffect, useRef }               from 'react';
-import { View, Animated }                  from 'react-native';
-import { Stack, router, usePathname }      from 'expo-router';
-import { COLORS }                          from '../../src/constants/theme';
+import { useEffect, useRef }             from 'react';
+import { View, Animated }                from 'react-native';
+import { Stack, router, usePathname }    from 'expo-router';
+import { COLORS }                        from '../../src/constants/theme';
 import { registerNotificationTapHandler } from '../../src/lib/notifications';
-import { useNetwork }                      from '../../src/context/NetworkContext';
-import { useAuth }                         from '../../src/context/AuthContext';
-import { checkOnboardingStatus }           from '../../src/services/onboardingService';
-import { OfflineScreen }                   from '../../src/components/offline/OfflineScreen';
-import { AccountSuspendedScreen }          from '../../src/components/common/AccountSuspendedScreen';
-import { AccountDeletedScreen }            from '../../src/components/common/AccountDeletedScreen';
+import { useNetwork }                    from '../../src/context/NetworkContext';
+import { useAuth }                       from '../../src/context/AuthContext';
+import { checkOnboardingStatus }         from '../../src/services/onboardingService';
+import { OfflineScreen }                 from '../../src/components/offline/OfflineScreen';
+import { AccountSuspendedScreen }        from '../../src/components/common/AccountSuspendedScreen';
+import { AccountDeletedScreen }          from '../../src/components/common/AccountDeletedScreen';
+import { MiniPlayer, MiniPlayerBus }     from '../../src/components/podcast/MiniPlayer';
+import {
+  MiniPlayerProvider,
+  useMiniPlayerContext,
+} from '../../src/context/MiniPlayerContext';
+import {
+  stopGlobalAudio,
+  toggleGlobalAudio,
+} from '../../src/hooks/usePodcastPlayer';
 
-export default function AppLayout() {
+// ─── Inner layout ──────────────────────────────────────────────────────────────
+
+function AppLayoutInner() {
   const { isOffline, isConnecting }                       = useNetwork();
   const { user, profile, profileLoading, accountDeleted } = useAuth();
   const pathname                                          = usePathname();
+
+  const { miniPlayerState, hideMiniPlayer } = useMiniPlayerContext();
 
   const offlineFade = useRef(new Animated.Value(0)).current;
   const prevOffline = useRef(false);
@@ -42,6 +73,34 @@ export default function AppLayout() {
     });
     return unsubscribe;
   }, []);
+
+  // ── Mini player bus — global subscriber (always mounted) ──────────────────────
+  // FIX 2: Handle BOTH 'toggle' and 'dismiss' here so they work even when
+  // podcast-player.tsx is not in the navigation stack.
+  //
+  // 'toggle' → toggleGlobalAudio() operates directly on globalHolder.sound.
+  //            When podcast-player.tsx IS on screen the mini player is hidden,
+  //            so the user physically cannot trigger 'toggle' from there.
+  //            No double-handling can occur.
+  //
+  // 'dismiss' → stopGlobalAudio() + hideMiniPlayer().
+  //             podcast-player.tsx also subscribes to 'dismiss' for its own
+  //             cleanup when mounted — both are safe to call (idempotent).
+  useEffect(() => {
+    const unsub = MiniPlayerBus.subscribe(async (event: string) => {
+      if (event === 'toggle') {
+        // FIX 2: This is the global handler for play/pause when the player
+        // screen is NOT mounted. Works by directly manipulating globalHolder.sound.
+        await toggleGlobalAudio();
+      }
+      if (event === 'dismiss') {
+        // Stop the audio and hide the mini player UI
+        await stopGlobalAudio();
+        hideMiniPlayer();
+      }
+    });
+    return unsub;
+  }, [hideMiniPlayer]);
 
   const onboardingChecked = useRef(false);
 
@@ -68,6 +127,11 @@ export default function AppLayout() {
   const isDeleted         = accountDeleted;
   const isSuspended       = !isDeleted && profile?.account_status === 'suspended';
   const blockInteractions = (isOffline && !isConnecting) || isSuspended || isDeleted;
+
+  // Hide mini player while ON the podcast-player screen (full player is showing).
+  // This also ensures 'toggle' from the mini player can never fire while the
+  // full player is on-screen — eliminating any double-handling risk.
+  const isOnPlayerScreen = pathname?.includes('podcast-player') ?? false;
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
@@ -102,20 +166,22 @@ export default function AppLayout() {
 
           {/* ── Content formats ── */}
           <Stack.Screen name="academic-paper"    options={{ animation: 'slide_from_right' }} />
-          {/* Part 38: Inline academic paper editor */}
           <Stack.Screen name="paper-editor"      options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="podcast-player"    options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="debate-detail"     options={{ animation: 'slide_from_right' }} />
 
+          {/* ── Part 39: Podcast Series ── */}
+          <Stack.Screen name="podcast-series"    options={{ animation: 'slide_from_right' }} />
+
           {/* ── Workspace ── */}
-          <Stack.Screen name="workspace-detail"   options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="workspace-members"  options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="workspace-settings" options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="workspace-report"   options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="workspace-detail"                options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="workspace-members"               options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="workspace-settings"              options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="workspace-report"                options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-viewer"         options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-podcast-player" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-debate"         options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="workspace-chat"    options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="workspace-chat"                  options={{ animation: 'slide_from_right' }} />
 
           {/* ── Credits ── */}
           <Stack.Screen name="credits-store"       options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
@@ -132,12 +198,11 @@ export default function AppLayout() {
           <Stack.Screen name="onboarding-flow"    options={{ animation: 'fade', gestureEnabled: false }} />
           <Stack.Screen name="insights"           options={{ animation: 'slide_from_right' }} />
 
-          {/* ── Social screens (Part 36) ── */}
+          {/* ── Social ── */}
           <Stack.Screen name="user-profile"        options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="followers"           options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="explore-researchers" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="feed-report-view"    options={{ animation: 'slide_from_right' }} />
-
         </Stack>
       </Animated.View>
 
@@ -159,6 +224,21 @@ export default function AppLayout() {
       >
         {(isOffline || prevOffline.current) && <OfflineScreen />}
       </Animated.View>
+
+      {/* Only render MiniPlayer when NOT on the player screen itself.
+          This keeps the full-screen player and mini player from overlapping,
+          and prevents any accidental double-handling of 'toggle' events. */}
+      {!isOnPlayerScreen && <MiniPlayer state={miniPlayerState} />}
     </View>
+  );
+}
+
+// ─── Root export ───────────────────────────────────────────────────────────────
+
+export default function AppLayout() {
+  return (
+    <MiniPlayerProvider>
+      <AppLayoutInner />
+    </MiniPlayerProvider>
   );
 }

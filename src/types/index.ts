@@ -1,10 +1,10 @@
 // src/types/index.ts
 // DeepDive AI — Complete Type Definitions
-// Parts 1–36 — All types in one file
+// Parts 1–39 — All types in one file
 //
-// Part 36 change: Added `is_public?`, `follower_count?`, `following_count?`
-// to Profile interface for the Social & Discovery feature.
-// All other types are identical to Part 32.
+// Part 39 change: PodcastTurn.speaker widened to include 'guest1' | 'guest2'
+// for 3-speaker V2 support. Backward compatible — 'guest' still valid.
+// All other types are identical to Part 36.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
@@ -592,10 +592,12 @@ export interface AcademicPaperMeta {
 export type PodcastVoice  = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
 export type PodcastStatus = 'pending' | 'generating_script' | 'generating_audio' | 'completed' | 'failed';
 
+// Part 39: speaker widened to include 'guest1' | 'guest2' for 3-speaker V2 support.
+// 'guest' is kept for backward compat with V1 episodes stored in DB.
 export interface PodcastTurn {
   id:            string;
   segmentIndex:  number;
-  speaker:       'host' | 'guest';
+  speaker:       'host' | 'guest' | 'guest1' | 'guest2';
   speakerName:   string;
   text:          string;
   audioPath?:    string;
