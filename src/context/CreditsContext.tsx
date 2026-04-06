@@ -1,17 +1,21 @@
 // src/context/CreditsContext.tsx
 // Part 32 UPDATE — Added Supabase Realtime subscription for user_credits balance.
+// Part 39 FIX — Added consumeTotal() for atomic combined credit deduction.
+//
+// NEW in Part 39 FIX:
+//   consumeTotal(feature, totalCost, description) — deducts a combined cost as ONE
+//   single DB transaction. Used by podcast generation to charge duration + quality
+//   add-on together, so transaction history shows "-25 cr" instead of two separate
+//   "-20 cr" and "-5 cr" entries.
+//
+//   Returns { ok: boolean; currentBalance: number } so the caller (useCreditGate)
+//   can show the correct combined required amount in the InsufficientCreditsModal.
 //
 // NEW in Part 32:
 //   When admin adjusts credits via the admin dashboard, user_credits.balance is
 //   updated in the DB. Supabase Realtime fires an UPDATE event on the row.
 //   This context now listens for that event and instantly updates the balance
 //   shown in the app's header pill — no restart or manual refresh required.
-//
-//   Result: admin adds 100 credits → user's balance pill updates in ~1 second.
-//
-// KEPT from Part 31 Fix 3:
-//   loadTransactions() still also refreshes balance from DB after fetching
-//   transactions (belt-and-suspenders approach in case Realtime is delayed).
 //
 // All Part 24–31 logic preserved unchanged.
 
@@ -52,7 +56,18 @@ interface CreditsContextValue {
   txLoading:        boolean;
   purchaseState:    PurchaseState;
   error:            string | null;
+  /** Deduct a single feature's cost. Returns false if insufficient. */
   consume:          (feature: CreditFeature) => Promise<boolean>;
+  /**
+   * Part 39 FIX — Deduct a combined cost as ONE DB transaction.
+   * Used when two features (e.g. duration + quality) should appear as a
+   * single line in the transaction history and the insufficient modal should
+   * show the combined required amount.
+   *
+   * Returns { ok, currentBalance } so the caller knows the fresh balance
+   * without waiting for a re-render.
+   */
+  consumeTotal:     (feature: CreditFeature, totalCost: number, description?: string) => Promise<{ ok: boolean; currentBalance: number }>;
   purchasePack:     (pack: CreditPack) => Promise<void>;
   refresh:          () => Promise<void>;
   loadTransactions: () => Promise<void>;
@@ -65,6 +80,7 @@ const CreditsContext = createContext<CreditsContextValue>({
   purchaseState: { phase: 'idle', selectedPack: null },
   error: null,
   consume:          async () => false,
+  consumeTotal:     async () => ({ ok: false, currentBalance: 0 }),
   purchasePack:     async () => {},
   refresh:          async () => {},
   loadTransactions: async () => {},
@@ -91,11 +107,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   const creditChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // ── Realtime: subscribe to user_credits balance changes ───────────────────
-  // Fires instantly when admin (or any RPC) updates user_credits.balance.
-  // Filter: `user_id=eq.${userId}` — only this user's row.
-  // SECURITY: Supabase RLS ensures the user can only receive events for their
-  //           own user_credits row (SELECT policy: user_id = auth.uid()).
-
   const setupCreditRealtime = useCallback((userId: string) => {
     if (creditChannelRef.current) {
       supabase.removeChannel(creditChannelRef.current);
@@ -169,7 +180,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       loadedRef.current  = false;
       loadingRef.current = false;
       loadBalance();
-      setupCreditRealtime(user.id);   // Part 32: start listening for balance changes
+      setupCreditRealtime(user.id);
     } else {
       setBalance(0);
       setTransactions([]);
@@ -178,18 +189,17 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       loadedRef.current  = false;
       loadingRef.current = false;
       clearBalanceCache();
-      teardownCreditRealtime();        // Part 32: clean up on sign out
+      teardownCreditRealtime();
     }
 
     return () => {
-      // Part 32: clean up realtime channel when userId changes or component unmounts
       teardownCreditRealtime();
     };
   }, [user?.id]);
 
   const refresh = useCallback(() => loadBalance(true), [loadBalance]);
 
-  // ── Load transactions (also refreshes balance — Part 31 Fix 3) ────────────
+  // ── Load transactions ─────────────────────────────────────────────────────
 
   const loadTransactions = useCallback(async () => {
     if (!user) return;
@@ -205,7 +215,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
 
     // Belt-and-suspenders: also refresh balance from DB.
-    // Realtime usually beats this, but it handles delayed events and offline reconnect.
     if (user) {
       try {
         const credits = await fetchUserCredits(user.id);
@@ -217,7 +226,8 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user]);
 
-  // ── Consume credits ───────────────────────────────────────────────────────
+  // ── Consume a single feature's cost ──────────────────────────────────────
+  // Keeps original behaviour — used by all features except podcast (which uses consumeTotal).
 
   const consume = useCallback(async (feature: CreditFeature): Promise<boolean> => {
     if (!user) return false;
@@ -253,6 +263,71 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
         cacheBalance(user.id, err.balance);
       }
       return false;
+    }
+  }, [user, balance]);
+
+  // ── Part 39 FIX: Consume a combined total as ONE DB transaction ───────────
+  //
+  // This solves three bugs in podcast generation:
+  //
+  // Bug 1 — split transactions: calling guardedConsume twice (once for quality,
+  //   once for duration) creates two separate DB rows. This method creates one.
+  //
+  // Bug 2 — wrong modal amount: when each guardedConsume only knows its own cost,
+  //   the InsufficientCreditsModal shows the wrong "required" figure. By passing
+  //   totalCost here, the modal always shows the correct combined amount.
+  //
+  // Bug 3 — quality pre-charge: the old order (quality first, then duration)
+  //   deducted quality credits even when the user couldn't afford the full total.
+  //   This method checks the full totalCost BEFORE touching any credits.
+  //
+  // Returns { ok, currentBalance } so the caller (useCreditGate) can build the
+  // InsufficientCreditsInfo with the fresh balance without waiting for a re-render.
+
+  const consumeTotal = useCallback(async (
+    feature:     CreditFeature,
+    totalCost:   number,
+    description: string = '',
+  ): Promise<{ ok: boolean; currentBalance: number }> => {
+    if (!user) return { ok: false, currentBalance: 0 };
+
+    // Step 1 — fetch fresh balance from DB (never trust stale state for money ops)
+    let currentBalance = balance;
+    try {
+      const fresh = await fetchUserCredits(user.id);
+      currentBalance = fresh.balance;
+      setBalance(currentBalance);
+      cacheBalance(user.id, currentBalance);
+    } catch (fetchErr) {
+      console.warn('[Credits] consumeTotal: could not fetch fresh balance, using cached:', fetchErr);
+    }
+
+    // Step 2 — pre-flight check: if insufficient, return immediately with ZERO credits charged
+    if (currentBalance < totalCost) {
+      return { ok: false, currentBalance };
+    }
+
+    // Step 3 — optimistic deduction in UI so balance pill updates instantly
+    setBalance(prev => Math.max(0, prev - totalCost));
+
+    // Step 4 — single atomic DB deduction with combined description
+    try {
+      const newBalance = await consumeCredits(user.id, feature, totalCost, description);
+      setBalance(newBalance);
+      cacheBalance(user.id, newBalance);
+      return { ok: true, currentBalance: newBalance };
+    } catch (err) {
+      // Rollback optimistic deduction on any DB error
+      setBalance(currentBalance);
+      cacheBalance(user.id, currentBalance);
+
+      if (err instanceof InsufficientCreditsError) {
+        // DB said insufficient (race condition) — update to real balance
+        setBalance(err.balance);
+        cacheBalance(user.id, err.balance);
+        return { ok: false, currentBalance: err.balance };
+      }
+      return { ok: false, currentBalance };
     }
   }, [user, balance]);
 
@@ -378,7 +453,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   const value: CreditsContextValue = {
     balance, isLoading, isRefreshing,
     transactions, txLoading, purchaseState, error,
-    consume, purchasePack, refresh, loadTransactions, resetPurchase,
+    consume, consumeTotal, purchasePack, refresh, loadTransactions, resetPurchase,
   };
 
   return (

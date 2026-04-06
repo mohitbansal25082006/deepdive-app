@@ -1,20 +1,29 @@
 // app/(app)/(tabs)/podcast.tsx
-// Part 39 — FULLY REDESIGNED Podcast Tab
+// Part 39 FIX v2 — Replaced two-step credit deduction with single guardedConsumeTotal.
 //
-// NEW SECTIONS:
-//   Library         → Series grouping, Continue Listening row, Recently Played row
-//   Stats Strip     → Total episodes · Total listening time · Favourite style · Streak
-//   Discovery       → Trending topics (from Part 21 system) · "Complete the series" nudge
-//   Create Form     → V2 VoiceStyleSelector (11 presets), Report Import, Voice Input,
-//                     Duration picker, Audio Quality picker, Series selector
+// BUGS FIXED:
 //
-// PRESERVED from Part 35:
-//   - Long-press → Add to Collection sheet
-//   - Credits gate (guardedConsume)
-//   - Search button in header
-//   - ReportImportSheet, VoiceStyleSelector
-//   - ShareSheet (MP3/PDF/Copy)
-//   - upsertPodcast, refresh after completion
+// Bug 1 — Transaction shows -20 instead of -25:
+//   OLD: Two separate guardedConsume() calls → two DB rows (-5 and -20).
+//   FIX: One guardedConsumeTotal(feature, 25, label) → one DB row (-25).
+//
+// Bug 2 — InsufficientCreditsModal shows wrong required amount:
+//   OLD: Each guardedConsume only knows its own cost (e.g. 20 for base).
+//        If quality passed but base failed, modal said "need 20, have 17"
+//        even though the true combined need was 25.
+//   FIX: guardedConsumeTotal passes totalCreditCost (25) as required, so the
+//        modal always shows the correct combined figure.
+//
+// Bug 3 — Quality credits charged when podcast not generated:
+//   OLD: Quality deducted first; if base check then failed, quality was lost.
+//   FIX: consumeTotal() does a SINGLE pre-flight balance check against the
+//        full totalCost BEFORE touching any credits. If insufficient, 0 cr charged.
+//
+// CHANGES FROM PREVIOUS VERSION:
+//   - Removed podcastQualityToFeature from imports (no longer needed in generate)
+//   - Added guardedConsumeTotal to useCreditGate destructure
+//   - Removed guardedConsume from useCreditGate destructure (no longer used here)
+//   - handleGenerate: replaced two-step consume block with single guardedConsumeTotal
 
 import React, {
   useState, useEffect, useCallback, useRef, useMemo,
@@ -33,7 +42,7 @@ import Animated, {
   withRepeat, withSequence, withTiming, cancelAnimation,
 }                                           from 'react-native-reanimated';
 import { SafeAreaView }                     from 'react-native-safe-area-context';
-import { router }                           from 'expo-router';
+import { router, useFocusEffect }           from 'expo-router';
 
 import { COLORS, FONTS, SPACING, RADIUS }   from '../../../src/constants/theme';
 import { usePodcast }                       from '../../../src/hooks/usePodcast';
@@ -51,14 +60,20 @@ import { AddToCollectionSheet }             from '../../../src/components/collec
 import { CreditBalance }                    from '../../../src/components/credits/CreditBalance';
 import { InsufficientCreditsModal }         from '../../../src/components/credits/InsufficientCreditsModal';
 import { useCreditGate }                    from '../../../src/hooks/useCreditGate';
-import { podcastDurationToFeature, FEATURE_COSTS } from '../../../src/constants/credits';
+import {
+  podcastDurationToFeature,
+  podcastTotalCost,
+  FEATURE_COSTS,
+}                                           from '../../../src/constants/credits';
+// NOTE: podcastQualityToFeature intentionally removed — no longer needed now that
+//       we deduct duration + quality as one combined call via guardedConsumeTotal.
+import {
+  exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
+}                                           from '../../../src/services/podcastExport';
 import {
   startRecording, stopRecording,
   transcribeAudio, requestMicrophonePermission, formatDuration as formatRecDuration,
 }                                           from '../../../src/services/voiceResearch';
-import {
-  exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
-}                                           from '../../../src/services/podcastExport';
 import { PODCAST_VOICE_PRESETS_V2 }         from '../../../src/constants/podcastV2';
 import { AUDIO_QUALITY_OPTIONS }            from '../../../src/constants/podcastV2';
 import type { Podcast, ResearchReport }     from '../../../src/types';
@@ -183,26 +198,14 @@ function VoiceInputButton({
 
   return (
     <Animated.View style={[pulseStyle, { alignSelf: 'center' }]}>
-      <TouchableOpacity
-        onPress={handlePress}
-        disabled={disabled || recState === 'transcribing'}
-        activeOpacity={0.8}
-        style={{
-          width: 44, height: 44, borderRadius: 14,
-          backgroundColor: recState === 'recording' ? `${COLORS.error}22` : `${COLORS.primary}15`,
-          alignItems: 'center', justifyContent: 'center',
-          borderWidth: 1.5, borderColor: recState === 'recording' ? `${COLORS.error}50` : `${COLORS.primary}35`,
-          opacity: disabled ? 0.4 : 1,
-        }}
-      >
+      <TouchableOpacity onPress={handlePress} disabled={disabled || recState === 'transcribing'} activeOpacity={0.8}
+        style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: recState === 'recording' ? `${COLORS.error}22` : `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: recState === 'recording' ? `${COLORS.error}50` : `${COLORS.primary}35`, opacity: disabled ? 0.4 : 1 }}>
         {recState === 'transcribing'
           ? <ActivityIndicator size="small" color={COLORS.primary} />
           : <Ionicons name={recState === 'recording' ? 'stop-circle' : 'mic-outline'} size={20} color={recState === 'recording' ? COLORS.error : COLORS.primary} />}
       </TouchableOpacity>
       {recState === 'recording' && (
-        <Text style={{ color: COLORS.error, fontSize: 9, fontWeight: '700', textAlign: 'center', marginTop: 3 }}>
-          {formatRecDuration(durationMs)}
-        </Text>
+        <Text style={{ color: COLORS.error, fontSize: 9, fontWeight: '700', textAlign: 'center', marginTop: 3 }}>{formatRecDuration(durationMs)}</Text>
       )}
     </Animated.View>
   );
@@ -213,11 +216,7 @@ function VoiceInputButton({
 function ImportedReportChip({ report, onRemove }: { report: ResearchReport; onRemove: () => void }) {
   return (
     <Animated.View entering={FadeIn.duration(300)}>
-      <LinearGradient colors={[`${COLORS.primary}18`, `${COLORS.accent}10`]} style={{
-        flexDirection: 'row', alignItems: 'center', gap: 10,
-        padding: SPACING.sm + 2, borderRadius: RADIUS.lg,
-        borderWidth: 1, borderColor: `${COLORS.primary}35`, marginBottom: SPACING.md,
-      }}>
+      <LinearGradient colors={[`${COLORS.primary}18`, `${COLORS.accent}10`]} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.sm + 2, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.primary}35`, marginBottom: SPACING.md }}>
         <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <Ionicons name="document-text" size={16} color={COLORS.primary} />
         </View>
@@ -235,18 +234,14 @@ function ImportedReportChip({ report, onRemove }: { report: ResearchReport; onRe
 
 // ─── Stats Strip ──────────────────────────────────────────────────────────────
 
-function StatsStrip({ stats, totalMinutes, completedCount }: {
-  stats: any; totalMinutes: number; completedCount: number;
-}) {
+function StatsStrip({ stats, totalMinutes, completedCount }: { stats: any; totalMinutes: number; completedCount: number }) {
   const items = [
     { label: 'Episodes', value: String(completedCount), icon: 'radio-outline', color: COLORS.primary },
     { label: 'Listened', value: totalMinutes >= 60 ? `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m` : `${totalMinutes}m`, icon: 'headset-outline', color: COLORS.secondary },
     ...(stats?.mostUsedStyle ? [{ label: 'Fav Style', value: stats.mostUsedStyle.replace('_', ' ').split(' ').map((w: string) => w[0].toUpperCase() + w.slice(1)).join(' '), icon: 'mic-outline', color: COLORS.accent }] : []),
     ...(stats?.currentStreakDays > 0 ? [{ label: 'Streak', value: `${stats.currentStreakDays}d 🔥`, icon: 'flame-outline', color: '#F59E0B' }] : []),
   ];
-
   if (items.length === 0) return null;
-
   return (
     <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.lg }}>
       {items.map(item => (
@@ -263,7 +258,6 @@ function StatsStrip({ stats, totalMinutes, completedCount }: {
 
 function ContinueListeningRow({ items }: { items: any[] }) {
   if (!items || items.length === 0) return null;
-
   return (
     <View style={{ marginBottom: SPACING.lg }}>
       <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
@@ -271,15 +265,12 @@ function ContinueListeningRow({ items }: { items: any[] }) {
       </Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: SPACING.sm, paddingRight: SPACING.md }}>
         {items.map(item => (
-          <TouchableOpacity
-            key={item.podcastId}
+          <TouchableOpacity key={item.podcastId}
             onPress={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId: item.podcastId } })}
-            style={{ width: 160, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}
-          >
+            style={{ width: 160, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}>
             <EpisodeArtwork title={item.title ?? ''} size={160} borderRadius={0} accentColor={item.accentColor} />
             <View style={{ padding: SPACING.sm }}>
               <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xs, fontWeight: '700', marginBottom: 4 }} numberOfLines={2}>{item.title}</Text>
-              {/* Progress bar */}
               <View style={{ height: 3, backgroundColor: COLORS.backgroundElevated, borderRadius: 2, overflow: 'hidden', marginBottom: 4 }}>
                 <View style={{ width: `${Math.round((item.progressPercent ?? 0) * 100)}%` as any, height: '100%', backgroundColor: item.accentColor ?? COLORS.primary, borderRadius: 2 }} />
               </View>
@@ -301,10 +292,7 @@ function EpisodeReadyBanner({ title, duration, hostName, guestName, podcastId, o
   const mins = duration > 0 ? Math.round(duration / 60) : null;
   return (
     <Animated.View entering={FadeIn.duration(500)}>
-      <LinearGradient colors={[`${COLORS.primary}22`, `${COLORS.accent}18`]} style={{
-        borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.lg,
-        borderWidth: 1, borderColor: `${COLORS.primary}40`,
-      }}>
+      <LinearGradient colors={[`${COLORS.primary}22`, `${COLORS.accent}18`]} style={{ borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}40` }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: SPACING.sm }}>
           <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />
@@ -323,8 +311,7 @@ function EpisodeReadyBanner({ title, duration, hostName, guestName, podcastId, o
         <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
           <TouchableOpacity
             onPress={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId } })}
-            style={{ flex: 1, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}
-          >
+            style={{ flex: 1, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <Ionicons name="play-circle" size={18} color="#FFF" />
             <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Listen</Text>
           </TouchableOpacity>
@@ -340,8 +327,6 @@ function EpisodeReadyBanner({ title, duration, hostName, guestName, podcastId, o
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function PodcastScreen() {
-  // ── Hooks ─────────────────────────────────────────────────────────────────
-
   const {
     state: genState, isGenerating, progressPhase,
     generateFromPresetV2, generateFromReport, generateFromTopic, reset: resetGeneration,
@@ -358,8 +343,14 @@ export default function PodcastScreen() {
     refresh: refreshSeries,
   } = usePodcastSeries();
 
-  // ── Form state ────────────────────────────────────────────────────────────
+  // Refresh continue listening when tab gains focus
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [])
+  );
 
+  // Form state
   const [topic,              setTopic]              = useState('');
   const [selectedPresetId,   setSelectedPresetId]   = useState('casual');
   const [selectedDuration,   setSelectedDuration]   = useState(10);
@@ -373,14 +364,15 @@ export default function PodcastScreen() {
   const [selectedSeriesId,   setSelectedSeriesId]    = useState<string | null>(null);
   const [showSeriesPicker,   setShowSeriesPicker]    = useState(false);
 
-  const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
+  // FIX: Use guardedConsumeTotal instead of guardedConsume for podcast generation.
+  // guardedConsume kept in case it's needed elsewhere; not used in handleGenerate.
+  const { balance, guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
   const hasSerpKey = !!(process.env.EXPO_PUBLIC_SERPAPI_KEY?.trim() && process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here');
 
   const openShareSheet  = useCallback((podcast: Podcast) => { setShareTarget(podcast); setShareSheetOpen(true); }, []);
   const closeShareSheet = useCallback(() => { setShareSheetOpen(false); setTimeout(() => setShareTarget(null), 400); }, []);
 
-  // Sync on complete
   useEffect(() => {
     if (progressPhase === 'done' && genState.podcast) {
       upsertPodcast(genState.podcast);
@@ -389,14 +381,26 @@ export default function PodcastScreen() {
     }
   }, [progressPhase]);
 
-  // ── Selected preset ───────────────────────────────────────────────────────
-
   const selectedPreset = useMemo(
     () => PODCAST_VOICE_PRESETS_V2.find(p => p.id === selectedPresetId) ?? PODCAST_VOICE_PRESETS_V2[0],
     [selectedPresetId]
   );
 
-  // ── Generate ──────────────────────────────────────────────────────────────
+  // ── Total credit cost = base duration + quality add-on ──────────────────────
+  const totalCreditCost = useMemo(
+    () => podcastTotalCost(selectedDuration, audioQuality),
+    [selectedDuration, audioQuality]
+  );
+
+  const baseCreditCost   = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
+  const qualityAddOnCost = totalCreditCost - baseCreditCost;
+
+  // ── Generate handler — FIX: single atomic deduction ─────────────────────────
+  //
+  // All three credit bugs are fixed by calling guardedConsumeTotal() once:
+  //   - One call → one DB transaction → transaction history shows correct total
+  //   - totalCreditCost passed as required → modal shows correct combined amount
+  //   - Pre-flight check inside consumeTotal → 0 cr charged if insufficient
 
   const handleGenerate = useCallback(async () => {
     const effectiveTopic = topic.trim() || importedReport?.query || '';
@@ -405,12 +409,24 @@ export default function PodcastScreen() {
       return;
     }
 
-    const feature = podcastDurationToFeature(selectedDuration);
-    // Add quality credit cost
-    const qualityCost = AUDIO_QUALITY_OPTIONS.find(q => q.value === audioQuality)?.creditBonus ?? 0;
-    const ok = await guardedConsume(feature);
+    // Build a human-readable label for the InsufficientCreditsModal and the
+    // credit_transactions.description DB column.
+    const qualityLabel =
+      audioQuality === 'high'     ? ' · High Quality'     :
+      audioQuality === 'lossless' ? ' · Lossless Quality' : '';
+    const combinedLabel = `Podcast (${selectedDuration} min${qualityLabel})`;
+
+    // Single pre-flight check + single DB deduction for the full combined cost.
+    // If balance < totalCreditCost, the modal is shown with the correct amount
+    // and 0 credits are deducted.
+    const ok = await guardedConsumeTotal(
+      podcastDurationToFeature(selectedDuration),
+      totalCreditCost,
+      combinedLabel,
+    );
     if (!ok) return;
 
+    // Credits successfully deducted — start generation
     const config = {
       hostVoice:             selectedPreset.hostVoice,
       guestVoice:            selectedPreset.guestVoice,
@@ -425,9 +441,7 @@ export default function PodcastScreen() {
       presetStyleV2: selectedPreset.presetStyleV2,
       audioQuality,
       seriesId:      selectedSeriesId ?? undefined,
-      episodeNumber: selectedSeriesId
-        ? (series.find(s => s.id === selectedSeriesId)?.episodeCount ?? 0) + 1
-        : undefined,
+      episodeNumber: selectedSeriesId ? (series.find(s => s.id === selectedSeriesId)?.episodeCount ?? 0) + 1 : undefined,
     };
 
     if (importedReport) {
@@ -435,7 +449,11 @@ export default function PodcastScreen() {
     } else {
       generateFromTopic(effectiveTopic, config, selectedPreset.presetStyleV2 as any, v2Options);
     }
-  }, [topic, importedReport, selectedPreset, selectedDuration, audioQuality, selectedSeriesId, series, guardedConsume, generateFromReport, generateFromTopic]);
+  }, [
+    topic, importedReport, selectedPreset, selectedDuration, audioQuality,
+    totalCreditCost, selectedSeriesId, series,
+    guardedConsumeTotal, generateFromReport, generateFromTopic,
+  ]);
 
   const handleCancel = useCallback(() => {
     Alert.alert('Cancel Generation', 'Stop generating this podcast?', [
@@ -444,15 +462,11 @@ export default function PodcastScreen() {
     ]);
   }, [resetGeneration]);
 
-  // ── View flags ────────────────────────────────────────────────────────────
-
   const showForm     = !isGenerating;
   const showProgress = progressPhase === 'script' || progressPhase === 'audio';
   const showBanner   = progressPhase === 'done' && genState.podcast !== null;
-  const creditCost   = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
   const hasLibrary   = completedPodcasts.length > 0 || series.length > 0;
 
-  // Series picker modal
   const SeriesPickerModal = () => (
     <Modal visible={showSeriesPicker} animationType="slide" transparent onRequestClose={() => setShowSeriesPicker(false)}>
       <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.7)', justifyContent: 'flex-end' }}>
@@ -460,19 +474,14 @@ export default function PodcastScreen() {
         <View style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: SPACING.xl, borderTopWidth: 1, borderTopColor: COLORS.border, maxHeight: '70%', paddingBottom: SPACING.xl + 8 }}>
           <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.lg }} />
           <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', marginBottom: SPACING.md }}>Add to Series</Text>
-          <TouchableOpacity
-            onPress={() => { setSelectedSeriesId(null); setShowSeriesPicker(false); }}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md, backgroundColor: !selectedSeriesId ? `${COLORS.primary}12` : COLORS.backgroundElevated, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: !selectedSeriesId ? COLORS.primary : COLORS.border }}
-          >
+          <TouchableOpacity onPress={() => { setSelectedSeriesId(null); setShowSeriesPicker(false); }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md, backgroundColor: !selectedSeriesId ? `${COLORS.primary}12` : COLORS.backgroundElevated, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: !selectedSeriesId ? COLORS.primary : COLORS.border }}>
             <Ionicons name="close-circle-outline" size={20} color={!selectedSeriesId ? COLORS.primary : COLORS.textMuted} />
             <Text style={{ color: !selectedSeriesId ? COLORS.primary : COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>No Series (standalone)</Text>
           </TouchableOpacity>
           {series.map(s => (
-            <TouchableOpacity
-              key={s.id}
-              onPress={() => { setSelectedSeriesId(s.id); setShowSeriesPicker(false); }}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md, backgroundColor: selectedSeriesId === s.id ? `${s.accentColor}12` : COLORS.backgroundElevated, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: selectedSeriesId === s.id ? s.accentColor : COLORS.border }}
-            >
+            <TouchableOpacity key={s.id} onPress={() => { setSelectedSeriesId(s.id); setShowSeriesPicker(false); }}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md, backgroundColor: selectedSeriesId === s.id ? `${s.accentColor}12` : COLORS.backgroundElevated, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: selectedSeriesId === s.id ? s.accentColor : COLORS.border }}>
               <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: `${s.accentColor}20`, alignItems: 'center', justifyContent: 'center' }}>
                 <Ionicons name={s.iconName as any ?? 'radio-outline'} size={18} color={s.accentColor} />
               </View>
@@ -483,10 +492,8 @@ export default function PodcastScreen() {
               {selectedSeriesId === s.id && <Ionicons name="checkmark-circle" size={20} color={s.accentColor} />}
             </TouchableOpacity>
           ))}
-          <TouchableOpacity
-            onPress={() => { setShowSeriesPicker(false); setShowSeriesCreator(true); }}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, marginTop: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.primary}25` }}
-          >
+          <TouchableOpacity onPress={() => { setShowSeriesPicker(false); setShowSeriesCreator(true); }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, marginTop: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
             <Ionicons name="add-circle-outline" size={20} color={COLORS.primary} />
             <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>Create New Series</Text>
           </TouchableOpacity>
@@ -506,7 +513,7 @@ export default function PodcastScreen() {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={COLORS.primary} />}
           >
 
-            {/* ── Header ── */}
+            {/* Header */}
             <Animated.View entering={FadeIn.duration(600)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.xl }}>
               <View>
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>Podcast Studio</Text>
@@ -532,34 +539,27 @@ export default function PodcastScreen() {
               </View>
             </Animated.View>
 
-            {/* ── Episode Ready Banner ── */}
+            {/* Episode Ready Banner */}
             {showBanner && genState.podcast && (
               <EpisodeReadyBanner
-                title={genState.podcast.title}
-                duration={genState.podcast.durationSeconds}
-                hostName={genState.podcast.config.hostName}
-                guestName={genState.podcast.config.guestName}
+                title={genState.podcast.title} duration={genState.podcast.durationSeconds}
+                hostName={genState.podcast.config.hostName} guestName={genState.podcast.config.guestName}
                 podcastId={genState.podcast.id}
-                onShare={() => openShareSheet(genState.podcast!)}
-                onDismiss={resetGeneration}
+                onShare={() => openShareSheet(genState.podcast!)} onDismiss={resetGeneration}
               />
             )}
 
-            {/* ── Generation Progress ── */}
+            {/* Generation Progress */}
             {showProgress && (
               <PodcastGenerationProgress
-                isGeneratingScript={genState.isGeneratingScript}
-                isGeneratingAudio={genState.isGeneratingAudio}
-                scriptGenerated={genState.scriptGenerated}
-                audioProgress={genState.audioProgress}
-                progressMessage={genState.progressMessage}
-                targetDurationMins={selectedDuration}
-                webSearchActive={hasSerpKey && !importedReport}
-                onCancel={handleCancel}
+                isGeneratingScript={genState.isGeneratingScript} isGeneratingAudio={genState.isGeneratingAudio}
+                scriptGenerated={genState.scriptGenerated} audioProgress={genState.audioProgress}
+                progressMessage={genState.progressMessage} targetDurationMins={selectedDuration}
+                webSearchActive={hasSerpKey && !importedReport} onCancel={handleCancel}
               />
             )}
 
-            {/* ── Error state ── */}
+            {/* Error */}
             {progressPhase === 'error' && genState.error && (
               <Animated.View entering={FadeIn.duration(400)} style={{ backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30`, flexDirection: 'row', gap: 10 }}>
                 <Ionicons name="alert-circle-outline" size={18} color={COLORS.error} />
@@ -570,35 +570,24 @@ export default function PodcastScreen() {
               </Animated.View>
             )}
 
-            {/* ── Library Section (only when has content) ── */}
+            {/* Library Section */}
             {hasLibrary && (
               <Animated.View entering={FadeInDown.duration(400)}>
-
-                {/* Stats Strip */}
                 {(statsV2 || totalMinutes > 0) && (
                   <StatsStrip stats={statsV2} totalMinutes={totalMinutes} completedCount={completedPodcasts.length} />
                 )}
-
-                {/* Continue Listening */}
                 <ContinueListeningRow items={continueListening as any} />
-
-                {/* Series section */}
                 {series.length > 0 && (
                   <View style={{ marginBottom: SPACING.lg }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
-                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' }}>
-                        Series
-                      </Text>
+                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' }}>Series</Text>
                       <TouchableOpacity onPress={() => setShowSeriesCreator(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                         <Ionicons name="add" size={14} color={COLORS.primary} />
                         <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>New Series</Text>
                       </TouchableOpacity>
                     </View>
                     {series.map((s, i) => (
-                      <SeriesCard
-                        key={s.id}
-                        series={s}
-                        index={i}
+                      <SeriesCard key={s.id} series={s} index={i}
                         onPress={() => router.push({ pathname: '/(app)/podcast-series' as any, params: { seriesId: s.id } })}
                         onNewEpisode={() => { setSelectedSeriesId(s.id); setTopic(''); }}
                       />
@@ -608,13 +597,11 @@ export default function PodcastScreen() {
               </Animated.View>
             )}
 
-            {/* ── Create Form ── */}
+            {/* Create Form */}
             {showForm && (
               <Animated.View entering={FadeInDown.duration(400).delay(hasLibrary ? 100 : 0)}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' }}>
-                    New Episode
-                  </Text>
+                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' }}>New Episode</Text>
                   {series.length === 0 && (
                     <TouchableOpacity onPress={() => setShowSeriesCreator(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                       <Ionicons name="albums-outline" size={13} color={COLORS.textMuted} />
@@ -623,21 +610,15 @@ export default function PodcastScreen() {
                   )}
                 </View>
 
-                {/* Report chip */}
                 {importedReport && <ImportedReportChip report={importedReport} onRemove={() => setImportedReport(null)} />}
 
-                {/* Series chip — if series selected */}
                 {selectedSeriesId && series.find(s => s.id === selectedSeriesId) && (() => {
                   const s = series.find(s => s.id === selectedSeriesId)!;
                   return (
-                    <TouchableOpacity
-                      onPress={() => setShowSeriesPicker(true)}
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: SPACING.sm, backgroundColor: `${s.accentColor}12`, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${s.accentColor}30` }}
-                    >
+                    <TouchableOpacity onPress={() => setShowSeriesPicker(true)}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: SPACING.sm, backgroundColor: `${s.accentColor}12`, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${s.accentColor}30` }}>
                       <Ionicons name="albums-outline" size={14} color={s.accentColor} />
-                      <Text style={{ color: s.accentColor, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>
-                        Adding to: {s.name} · Ep {s.episodeCount + 1}
-                      </Text>
+                      <Text style={{ color: s.accentColor, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>Adding to: {s.name} · Ep {s.episodeCount + 1}</Text>
                       <TouchableOpacity onPress={() => setSelectedSeriesId(null)}>
                         <Ionicons name="close-circle" size={16} color={s.accentColor} />
                       </TouchableOpacity>
@@ -664,7 +645,6 @@ export default function PodcastScreen() {
                       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Speak topic</Text>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      {/* Series button */}
                       {series.length > 0 && !selectedSeriesId && (
                         <TouchableOpacity onPress={() => setShowSeriesPicker(true)} disabled={isGenerating}
                           style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: COLORS.border, opacity: isGenerating ? 0.5 : 1 }}>
@@ -672,7 +652,6 @@ export default function PodcastScreen() {
                           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Series</Text>
                         </TouchableOpacity>
                       )}
-                      {/* Import report */}
                       <TouchableOpacity onPress={() => setShowImportSheet(true)} disabled={isGenerating}
                         style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: importedReport ? `${COLORS.primary}18` : COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: importedReport ? `${COLORS.primary}40` : COLORS.border, opacity: isGenerating ? 0.5 : 1 }}>
                         <Ionicons name="document-text-outline" size={13} color={importedReport ? COLORS.primary : COLORS.textMuted} />
@@ -687,14 +666,9 @@ export default function PodcastScreen() {
                 {/* Voice Style */}
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Voice Style</Text>
                 <View style={{ marginBottom: SPACING.md }}>
-                  <VoiceStyleSelector
-                    selectedPresetId={selectedPresetId}
-                    onSelectPreset={(p: PodcastVoicePresetV2Def) => setSelectedPresetId(p.id)}
-                    variant="grid"
-                  />
+                  <VoiceStyleSelector selectedPresetId={selectedPresetId} onSelectPreset={(p: PodcastVoicePresetV2Def) => setSelectedPresetId(p.id)} variant="grid" />
                 </View>
 
-                {/* New preset badge */}
                 {selectedPreset.isNew && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${COLORS.accent}12`, borderRadius: RADIUS.lg, padding: SPACING.sm, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.accent}25` }}>
                     <Ionicons name="sparkles" size={14} color={COLORS.accent} />
@@ -708,8 +682,10 @@ export default function PodcastScreen() {
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Episode Length</Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
                   {DURATION_OPTIONS.map(opt => {
-                    const isActive = selectedDuration === opt.value;
-                    const cost     = FEATURE_COSTS[podcastDurationToFeature(opt.value)];
+                    const isActive  = selectedDuration === opt.value;
+                    const baseCost  = FEATURE_COSTS[podcastDurationToFeature(opt.value)];
+                    const totalCost = podcastTotalCost(opt.value, audioQuality);
+                    const showTotal = audioQuality !== 'standard';
                     return (
                       <TouchableOpacity key={opt.value} onPress={() => setSelectedDuration(opt.value)}
                         style={{ flex: 1, backgroundColor: isActive ? COLORS.primary : COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', borderWidth: 1, borderColor: isActive ? COLORS.primary : COLORS.border }}>
@@ -717,7 +693,9 @@ export default function PodcastScreen() {
                         <Text style={{ color: isActive ? 'rgba(255,255,255,0.65)' : COLORS.textMuted, fontSize: 9, marginBottom: 2 }}>{opt.sublabel}</Text>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: isActive ? 'rgba(255,255,255,0.2)' : `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 2 }}>
                           <Ionicons name="flash" size={8} color={isActive ? '#FFF' : COLORS.primary} />
-                          <Text style={{ color: isActive ? '#FFF' : COLORS.primary, fontSize: 8, fontWeight: '800' }}>{cost}</Text>
+                          <Text style={{ color: isActive ? '#FFF' : COLORS.primary, fontSize: 8, fontWeight: '800' }}>
+                            {showTotal ? totalCost : baseCost}
+                          </Text>
                         </View>
                       </TouchableOpacity>
                     );
@@ -736,14 +714,24 @@ export default function PodcastScreen() {
                         <Text style={{ color: isActive ? COLORS.primary : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: isActive ? '700' : '500' }}>{opt.label}</Text>
                         <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 2, textAlign: 'center' }}>{opt.description}</Text>
                         {opt.creditBonus > 0 && (
-                          <View style={{ marginTop: 4, backgroundColor: `${COLORS.warning}15`, borderRadius: RADIUS.full, paddingHorizontal: 6, paddingVertical: 2 }}>
-                            <Text style={{ color: COLORS.warning, fontSize: 8, fontWeight: '700' }}>+{opt.creditBonus} cr</Text>
+                          <View style={{ marginTop: 4, backgroundColor: isActive ? `${COLORS.primary}20` : `${COLORS.warning}15`, borderRadius: RADIUS.full, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 1, borderColor: isActive ? `${COLORS.primary}40` : `${COLORS.warning}30` }}>
+                            <Text style={{ color: isActive ? COLORS.primary : COLORS.warning, fontSize: 8, fontWeight: '700' }}>+{opt.creditBonus} cr</Text>
                           </View>
                         )}
                       </TouchableOpacity>
                     );
                   })}
                 </View>
+
+                {/* Total cost breakdown (shown when quality add-on applies) */}
+                {audioQuality !== 'standard' && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, padding: SPACING.sm, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}20` }}>
+                    <Ionicons name="flash-outline" size={14} color={COLORS.primary} />
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1 }}>
+                      {baseCreditCost} cr (episode) + {qualityAddOnCost} cr ({audioQuality === 'lossless' ? 'Lossless' : 'High'} quality) = <Text style={{ color: COLORS.primary, fontWeight: '700' }}>{totalCreditCost} cr total</Text>
+                    </Text>
+                  </View>
+                )}
 
                 {/* Generate Button */}
                 <TouchableOpacity onPress={handleGenerate} disabled={isConsuming} activeOpacity={0.85}>
@@ -753,37 +741,27 @@ export default function PodcastScreen() {
                       ? <ActivityIndicator size="small" color="#FFF" />
                       : <WaveformVisualizer isPlaying={false} color="#FFFFFF" barWidth={3} barGap={2} maxHeight={18} />}
                     <Text style={{ color: '#FFF', fontSize: FONTS.sizes.md, fontWeight: '700' }}>
-                      {isConsuming
-                        ? 'Checking credits...'
-                        : importedReport
-                        ? 'Generate from Report'
-                        : selectedPreset.speakerCount === 3
-                        ? `Generate 3-Person Episode`
-                        : 'Generate Podcast'}
+                      {isConsuming ? 'Checking credits...' : importedReport ? 'Generate from Report' : selectedPreset.speakerCount === 3 ? 'Generate 3-Person Episode' : 'Generate Podcast'}
                     </Text>
+                    {/* Badge shows TOTAL cost including quality add-on */}
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
                       <Ionicons name="flash" size={10} color="#FFF" />
-                      <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{creditCost} cr</Text>
+                      <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{totalCreditCost} cr</Text>
                     </View>
                   </LinearGradient>
                 </TouchableOpacity>
               </Animated.View>
             )}
 
-            {/* ── Past Episodes ── */}
+            {/* Past Episodes */}
             {(podcasts.length > 0 || loading) && (
               <View style={{ marginTop: SPACING.xl }}>
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
-                  All Episodes
-                </Text>
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>All Episodes</Text>
                 {loading && podcasts.length === 0 && [0, 1, 2].map(i => (
                   <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, height: 100, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, opacity: 1 - i * 0.3 }} />
                 ))}
                 {podcasts.map((podcast, i) => (
-                  <PodcastCard
-                    key={podcast.id}
-                    podcast={podcast}
-                    index={i}
+                  <PodcastCard key={podcast.id} podcast={podcast} index={i}
                     onPlay={() => router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId: podcast.id } })}
                     onShare={() => openShareSheet(podcast)}
                     onDelete={() => deletePodcast(podcast.id)}
@@ -799,9 +777,7 @@ export default function PodcastScreen() {
                   <Ionicons name="radio-outline" size={32} color={COLORS.border} />
                 </View>
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600', textAlign: 'center' }}>No episodes yet</Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', marginTop: SPACING.sm, lineHeight: 20 }}>
-                  Enter a topic above and tap Generate Podcast
-                </Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', marginTop: SPACING.sm, lineHeight: 20 }}>Enter a topic above and tap Generate Podcast</Text>
               </Animated.View>
             )}
 
@@ -809,13 +785,10 @@ export default function PodcastScreen() {
         </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* ── Modals & Sheets ── */}
-
       <ShareSheet podcast={shareTarget} visible={shareSheetOpen} onClose={closeShareSheet} />
 
       <ReportImportSheet
-        visible={showImportSheet}
-        onClose={() => setShowImportSheet(false)}
+        visible={showImportSheet} onClose={() => setShowImportSheet(false)}
         onSelectReport={(report) => { setImportedReport(report); if (!topic.trim()) setTopic(report.query); }}
         selectedReportId={importedReport?.id}
       />
@@ -823,24 +796,17 @@ export default function PodcastScreen() {
       <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
 
       <SeriesCreatorModal
-        visible={showSeriesCreator}
-        onClose={() => setShowSeriesCreator(false)}
+        visible={showSeriesCreator} onClose={() => setShowSeriesCreator(false)}
         isSaving={serieSaving}
-        onCreate={async (input) => {
-          const s = await createSeries(input);
-          if (s) setSelectedSeriesId(s.id);
-          setShowSeriesCreator(false);
-        }}
+        onCreate={async (input) => { const s = await createSeries(input); if (s) setSelectedSeriesId(s.id); setShowSeriesCreator(false); }}
       />
 
       <SeriesPickerModal />
 
       {collectionTarget && (
         <AddToCollectionSheet
-          visible={!!collectionTarget}
-          contentType="podcast"
-          contentId={collectionTarget.id}
-          contentTitle={collectionTarget.title}
+          visible={!!collectionTarget} contentType="podcast"
+          contentId={collectionTarget.id} contentTitle={collectionTarget.title}
           onClose={() => setCollectionTarget(null)}
         />
       )}

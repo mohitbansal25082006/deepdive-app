@@ -1,9 +1,9 @@
 // app/(app)/(tabs)/_layout.tsx
-// Part 36B — UPDATED: Added "Feed" tab between History and Teams.
-// 7 tabs total: Research | History | Feed | Teams | Podcast | Debate | Profile
+// Part 36B — 7 tabs: Research | History | Feed | Teams | Podcast | Debate | Profile
 //
-// The Feed tab icon shows a small unread dot when hasNew is true.
-// All Part 10–35 tabs and logic preserved unchanged.
+// Part 39 Fix (final) — No changes needed in this file.
+//   MiniPlayer is rendered in app/(app)/_layout.tsx (the parent), not here.
+//   All tab styling, BlurView, badgeDot logic, and tab order preserved exactly.
 
 import { Tabs }                   from 'expo-router';
 import { View, Text, Platform }   from 'react-native';
@@ -153,7 +153,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── 3. Feed (NEW — Part 36) ── */}
+      {/* ── 3. Feed (Part 36) ── */}
       <Tabs.Screen
         name="feed"
         options={{

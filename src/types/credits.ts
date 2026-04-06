@@ -3,19 +3,23 @@
 // Part 31 — Added slide_ai_rewrite, slide_ai_generate, slide_ai_notes
 // Part 38b — Added paper_ai_* feature types for Academic Paper Editor
 // Part 38e FIX — Added paper_ai_generate_citations (2 cr, single atomic deduction)
-//                Replaces the broken double-guardedConsume('paper_ai_fix_citations')
-//                pattern that caused duplicate transactions and wrong credit amounts.
+// Part 39 FIX — Added podcast_quality_high and podcast_quality_lossless.
+//               These are add-on charges deducted in addition to the base podcast
+//               duration cost when the user selects High or Lossless audio quality.
 
 export type CreditFeature =
   // ── Core research ────────────────────────────────────────────────────────
   | 'research_quick'
   | 'research_deep'
   | 'research_expert'
-  // ── Podcast ──────────────────────────────────────────────────────────────
+  // ── Podcast — base duration ───────────────────────────────────────────────
   | 'podcast_5min'
   | 'podcast_10min'
   | 'podcast_15min'
   | 'podcast_20min'
+  // ── Podcast — audio quality add-ons (Part 39 FIX) ────────────────────────
+  | 'podcast_quality_high'      // +5 cr  — tts-1-hd + mp3
+  | 'podcast_quality_lossless'  // +10 cr — tts-1-hd + wav
   // ── Content generation ────────────────────────────────────────────────────
   | 'academic_paper'
   | 'presentation'

@@ -1,9 +1,26 @@
 // src/services/podcastTTSService.ts
-// Part 8 — Handles all OpenAI TTS audio generation and local filesystem management.
+// Part 39 FIX — Audio Quality now actually changes the OpenAI TTS model & format.
 //
-// FIX: expo-file-system v17+ (Expo 54) removed documentDirectory and EncodingType
-// from the default namespace object. They must be imported as named exports.
-// Using: import { documentDirectory, writeAsStringAsync, ... } from 'expo-file-system'
+// ROOT CAUSE (Parts 8–39):
+//   generateTurnAudio() ALWAYS called the API with:
+//     model: 'tts-1'   ← hardcoded
+//     response_format: 'mp3'  ← hardcoded
+//   Even though AUDIO_QUALITY_CONFIG defined model/format per quality tier,
+//   and the orchestrator stored audioQuality in the DB row — it was never
+//   passed down to the actual API call. The selector was purely cosmetic.
+//
+// FIX SUMMARY:
+//   1. generateTurnAudio()      → new `quality: AudioQuality` param (default 'standard')
+//   2. generateAllTurnAudio()   → new `quality` param, forwarded per segment
+//   3. regenerateMissingSegments() → new `quality` param
+//   4. getSegmentPath()         → now returns .wav extension for lossless quality
+//      (expo-av needs the correct extension to select the right decoder)
+//   5. resolveQualityParams()   → reads AUDIO_QUALITY_CONFIG to pick model+format
+//
+// Quality tiers (from AUDIO_QUALITY_CONFIG in podcast_v2.ts):
+//   standard → tts-1    + mp3  (fast, ~128kbps, smallest files)
+//   high     → tts-1-hd + mp3  (richer voice, same container)
+//   lossless → tts-1-hd + wav  (studio quality, uncompressed, largest files)
 
 import {
   documentDirectory,
@@ -15,6 +32,8 @@ import {
 } from 'expo-file-system/legacy';
 
 import { PodcastTurn, PodcastVoice } from '../types';
+import { AUDIO_QUALITY_CONFIG }      from '../types/podcast_v2';
+import type { AudioQuality }         from '../types/podcast_v2';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,6 +51,22 @@ function getApiKey(): string {
     );
   }
   return key.trim();
+}
+
+/**
+ * Resolves TTS model + response_format from an AudioQuality tier.
+ * Falls back to standard if quality is undefined/invalid.
+ *
+ *   standard → { model: 'tts-1',    format: 'mp3' }
+ *   high     → { model: 'tts-1-hd', format: 'mp3' }
+ *   lossless → { model: 'tts-1-hd', format: 'wav' }
+ */
+function resolveQualityParams(quality: AudioQuality = 'standard'): {
+  model:  'tts-1' | 'tts-1-hd';
+  format: 'mp3' | 'wav';
+} {
+  const cfg = AUDIO_QUALITY_CONFIG[quality] ?? AUDIO_QUALITY_CONFIG.standard;
+  return { model: cfg.model, format: cfg.format };
 }
 
 /**
@@ -65,8 +100,23 @@ export function getPodcastDir(podcastId: string): string {
   return PODCAST_BASE_DIR + podcastId + '/';
 }
 
-export function getSegmentPath(podcastId: string, segmentIndex: number): string {
-  return getPodcastDir(podcastId) + `turn_${segmentIndex}.mp3`;
+/**
+ * Returns the local filesystem path for a segment file.
+ * Uses the correct extension for the quality tier:
+ *   standard / high → .mp3
+ *   lossless        → .wav
+ *
+ * expo-av (and iOS/Android audio decoders) require the correct file
+ * extension to pick the right decoder — a WAV file saved as .mp3 will
+ * fail or sound corrupted.
+ */
+export function getSegmentPath(
+  podcastId:    string,
+  segmentIndex: number,
+  quality:      AudioQuality = 'standard',
+): string {
+  const { format } = resolveQualityParams(quality);
+  return getPodcastDir(podcastId) + `turn_${segmentIndex}.${format}`;
 }
 
 export async function ensurePodcastDirectory(podcastId: string): Promise<string> {
@@ -113,13 +163,27 @@ export async function deletePodcastAudio(podcastId: string): Promise<void> {
 
 // ─── Single-Segment TTS ───────────────────────────────────────────────────────
 
+/**
+ * Generate audio for one dialogue turn via OpenAI TTS.
+ *
+ * @param text        Text to synthesize (prosody hints already stripped by agent).
+ * @param voice       OpenAI voice name (alloy, nova, echo, etc.).
+ * @param outputPath  Absolute local path to write the audio file.
+ * @param retries     Retry attempts on transient API errors (default 2).
+ * @param quality     Audio quality tier — drives model selection AND format:
+ *                      'standard' → tts-1    + mp3   fastest, ~128 kbps
+ *                      'high'     → tts-1-hd + mp3   richer voice, ~192 kbps
+ *                      'lossless' → tts-1-hd + wav   studio, uncompressed PCM
+ */
 export async function generateTurnAudio(
   text:       string,
   voice:      PodcastVoice,
   outputPath: string,
-  retries     = 2
+  retries     = 2,
+  quality:    AudioQuality = 'standard',
 ): Promise<string> {
   const apiKey = getApiKey();
+  const { model, format } = resolveQualityParams(quality);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -130,10 +194,10 @@ export async function generateTurnAudio(
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model:           'tts-1',
+          model,                   // ← FIX: was always 'tts-1', now quality-driven
           input:           text,
           voice,
-          response_format: 'mp3',
+          response_format: format, // ← FIX: was always 'mp3', now 'wav' for lossless
           speed:           1.0,
         }),
       });
@@ -146,6 +210,7 @@ export async function generateTurnAudio(
         } catch { /* ignore */ }
 
         if (response.status === 429 && attempt < retries) {
+          // Exponential back-off: 2 s, 4 s
           await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
           continue;
         }
@@ -163,7 +228,6 @@ export async function generateTurnAudio(
 
       const base64 = arrayBufferToBase64(arrayBuffer);
 
-      // FIX: EncodingType is now a named import, not FileSystem.EncodingType
       await writeAsStringAsync(outputPath, base64, {
         encoding: EncodingType.Base64,
       });
@@ -191,12 +255,19 @@ export interface BatchProgressCallback {
   onProgress?: (message: string) => void;
 }
 
+/**
+ * Generate audio for all turns in a 2-speaker podcast.
+ * Processes segments in batches of CONCURRENCY=3 to avoid rate limits.
+ *
+ * @param quality  Forwarded to every generateTurnAudio() call.
+ */
 export async function generateAllTurnAudio(
   turns:      PodcastTurn[],
   podcastId:  string,
   hostVoice:  PodcastVoice,
   guestVoice: PodcastVoice,
-  callbacks:  BatchProgressCallback
+  callbacks:  BatchProgressCallback,
+  quality:    AudioQuality = 'standard',
 ): Promise<string[]> {
 
   await ensurePodcastDirectory(podcastId);
@@ -213,11 +284,12 @@ export async function generateAllTurnAudio(
 
     await Promise.allSettled(
       batch.map(async (turn) => {
-        const outputPath = getSegmentPath(podcastId, turn.segmentIndex);
+        // Quality-aware path: .mp3 or .wav depending on quality tier
+        const outputPath = getSegmentPath(podcastId, turn.segmentIndex, quality);
         const voice      = turn.speaker === 'host' ? hostVoice : guestVoice;
 
         try {
-          await generateTurnAudio(turn.text, voice, outputPath);
+          await generateTurnAudio(turn.text, voice, outputPath, 2, quality);
           audioPaths[turn.segmentIndex] = outputPath;
           completedCount++;
           callbacks.onSegmentComplete(turn.segmentIndex, turns.length, outputPath, true);
@@ -247,19 +319,20 @@ export async function regenerateMissingSegments(
   podcastId:  string,
   hostVoice:  PodcastVoice,
   guestVoice: PodcastVoice,
-  callbacks:  BatchProgressCallback
+  callbacks:  BatchProgressCallback,
+  quality:    AudioQuality = 'standard',
 ): Promise<string[]> {
 
   await ensurePodcastDirectory(podcastId);
 
   const existChecks = await Promise.all(
-    turns.map(turn => audioFileExists(getSegmentPath(podcastId, turn.segmentIndex)))
+    turns.map(turn => audioFileExists(getSegmentPath(podcastId, turn.segmentIndex, quality)))
   );
 
   const missingTurns = turns.filter((_, i) => !existChecks[i]);
 
   if (missingTurns.length === 0) {
-    return turns.map(t => getSegmentPath(podcastId, t.segmentIndex));
+    return turns.map(t => getSegmentPath(podcastId, t.segmentIndex, quality));
   }
 
   callbacks.onProgress?.(`Regenerating ${missingTurns.length} missing segments...`);
@@ -269,11 +342,12 @@ export async function regenerateMissingSegments(
     podcastId,
     hostVoice,
     guestVoice,
-    callbacks
+    callbacks,
+    quality,
   );
 
   return turns.map((turn, i) => {
-    if (existChecks[i]) return getSegmentPath(podcastId, turn.segmentIndex);
+    if (existChecks[i]) return getSegmentPath(podcastId, turn.segmentIndex, quality);
     const newPath = newPaths[missingTurns.indexOf(turn)];
     return newPath ?? '';
   });

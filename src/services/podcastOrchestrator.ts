@@ -1,20 +1,17 @@
 // src/services/podcastOrchestrator.ts
-// Part 39 FIX — Key fix: preserve V2 speaker roles (guest1/guest2) in finalPodcast.
+// Part 39 FIX — audioQuality is now passed through the full generation pipeline.
 //
-// ROOT CAUSE of 3-person podcast showing as 1-person:
-//   v2TurnsToV1() mapped guest1/guest2 → 'guest', THEN finalPodcast used
-//   { ...script, turns: turnsWithAudio } which had all guests as 'guest'.
-//   Player saw no 'guest2' turns → showed only 2 speakers.
+// ROOT CAUSE:
+//   Even though `input.audioQuality` was stored in the DB row, neither
+//   generateAllTurnAudioV2() nor generateAllTurnAudio() received it.
+//   Both functions called generateTurnAudio() without a quality param,
+//   which defaulted to 'standard' (tts-1 + mp3) every time.
 //
 // FIX:
-//   When V2 path is used, finalPodcast.script.turns preserves the original
-//   speaker roles ('host' | 'guest1' | 'guest2') from scriptV2.turns.
-//   This matches what's stored in DB (finalScriptToStore already used V2 turns).
-//
-// Also: mapRowToPodcast now reads speaker_count from DB row for context.
-//
-// All Part 25 functionality preserved:
-//   background cloud upload, robust DB UPDATE, local file paths.
+//   generateAllTurnAudioV2() now accepts and forwards `audioQuality`.
+//   Both V1 and V2 TTS generation paths pass `input.audioQuality ?? 'standard'`.
+//   getSegmentPath() calls now include the quality param so .wav files get
+//   the correct extension for lossless quality.
 
 import { supabase }                    from '../lib/supabase';
 import type {
@@ -78,7 +75,7 @@ function getSpeakerVoiceForV2Turn(
   return speakers[0]?.voice ?? config.hostVoice;
 }
 
-// ─── V2 Audio Generation (3-speaker aware) ────────────────────────────────────
+// ─── V2 Audio Generation (3-speaker aware + quality-aware) ───────────────────
 
 const CONCURRENCY = 3;
 
@@ -87,12 +84,17 @@ interface BatchCallbacksV2 {
   onProgress?: (msg: string) => void;
 }
 
+/**
+ * Generate audio for all turns in a V2 (3-speaker) podcast.
+ * FIX: now accepts and uses `audioQuality` to drive model + format selection.
+ */
 async function generateAllTurnAudioV2(
-  turns:     PodcastTurnV2[],
-  podcastId: string,
-  speakers:  SpeakerConfig[],
-  config:    PodcastConfig,
-  callbacks: BatchCallbacksV2,
+  turns:        PodcastTurnV2[],
+  podcastId:    string,
+  speakers:     SpeakerConfig[],
+  config:       PodcastConfig,
+  callbacks:    BatchCallbacksV2,
+  audioQuality: AudioQuality = 'standard',
 ): Promise<string[]> {
   const audioPaths: string[] = new Array(turns.length).fill('');
   let completedCount = 0;
@@ -106,11 +108,13 @@ async function generateAllTurnAudioV2(
 
     await Promise.allSettled(
       batch.map(async (turn) => {
-        const outputPath = getSegmentPath(podcastId, turn.segmentIndex);
+        // FIX: quality-aware path (.mp3 or .wav depending on quality)
+        const outputPath = getSegmentPath(podcastId, turn.segmentIndex, audioQuality);
         const voice      = getSpeakerVoiceForV2Turn(turn, speakers, config);
 
         try {
-          await generateTurnAudio(turn.text, voice, outputPath);
+          // FIX: pass audioQuality so tts-1-hd / wav is used when selected
+          await generateTurnAudio(turn.text, voice, outputPath, 2, audioQuality);
           audioPaths[turn.segmentIndex] = outputPath;
           completedCount++;
           callbacks.onSegmentComplete(turn.segmentIndex, turns.length, outputPath);
@@ -129,16 +133,13 @@ async function generateAllTurnAudioV2(
   return audioPaths;
 }
 
-// ─── V2 turns → V1 PodcastTurn (for V1 consumers only) ───────────────────────
-// NOTE: This is now ONLY used internally for the `script` field when we need
-// backward compat. finalPodcast.script.turns uses the ORIGINAL V2 turns.
+// ─── V2 turns → V1 PodcastTurn ───────────────────────────────────────────────
+// Preserves 'host'|'guest1'|'guest2' speaker roles.
 
 function v2TurnsToV1Compatible(turns: PodcastTurnV2[]): PodcastTurn[] {
   return turns.map(t => ({
     id:           t.id,
     segmentIndex: t.segmentIndex,
-    // Preserve the ORIGINAL speaker role — 'host' | 'guest1' | 'guest2'
-    // PodcastTurn.speaker was widened in Part 39 to support all three.
     speaker:      t.speaker,
     speakerName:  t.speakerName,
     text:         t.text,
@@ -175,10 +176,19 @@ export async function runPodcastPipeline(
   const serpKey    = process.env.EXPO_PUBLIC_SERPAPI_KEY;
   const hasSerpKey = !!(serpKey && serpKey.trim() && serpKey !== 'your_serpapi_key_here');
 
+  // Resolve audio quality — default to standard if not provided
+  const audioQuality: AudioQuality = input.audioQuality ?? 'standard';
+
+  const qualityLabel = audioQuality === 'lossless'
+    ? '🎵 Studio WAV quality'
+    : audioQuality === 'high'
+    ? '🎧 High quality (tts-1-hd)'
+    : '🎙 Standard quality';
+
   callbacks.onProgress(
     hasSerpKey
       ? `🔍 Searching the web for latest "${input.topic}" data...`
-      : 'Writing podcast script with AI...'
+      : `Writing podcast script with AI... (${qualityLabel})`
   );
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -217,9 +227,7 @@ export async function runPodcastPipeline(
       teaser      = result.teaser;
       webSearchUsed = result.webSearchUsed;
 
-      // Build V1-compatible script for callbacks (turn count, word count)
       script = {
-        // FIX: preserve V2 speaker roles so the in-memory podcast shows 3 speakers
         turns: v2TurnsToV1Compatible(result.script.turns),
         totalWords: result.script.totalWords,
         estimatedDurationMinutes: result.script.estimatedDurationMinutes,
@@ -229,7 +237,8 @@ export async function runPodcastPipeline(
       callbacks.onProgress(
         `Script ready — ${script.turns.length} turns · ~${script.estimatedDurationMinutes} min` +
         (webSearchUsed ? ' · web-grounded' : '') +
-        (input.speakerCount === 3 ? ' · 3 speakers' : '')
+        (input.speakerCount === 3 ? ' · 3 speakers' : '') +
+        ` · ${qualityLabel}`
       );
     } else {
       const result = await runPodcastScriptAgent({
@@ -247,7 +256,8 @@ export async function runPodcastPipeline(
       callbacks.onScriptGenerated(script);
       callbacks.onProgress(
         `Script ready — ${script.turns.length} turns · ~${script.estimatedDurationMinutes} min` +
-        (webSearchUsed ? ' · web-grounded' : '')
+        (webSearchUsed ? ' · web-grounded' : '') +
+        ` · ${qualityLabel}`
       );
     }
   } catch (err) {
@@ -280,7 +290,7 @@ export async function runPodcastPipeline(
     audio_segment_paths:     [],
     speaker_count:           input.speakerCount ?? 2,
     speakers_config:         speakers,
-    audio_quality:           input.audioQuality ?? 'standard',
+    audio_quality:           audioQuality,   // ← always the resolved value
     preset_style_v2:         input.presetStyleV2 ?? (input.presetStyle ?? 'casual'),
     ...(input.seriesId      ? { series_id:      input.seriesId      } : {}),
     ...(input.episodeNumber ? { episode_number: input.episodeNumber } : {}),
@@ -300,10 +310,12 @@ export async function runPodcastPipeline(
   const podcastId = podcastRow.id as string;
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 3 — TTS AUDIO GENERATION
+  // STEP 3 — TTS AUDIO GENERATION (FIX: quality now flows into every call)
   // ─────────────────────────────────────────────────────────────────────────
 
-  callbacks.onProgress(`Generating audio: 0/${script.turns.length} voice segments...`);
+  callbacks.onProgress(
+    `Generating audio: 0/${script.turns.length} voice segments (${qualityLabel})...`
+  );
 
   let audioPaths: string[];
 
@@ -311,7 +323,7 @@ export async function runPodcastPipeline(
     await ensurePodcastDirectory(podcastId);
 
     if (useV2 && scriptV2) {
-      // V2: per-turn voice mapping (host/guest1/guest2 each get their own voice)
+      // V2: per-turn voice mapping + quality-aware generation
       audioPaths = await generateAllTurnAudioV2(
         scriptV2.turns,
         podcastId,
@@ -325,9 +337,11 @@ export async function runPodcastPipeline(
             );
           },
           onProgress: (message) => callbacks.onProgress(message),
-        }
+        },
+        audioQuality,  // ← FIX: was not passed before
       );
     } else {
+      // V1: 2-speaker generation + quality-aware
       audioPaths = await generateAllTurnAudio(
         script.turns,
         podcastId,
@@ -341,7 +355,8 @@ export async function runPodcastPipeline(
             );
           },
           onProgress: (message) => callbacks.onProgress(message),
-        }
+        },
+        audioQuality,  // ← FIX: was not passed before
       );
     }
   } catch (err) {
@@ -371,14 +386,12 @@ export async function runPodcastPipeline(
   // STEP 4 — FINALIZE
   // ─────────────────────────────────────────────────────────────────────────
 
-  // FIX: Build turnsWithAudio that PRESERVES V2 speaker roles.
-  // For V2: use scriptV2.turns mapped to PodcastTurn (speaker roles preserved).
-  // For V1: use the standard script.turns.
+  // Build turnsWithAudio preserving V2 speaker roles
   const turnsWithAudio: PodcastTurn[] = useV2 && scriptV2
     ? scriptV2.turns.map((t, i) => ({
         id:           t.id,
         segmentIndex: t.segmentIndex,
-        speaker:      t.speaker,          // ← preserve 'host'/'guest1'/'guest2'
+        speaker:      t.speaker,
         speakerName:  t.speakerName,
         text:         t.text,
         audioPath:    audioPaths[i] ?? '',
@@ -393,7 +406,6 @@ export async function runPodcastPipeline(
   const totalDurationMs = turnsWithAudio.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
   const durationSeconds = Math.round(totalDurationMs / 1000);
 
-  // Store V2 script with audio paths merged in
   const finalScriptToStore = scriptV2
     ? {
         ...scriptV2,
@@ -432,7 +444,6 @@ export async function runPodcastPipeline(
       .eq('id', podcastId);
   }
 
-  // Build final in-memory Podcast — FIX: script.turns uses V2-preserving turns
   const finalPodcast: Podcast = {
     id:                podcastId,
     userId,
@@ -441,7 +452,7 @@ export async function runPodcastPipeline(
     description,
     topic:             input.topic,
     script: {
-      turns:                    turnsWithAudio,   // ← V2 roles preserved
+      turns:                    turnsWithAudio,
       totalWords:               script.totalWords,
       estimatedDurationMinutes: script.estimatedDurationMinutes,
     },
@@ -502,9 +513,6 @@ export function mapRowToPodcast(row: Record<string, any>): Podcast {
     targetDurationMinutes: row.target_duration_minutes ?? row.script?.estimatedDurationMinutes ?? 10,
   };
 
-  // The script stored in DB for V2 podcasts has PodcastTurnV2 turns with
-  // speaker = 'host'|'guest1'|'guest2'. These map correctly to PodcastTurn
-  // since PodcastTurn.speaker was widened in Part 39.
   return {
     id:                row.id,
     userId:            row.user_id,
@@ -525,7 +533,6 @@ export function mapRowToPodcast(row: Record<string, any>): Podcast {
     completedAt:       row.completed_at ?? undefined,
     audioStorageUrls:  row.audio_storage_urls ?? [],
     audioAllUploaded:  row.audio_all_uploaded ?? false,
-    // V2 extras (available via type cast in consuming code)
     ...(row.speaker_count   ? { speakerCount:   row.speaker_count   } : {}),
     ...(row.speakers_config ? { speakersConfig: row.speakers_config } : {}),
     ...(row.series_id       ? { seriesId:       row.series_id       } : {}),
