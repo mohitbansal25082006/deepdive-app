@@ -1,41 +1,12 @@
 // app/(app)/podcast-player.tsx
-// ─────────────────────────────────────────────────────────────────────────────
-// Refactored in Part 39 Fix (final).
+// Part 39 FIXES:
 //
-// WHAT WAS BROKEN:
-//   1. Navigating away then back → player showed position 0 and wouldn't play
-//      from where mini player was
-//   2. Mini player progress bar not advancing in real-time
-//   3. "Continue Listening" progress not updating while mini player active
-//
-// HOW THEY'RE FIXED:
-//   1. Position continuity:
-//      - usePodcastPlayer now subscribes to GlobalAudioEngine
-//      - On mount, if audio already running for this podcast, AudioEngine.reattach()
-//        fires a getStatusAsync() snapshot and re-registers the status handler
-//      - First state snapshot from engine includes exact totalPositionMs/positionMs
-//      - No more "start from 0" because AudioEngine.startPodcast is only called
-//        when isGlobalAudioActiveForPodcast() returns false
-//
-//   2. Mini player progress:
-//      - MiniPlayer.tsx now subscribes to GlobalAudioEngine directly
-//      - No more setTimeout queue, no more callback threading
-//      - Both mini player and podcast-player read the same engine state
-//
-//   3. Continue Listening:
-//      - registerProgressSaveCallback() is called on mount with a function that
-//        calls savePlaybackProgress()
-//      - GlobalAudioEngine.maybeSaveProgress() fires every 10s from within the
-//        status handler — works even when this screen is not mounted
-//      - useFocusEffect → refresh() in podcast.tsx fetches updated progress from DB
-//
-// NAVIGATION:
-//   - beforeRemove listener calls AudioEngine.detach() (sets keepAlive=true)
-//   - This is the ONLY thing that needs to happen before nav — no more
-//     complex globalKeepAlive flag management
-//   - On re-mount: isGlobalAudioActiveForPodcast() → true → skip startPlayback()
-//   - AudioEngine.reattach() re-wires status handler with fresh podcast ref
-// ─────────────────────────────────────────────────────────────────────────────
+// FIX 2 (duplicate episode prevention in AddToSeriesSheet):
+//   - addEpisode() now returns { success, alreadyInSeries, seriesName }
+//   - If alreadyInSeries is true, show "Already added" message instead of adding
+//   - Series rows that already contain this podcast show a checkmark and
+//     "Already added" label instead of the add button
+//   - On mount, AddToSeriesSheet fetches which series this podcast already belongs to
 
 import React, {
   useEffect, useState, useRef, useCallback, useMemo,
@@ -295,43 +266,148 @@ function TranscriptRow({ turn, isActive, speakers, onPress }: {
 }
 
 // ─── Add to Series Sheet ───────────────────────────────────────────────────────
+// FIX 2: Prevents adding the same podcast to the same series twice.
+// Shows a checkmark on series that already contain this podcast.
 
-function AddToSeriesSheet({ visible, podcast, onClose }: { visible: boolean; podcast: Podcast | null; onClose: () => void }) {
-  const { series, loading, addEpisode } = usePodcastSeries();
-  const [saving, setSaving] = useState<string | null>(null);
+function AddToSeriesSheet({ visible, podcast, onClose }: {
+  visible: boolean; podcast: Podcast | null; onClose: () => void;
+}) {
+  const { series, loading, addEpisode, refresh } = usePodcastSeries();
+  const [saving,              setSaving]              = useState<string | null>(null);
+  // FIX 2: Track which series this podcast already belongs to
+  const [podcastSeriesId,     setPodcastSeriesId]     = useState<string | null>(null);
+  const [loadingCurrentSeries, setLoadingCurrentSeries] = useState(false);
+
+  // FIX 2: When sheet opens, fetch the podcast's current series_id
+  useEffect(() => {
+    if (!visible || !podcast) return;
+    setPodcastSeriesId(null);
+    setLoadingCurrentSeries(true);
+    
+    const fetchSeriesId = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('podcasts')
+          .select('series_id')
+          .eq('id', podcast.id)
+          .single();
+        
+        if (!error && data) {
+          setPodcastSeriesId(data?.series_id ?? null);
+        }
+      } catch (err) {
+        // Handle error silently
+        console.error('Error fetching podcast series:', err);
+      } finally {
+        setLoadingCurrentSeries(false);
+      }
+    };
+    
+    fetchSeriesId();
+  }, [visible, podcast?.id]);
+
   if (!podcast) return null;
+
+  const handleAdd = async (s: typeof series[0]) => {
+    // FIX 2: Block if already in this series
+    if (podcastSeriesId === s.id) {
+      Alert.alert(
+        'Already Added',
+        `This episode is already in "${s.name}".`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    setSaving(s.id);
+    const result = await addEpisode(podcast.id, s.id, s.episodeCount + 1);
+    setSaving(null);
+
+    if (result.alreadyInSeries) {
+      Alert.alert(
+        'Already in Series',
+        `This episode is already in "${result.seriesName ?? s.name}".`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    if (result.success) {
+      setPodcastSeriesId(s.id);
+      onClose();
+      Alert.alert('Added!', `Episode added to "${s.name}" as Episode ${s.episodeCount + 1}.`);
+    }
+  };
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.7)', justifyContent: 'flex-end' }}>
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
-        <View style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: SPACING.xl, borderTopWidth: 1, borderTopColor: COLORS.border, maxHeight: '60%', paddingBottom: SPACING.xl + 8 }}>
+        <View style={{
+          backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+          padding: SPACING.xl, borderTopWidth: 1, borderTopColor: COLORS.border,
+          maxHeight: '60%', paddingBottom: SPACING.xl + 8,
+        }}>
           <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.lg }} />
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', marginBottom: SPACING.md }}>Add to Series</Text>
-          {loading ? <ActivityIndicator color={COLORS.primary} /> : series.length === 0 ? (
+          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', marginBottom: SPACING.md }}>
+            Add to Series
+          </Text>
+
+          {(loading || loadingCurrentSeries) ? (
+            <ActivityIndicator color={COLORS.primary} style={{ paddingVertical: SPACING.xl }} />
+          ) : series.length === 0 ? (
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', paddingVertical: SPACING.xl }}>
               No series yet. Create one from the Podcast tab.
             </Text>
-          ) : series.map(s => (
-            <TouchableOpacity key={s.id} disabled={saving === s.id}
-              onPress={async () => {
-                setSaving(s.id);
-                await addEpisode(podcast.id, s.id, s.episodeCount + 1);
-                setSaving(null); onClose();
-                Alert.alert('Added!', `Episode added to "${s.name}" as Episode ${s.episodeCount + 1}.`);
-              }}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border }}
-            >
-              <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${s.accentColor}20`, alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name={(s.iconName ?? 'radio-outline') as any} size={18} color={s.accentColor} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>{s.name}</Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{s.episodeCount} episodes</Text>
-              </View>
-              {saving === s.id ? <ActivityIndicator size="small" color={s.accentColor} /> : <Ionicons name="add-circle-outline" size={22} color={s.accentColor} />}
-            </TouchableOpacity>
-          ))}
+          ) : series.map(s => {
+            // FIX 2: check if this episode already belongs to this series
+            const alreadyInThis = podcastSeriesId === s.id;
+            return (
+              <TouchableOpacity
+                key={s.id}
+                disabled={saving === s.id || alreadyInThis}
+                onPress={() => handleAdd(s)}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 12,
+                  padding: SPACING.md,
+                  backgroundColor: alreadyInThis
+                    ? `${s.accentColor}10`
+                    : COLORS.backgroundElevated,
+                  borderRadius: RADIUS.lg, marginBottom: SPACING.sm,
+                  borderWidth: 1,
+                  borderColor: alreadyInThis ? `${s.accentColor}40` : COLORS.border,
+                  opacity: alreadyInThis ? 0.85 : 1,
+                }}
+              >
+                <View style={{
+                  width: 40, height: 40, borderRadius: 12,
+                  backgroundColor: `${s.accentColor}20`,
+                  alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Ionicons name={(s.iconName ?? 'radio-outline') as any} size={18} color={s.accentColor} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{
+                    color: alreadyInThis ? s.accentColor : COLORS.textPrimary,
+                    fontSize: FONTS.sizes.sm, fontWeight: '600',
+                  }}>
+                    {s.name}
+                  </Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                    {alreadyInThis ? '✓ Already added' : `${s.episodeCount} episodes`}
+                  </Text>
+                </View>
+                {saving === s.id ? (
+                  <ActivityIndicator size="small" color={s.accentColor} />
+                ) : alreadyInThis ? (
+                  <Ionicons name="checkmark-circle" size={22} color={s.accentColor} />
+                ) : (
+                  <Ionicons name="add-circle-outline" size={22} color={s.accentColor} />
+                )}
+              </TouchableOpacity>
+            );
+          })}
+
           <TouchableOpacity onPress={onClose} style={{ alignItems: 'center', paddingVertical: 14, marginTop: 4 }}>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '600' }}>Cancel</Text>
           </TouchableOpacity>
@@ -381,7 +457,7 @@ export default function PodcastPlayerScreen() {
     })();
   }, [podcastId]);
 
-  // ── usePodcastPlayer — subscribes to GlobalAudioEngine ────────────────────────
+  // ── usePodcastPlayer ─────────────────────────────────────────────────────────
   const {
     playerState, currentTurn, progressPercent,
     startPlayback, resumeFrom, togglePlayPause,
@@ -390,12 +466,8 @@ export default function PodcastPlayerScreen() {
   } = usePodcastPlayer(podcast);
 
   // ── Register global progress save callback ─────────────────────────────────
-  // This runs every 10s from within the AudioEngine status handler — even when
-  // this screen is unmounted and only the mini player is visible.
-  // Intentionally NOT cleared on unmount (AudioEngine.stop() clears it instead).
   useEffect(() => {
     if (!user || !podcast) return;
-
     registerProgressSaveCallback((turnIdx, totalPosMs, totalDurMs) => {
       const u = userRef.current;
       const p = podcastRef.current;
@@ -403,18 +475,12 @@ export default function PodcastPlayerScreen() {
         savePlaybackProgress(u.id, p.id, turnIdx, totalPosMs, totalDurMs);
       }
     });
-
-    // No cleanup here intentionally — callback survives screen unmount
-    // so that mini player saves progress while podcast-player is not shown.
-    // AudioEngine.stop() / AudioEngine.detach() manage the lifecycle.
   }, [user?.id, podcast?.id]);
 
-  // ── Mini player bus — only 'dismiss' ──────────────────────────────────────────
-  // 'toggle' is no longer sent via bus — MiniPlayer.tsx calls AudioEngine.toggle()
+  // ── Mini player bus ────────────────────────────────────────────────────────
   useEffect(() => {
     const unsub = MiniPlayerBus.subscribe((event: string) => {
       if (event === 'dismiss') {
-        // Save final position before stopping
         const u = userRef.current;
         const p = podcastRef.current;
         if (u && p && playerState.totalPositionMs > 0) {
@@ -427,45 +493,24 @@ export default function PodcastPlayerScreen() {
   }, [stopPlayback]);
 
   // ── beforeRemove: detach instead of stopping ──────────────────────────────────
-  // This intercepts ALL navigation away: back button, swipe, router.back().
-  // detachScreen() sets keepAlive=true so cleanup in usePodcastPlayer doesn't
-  // call AudioEngine.stop(). Audio continues, mini player stays visible.
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (_e) => {
-      // detach FIRST (synchronous) — keeps audio alive
       detachScreen();
-
-      // Save progress using the latest state
       const u = userRef.current;
       const p = podcastRef.current;
       if (u && p && playerState.totalPositionMs > 0) {
-        savePlaybackProgress(
-          u.id, p.id,
-          playerState.currentTurnIndex,
-          playerState.totalPositionMs,
-          playerState.totalDurationMs,
-        );
+        savePlaybackProgress(u.id, p.id, playerState.currentTurnIndex, playerState.totalPositionMs, playerState.totalDurationMs);
       }
     });
     return unsubscribe;
   }, [navigation, detachScreen, playerState]);
 
   // ── Auto-start ─────────────────────────────────────────────────────────────────
-  // Only starts playback if audio is NOT already running for this podcast.
-  // If the user tapped the mini player to come here, audio is already playing
-  // and AudioEngine.reattach() (called in usePodcastPlayer mount) has already
-  // re-synced the state — do not restart.
   useEffect(() => {
     if (!podcast || loadingPodcast || hasStarted) return;
     setHasStarted(true);
-
     (async () => {
-      // Mini player was active → audio already running → just reattach (done in hook)
-      if (isGlobalAudioActiveForPodcast(podcast.id)) {
-        return;
-      }
-
-      // Check DB for resume position
+      if (isGlobalAudioActiveForPodcast(podcast.id)) return;
       if (user) {
         try {
           const { data } = await supabase
@@ -474,14 +519,12 @@ export default function PodcastPlayerScreen() {
             .eq('user_id', user.id)
             .eq('podcast_id', podcast.id)
             .maybeSingle();
-
           if (data && data.last_turn_idx > 0 && (data.progress_percent ?? 0) < 95) {
             await resumeFrom(data.last_turn_idx);
             return;
           }
         } catch { /* non-fatal */ }
       }
-
       await startPlayback();
     })();
   }, [podcast, loadingPodcast, hasStarted, user]);
@@ -498,27 +541,19 @@ export default function PodcastPlayerScreen() {
     }
   }, [playerState.currentTurnIndex]);
 
-  // Save on unmount (safety net — beforeRemove handles most cases)
+  // Save on unmount
   useEffect(() => {
     return () => {
       const u = userRef.current;
       const p = podcastRef.current;
       if (u && p && playerState.totalPositionMs > 0) {
-        savePlaybackProgress(
-          u.id, p.id,
-          playerState.currentTurnIndex,
-          playerState.totalPositionMs,
-          playerState.totalDurationMs,
-        );
+        savePlaybackProgress(u.id, p.id, playerState.currentTurnIndex, playerState.totalPositionMs, playerState.totalDurationMs);
       }
     };
   }, []);
 
   const handleBack = useCallback(() => { router.back(); }, []);
-
-  const handleSeek = useCallback((percent: number) => {
-    AudioEngine.seekToPercent(percent);
-  }, []);
+  const handleSeek = useCallback((percent: number) => { AudioEngine.seekToPercent(percent); }, []);
 
   const handleSharedToWorkspace = useCallback((_id: string, name: string) => {
     setSharedToast(`Shared to "${name}"`);
@@ -548,8 +583,6 @@ export default function PodcastPlayerScreen() {
   const isGuest2_ = speakerIsGuest2(currentTurn?.speaker);
   const activeColor = isHost_ ? COLORS.primary : isGuest2_ ? '#43E97B' : COLORS.secondary;
   const turns = podcast?.script?.turns ?? [];
-
-  // ── Loading / error states ─────────────────────────────────────────────────────
 
   if (loadingPodcast) {
     return (
@@ -609,7 +642,6 @@ export default function PodcastPlayerScreen() {
           </View>
         </Animated.View>
 
-        {/* Shared toast */}
         {sharedToast && (
           <Animated.View entering={FadeIn.duration(300)} style={{ marginHorizontal: SPACING.xl, marginBottom: SPACING.sm, backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: `${COLORS.success}30` }}>
             <Ionicons name="checkmark-circle" size={16} color={COLORS.success} />
@@ -654,12 +686,10 @@ export default function PodcastPlayerScreen() {
 
             <View style={{ width: '100%', marginBottom: SPACING.md }}>
               <ProgressBar
-                progress={progressPercent}
-                onSeek={handleSeek}
+                progress={progressPercent} onSeek={handleSeek}
                 totalDurationMs={playerState.totalDurationMs}
                 currentPositionMs={playerState.totalPositionMs}
-                formatTime={formatTime}
-                chapters={chapters}
+                formatTime={formatTime} chapters={chapters}
               />
             </View>
 

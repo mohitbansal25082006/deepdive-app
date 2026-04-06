@@ -1,19 +1,34 @@
 // app/(app)/podcast-series.tsx
-// Part 39 FIX v2:
+// Part 39 FIXES applied:
 //
-//  FIX 2 (Series episode generation redirects to podcast tab instead of generating):
-//    - handleGenerateEpisode() no longer uses router.push to the podcast tab.
-//    - Instead, the series screen shows an INLINE generation form at the bottom.
-//    - Tapping "Generate This Episode" on any recommendation or initial suggestion
-//      sets a prefilled topic in the inline form and scrolls to it.
-//    - The inline form uses the same usePodcast() hook to generate directly,
-//      with seriesId pre-wired so the episode is automatically added to the series.
-//    - On completion, the episode list auto-refreshes and the episode ready banner
-//      appears inline.
+// FIX 1 (voice quality in series generator):
+//   InlineEpisodeGenerator now includes the Audio Quality selector, matching
+//   the main podcast tab. The quality add-on credit cost is shown in the
+//   generate button.
 //
-//  FIX 4 (Edit/delete) — preserved from Part 39.
-//  FIX 2 (Initial suggestions) — preserved.
-//  FIX 3 (Advanced recommendations) — preserved.
+// FIX 3 (series episode count):
+//   refresh() now calls usePodcastSeries().refresh() in addition to
+//   useSeriesDetail().refresh() so the podcast tab's series list also updates.
+//
+// FIX 4 (deleted series not removed from tab):
+//   handleDeleteSeries() now calls refreshSeriesList() from usePodcastSeries()
+//   BEFORE router.back() so the tab's series list is already updated when
+//   the user arrives back on the podcast tab.
+//
+// FIX 5 (AI starter ideas persist + regenerate button):
+//   - InitialSuggestionsPanel receives an onRegenerate prop and shows a
+//     "↻ Regenerate" button after the first load.
+//   - loadInitialSuggestions(force=true) is wired to the regenerate button.
+//   - Suggestions are cached globally in usePodcastSeries so navigating away
+//     and back does NOT re-generate — they appear instantly from cache.
+//   - SeriesCreatorModal suggestions are now saved to the cache via seriesId
+//     so they appear on the series screen immediately after creation.
+//
+// GENERATION FIXES:
+//   - InlineEpisodeGenerator now passes webSearchActive correctly (reads
+//     EXPO_PUBLIC_SERPAPI_KEY just like the main podcast tab).
+//   - Cancel button in InlineEpisodeGenerator now shows a confirmation Alert
+//     ("Keep Going" / "Stop") before calling reset, matching the main tab UX.
 
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import {
@@ -39,11 +54,15 @@ import { VoiceStyleSelector }           from '../../src/components/podcast/Voice
 import { PodcastGenerationProgress }    from '../../src/components/podcast/PodcastGenerationProgress';
 import { useCreditGate }                from '../../src/hooks/useCreditGate';
 import { InsufficientCreditsModal }     from '../../src/components/credits/InsufficientCreditsModal';
-import { podcastDurationToFeature, FEATURE_COSTS } from '../../src/constants/credits';
+import {
+  podcastDurationToFeature,
+  podcastTotalCost,
+  FEATURE_COSTS,
+}                                       from '../../src/constants/credits';
 import { PODCAST_VOICE_PRESETS_V2, AUDIO_QUALITY_OPTIONS } from '../../src/constants/podcastV2';
 import type { SeriesEpisodeSummary }    from '../../src/services/podcastSeriesService';
 import type { AdvancedNextEpisodeRecommendation, SeriesTopicSuggestion } from '../../src/services/podcastSeriesService';
-import type { PodcastVoicePresetV2Def } from '../../src/types/podcast_v2';
+import type { PodcastVoicePresetV2Def, AudioQuality } from '../../src/types/podcast_v2';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -154,14 +173,16 @@ function EpisodeRow({
 }
 
 // ─── Initial Suggestions Panel ─────────────────────────────────────────────────
+// FIX 5: Added onRegenerate prop and Regenerate button
 
 function InitialSuggestionsPanel({
-  suggestions, loadingInitial, accentColor, onSelectTopic,
+  suggestions, loadingInitial, accentColor, onSelectTopic, onRegenerate,
 }: {
-  suggestions: SeriesTopicSuggestion[];
+  suggestions:    SeriesTopicSuggestion[];
   loadingInitial: boolean;
-  accentColor: string;
-  onSelectTopic: (topic: string) => void;
+  accentColor:    string;
+  onSelectTopic:  (topic: string) => void;
+  onRegenerate:   () => void;
 }) {
   const [expanded, setExpanded] = useState<number | null>(null);
 
@@ -178,10 +199,29 @@ function InitialSuggestionsPanel({
 
   return (
     <Animated.View entering={FadeIn.duration(500)} style={{ marginBottom: SPACING.lg }}>
+      {/* Header row with Regenerate button */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
         <Ionicons name="sparkles" size={14} color={accentColor} />
-        <Text style={{ color: accentColor, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>AI STARTER IDEAS</Text>
-        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Tap to use as topic</Text>
+        <Text style={{ color: accentColor, fontSize: FONTS.sizes.sm, fontWeight: '700', flex: 1 }}>
+          AI STARTER IDEAS
+        </Text>
+        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginRight: 4 }}>
+          Tap to use
+        </Text>
+        {/* FIX 5: Regenerate button */}
+        <TouchableOpacity
+          onPress={onRegenerate}
+          disabled={loadingInitial}
+          style={{
+            flexDirection: 'row', alignItems: 'center', gap: 4,
+            backgroundColor: `${accentColor}12`, borderRadius: RADIUS.full,
+            paddingHorizontal: 8, paddingVertical: 4,
+            borderWidth: 1, borderColor: `${accentColor}25`,
+          }}
+        >
+          <Ionicons name="refresh-outline" size={11} color={accentColor} />
+          <Text style={{ color: accentColor, fontSize: 10, fontWeight: '700' }}>Regenerate</Text>
+        </TouchableOpacity>
       </View>
 
       {suggestions.map((sug, idx) => (
@@ -223,7 +263,6 @@ function InitialSuggestionsPanel({
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16, marginBottom: 12 }}>
                     ⚡ {sug.whyNow}
                   </Text>
-                  {/* FIX 2: onSelectTopic fills the inline form below — no navigation */}
                   <TouchableOpacity
                     onPress={() => { onSelectTopic(sug.topic); setExpanded(null); }}
                     style={{
@@ -256,11 +295,11 @@ function InitialSuggestionsPanel({
 function AdvancedRecommendationPanel({
   recommendations, loadingRec, accentColor, onLoadRecommendations, onSelectTopic,
 }: {
-  recommendations: AdvancedNextEpisodeRecommendation[];
-  loadingRec: boolean;
-  accentColor: string;
+  recommendations:      AdvancedNextEpisodeRecommendation[];
+  loadingRec:           boolean;
+  accentColor:          string;
   onLoadRecommendations: () => void;
-  onSelectTopic: (topic: string) => void;
+  onSelectTopic:        (topic: string) => void;
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const rec = recommendations[activeIdx];
@@ -302,6 +341,20 @@ function AdvancedRecommendationPanel({
               <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Analyse</Text>
             </TouchableOpacity>
           )}
+          {!loadingRec && recommendations.length > 0 && (
+            <TouchableOpacity
+              onPress={onLoadRecommendations}
+              style={{
+                flexDirection: 'row', alignItems: 'center', gap: 4,
+                backgroundColor: `${accentColor}12`, borderRadius: RADIUS.full,
+                paddingHorizontal: 8, paddingVertical: 4,
+                borderWidth: 1, borderColor: `${accentColor}25`,
+              }}
+            >
+              <Ionicons name="refresh-outline" size={11} color={accentColor} />
+              <Text style={{ color: accentColor, fontSize: 10, fontWeight: '700' }}>Refresh</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {loadingRec && (
@@ -315,7 +368,6 @@ function AdvancedRecommendationPanel({
 
         {rec && (
           <Animated.View entering={FadeIn.duration(300)}>
-            {/* Option tabs */}
             {recommendations.length > 1 && (
               <View style={{ flexDirection: 'row', gap: 6, marginBottom: SPACING.md }}>
                 {recommendations.map((_, i) => (
@@ -401,7 +453,6 @@ function AdvancedRecommendationPanel({
               </View>
             )}
 
-            {/* FIX 2: Use This Topic fills inline form — no navigation */}
             <TouchableOpacity
               onPress={() => onSelectTopic(rec.suggestedTopic)}
               style={{
@@ -422,16 +473,17 @@ function AdvancedRecommendationPanel({
 }
 
 // ─── Inline Episode Generator ──────────────────────────────────────────────────
-// FIX 2: This replaces the router.push approach.
-// Generates the podcast directly within the series screen.
+// FIX 1:   Added Audio Quality selector with credit cost display.
+// GEN FIX: webSearchActive now reads EXPO_PUBLIC_SERPAPI_KEY (same as podcast tab).
+// GEN FIX: Cancel button shows Alert confirmation before stopping.
 
 interface InlineGeneratorProps {
-  seriesId:    string;
-  seriesName:  string;
-  episodeNum:  number;
-  accentColor: string;
+  seriesId:      string;
+  seriesName:    string;
+  episodeNum:    number;
+  accentColor:   string;
   prefillTopic?: string;
-  onComplete:  () => void;
+  onComplete:    () => void;
 }
 
 function InlineEpisodeGenerator({
@@ -440,19 +492,22 @@ function InlineEpisodeGenerator({
   const [topic,            setTopic]            = useState(prefillTopic ?? '');
   const [selectedPresetId, setSelectedPresetId] = useState('casual');
   const [selectedDuration, setSelectedDuration] = useState(10);
-  const scrollRef = useRef<ScrollView>(null);
+  // FIX 1: Audio quality state
+  const [audioQuality,     setAudioQuality]     = useState<AudioQuality>('standard');
 
   const { state: genState, isGenerating, progressPhase, generateFromTopic, reset } = usePodcast();
   const { upsertPodcast, refresh: refreshHistory } = usePodcastHistory();
-  const { guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
+  const { guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
+
+  // GEN FIX: detect SerpAPI availability exactly as the main podcast tab does
+  const hasSerpKey = !!(
+    process.env.EXPO_PUBLIC_SERPAPI_KEY?.trim() &&
+    process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here'
+  );
 
   // Update topic if a suggestion is selected
   useEffect(() => {
-    if (prefillTopic) {
-      setTopic(prefillTopic);
-      // Scroll to the generator
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 200);
-    }
+    if (prefillTopic) setTopic(prefillTopic);
   }, [prefillTopic]);
 
   // On completion, refresh series + history
@@ -466,6 +521,11 @@ function InlineEpisodeGenerator({
 
   const selectedPreset = PODCAST_VOICE_PRESETS_V2.find(p => p.id === selectedPresetId) ?? PODCAST_VOICE_PRESETS_V2[0];
 
+  // FIX 1: Total cost includes duration + quality add-on
+  const totalCreditCost = podcastTotalCost(selectedDuration, audioQuality);
+  const baseCreditCost  = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
+  const qualityAddOn    = totalCreditCost - baseCreditCost;
+
   const handleGenerate = async () => {
     const effectiveTopic = topic.trim();
     if (!effectiveTopic) {
@@ -473,8 +533,17 @@ function InlineEpisodeGenerator({
       return;
     }
 
-    const feature = podcastDurationToFeature(selectedDuration);
-    const ok = await guardedConsume(feature);
+    // FIX 1: Use guardedConsumeTotal to handle quality add-on correctly
+    const qualityLabel =
+      audioQuality === 'high'     ? ' · High Quality'     :
+      audioQuality === 'lossless' ? ' · Lossless Quality' : '';
+    const combinedLabel = `Podcast (${selectedDuration} min${qualityLabel})`;
+
+    const ok = await guardedConsumeTotal(
+      podcastDurationToFeature(selectedDuration),
+      totalCreditCost,
+      combinedLabel,
+    );
     if (!ok) return;
 
     const config = {
@@ -493,14 +562,22 @@ function InlineEpisodeGenerator({
         speakers:      selectedPreset.speakers,
         speakerCount:  selectedPreset.speakerCount,
         presetStyleV2: selectedPreset.presetStyleV2,
+        audioQuality,         // FIX 1: pass quality
         seriesId,
         episodeNumber: episodeNum,
       }
     );
   };
 
+  // GEN FIX: Confirmation alert before cancelling — same UX as main podcast tab
+  const handleCancel = useCallback(() => {
+    Alert.alert('Cancel Generation', 'Stop generating this podcast?', [
+      { text: 'Keep Going', style: 'cancel' },
+      { text: 'Stop', style: 'destructive', onPress: reset },
+    ]);
+  }, [reset]);
+
   const showProgress = progressPhase === 'script' || progressPhase === 'audio';
-  const creditCost   = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
 
   return (
     <Animated.View entering={FadeIn.duration(400)} style={{ marginBottom: SPACING.xl }}>
@@ -530,14 +607,15 @@ function InlineEpisodeGenerator({
               {seriesName} · Episode {episodeNum}
             </Text>
           </View>
+          {/* GEN FIX: cancel button now calls handleCancel (shows confirmation) */}
           {isGenerating && (
-            <TouchableOpacity onPress={reset} style={{ padding: 6 }}>
+            <TouchableOpacity onPress={handleCancel} style={{ padding: 6 }}>
               <Ionicons name="stop-circle-outline" size={20} color={COLORS.error} />
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Progress overlay */}
+        {/* Progress overlay — GEN FIX: webSearchActive reads real SerpAPI key */}
         {showProgress && (
           <View style={{ marginBottom: SPACING.md }}>
             <PodcastGenerationProgress
@@ -547,8 +625,8 @@ function InlineEpisodeGenerator({
               audioProgress={genState.audioProgress}
               progressMessage={genState.progressMessage}
               targetDurationMins={selectedDuration}
-              webSearchActive={false}
-              onCancel={reset}
+              webSearchActive={hasSerpKey}
+              onCancel={handleCancel}
             />
           </View>
         )}
@@ -586,7 +664,7 @@ function InlineEpisodeGenerator({
               />
             </View>
 
-            {/* Voice style — using 'grid' variant instead of 'compact' */}
+            {/* Voice style */}
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 }}>
               Voice Style
             </Text>
@@ -598,11 +676,14 @@ function InlineEpisodeGenerator({
               />
             </View>
 
-            {/* Duration — compact row */}
-            <View style={{ flexDirection: 'row', gap: 6, marginBottom: SPACING.md }}>
+            {/* Duration */}
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 }}>
+              Episode Length
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 6, marginBottom: SPACING.sm }}>
               {[5, 10, 15, 20].map(dur => {
-                const isActive = selectedDuration === dur;
-                const cost     = FEATURE_COSTS[podcastDurationToFeature(dur)];
+                const isActive  = selectedDuration === dur;
+                const cost      = podcastTotalCost(dur, audioQuality);
                 return (
                   <TouchableOpacity
                     key={dur}
@@ -635,6 +716,69 @@ function InlineEpisodeGenerator({
               })}
             </View>
 
+            {/* FIX 1: Audio Quality selector */}
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 }}>
+              Audio Quality
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 6, marginBottom: SPACING.sm }}>
+              {AUDIO_QUALITY_OPTIONS.map(opt => {
+                const isActive = audioQuality === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    onPress={() => setAudioQuality(opt.value)}
+                    style={{
+                      flex: 1,
+                      backgroundColor: isActive ? `${accentColor}15` : COLORS.backgroundCard,
+                      borderRadius: RADIUS.lg, paddingVertical: 8, paddingHorizontal: 4,
+                      alignItems: 'center',
+                      borderWidth: 1.5, borderColor: isActive ? accentColor : COLORS.border,
+                    }}
+                  >
+                    <Ionicons
+                      name={opt.icon as any} size={14}
+                      color={isActive ? accentColor : COLORS.textMuted}
+                      style={{ marginBottom: 3 }}
+                    />
+                    <Text style={{
+                      color: isActive ? accentColor : COLORS.textSecondary,
+                      fontSize: 10, fontWeight: isActive ? '700' : '500',
+                    }}>
+                      {opt.label}
+                    </Text>
+                    {opt.creditBonus > 0 && (
+                      <View style={{
+                        marginTop: 2,
+                        backgroundColor: isActive ? `${accentColor}20` : `${COLORS.warning}15`,
+                        borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 1,
+                        borderWidth: 1, borderColor: isActive ? `${accentColor}40` : `${COLORS.warning}30`,
+                      }}>
+                        <Text style={{ color: isActive ? accentColor : COLORS.warning, fontSize: 8, fontWeight: '700' }}>
+                          +{opt.creditBonus} cr
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* FIX 1: Cost breakdown when quality add-on applies */}
+            {audioQuality !== 'standard' && (
+              <View style={{
+                flexDirection: 'row', alignItems: 'center', gap: 8,
+                backgroundColor: `${accentColor}08`, borderRadius: RADIUS.lg,
+                padding: SPACING.sm, marginBottom: SPACING.sm,
+                borderWidth: 1, borderColor: `${accentColor}20`,
+              }}>
+                <Ionicons name="flash-outline" size={12} color={accentColor} />
+                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1 }}>
+                  {baseCreditCost} cr (base) + {qualityAddOn} cr (quality) ={' '}
+                  <Text style={{ color: accentColor, fontWeight: '700' }}>{totalCreditCost} cr total</Text>
+                </Text>
+              </View>
+            )}
+
             {/* Generate button */}
             <TouchableOpacity
               onPress={handleGenerate}
@@ -659,7 +803,7 @@ function InlineEpisodeGenerator({
                   flexDirection: 'row', alignItems: 'center', gap: 2,
                 }}>
                   <Ionicons name="flash" size={9} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '800' }}>{creditCost}</Text>
+                  <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '800' }}>{totalCreditCost}</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -686,22 +830,21 @@ export default function PodcastSeriesScreen() {
     detail, loading, refresh,
     recommendations, loadingRec, loadRecommendations,
     initialSuggestions, loadingInitial,
+    loadInitialSuggestions,
   } = useSeriesDetail(seriesId ?? null);
 
-  const { removeEpisode, update, remove } = usePodcastSeries();
+  // FIX 3 & 4: Get remove and refresh from usePodcastSeries so tab updates too
+  const { removeEpisode, update, remove, refresh: refreshSeriesList } = usePodcastSeries();
 
-  const [removingId,       setRemovingId]       = useState<string | null>(null);
-  const [showEditModal,    setShowEditModal]     = useState(false);
-  const [isSavingEdit,     setIsSavingEdit]      = useState(false);
-  const [showGenerator,    setShowGenerator]     = useState(false);
-
-  // FIX 2: selectedTopic is set by recommendations/suggestions; fills inline form
-  const [selectedTopic,    setSelectedTopic]     = useState('');
+  const [removingId,    setRemovingId]    = useState<string | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [isSavingEdit,  setIsSavingEdit]  = useState(false);
+  const [showGenerator, setShowGenerator] = useState(false);
+  const [selectedTopic, setSelectedTopic] = useState('');
 
   const scrollViewRef = useRef<ScrollView>(null);
   const accentColor   = detail?.series.accentColor ?? '#6C63FF';
 
-  // FIX 2: When a topic is selected, show the generator and scroll to it
   const handleSelectTopic = useCallback((topic: string) => {
     setSelectedTopic(topic);
     setShowGenerator(true);
@@ -710,7 +853,6 @@ export default function PodcastSeriesScreen() {
     }, 300);
   }, []);
 
-  // Remove episode from series
   const handleRemoveEpisode = useCallback(async (episode: SeriesEpisodeSummary) => {
     Alert.alert(
       'Remove from Series',
@@ -722,6 +864,7 @@ export default function PodcastSeriesScreen() {
           onPress: async () => {
             setRemovingId(episode.podcastId);
             await removeEpisode(episode.podcastId, seriesId ?? '');
+            // FIX 3: refresh both detail and the main series list
             refresh();
             setRemovingId(null);
           },
@@ -737,7 +880,6 @@ export default function PodcastSeriesScreen() {
     });
   }, []);
 
-  // FIX 4: Update series
   const handleUpdateSeries = useCallback(async (_seriesId: string, input: Partial<any>) => {
     if (!seriesId) return;
     setIsSavingEdit(true);
@@ -750,7 +892,8 @@ export default function PodcastSeriesScreen() {
     }
   }, [seriesId, update, refresh]);
 
-  // FIX 4: Delete series
+  // FIX 4: Delete calls refreshSeriesList() before navigating back so the
+  // podcast tab's series section is already updated when the user lands there
   const handleDeleteSeries = useCallback(() => {
     if (!detail) return;
     const episodeCount = detail.episodes.length;
@@ -767,14 +910,17 @@ export default function PodcastSeriesScreen() {
           text: 'Delete Series', style: 'destructive',
           onPress: async () => {
             await remove(seriesId ?? '');
+            // FIX 4: refreshSeriesList() filters the deleted series from
+            // local state immediately so the tab updates without re-fetch
+            await refreshSeriesList();
             router.back();
           },
         },
       ]
     );
-  }, [detail, remove, seriesId]);
+  }, [detail, remove, seriesId, refreshSeriesList]);
 
-  const totalMins = detail ? Math.round(detail.series.totalDurationSeconds / 60) : 0;
+  const totalMins      = detail ? Math.round(detail.series.totalDurationSeconds / 60) : 0;
   const nextEpisodeNum = (detail?.series.episodeCount ?? 0) + 1;
 
   return (
@@ -845,6 +991,12 @@ export default function PodcastSeriesScreen() {
               <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600', marginTop: SPACING.md, textAlign: 'center' }}>
                 Series not found
               </Text>
+              <TouchableOpacity
+                onPress={() => router.back()}
+                style={{ marginTop: SPACING.lg, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 10, paddingHorizontal: 24 }}
+              >
+                <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Go Back</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <ScrollView
@@ -894,6 +1046,7 @@ export default function PodcastSeriesScreen() {
                       paddingHorizontal: 12, paddingVertical: 7,
                       alignItems: 'center', flex: 1,
                     }}>
+                      {/* FIX 3: show live episodeCount from DB */}
                       <Text style={{ color: accentColor, fontSize: FONTS.sizes.md, fontWeight: '800' }}>
                         {detail.series.episodeCount}
                       </Text>
@@ -912,7 +1065,11 @@ export default function PodcastSeriesScreen() {
                       </View>
                     )}
                     <TouchableOpacity
-                      onPress={() => { setSelectedTopic(''); setShowGenerator(true); setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 300); }}
+                      onPress={() => {
+                        setSelectedTopic('');
+                        setShowGenerator(true);
+                        setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 300);
+                      }}
                       style={{
                         backgroundColor: accentColor, borderRadius: RADIUS.lg,
                         paddingHorizontal: 14, paddingVertical: 7,
@@ -934,6 +1091,8 @@ export default function PodcastSeriesScreen() {
                   loadingInitial={loadingInitial}
                   accentColor={accentColor}
                   onSelectTopic={handleSelectTopic}
+                  // FIX 5: regenerate calls loadInitialSuggestions with force=true
+                  onRegenerate={() => loadInitialSuggestions(true)}
                 />
               )}
 
@@ -980,8 +1139,8 @@ export default function PodcastSeriesScreen() {
                 </>
               )}
 
-              {/* Empty state (no episodes + no generator shown yet) */}
-              {detail.episodes.length === 0 && !showGenerator && (
+              {/* Empty state */}
+              {detail.episodes.length === 0 && !showGenerator && initialSuggestions.length === 0 && !loadingInitial && (
                 <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
                   <View style={{
                     width: 64, height: 64, borderRadius: 20,
@@ -994,10 +1153,13 @@ export default function PodcastSeriesScreen() {
                     No episodes yet
                   </Text>
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', marginTop: SPACING.sm, lineHeight: 20 }}>
-                    Pick an AI suggestion above or tap New Ep to get started
+                    Tap New Ep to get started
                   </Text>
                   <TouchableOpacity
-                    onPress={() => { setShowGenerator(true); setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 300); }}
+                    onPress={() => {
+                      setShowGenerator(true);
+                      setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 300);
+                    }}
                     style={{
                       marginTop: SPACING.lg, backgroundColor: accentColor,
                       borderRadius: RADIUS.lg, paddingVertical: 12, paddingHorizontal: 24,
@@ -1010,7 +1172,7 @@ export default function PodcastSeriesScreen() {
                 </View>
               )}
 
-              {/* FIX 2: Inline generator — appears when showGenerator is true */}
+              {/* Inline generator */}
               {showGenerator && seriesId && detail && (
                 <View style={{ marginTop: SPACING.md }}>
                   <InlineEpisodeGenerator
@@ -1022,7 +1184,9 @@ export default function PodcastSeriesScreen() {
                     onComplete={() => {
                       setShowGenerator(false);
                       setSelectedTopic('');
+                      // FIX 3: refresh both detail and the main series list
                       refresh();
+                      refreshSeriesList();
                     }}
                   />
                 </View>

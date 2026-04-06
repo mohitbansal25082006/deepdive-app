@@ -1,29 +1,22 @@
 // app/(app)/(tabs)/podcast.tsx
-// Part 39 FIX v2 — Replaced two-step credit deduction with single guardedConsumeTotal.
+// Part 39 FIXES applied to podcast tab:
 //
-// BUGS FIXED:
+// FIX 3 (series shows 0 episodes):
+//   - useFocusEffect now also calls refreshSeries() so series episode counts
+//     are re-fetched from DB every time the tab is focused.
 //
-// Bug 1 — Transaction shows -20 instead of -25:
-//   OLD: Two separate guardedConsume() calls → two DB rows (-5 and -20).
-//   FIX: One guardedConsumeTotal(feature, 25, label) → one DB row (-25).
+// FIX 5 (save creation-screen suggestions):
+//   - After createSeries() succeeds, if suggestions were generated in the
+//     SeriesCreatorModal, generate() is called with the new seriesId to
+//     save those suggestions to the global cache. The series screen picks
+//     them up instantly without a second API call.
 //
-// Bug 2 — InsufficientCreditsModal shows wrong required amount:
-//   OLD: Each guardedConsume only knows its own cost (e.g. 20 for base).
-//        If quality passed but base failed, modal said "need 20, have 17"
-//        even though the true combined need was 25.
-//   FIX: guardedConsumeTotal passes totalCreditCost (25) as required, so the
-//        modal always shows the correct combined figure.
+// FIX 6 (redirect to series after creation):
+//   - After createSeries() returns the new series, router.push navigates to
+//     the podcast-series screen for the new series immediately.
 //
-// Bug 3 — Quality credits charged when podcast not generated:
-//   OLD: Quality deducted first; if base check then failed, quality was lost.
-//   FIX: consumeTotal() does a SINGLE pre-flight balance check against the
-//        full totalCost BEFORE touching any credits. If insufficient, 0 cr charged.
-//
-// CHANGES FROM PREVIOUS VERSION:
-//   - Removed podcastQualityToFeature from imports (no longer needed in generate)
-//   - Added guardedConsumeTotal to useCreditGate destructure
-//   - Removed guardedConsume from useCreditGate destructure (no longer used here)
-//   - handleGenerate: replaced two-step consume block with single guardedConsumeTotal
+// SCROLL FIX: When Generate is tapped, ScrollView scrolls to top so the
+//   PodcastGenerationProgress card is immediately visible.
 
 import React, {
   useState, useEffect, useCallback, useRef, useMemo,
@@ -48,6 +41,7 @@ import { COLORS, FONTS, SPACING, RADIUS }   from '../../../src/constants/theme';
 import { usePodcast }                       from '../../../src/hooks/usePodcast';
 import { usePodcastHistory }               from '../../../src/hooks/usePodcastHistory';
 import { usePodcastSeries }                from '../../../src/hooks/usePodcastSeries';
+import { useSeriesTopicSuggestions }        from '../../../src/hooks/usePodcastSeries';
 import { PodcastGenerationProgress }        from '../../../src/components/podcast/PodcastGenerationProgress';
 import { PodcastCard }                      from '../../../src/components/podcast/PodcastCard';
 import { WaveformVisualizer }               from '../../../src/components/podcast/WaveformVisualizer';
@@ -65,8 +59,6 @@ import {
   podcastTotalCost,
   FEATURE_COSTS,
 }                                           from '../../../src/constants/credits';
-// NOTE: podcastQualityToFeature intentionally removed — no longer needed now that
-//       we deduct duration + quality as one combined call via guardedConsumeTotal.
 import {
   exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
 }                                           from '../../../src/services/podcastExport';
@@ -80,6 +72,7 @@ import type { Podcast, ResearchReport }     from '../../../src/types';
 import type {
   PodcastVoicePresetV2Def,
   AudioQuality,
+  CreateSeriesInput,
 }                                           from '../../../src/types/podcast_v2';
 
 // ─── Duration options ──────────────────────────────────────────────────────────
@@ -343,10 +336,17 @@ export default function PodcastScreen() {
     refresh: refreshSeries,
   } = usePodcastSeries();
 
-  // Refresh continue listening when tab gains focus
+  // FIX 5: Access the suggestion hook to save suggestions after series creation
+  const { suggestions: pendingSuggestions, generate: saveSuggestionsToCache } = useSeriesTopicSuggestions();
+
+  // SCROLL FIX: ref for the main ScrollView so we can scroll to top on generate
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  // FIX 3: Refresh both episodes and series when tab is focused
   useFocusEffect(
     useCallback(() => {
       refresh();
+      refreshSeries(); // FIX 3: ensures series episode counts are up-to-date
     }, [])
   );
 
@@ -364,8 +364,6 @@ export default function PodcastScreen() {
   const [selectedSeriesId,   setSelectedSeriesId]    = useState<string | null>(null);
   const [showSeriesPicker,   setShowSeriesPicker]    = useState(false);
 
-  // FIX: Use guardedConsumeTotal instead of guardedConsume for podcast generation.
-  // guardedConsume kept in case it's needed elsewhere; not used in handleGenerate.
   const { balance, guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
   const hasSerpKey = !!(process.env.EXPO_PUBLIC_SERPAPI_KEY?.trim() && process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here');
@@ -377,7 +375,7 @@ export default function PodcastScreen() {
     if (progressPhase === 'done' && genState.podcast) {
       upsertPodcast(genState.podcast);
       refresh();
-      refreshSeries();
+      refreshSeries(); // FIX 3: update episode counts after generation
     }
   }, [progressPhase]);
 
@@ -386,7 +384,6 @@ export default function PodcastScreen() {
     [selectedPresetId]
   );
 
-  // ── Total credit cost = base duration + quality add-on ──────────────────────
   const totalCreditCost = useMemo(
     () => podcastTotalCost(selectedDuration, audioQuality),
     [selectedDuration, audioQuality]
@@ -395,13 +392,6 @@ export default function PodcastScreen() {
   const baseCreditCost   = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
   const qualityAddOnCost = totalCreditCost - baseCreditCost;
 
-  // ── Generate handler — FIX: single atomic deduction ─────────────────────────
-  //
-  // All three credit bugs are fixed by calling guardedConsumeTotal() once:
-  //   - One call → one DB transaction → transaction history shows correct total
-  //   - totalCreditCost passed as required → modal shows correct combined amount
-  //   - Pre-flight check inside consumeTotal → 0 cr charged if insufficient
-
   const handleGenerate = useCallback(async () => {
     const effectiveTopic = topic.trim() || importedReport?.query || '';
     if (!effectiveTopic) {
@@ -409,16 +399,11 @@ export default function PodcastScreen() {
       return;
     }
 
-    // Build a human-readable label for the InsufficientCreditsModal and the
-    // credit_transactions.description DB column.
     const qualityLabel =
       audioQuality === 'high'     ? ' · High Quality'     :
       audioQuality === 'lossless' ? ' · Lossless Quality' : '';
     const combinedLabel = `Podcast (${selectedDuration} min${qualityLabel})`;
 
-    // Single pre-flight check + single DB deduction for the full combined cost.
-    // If balance < totalCreditCost, the modal is shown with the correct amount
-    // and 0 credits are deducted.
     const ok = await guardedConsumeTotal(
       podcastDurationToFeature(selectedDuration),
       totalCreditCost,
@@ -426,7 +411,9 @@ export default function PodcastScreen() {
     );
     if (!ok) return;
 
-    // Credits successfully deducted — start generation
+    // SCROLL FIX: scroll to top so the progress card is visible immediately
+    scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+
     const config = {
       hostVoice:             selectedPreset.hostVoice,
       guestVoice:            selectedPreset.guestVoice,
@@ -467,6 +454,8 @@ export default function PodcastScreen() {
   const showBanner   = progressPhase === 'done' && genState.podcast !== null;
   const hasLibrary   = completedPodcasts.length > 0 || series.length > 0;
 
+  // ─── Series Picker Modal ────────────────────────────────────────────────────
+
   const SeriesPickerModal = () => (
     <Modal visible={showSeriesPicker} animationType="slide" transparent onRequestClose={() => setShowSeriesPicker(false)}>
       <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.7)', justifyContent: 'flex-end' }}>
@@ -487,6 +476,7 @@ export default function PodcastScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={{ color: selectedSeriesId === s.id ? s.accentColor : COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>{s.name}</Text>
+                {/* FIX 3: shows live episodeCount from DB */}
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{s.episodeCount} episodes</Text>
               </View>
               {selectedSeriesId === s.id && <Ionicons name="checkmark-circle" size={20} color={s.accentColor} />}
@@ -506,11 +496,13 @@ export default function PodcastScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          {/* SCROLL FIX: ref attached here */}
           <ScrollView
+            ref={scrollViewRef}
             contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 140 }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={COLORS.primary} />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { refresh(); refreshSeries(); }} tintColor={COLORS.primary} />}
           >
 
             {/* Header */}
@@ -586,6 +578,7 @@ export default function PodcastScreen() {
                         <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>New Series</Text>
                       </TouchableOpacity>
                     </View>
+                    {/* FIX 3: SeriesCard shows live episodeCount from series state */}
                     {series.map((s, i) => (
                       <SeriesCard key={s.id} series={s} index={i}
                         onPress={() => router.push({ pathname: '/(app)/podcast-series' as any, params: { seriesId: s.id } })}
@@ -683,9 +676,7 @@ export default function PodcastScreen() {
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
                   {DURATION_OPTIONS.map(opt => {
                     const isActive  = selectedDuration === opt.value;
-                    const baseCost  = FEATURE_COSTS[podcastDurationToFeature(opt.value)];
                     const totalCost = podcastTotalCost(opt.value, audioQuality);
-                    const showTotal = audioQuality !== 'standard';
                     return (
                       <TouchableOpacity key={opt.value} onPress={() => setSelectedDuration(opt.value)}
                         style={{ flex: 1, backgroundColor: isActive ? COLORS.primary : COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', borderWidth: 1, borderColor: isActive ? COLORS.primary : COLORS.border }}>
@@ -693,9 +684,7 @@ export default function PodcastScreen() {
                         <Text style={{ color: isActive ? 'rgba(255,255,255,0.65)' : COLORS.textMuted, fontSize: 9, marginBottom: 2 }}>{opt.sublabel}</Text>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: isActive ? 'rgba(255,255,255,0.2)' : `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 2 }}>
                           <Ionicons name="flash" size={8} color={isActive ? '#FFF' : COLORS.primary} />
-                          <Text style={{ color: isActive ? '#FFF' : COLORS.primary, fontSize: 8, fontWeight: '800' }}>
-                            {showTotal ? totalCost : baseCost}
-                          </Text>
+                          <Text style={{ color: isActive ? '#FFF' : COLORS.primary, fontSize: 8, fontWeight: '800' }}>{totalCost}</Text>
                         </View>
                       </TouchableOpacity>
                     );
@@ -723,7 +712,6 @@ export default function PodcastScreen() {
                   })}
                 </View>
 
-                {/* Total cost breakdown (shown when quality add-on applies) */}
                 {audioQuality !== 'standard' && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, padding: SPACING.sm, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}20` }}>
                     <Ionicons name="flash-outline" size={14} color={COLORS.primary} />
@@ -743,7 +731,6 @@ export default function PodcastScreen() {
                     <Text style={{ color: '#FFF', fontSize: FONTS.sizes.md, fontWeight: '700' }}>
                       {isConsuming ? 'Checking credits...' : importedReport ? 'Generate from Report' : selectedPreset.speakerCount === 3 ? 'Generate 3-Person Episode' : 'Generate Podcast'}
                     </Text>
-                    {/* Badge shows TOTAL cost including quality add-on */}
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
                       <Ionicons name="flash" size={10} color="#FFF" />
                       <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{totalCreditCost} cr</Text>
@@ -795,10 +782,32 @@ export default function PodcastScreen() {
 
       <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
 
+      {/* FIX 5 + FIX 6: onCreate saves suggestions to cache and redirects to series */}
       <SeriesCreatorModal
-        visible={showSeriesCreator} onClose={() => setShowSeriesCreator(false)}
+        visible={showSeriesCreator}
+        onClose={() => setShowSeriesCreator(false)}
         isSaving={serieSaving}
-        onCreate={async (input) => { const s = await createSeries(input); if (s) setSelectedSeriesId(s.id); setShowSeriesCreator(false); }}
+        onCreate={async (input: CreateSeriesInput) => {
+          const newSeries = await createSeries(input);
+          if (newSeries) {
+            setSelectedSeriesId(newSeries.id);
+            setShowSeriesCreator(false);
+
+            // FIX 5: Save any suggestions from the creation screen to the global
+            // cache so the series screen displays them instantly without re-calling API
+            if (input.name.trim()) {
+              saveSuggestionsToCache(input.name, input.description, newSeries.id);
+            }
+
+            // FIX 6: Navigate to the new series immediately
+            router.push({
+              pathname: '/(app)/podcast-series' as any,
+              params:   { seriesId: newSeries.id },
+            });
+          } else {
+            setShowSeriesCreator(false);
+          }
+        }}
       />
 
       <SeriesPickerModal />

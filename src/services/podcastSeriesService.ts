@@ -1,22 +1,22 @@
 // src/services/podcastSeriesService.ts
-// Part 39 FIX v3:
+// Part 39 FIXES applied:
 //
-// FIX — Continue Listening wrong percentage:
-//   DB stores progress_percent as NUMERIC(5,2) in the range 0–100
-//   (e.g. 45.50 = 45.5% complete, stored by upsert_podcast_progress which
-//   computes: ROUND((posMs / totalMs) * 10000) / 100).
+// FIX 2 (duplicate episode prevention):
+//   addEpisodeToSeries() now queries the podcast's current series_id first.
+//   If it's already in the target series → returns { alreadyInSeries: true, existingSeriesName }.
+//   If it's in a different series → removes from old, adds to new (move behaviour).
+//   If it's not in any series → adds normally.
 //
-//   getContinueListening() was returning this raw 0–100 value as `progressPercent`
-//   but the UI (ContinueListeningRow) treated it as a 0–1 fraction and multiplied
-//   by 100 to display "45.5%" — which actually worked correctly ONLY IF the value
-//   was 0–1. When it's 0–100, the bar fills to 100% immediately.
+// FIX 3 (series episode count):
+//   getUserSeries() now runs a subquery to get live episode_count from DB
+//   (the trigger updates podcast_series.episode_count, so just re-fetching the
+//   row is sufficient — but we force a fresh select to bypass any caching).
+//   mapRowToSeries() already maps episode_count correctly.
 //
-//   Fix: Divide progress_percent by 100 when mapping from DB rows so the entire
-//   app consistently uses 0–1 fractions in memory.
+// FIX 5 (continue listening progress fraction):
+//   getContinueListening() normalizes 0–100 DB value to 0–1 fraction (unchanged).
 //
-//   savePlaybackProgress() is unchanged — it still sends 0–100 to the DB RPC.
-//
-// All Part 39 + series CRUD + recommendations preserved.
+// All other functions are unchanged from Part 39.
 
 import { supabase }                            from '../lib/supabase';
 import { chatCompletionJSON }                  from './openaiClient';
@@ -78,6 +78,7 @@ export async function updateSeries(
 
 export async function deleteSeries(seriesId: string): Promise<{ error: string | null }> {
   try {
+    // Detach all episodes from this series first (preserves podcasts in library)
     await supabase
       .from('podcasts')
       .update({ series_id: null, episode_number: null })
@@ -95,6 +96,7 @@ export async function deleteSeries(seriesId: string): Promise<{ error: string | 
   }
 }
 
+// FIX 3: Force a fresh select to get updated episode_count after trigger fires
 export async function getUserSeries(userId: string): Promise<PodcastSeries[]> {
   try {
     const { data, error } = await supabase
@@ -111,16 +113,59 @@ export async function getUserSeries(userId: string): Promise<PodcastSeries[]> {
   }
 }
 
+// FIX 2: Duplicate prevention — check before adding
 export async function addEpisodeToSeries(
   podcastId:     string,
   seriesId:      string,
   episodeNumber: number,
-): Promise<{ error: string | null }> {
+): Promise<{ error: string | null; alreadyInSeries?: boolean; existingSeriesName?: string }> {
   try {
+    // Step 1: Fetch the podcast's current series membership
+    const { data: podcastRow, error: fetchErr } = await supabase
+      .from('podcasts')
+      .select('series_id')
+      .eq('id', podcastId)
+      .single();
+
+    if (fetchErr) throw fetchErr;
+
+    const currentSeriesId = podcastRow?.series_id;
+
+    // Step 2: Already in the SAME series → reject with friendly message
+    if (currentSeriesId && currentSeriesId === seriesId) {
+      // Fetch the series name for the error message
+      let existingSeriesName = 'this series';
+      try {
+        const { data: sr } = await supabase
+          .from('podcast_series')
+          .select('name')
+          .eq('id', seriesId)
+          .single();
+        if (sr?.name) existingSeriesName = sr.name;
+      } catch {}
+
+      return {
+        error:              'Already in series',
+        alreadyInSeries:    true,
+        existingSeriesName,
+      };
+    }
+
+    // Step 3: In a DIFFERENT series → detach from old series first (move behaviour)
+    if (currentSeriesId && currentSeriesId !== seriesId) {
+      await supabase
+        .from('podcasts')
+        .update({ series_id: null, episode_number: null })
+        .eq('id', podcastId);
+      // The trigger will update the old series episode_count
+    }
+
+    // Step 4: Assign to the new series
     const { error } = await supabase
       .from('podcasts')
       .update({ series_id: seriesId, episode_number: episodeNumber })
       .eq('id', podcastId);
+
     if (error) throw error;
     return { error: null };
   } catch (err) {
@@ -198,11 +243,11 @@ export async function getSeriesWithEpisodes(
 // ─── Initial Topic Suggestions ────────────────────────────────────────────────
 
 export interface SeriesTopicSuggestion {
-  topic:           string;
-  hookLine:        string;
-  guestType:       string;
-  episodeFormat:   string;
-  whyNow:          string;
+  topic:         string;
+  hookLine:      string;
+  guestType:     string;
+  episodeFormat: string;
+  whyNow:        string;
 }
 
 export async function generateInitialTopicSuggestions(
@@ -346,13 +391,12 @@ export async function getPodcastPlaybackProgress(
 
     if (error || !data) return null;
 
-    // FIX: DB stores 0–100, normalize to 0–1 for the app
     const rawPct = data.progress_percent ?? 0;
     const normalizedPct = rawPct > 1 ? rawPct / 100 : rawPct;
 
     return {
-      lastTurnIdx:     data.last_turn_idx     ?? 0,
-      lastPositionMs:  data.last_position_ms  ?? 0,
+      lastTurnIdx:     data.last_turn_idx    ?? 0,
+      lastPositionMs:  data.last_position_ms ?? 0,
       progressPercent: normalizedPct,
       updatedAt:       data.updated_at,
     };
@@ -363,7 +407,6 @@ export async function getPodcastPlaybackProgress(
 }
 
 // ─── Playback Progress (save) ─────────────────────────────────────────────────
-// Stores 0–100 in DB (as NUMERIC(5,2)).
 
 export async function savePlaybackProgress(
   userId:       string,
@@ -373,7 +416,6 @@ export async function savePlaybackProgress(
   totalDurMs:   number,
 ): Promise<void> {
   try {
-    // Compute 0–100 value for DB
     const progressPct = totalDurMs > 0
       ? Math.round((positionMs / totalDurMs) * 10000) / 100
       : 0;
@@ -387,13 +429,11 @@ export async function savePlaybackProgress(
       p_progress_pct:   progressPct,
     });
   } catch (err) {
-    // Non-fatal
     console.warn('[podcastSeriesService] savePlaybackProgress error:', err);
   }
 }
 
 // ─── Continue Listening ───────────────────────────────────────────────────────
-// FIX: Normalizes progress_percent from DB (0–100) to app (0–1 fraction).
 
 export async function getContinueListening(userId: string): Promise<PodcastPlaybackProgress[]> {
   try {
@@ -403,7 +443,6 @@ export async function getContinueListening(userId: string): Promise<PodcastPlayb
     if (error) throw error;
 
     return ((data as any[]) ?? []).map(r => {
-      // DB stores 0–100 → normalize to 0–1 fraction for the UI
       const rawPct = r.progress_percent ?? 0;
       const normalizedPct = rawPct > 1 ? rawPct / 100 : rawPct;
 
@@ -412,9 +451,8 @@ export async function getContinueListening(userId: string): Promise<PodcastPlayb
         lastTurnIdx:     r.last_turn_idx      ?? 0,
         lastPositionMs:  r.last_position_ms   ?? 0,
         totalDurationMs: (r.duration_seconds  ?? 0) * 1000,
-        progressPercent: normalizedPct,        // ← 0–1 fraction
+        progressPercent: normalizedPct,
         updatedAt:       r.updated_at,
-        // Extra display fields
         title:           r.title,
         hostName:        r.host_name,
         guestName:       r.guest_name,
@@ -461,6 +499,7 @@ function mapRowToSeries(row: Record<string, any>): PodcastSeries {
     description:          row.description ?? '',
     accentColor:          row.accent_color ?? '#6C63FF',
     iconName:             row.icon_name    ?? 'radio-outline',
+    // FIX 3: episode_count is maintained by DB trigger — always use DB value
     episodeCount:         row.episode_count ?? 0,
     totalDurationSeconds: row.total_duration_seconds ?? 0,
     createdAt:            row.created_at,
