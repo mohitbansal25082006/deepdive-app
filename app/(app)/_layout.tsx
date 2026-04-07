@@ -154,6 +154,19 @@ function AppLayoutInner() {
           <Stack.Screen name="academic-paper"    options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="paper-editor"      options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="podcast-player"    options={{ animation: 'slide_from_right' }} />
+          
+          {/* Podcast Video Player - Full screen modal */}
+          <Stack.Screen
+            name="podcast-video-player"
+            options={{
+              headerShown:      false,
+              presentation:     'fullScreenModal',
+              animation:        'fade',
+              gestureEnabled:   true,
+              gestureDirection: 'vertical',
+            }}
+          />
+          
           <Stack.Screen name="debate-detail"     options={{ animation: 'slide_from_right' }} />
 
           {/* Podcast Series */}

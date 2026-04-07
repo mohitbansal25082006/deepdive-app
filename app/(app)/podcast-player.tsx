@@ -1,12 +1,5 @@
 // app/(app)/podcast-player.tsx
-// Part 39 FIXES:
-//
-// FIX 2 (duplicate episode prevention in AddToSeriesSheet):
-//   - addEpisode() now returns { success, alreadyInSeries, seriesName }
-//   - If alreadyInSeries is true, show "Already added" message instead of adding
-//   - Series rows that already contain this podcast show a checkmark and
-//     "Already added" label instead of the add button
-//   - On mount, AddToSeriesSheet fetches which series this podcast already belongs to
+// Part 40 UPDATE — Removed "Video Mode" promo card (kept videocam icon in header)
 
 import React, {
   useEffect, useState, useRef, useCallback, useMemo,
@@ -266,72 +259,44 @@ function TranscriptRow({ turn, isActive, speakers, onPress }: {
 }
 
 // ─── Add to Series Sheet ───────────────────────────────────────────────────────
-// FIX 2: Prevents adding the same podcast to the same series twice.
-// Shows a checkmark on series that already contain this podcast.
 
 function AddToSeriesSheet({ visible, podcast, onClose }: {
   visible: boolean; podcast: Podcast | null; onClose: () => void;
 }) {
-  const { series, loading, addEpisode, refresh } = usePodcastSeries();
-  const [saving,              setSaving]              = useState<string | null>(null);
-  // FIX 2: Track which series this podcast already belongs to
-  const [podcastSeriesId,     setPodcastSeriesId]     = useState<string | null>(null);
+  const { series, loading, addEpisode } = usePodcastSeries();
+  const [saving,               setSaving]              = useState<string | null>(null);
+  const [podcastSeriesId,      setPodcastSeriesId]     = useState<string | null>(null);
   const [loadingCurrentSeries, setLoadingCurrentSeries] = useState(false);
 
-  // FIX 2: When sheet opens, fetch the podcast's current series_id
   useEffect(() => {
     if (!visible || !podcast) return;
     setPodcastSeriesId(null);
     setLoadingCurrentSeries(true);
-    
     const fetchSeriesId = async () => {
       try {
         const { data, error } = await supabase
-          .from('podcasts')
-          .select('series_id')
-          .eq('id', podcast.id)
-          .single();
-        
-        if (!error && data) {
-          setPodcastSeriesId(data?.series_id ?? null);
-        }
-      } catch (err) {
-        // Handle error silently
-        console.error('Error fetching podcast series:', err);
-      } finally {
-        setLoadingCurrentSeries(false);
-      }
+          .from('podcasts').select('series_id').eq('id', podcast.id).single();
+        if (!error && data) setPodcastSeriesId(data?.series_id ?? null);
+      } catch (err) { console.error('Error fetching podcast series:', err); }
+      finally { setLoadingCurrentSeries(false); }
     };
-    
     fetchSeriesId();
   }, [visible, podcast?.id]);
 
   if (!podcast) return null;
 
   const handleAdd = async (s: typeof series[0]) => {
-    // FIX 2: Block if already in this series
     if (podcastSeriesId === s.id) {
-      Alert.alert(
-        'Already Added',
-        `This episode is already in "${s.name}".`,
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Already Added', `This episode is already in "${s.name}".`, [{ text: 'OK' }]);
       return;
     }
-
     setSaving(s.id);
     const result = await addEpisode(podcast.id, s.id, s.episodeCount + 1);
     setSaving(null);
-
     if (result.alreadyInSeries) {
-      Alert.alert(
-        'Already in Series',
-        `This episode is already in "${result.seriesName ?? s.name}".`,
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Already in Series', `This episode is already in "${result.seriesName ?? s.name}".`, [{ text: 'OK' }]);
       return;
     }
-
     if (result.success) {
       setPodcastSeriesId(s.id);
       onClose();
@@ -349,10 +314,7 @@ function AddToSeriesSheet({ visible, podcast, onClose }: {
           maxHeight: '60%', paddingBottom: SPACING.xl + 8,
         }}>
           <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.lg }} />
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', marginBottom: SPACING.md }}>
-            Add to Series
-          </Text>
-
+          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', marginBottom: SPACING.md }}>Add to Series</Text>
           {(loading || loadingCurrentSeries) ? (
             <ActivityIndicator color={COLORS.primary} style={{ paddingVertical: SPACING.xl }} />
           ) : series.length === 0 ? (
@@ -360,54 +322,30 @@ function AddToSeriesSheet({ visible, podcast, onClose }: {
               No series yet. Create one from the Podcast tab.
             </Text>
           ) : series.map(s => {
-            // FIX 2: check if this episode already belongs to this series
             const alreadyInThis = podcastSeriesId === s.id;
             return (
-              <TouchableOpacity
-                key={s.id}
-                disabled={saving === s.id || alreadyInThis}
-                onPress={() => handleAdd(s)}
+              <TouchableOpacity key={s.id} disabled={saving === s.id || alreadyInThis} onPress={() => handleAdd(s)}
                 style={{
                   flexDirection: 'row', alignItems: 'center', gap: 12,
                   padding: SPACING.md,
-                  backgroundColor: alreadyInThis
-                    ? `${s.accentColor}10`
-                    : COLORS.backgroundElevated,
+                  backgroundColor: alreadyInThis ? `${s.accentColor}10` : COLORS.backgroundElevated,
                   borderRadius: RADIUS.lg, marginBottom: SPACING.sm,
-                  borderWidth: 1,
-                  borderColor: alreadyInThis ? `${s.accentColor}40` : COLORS.border,
+                  borderWidth: 1, borderColor: alreadyInThis ? `${s.accentColor}40` : COLORS.border,
                   opacity: alreadyInThis ? 0.85 : 1,
-                }}
-              >
-                <View style={{
-                  width: 40, height: 40, borderRadius: 12,
-                  backgroundColor: `${s.accentColor}20`,
-                  alignItems: 'center', justifyContent: 'center',
                 }}>
+                <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${s.accentColor}20`, alignItems: 'center', justifyContent: 'center' }}>
                   <Ionicons name={(s.iconName ?? 'radio-outline') as any} size={18} color={s.accentColor} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{
-                    color: alreadyInThis ? s.accentColor : COLORS.textPrimary,
-                    fontSize: FONTS.sizes.sm, fontWeight: '600',
-                  }}>
-                    {s.name}
-                  </Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                    {alreadyInThis ? '✓ Already added' : `${s.episodeCount} episodes`}
-                  </Text>
+                  <Text style={{ color: alreadyInThis ? s.accentColor : COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>{s.name}</Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{alreadyInThis ? '✓ Already added' : `${s.episodeCount} episodes`}</Text>
                 </View>
-                {saving === s.id ? (
-                  <ActivityIndicator size="small" color={s.accentColor} />
-                ) : alreadyInThis ? (
-                  <Ionicons name="checkmark-circle" size={22} color={s.accentColor} />
-                ) : (
-                  <Ionicons name="add-circle-outline" size={22} color={s.accentColor} />
-                )}
+                {saving === s.id ? <ActivityIndicator size="small" color={s.accentColor} />
+                  : alreadyInThis ? <Ionicons name="checkmark-circle" size={22} color={s.accentColor} />
+                  : <Ionicons name="add-circle-outline" size={22} color={s.accentColor} />}
               </TouchableOpacity>
             );
           })}
-
           <TouchableOpacity onPress={onClose} style={{ alignItems: 'center', paddingVertical: 14, marginTop: 4 }}>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '600' }}>Cancel</Text>
           </TouchableOpacity>
@@ -440,16 +378,12 @@ export default function PodcastPlayerScreen() {
   useEffect(() => { userRef.current    = user; }, [user]);
   useEffect(() => { podcastRef.current = podcast; }, [podcast]);
 
-  // ── Load podcast ───────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!podcastId) { setLoadError('No podcast ID provided.'); setLoadingPodcast(false); return; }
     (async () => {
       try {
         const { data, error } = await supabase
-          .from('podcasts')
-          .select('*')
-          .eq('id', podcastId)
-          .single();
+          .from('podcasts').select('*').eq('id', podcastId).single();
         if (error || !data) { setLoadError('Could not load this episode.'); return; }
         setPodcast(mapRowToPodcast(data));
       } catch { setLoadError('Failed to load episode.'); }
@@ -457,7 +391,6 @@ export default function PodcastPlayerScreen() {
     })();
   }, [podcastId]);
 
-  // ── usePodcastPlayer ─────────────────────────────────────────────────────────
   const {
     playerState, currentTurn, progressPercent,
     startPlayback, resumeFrom, togglePlayPause,
@@ -465,19 +398,15 @@ export default function PodcastPlayerScreen() {
     setPlaybackRate, stopPlayback, detachScreen, formatTime,
   } = usePodcastPlayer(podcast);
 
-  // ── Register global progress save callback ─────────────────────────────────
   useEffect(() => {
     if (!user || !podcast) return;
     registerProgressSaveCallback((turnIdx, totalPosMs, totalDurMs) => {
       const u = userRef.current;
       const p = podcastRef.current;
-      if (u && p) {
-        savePlaybackProgress(u.id, p.id, turnIdx, totalPosMs, totalDurMs);
-      }
+      if (u && p) savePlaybackProgress(u.id, p.id, turnIdx, totalPosMs, totalDurMs);
     });
   }, [user?.id, podcast?.id]);
 
-  // ── Mini player bus ────────────────────────────────────────────────────────
   useEffect(() => {
     const unsub = MiniPlayerBus.subscribe((event: string) => {
       if (event === 'dismiss') {
@@ -492,7 +421,6 @@ export default function PodcastPlayerScreen() {
     return unsub;
   }, [stopPlayback]);
 
-  // ── beforeRemove: detach instead of stopping ──────────────────────────────────
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (_e) => {
       detachScreen();
@@ -505,7 +433,6 @@ export default function PodcastPlayerScreen() {
     return unsubscribe;
   }, [navigation, detachScreen, playerState]);
 
-  // ── Auto-start ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!podcast || loadingPodcast || hasStarted) return;
     setHasStarted(true);
@@ -523,25 +450,21 @@ export default function PodcastPlayerScreen() {
             await resumeFrom(data.last_turn_idx);
             return;
           }
-        } catch { /* non-fatal */ }
+        } catch {}
       }
       await startPlayback();
     })();
   }, [podcast, loadingPodcast, hasStarted, user]);
 
-  // ── Scroll transcript to active turn ──────────────────────────────────────────
   useEffect(() => {
     const idx = playerState.currentTurnIndex;
     if (idx >= 0 && transcriptRef.current) {
       try {
-        transcriptRef.current.scrollToIndex({
-          index: idx, animated: true, viewOffset: 60, viewPosition: 0.3,
-        });
+        transcriptRef.current.scrollToIndex({ index: idx, animated: true, viewOffset: 60, viewPosition: 0.3 });
       } catch {}
     }
   }, [playerState.currentTurnIndex]);
 
-  // Save on unmount
   useEffect(() => {
     return () => {
       const u = userRef.current;
@@ -552,13 +475,21 @@ export default function PodcastPlayerScreen() {
     };
   }, []);
 
-  const handleBack = useCallback(() => { router.back(); }, []);
-  const handleSeek = useCallback((percent: number) => { AudioEngine.seekToPercent(percent); }, []);
+  const handleBack  = useCallback(() => { router.back(); }, []);
+  const handleSeek  = useCallback((percent: number) => { AudioEngine.seekToPercent(percent); }, []);
 
   const handleSharedToWorkspace = useCallback((_id: string, name: string) => {
     setSharedToast(`Shared to "${name}"`);
     setTimeout(() => setSharedToast(null), 3000);
   }, []);
+
+  const openVideoMode = useCallback(() => {
+    if (!podcast) return;
+    router.push({
+      pathname: '/(app)/podcast-video-player' as any,
+      params:   { podcastId: podcast.id },
+    });
+  }, [podcast]);
 
   const isPlayingFromCloud = !podcast ? false
     : (() => {
@@ -627,6 +558,19 @@ export default function PodcastPlayerScreen() {
           </View>
 
           <View style={{ flexDirection: 'row', gap: 6 }}>
+            {/* Video Mode button */}
+            <TouchableOpacity
+              onPress={openVideoMode}
+              hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+              style={{
+                width: 40, height: 40, borderRadius: 12,
+                backgroundColor: `${COLORS.primary}15`,
+                alignItems: 'center', justifyContent: 'center',
+                borderWidth: 1, borderColor: `${COLORS.primary}35`,
+              }}
+            >
+              <Ionicons name="videocam-outline" size={18} color={COLORS.primary} />
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => setSeriesSheetVisible(true)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
               style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${COLORS.accent}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.accent}30` }}>
               <Ionicons name="albums-outline" size={18} color={COLORS.accent} />
@@ -650,7 +594,7 @@ export default function PodcastPlayerScreen() {
         )}
 
         {/* Player Card */}
-        <Animated.View entering={FadeInDown.duration(500).delay(50)} style={{ paddingHorizontal: SPACING.xl, marginBottom: SPACING.md }}>
+        <Animated.View entering={FadeInDown.duration(500).delay(50)} style={{ paddingHorizontal: SPACING.xl, marginBottom: SPACING.sm }}>
           <LinearGradient colors={['#1A1A35', '#0F0F28']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${activeColor}25`, alignItems: 'center' }}>
 
             {isPlayingFromCloud && (
@@ -727,7 +671,7 @@ export default function PodcastPlayerScreen() {
           <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.xs }}>
             Transcript
           </Text>
-          <View style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', maxHeight: SCREEN_HEIGHT * 0.4 }}>
+          <View style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', maxHeight: SCREEN_HEIGHT * 0.48 }}>
             <FlatList
               ref={transcriptRef}
               data={turns}
