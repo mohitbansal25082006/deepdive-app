@@ -1,12 +1,16 @@
 // app/(app)/_layout.tsx
 // Part 40 UPDATE — Registered voice-debate-player screen.
 //
-// Only change from Part 39 Fix (final):
-//   • Added <Stack.Screen name="voice-debate-player" ... /> entry
-//   • Uses slide_from_right animation (consistent with other player screens)
+// FIXES applied:
+//   • Removed <Stack.Screen name="public-report" .../> — file does not exist,
+//     caused "[Layout children]: No route named 'public-report'" warning.
+//   • Removed <Stack.Screen name="edit-profile" .../> — file does not exist,
+//     caused "[Layout children]: No route named 'edit-profile'" warning.
+//     Edit profile is handled via an inline Modal inside profile.tsx, not a
+//     separate route screen.
 //
 // All other screens, mini player logic, offline handling, onboarding,
-// suspended/deleted overlays are 100% preserved from Part 39.
+// suspended/deleted overlays are 100% preserved from Part 40.
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
@@ -117,7 +121,6 @@ function AppLayoutInner() {
           <Stack.Screen name="research-progress" />
           <Stack.Screen name="research-report"   />
           <Stack.Screen name="knowledge-graph"   options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="public-report"     options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
 
           {/* Presentations */}
           <Stack.Screen name="slide-preview"     options={{ animation: 'slide_from_right' }} />
@@ -126,7 +129,6 @@ function AppLayoutInner() {
           {/* Legacy */}
           <Stack.Screen name="bookmarks"         options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="compare-reports"   options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="edit-profile" />
 
           {/* Content formats */}
           <Stack.Screen name="academic-paper"    options={{ animation: 'slide_from_right' }} />
