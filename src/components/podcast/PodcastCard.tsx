@@ -1,6 +1,17 @@
 // src/components/podcast/PodcastCard.tsx
-// Redesigned: improved title visibility with full-width title row,
-// artwork thumbnail, and actions moved to bottom bar.
+// Part 39 FIX — Show all speaker names (2 or 3) from script.turns
+//
+// ROOT CAUSE of "3-person podcast shows only 2 names":
+//   The hosts line used `podcast.config.hostName & podcast.config.guestName`.
+//   config.guestName is always the FIRST guest (legacy V1 field) and has no
+//   knowledge of guest2. For V2 3-speaker podcasts, guest2's name lives only
+//   inside script.turns[].speakerName where speaker === 'guest2'.
+//
+// FIX:
+//   getSpeakerNames() extracts unique names from script.turns by role order:
+//     host → guest1 (or guest) → guest2
+//   Falls back to config fields for backward compat with old V1 episodes.
+//   Result displayed as "Alex, Sam & Chris" for 3-speaker episodes.
 
 import React                                   from 'react';
 import { View, Text, TouchableOpacity, Alert } from 'react-native';
@@ -10,6 +21,48 @@ import { COLORS, FONTS, SPACING, RADIUS }      from '../../constants/theme';
 import { Podcast }                             from '../../types';
 import { WaveformVisualizer }                  from './WaveformVisualizer';
 import { EpisodeArtwork }                      from './EpisodeArtwork';
+
+// ─── Speaker name extraction (V1 + V2 compatible) ────────────────────────────
+
+/**
+ * Returns an array of speaker display names in order: [host, guest1, guest2?]
+ * Works for both V1 (2-speaker) and V2 (3-speaker) podcasts.
+ */
+function getSpeakerNames(podcast: Podcast): string[] {
+  const turns = podcast.script?.turns ?? [];
+
+  // Build a map: role → first speakerName seen for that role
+  const nameByRole = new Map<string, string>();
+  for (const turn of turns) {
+    if (!nameByRole.has(turn.speaker) && turn.speakerName) {
+      nameByRole.set(turn.speaker, turn.speakerName);
+    }
+  }
+
+  const hostName  = nameByRole.get('host')   ?? podcast.config.hostName  ?? 'Host';
+  const guest1Name = nameByRole.get('guest1') ?? nameByRole.get('guest') ?? podcast.config.guestName ?? 'Guest';
+  const guest2Name = nameByRole.get('guest2') ?? null;
+
+  if (guest2Name) {
+    return [hostName, guest1Name, guest2Name];
+  }
+  return [hostName, guest1Name];
+}
+
+/**
+ * Format speaker names as a human-readable string.
+ *   2 speakers: "Alex & Sam"
+ *   3 speakers: "Alex, Sam & Chris"
+ */
+function formatSpeakerNames(names: string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} & ${names[1]}`;
+  // 3+: "A, B & C"
+  const last = names[names.length - 1];
+  const rest = names.slice(0, -1).join(', ');
+  return `${rest} & ${last}`;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -102,6 +155,11 @@ export function PodcastCard({
     ? `${COLORS.warning}30`
     : COLORS.border;
 
+  // ── Speaker names (V1 + V2 aware) ─────────────────────────────────────────
+  const speakerNames    = getSpeakerNames(podcast);
+  const speakersLine    = formatSpeakerNames(speakerNames);
+  const is3Speaker      = speakerNames.length >= 3;
+
   return (
     <Animated.View
       entering={FadeInDown.duration(400).delay(index * 50)}
@@ -183,17 +241,32 @@ export function PodcastCard({
               {podcast.title}
             </Text>
 
-            {/* Hosts */}
-            <Text
-              style={{
-                color:        COLORS.textMuted,
-                fontSize:     FONTS.sizes.xs,
-                marginBottom: 6,
-              }}
-              numberOfLines={1}
-            >
-              {podcast.config.hostName} & {podcast.config.guestName}
-            </Text>
+            {/* Hosts — shows ALL speaker names (2 or 3) */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+              <Text
+                style={{
+                  color:     COLORS.textMuted,
+                  fontSize:  FONTS.sizes.xs,
+                  flexShrink: 1,
+                }}
+                numberOfLines={1}
+              >
+                {speakersLine}
+              </Text>
+              {is3Speaker && (
+                <View style={{
+                  backgroundColor:   `${COLORS.accent}15`,
+                  borderRadius:      RADIUS.full,
+                  paddingHorizontal: 5,
+                  paddingVertical:   1,
+                  borderWidth:       1,
+                  borderColor:       `${COLORS.accent}25`,
+                  flexShrink:        0,
+                }}>
+                  <Text style={{ color: COLORS.accent, fontSize: 9, fontWeight: '700' }}>3 🎙</Text>
+                </View>
+              )}
+            </View>
 
             {/* Meta chips row */}
             <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -247,11 +320,11 @@ export function PodcastCard({
         {podcast.description ? (
           <Text
             style={{
-              color:           COLORS.textSecondary,
-              fontSize:        FONTS.sizes.xs,
-              lineHeight:      18,
+              color:             COLORS.textSecondary,
+              fontSize:          FONTS.sizes.xs,
+              lineHeight:        18,
               paddingHorizontal: SPACING.md,
-              paddingBottom:   SPACING.sm,
+              paddingBottom:     SPACING.sm,
             }}
             numberOfLines={2}
           >
@@ -262,13 +335,13 @@ export function PodcastCard({
         {/* ── Action bar ── */}
         {isCompleted && (
           <View style={{
-            flexDirection:   'row',
-            alignItems:      'center',
-            borderTopWidth:  1,
-            borderTopColor:  COLORS.border,
-            paddingVertical: 10,
+            flexDirection:     'row',
+            alignItems:        'center',
+            borderTopWidth:    1,
+            borderTopColor:    COLORS.border,
+            paddingVertical:   10,
             paddingHorizontal: SPACING.md,
-            gap:             8,
+            gap:               8,
           }}>
 
             {/* Play — primary CTA, expands */}

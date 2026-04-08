@@ -1,10 +1,16 @@
 // src/components/workspace/SharedPodcastCard.tsx
-// Part 15 — Card for displaying a shared podcast episode in the
-// workspace "Shared" tab alongside presentations and academic papers.
+// Part 39 FIX — Show all speaker names (2 or 3) extracted from script.turns
 //
-// Shows: title, hosts, duration, play/download count, sharer info, action buttons.
-// Members can: Play (opens player), Download MP3, Export PDF Script, Copy Script.
-// Editors/owners can also: Remove from workspace.
+// ROOT CAUSE:
+//   The hosts line used `item.hostName & item.guestName` — both come from the
+//   SharedPodcast row which only stores V1 config fields (host + single guest).
+//   For 3-speaker podcasts the third speaker's name (guest2) is only in
+//   item.script.turns[].speakerName.
+//
+// FIX:
+//   getSpeakerNamesFromScript() reads unique names from script.turns by role.
+//   Falls back to SharedPodcast.hostName / guestName for V1 episodes.
+//   Displays as "Alex & Sam" (2) or "Alex, Sam & Chris" (3).
 
 import React, { useState } from 'react';
 import {
@@ -14,21 +20,51 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { LinearGradient }    from 'expo-linear-gradient';
-import { Ionicons }           from '@expo/vector-icons';
+import { LinearGradient }       from 'expo-linear-gradient';
+import { Ionicons }              from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
-import { SharedPodcast, WorkspaceRole }   from '../../types';
+import { SharedPodcast, WorkspaceRole } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+
+// ─── Speaker name helpers ─────────────────────────────────────────────────────
+
+function getSpeakerNamesFromScript(item: SharedPodcast): string[] {
+  const turns = item.script?.turns ?? [];
+  const nameByRole = new Map<string, string>();
+
+  for (const turn of turns) {
+    const role = (turn as any).speaker as string;
+    if (role && !nameByRole.has(role) && (turn as any).speakerName) {
+      nameByRole.set(role, (turn as any).speakerName);
+    }
+  }
+
+  const hostName   = nameByRole.get('host')   ?? item.hostName  ?? 'Host';
+  const guest1Name = nameByRole.get('guest1') ?? nameByRole.get('guest') ?? item.guestName ?? 'Guest';
+  const guest2Name = nameByRole.get('guest2') ?? null;
+
+  if (guest2Name) return [hostName, guest1Name, guest2Name];
+  return [hostName, guest1Name];
+}
+
+function formatSpeakerNames(names: string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} & ${names[1]}`;
+  const last = names[names.length - 1];
+  const rest = names.slice(0, -1).join(', ');
+  return `${rest} & ${last}`;
+}
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
-  item:       SharedPodcast;
-  index:      number;
-  userRole:   WorkspaceRole | null;
-  onPlay:     (item: SharedPodcast) => void;
-  onRemove:   (item: SharedPodcast) => Promise<void>;
+  item:            SharedPodcast;
+  index:           number;
+  userRole:        WorkspaceRole | null;
+  onPlay:          (item: SharedPodcast) => void;
+  onRemove:        (item: SharedPodcast) => Promise<void>;
   onDownloadMP3?:  (item: SharedPodcast) => Promise<void>;
   onExportPDF?:    (item: SharedPodcast) => Promise<void>;
   onCopyScript?:   (item: SharedPodcast) => Promise<void>;
@@ -40,9 +76,9 @@ function formatDate(iso: string): string {
   const d    = new Date(iso);
   const now  = new Date();
   const diff = Math.floor((now.getTime() - d.getTime()) / 1000);
-  if (diff < 60)   return 'Just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 60)     return 'Just now';
+  if (diff < 3600)   return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400)  return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
@@ -75,6 +111,11 @@ export function SharedPodcastCard({
 
   const isEditor = userRole === 'owner' || userRole === 'editor';
 
+  // ── Speaker names (V1 + V2 aware) ─────────────────────────────────────────
+  const speakerNames = getSpeakerNamesFromScript(item);
+  const speakersLine = formatSpeakerNames(speakerNames);
+  const is3Speaker   = speakerNames.length >= 3;
+
   const handleRemove = () => {
     Alert.alert(
       'Remove Podcast',
@@ -82,8 +123,7 @@ export function SharedPodcastCard({
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text:  'Remove',
-          style: 'destructive',
+          text: 'Remove', style: 'destructive',
           onPress: async () => {
             setIsRemoving(true);
             await onRemove(item);
@@ -168,12 +208,13 @@ export function SharedPodcastCard({
 
             {/* Title block */}
             <View style={{ flex: 1 }}>
-              {/* Type badge */}
+              {/* Type badge + 3-speaker badge */}
               <View style={{
-                flexDirection:     'row',
-                alignItems:        'center',
-                gap:               4,
-                marginBottom:      4,
+                flexDirection: 'row',
+                alignItems:    'center',
+                gap:           5,
+                marginBottom:  4,
+                flexWrap:      'wrap',
               }}>
                 <View style={{
                   backgroundColor:   `${ACCENT}18`,
@@ -197,6 +238,19 @@ export function SharedPodcastCard({
                     Podcast Episode
                   </Text>
                 </View>
+
+                {is3Speaker && (
+                  <View style={{
+                    backgroundColor:   `${COLORS.accent}15`,
+                    borderRadius:      RADIUS.full,
+                    paddingHorizontal: 6,
+                    paddingVertical:   2,
+                    borderWidth:       1,
+                    borderColor:       `${COLORS.accent}25`,
+                  }}>
+                    <Text style={{ color: COLORS.accent, fontSize: 9, fontWeight: '700' }}>3 🎙</Text>
+                  </View>
+                )}
               </View>
 
               <Text
@@ -211,6 +265,7 @@ export function SharedPodcastCard({
                 {item.title}
               </Text>
 
+              {/* Speakers — shows ALL names (2 or 3) */}
               <Text
                 style={{
                   color:     COLORS.textMuted,
@@ -219,7 +274,7 @@ export function SharedPodcastCard({
                 }}
                 numberOfLines={1}
               >
-                {item.hostName} & {item.guestName}
+                {speakersLine}
               </Text>
             </View>
 
@@ -256,16 +311,10 @@ export function SharedPodcastCard({
             marginBottom:  SPACING.sm,
           }}>
             {item.durationSeconds > 0 && (
-              <MetaChip
-                icon="time-outline"
-                label={formatDuration(item.durationSeconds)}
-              />
+              <MetaChip icon="time-outline" label={formatDuration(item.durationSeconds)} />
             )}
             {item.wordCount > 0 && (
-              <MetaChip
-                icon="text-outline"
-                label={`${item.wordCount.toLocaleString()} words`}
-              />
+              <MetaChip icon="text-outline" label={`${item.wordCount.toLocaleString()} words`} />
             )}
             {item.playCount > 0 && (
               <MetaChip
@@ -318,11 +367,7 @@ export function SharedPodcastCard({
                 <Ionicons name="person-outline" size={12} color={ACCENT} />
               </View>
               <Text
-                style={{
-                  color:    COLORS.textMuted,
-                  fontSize: FONTS.sizes.xs,
-                  flex:     1,
-                }}
+                style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1 }}
                 numberOfLines={1}
               >
                 {item.sharerName ?? 'Someone'} · {formatDate(item.sharedAt)}
@@ -331,7 +376,6 @@ export function SharedPodcastCard({
 
             {/* Action buttons */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {/* Download MP3 */}
               {onDownloadMP3 && hasAudio && (
                 <TouchableOpacity
                   onPress={handleDownloadMP3}
@@ -345,7 +389,6 @@ export function SharedPodcastCard({
                 </TouchableOpacity>
               )}
 
-              {/* Export PDF */}
               {onExportPDF && (
                 <TouchableOpacity
                   onPress={handleExportPDF}
@@ -359,7 +402,6 @@ export function SharedPodcastCard({
                 </TouchableOpacity>
               )}
 
-              {/* Copy Script */}
               {onCopyScript && (
                 <TouchableOpacity
                   onPress={handleCopyScript}
@@ -408,14 +450,8 @@ export function SharedPodcastCard({
 // ─── MetaChip ─────────────────────────────────────────────────────────────────
 
 function MetaChip({
-  icon,
-  label,
-  color = COLORS.textMuted,
-}: {
-  icon:   string;
-  label:  string;
-  color?: string;
-}) {
+  icon, label, color = COLORS.textMuted,
+}: { icon: string; label: string; color?: string }) {
   return (
     <View style={{
       flexDirection:     'row',

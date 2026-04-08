@@ -1,26 +1,31 @@
 // app/(app)/workspace-shared-podcast-player.tsx
-// Part 15 — Full-screen podcast player for workspace members.
+// Part 39 FIX — Full 3-speaker support, matching podcast-player.tsx
 //
-// KEY DIFFERENCES from podcast-player.tsx:
-//   • Loads from shared_podcasts table (SECURITY DEFINER RPC) — works for
-//     members who don't own the source podcast row.
-//   • NO generation controls — read/play/download only.
-//   • Shows sharer info + workspace context in header.
-//   • Download buttons: MP3, PDF Script, Copy Script.
-//   • Play count and download count are tracked in DB via RPCs.
-//   • If audio segments are missing (cleared by OS) shows graceful
-//     "audio unavailable" state with script-only mode (transcript readable).
+// ROOT CAUSE of 3-speaker issues in workspace player:
+//   1. SpeakerAvatar section hardcoded exactly 2 avatars (host + guest).
+//   2. TranscriptRow only handled speaker === 'host' vs 'guest' (no guest2).
+//   3. ProgressBar seek only handled 2-speaker name lookup.
+//   4. Title subtitle showed "X of Y turns" but no 3-speaker badge.
 //
-// Route params:
-//   workspaceId  — UUID of the workspace (required)
-//   sharedId     — UUID of the shared_podcasts row (required)
-//   contentTitle — display title shown while loading (optional)
+// FIXES:
+//   1. getSpeakersFromScript() extracts unique speakers from script.turns
+//      → builds [host, guest1, guest2?] array with name+color+role.
+//   2. SpeakerAvatars row renders dynamically from that array (2 or 3).
+//   3. TranscriptRow resolves name/color from the speakers array.
+//   4. Subtitle shows "· 3 speakers" badge when applicable.
+//   5. All backward-compatible with V1 episodes (speaker === 'guest').
+//
+// CHANGES (latest):
+//   - Removed PDF Script download button from the download bar.
+//   - Moved Download MP3 button to the header (music note icon).
+//   - Download bar section removed entirely (was only holding those two buttons).
 
 import React, {
   useEffect,
   useRef,
   useCallback,
   useState,
+  useMemo,
 } from 'react';
 import {
   View,
@@ -48,11 +53,63 @@ import { useSharedPodcastPlayer }   from '../../src/hooks/useSharedPodcastPlayer
 import { WaveformVisualizer }        from '../../src/components/podcast/WaveformVisualizer';
 import { LoadingOverlay }            from '../../src/components/common/LoadingOverlay';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
-import { PodcastTurn }               from '../../src/types';
+import type { PodcastTurn, SharedPodcast } from '../../src/types';
 
 const RATE_OPTIONS  = [0.75, 1.0, 1.25, 1.5, 2.0];
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const ACCENT = '#FF6584';
+
+// ─── Speaker config type ──────────────────────────────────────────────────────
+
+interface SpeakerInfo {
+  role:   string;
+  name:   string;
+  color:  string;
+  label:  string;
+}
+
+// ─── Extract speakers from script turns (V1 + V2 aware) ──────────────────────
+
+function getSpeakersFromScript(sp: SharedPodcast): SpeakerInfo[] {
+  const turns = sp.script?.turns ?? [];
+  const nameByRole = new Map<string, string>();
+
+  // Walk turns in order to capture first speakerName seen per role
+  for (const turn of turns) {
+    const role = (turn as any).speaker as string;
+    if (role && !nameByRole.has(role) && (turn as any).speakerName) {
+      nameByRole.set(role, (turn as any).speakerName);
+    }
+  }
+
+  const hostName   = nameByRole.get('host')   ?? sp.hostName  ?? 'Host';
+  const guest1Name = nameByRole.get('guest1') ?? nameByRole.get('guest') ?? sp.guestName ?? 'Guest';
+  const guest2Name = nameByRole.get('guest2') ?? null;
+
+  const speakers: SpeakerInfo[] = [
+    { role: 'host',   name: hostName,   color: ACCENT,         label: 'HOST' },
+    { role: 'guest1', name: guest1Name, color: COLORS.primary, label: 'GUEST' },
+  ];
+
+  if (guest2Name) {
+    speakers.push({ role: 'guest2', name: guest2Name, color: '#43E97B', label: 'GUEST 2' });
+  }
+
+  return speakers;
+}
+
+/**
+ * Given a turn's speaker field, return matching SpeakerInfo.
+ * Handles both V1 ('guest') and V2 ('guest1', 'guest2') roles.
+ */
+function resolveSpeaker(
+  speakerRole: string | undefined,
+  speakers: SpeakerInfo[],
+): SpeakerInfo {
+  // V1 compat: 'guest' maps to guest1 slot
+  const role = speakerRole === 'guest' ? 'guest1' : (speakerRole ?? 'host');
+  return speakers.find(s => s.role === role) ?? speakers[0];
+}
 
 // ─── Speaker Avatar ───────────────────────────────────────────────────────────
 
@@ -123,7 +180,7 @@ function ProgressBar({
   currentPositionMs: number;
   formatTime:        (ms: number) => string;
 }) {
-  const [barWidth,  setBarWidth]  = useState(0);
+  const [barWidth, setBarWidth] = useState(0);
   const fillWidth = useSharedValue(0);
 
   useEffect(() => {
@@ -171,18 +228,16 @@ function ProgressBar({
 function TranscriptRow({
   turn,
   isActive,
-  hostName,
-  guestName,
+  speakers,
   onPress,
 }: {
-  turn:      PodcastTurn;
-  isActive:  boolean;
-  hostName:  string;
-  guestName: string;
-  onPress:   () => void;
+  turn:     PodcastTurn;
+  isActive: boolean;
+  speakers: SpeakerInfo[];
+  onPress:  () => void;
 }) {
-  const isHost = turn.speaker === 'host';
-  const color  = isHost ? ACCENT : COLORS.primary;
+  const sp    = resolveSpeaker(turn.speaker, speakers);
+  const color = sp.color;
 
   return (
     <TouchableOpacity
@@ -207,7 +262,7 @@ function TranscriptRow({
           fontWeight: '700',
           textAlign:  'center',
         }}>
-          {isHost ? hostName : guestName}
+          {sp.name}
         </Text>
       </View>
       <View style={{ flex: 1 }}>
@@ -243,16 +298,21 @@ function AudioUnavailableBanner() {
       <Ionicons name="alert-circle-outline" size={18} color={COLORS.warning} />
       <View style={{ flex: 1 }}>
         <Text style={{
-          color:      COLORS.warning,
-          fontSize:   FONTS.sizes.sm,
-          fontWeight: '700',
+          color:        COLORS.warning,
+          fontSize:     FONTS.sizes.sm,
+          fontWeight:   '700',
           marginBottom: 2,
         }}>
           Audio Not Available
         </Text>
-        <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, opacity: 0.85, lineHeight: 16 }}>
+        <Text style={{
+          color:      COLORS.warning,
+          fontSize:   FONTS.sizes.xs,
+          opacity:    0.85,
+          lineHeight: 16,
+        }}>
           The audio files were generated on another device and aren't cached here.
-          You can still read the transcript and download the PDF script below.
+          You can still read the transcript below.
         </Text>
       </View>
     </View>
@@ -290,9 +350,26 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
     reload,
   } = useSharedPodcastPlayer(workspaceId, sharedId);
 
-  const [hasStarted,  setHasStarted]  = useState(false);
+  const [hasStarted,   setHasStarted]   = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
   const transcriptRef = useRef<FlatList>(null);
+
+  // ── Derive speaker array (memoized) ──────────────────────────────────────
+  const speakers = useMemo<SpeakerInfo[]>(() => {
+    if (!state.sharedPodcast) return [
+      { role: 'host',   name: 'Host',  color: ACCENT,         label: 'HOST'  },
+      { role: 'guest1', name: 'Guest', color: COLORS.primary, label: 'GUEST' },
+    ];
+    return getSpeakersFromScript(state.sharedPodcast);
+  }, [state.sharedPodcast]);
+
+  const is3Speaker = speakers.length >= 3;
+
+  // ── Active speaker (current turn) ─────────────────────────────────────────
+  const activeSpeaker = useMemo(
+    () => resolveSpeaker(currentTurn?.speaker, speakers),
+    [currentTurn, speakers]
+  );
 
   // Auto-start playback once loaded (only if audio is available)
   useEffect(() => {
@@ -330,7 +407,7 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
 
   const handleSeek = useCallback((percent: number) => {
     if (!state.podcast) return;
-    const turns   = state.podcast.script?.turns ?? [];
+    const turns    = state.podcast.script?.turns ?? [];
     const targetMs = percent * state.player.totalDurationMs;
     let cumMs = 0;
     for (let i = 0; i < turns.length; i++) {
@@ -354,12 +431,7 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
   // ── Loading ───────────────────────────────────────────────────────────────
 
   if (state.isLoadingPodcast) {
-    return (
-      <LoadingOverlay
-        visible
-        message={`Loading episode…`}
-      />
-    );
+    return <LoadingOverlay visible message="Loading episode…" />;
   }
 
   // ── Error / not found ─────────────────────────────────────────────────────
@@ -397,11 +469,8 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
     );
   }
 
-  // ── Main ──────────────────────────────────────────────────────────────────
-
   const sp    = state.sharedPodcast;
   const turns = state.podcast.script?.turns ?? [];
-  const isHost = currentTurn?.speaker !== 'guest';
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -414,7 +483,13 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
           </TouchableOpacity>
 
           <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: SPACING.sm }}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>
+            <Text style={{
+              color:         COLORS.textMuted,
+              fontSize:      FONTS.sizes.xs,
+              fontWeight:    '600',
+              textTransform: 'uppercase',
+              letterSpacing: 1,
+            }}>
               Workspace Episode
             </Text>
             {sp.sharerName && (
@@ -424,9 +499,8 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
             )}
           </View>
 
-          {/* Export actions */}
+          {/* Header action icons: copy script, export PDF, download MP3 */}
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            {/* Copy script */}
             <TouchableOpacity
               onPress={handleCopyScript}
               style={styles.iconBtn}
@@ -439,7 +513,6 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
               />
             </TouchableOpacity>
 
-            {/* Export PDF Script */}
             <TouchableOpacity
               onPress={downloadPDF}
               disabled={state.isExporting}
@@ -450,6 +523,20 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
                 ? <ActivityIndicator size="small" color={COLORS.primary} />
                 : <Ionicons name="document-text-outline" size={17} color={COLORS.textSecondary} />}
             </TouchableOpacity>
+
+            {/* Download MP3 — only shown when audio is available */}
+            {state.hasAudio && (
+              <TouchableOpacity
+                onPress={downloadMP3}
+                disabled={state.isExporting}
+                style={[styles.iconBtn, { opacity: state.isExporting ? 0.6 : 1 }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                {state.isExporting
+                  ? <ActivityIndicator size="small" color={ACCENT} />
+                  : <Ionicons name="musical-notes-outline" size={17} color={ACCENT} />}
+              </TouchableOpacity>
+            )}
           </View>
         </Animated.View>
 
@@ -467,7 +554,7 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
               borderRadius: RADIUS.xl,
               padding:      SPACING.lg,
               borderWidth:  1,
-              borderColor:  `${ACCENT}25`,
+              borderColor:  `${activeSpeaker.color}25`,
               alignItems:   'center',
             }}
           >
@@ -475,52 +562,45 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
             <View style={{ marginBottom: SPACING.lg }}>
               <WaveformVisualizer
                 isPlaying={state.player.isPlaying}
-                color={isHost ? ACCENT : COLORS.primary}
+                color={activeSpeaker.color}
                 barWidth={6}
                 barGap={4}
                 maxHeight={48}
               />
             </View>
 
-            {/* Speaker avatars */}
+            {/* Speaker avatars — dynamic 2 or 3 */}
             <View style={{
               flexDirection:  'row',
               alignItems:     'flex-end',
               justifyContent: 'center',
-              gap:            SPACING.lg,
+              gap:            is3Speaker ? SPACING.md : SPACING.lg,
               marginBottom:   SPACING.sm,
             }}>
-              <View style={{ alignItems: 'center', gap: 4 }}>
-                <SpeakerAvatar
-                  name={sp.hostName}
-                  isActive={currentTurn?.speaker === 'host'}
-                  color={ACCENT}
-                />
-                <Text style={{
-                  color:      currentTurn?.speaker === 'host' ? ACCENT : COLORS.textMuted,
-                  fontSize:   FONTS.sizes.xs,
-                  fontWeight: '600',
-                }}>
-                  {sp.hostName}
-                </Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>HOST</Text>
-              </View>
-
-              <View style={{ alignItems: 'center', gap: 4 }}>
-                <SpeakerAvatar
-                  name={sp.guestName}
-                  isActive={currentTurn?.speaker === 'guest'}
-                  color={COLORS.primary}
-                />
-                <Text style={{
-                  color:      currentTurn?.speaker === 'guest' ? COLORS.primary : COLORS.textMuted,
-                  fontSize:   FONTS.sizes.xs,
-                  fontWeight: '600',
-                }}>
-                  {sp.guestName}
-                </Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>GUEST</Text>
-              </View>
+              {speakers.map(sp => {
+                const isActive = resolveSpeaker(currentTurn?.speaker, speakers).role === sp.role;
+                return (
+                  <View key={sp.role} style={{ alignItems: 'center', gap: 4 }}>
+                    <SpeakerAvatar
+                      name={sp.name}
+                      isActive={isActive}
+                      color={sp.color}
+                    />
+                    <Text style={{
+                      color:      isActive ? sp.color : COLORS.textMuted,
+                      fontSize:   FONTS.sizes.xs,
+                      fontWeight: '600',
+                      textAlign:  'center',
+                      maxWidth:   70,
+                    }}
+                      numberOfLines={1}
+                    >
+                      {sp.name}
+                    </Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>{sp.label}</Text>
+                  </View>
+                );
+              })}
             </View>
 
             {/* Title */}
@@ -534,6 +614,8 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
             }}>
               {sp.title}
             </Text>
+
+            {/* Subtitle */}
             <Text style={{
               color:        COLORS.textMuted,
               fontSize:     FONTS.sizes.xs,
@@ -541,6 +623,7 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
               marginBottom: SPACING.md,
             }}>
               Turn {state.player.currentTurnIndex + 1} of {turns.length}
+              {is3Speaker ? ' · 3 speakers' : ''}
             </Text>
 
             {/* Progress bar */}
@@ -554,7 +637,7 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
               />
             </View>
 
-            {/* Controls — disabled if no audio */}
+            {/* Playback controls */}
             <View style={{
               flexDirection:  'row',
               alignItems:     'center',
@@ -640,71 +723,6 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
           </LinearGradient>
         </Animated.View>
 
-        {/* ── Download bar ── */}
-        <Animated.View
-          entering={FadeInDown.duration(400).delay(100)}
-          style={{
-            flexDirection:     'row',
-            paddingHorizontal: SPACING.xl,
-            gap:               SPACING.sm,
-            marginBottom:      SPACING.sm,
-          }}
-        >
-          {/* Download MP3 */}
-          {state.hasAudio && (
-            <TouchableOpacity
-              onPress={downloadMP3}
-              disabled={state.isExporting}
-              style={{
-                flex:            1,
-                flexDirection:   'row',
-                alignItems:      'center',
-                justifyContent:  'center',
-                gap:             6,
-                backgroundColor: `${ACCENT}15`,
-                borderRadius:    RADIUS.lg,
-                paddingVertical: 10,
-                borderWidth:     1,
-                borderColor:     `${ACCENT}30`,
-                opacity:         state.isExporting ? 0.6 : 1,
-              }}
-            >
-              {state.isExporting
-                ? <ActivityIndicator size="small" color={ACCENT} />
-                : <Ionicons name="download-outline" size={15} color={ACCENT} />}
-              <Text style={{ color: ACCENT, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
-                Download MP3
-              </Text>
-            </TouchableOpacity>
-          )}
-
-          {/* Export PDF Script */}
-          <TouchableOpacity
-            onPress={downloadPDF}
-            disabled={state.isExporting}
-            style={{
-              flex:            1,
-              flexDirection:   'row',
-              alignItems:      'center',
-              justifyContent:  'center',
-              gap:             6,
-              backgroundColor: COLORS.backgroundElevated,
-              borderRadius:    RADIUS.lg,
-              paddingVertical: 10,
-              borderWidth:     1,
-              borderColor:     COLORS.border,
-              opacity:         state.isExporting ? 0.6 : 1,
-            }}
-          >
-            {state.isExporting
-              ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-              : <Ionicons name="document-text-outline" size={15} color={COLORS.textMuted} />}
-            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
-              PDF Script
-            </Text>
-          </TouchableOpacity>
-        </Animated.View>
-
         {/* ── Transcript ── */}
         <Animated.View
           entering={FadeInDown.duration(500).delay(150)}
@@ -741,8 +759,7 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
                 <TranscriptRow
                   turn={item}
                   isActive={index === state.player.currentTurnIndex}
-                  hostName={sp.hostName}
-                  guestName={sp.guestName}
+                  speakers={speakers}
                   onPress={() => state.hasAudio && skipToTurn(index)}
                 />
               )}
@@ -802,14 +819,14 @@ const styles = StyleSheet.create({
     gap:            12,
   },
   errorIconWrap: {
-    width:          80,
-    height:         80,
-    borderRadius:   22,
+    width:           80,
+    height:          80,
+    borderRadius:    22,
     backgroundColor: COLORS.backgroundCard,
-    alignItems:     'center',
-    justifyContent: 'center',
-    borderWidth:    1,
-    borderColor:    COLORS.border,
+    alignItems:      'center',
+    justifyContent:  'center',
+    borderWidth:     1,
+    borderColor:     COLORS.border,
   },
   errorTitle: {
     color:      COLORS.textPrimary,
