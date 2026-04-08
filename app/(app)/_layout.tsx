@@ -1,23 +1,12 @@
 // app/(app)/_layout.tsx
-// Part 39 Fix (final) — Updated mini player integration:
+// Part 40 UPDATE — Registered voice-debate-player screen.
 //
-// REMOVED (no longer needed):
-//   • registerFallbackMiniPlayerCallback — MiniPlayer now subscribes to
-//     GlobalAudioEngine directly, no callback threading needed
-//   • toggleGlobalAudio from MiniPlayerBus 'toggle' handler — MiniPlayer.tsx
-//     now calls AudioEngine.toggle() directly on button press, so the bus
-//     'toggle' event is never emitted
-//   • state={miniPlayerState} prop on <MiniPlayer /> — MiniPlayer reads its
-//     own state from GlobalAudioEngine subscription
-//   • updateMiniPlayer from useMiniPlayerContext destructure — no longer used
+// Only change from Part 39 Fix (final):
+//   • Added <Stack.Screen name="voice-debate-player" ... /> entry
+//   • Uses slide_from_right animation (consistent with other player screens)
 //
-// KEPT UNCHANGED:
-//   • stopGlobalAudio on 'dismiss' bus event (still needed as a safety net
-//     in case dismiss fires while podcast-player is not mounted)
-//   • hideMiniPlayer on 'dismiss' (stops audio + hides overlay)
-//   • All onboarding, offline, suspended, deleted screen logic
-//   • All Stack.Screen registrations
-//   • isOnPlayerScreen guard (hides mini player while full player is open)
+// All other screens, mini player logic, offline handling, onboarding,
+// suspended/deleted overlays are 100% preserved from Part 39.
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
@@ -44,7 +33,6 @@ function AppLayoutInner() {
   const { user, profile, profileLoading, accountDeleted } = useAuth();
   const pathname                                          = usePathname();
 
-  // hideMiniPlayer still needed for the 'dismiss' bus event
   const { hideMiniPlayer } = useMiniPlayerContext();
 
   const offlineFade = useRef(new Animated.Value(0)).current;
@@ -70,28 +58,18 @@ function AppLayoutInner() {
     return unsubscribe;
   }, []);
 
-  // Mini player bus — global subscriber (always mounted).
-  //
-  // 'toggle' is NO LONGER handled here.
-  //   MiniPlayer.tsx calls AudioEngine.toggle() directly, so the 'toggle' event
-  //   is never emitted from the bus. The handler below is kept as a safety stub
-  //   in case any other code still emits 'toggle', but it's effectively dead code.
-  //
-  // 'dismiss' → stop audio + hide mini player overlay.
-  //   AudioEngine.stop() is called first (clears sound, resets engine state),
-  //   then hideMiniPlayer() (which also calls AudioEngine.stop() — idempotent).
+  // Mini player bus — global subscriber
   useEffect(() => {
     const unsub = MiniPlayerBus.subscribe(async (event: string) => {
       if (event === 'dismiss') {
         await stopGlobalAudio();
         hideMiniPlayer();
       }
-      // 'toggle' intentionally not handled here — MiniPlayer.tsx handles it directly
     });
     return unsub;
   }, [hideMiniPlayer]);
 
-  // Onboarding check — runs once after profile loads
+  // Onboarding check
   const onboardingChecked = useRef(false);
 
   useEffect(() => {
@@ -118,9 +96,9 @@ function AppLayoutInner() {
   const isSuspended       = !isDeleted && profile?.account_status === 'suspended';
   const blockInteractions = (isOffline && !isConnecting) || isSuspended || isDeleted;
 
-  // Hide mini player while the full podcast-player screen is open to prevent overlap.
-  // When podcast-player is open, it shows its own full-screen controls.
-  const isOnPlayerScreen = pathname?.includes('podcast-player') ?? false;
+  // Hide mini player while full player screens are open
+  const isOnPlayerScreen =
+    (pathname?.includes('podcast-player') || pathname?.includes('voice-debate-player')) ?? false;
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
@@ -154,8 +132,8 @@ function AppLayoutInner() {
           <Stack.Screen name="academic-paper"    options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="paper-editor"      options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="podcast-player"    options={{ animation: 'slide_from_right' }} />
-          
-          {/* Podcast Video Player - Full screen modal */}
+
+          {/* Podcast Video Player */}
           <Stack.Screen
             name="podcast-video-player"
             options={{
@@ -166,8 +144,21 @@ function AppLayoutInner() {
               gestureDirection: 'vertical',
             }}
           />
-          
+
+          {/* Debate */}
           <Stack.Screen name="debate-detail"     options={{ animation: 'slide_from_right' }} />
+
+          {/* Part 40: Voice Debate Player ─────────────────────────────── */}
+          <Stack.Screen
+            name="voice-debate-player"
+            options={{
+              headerShown:      false,
+              presentation:     'fullScreenModal',
+              animation:        'slide_from_bottom',
+              gestureEnabled:   true,
+              gestureDirection: 'vertical',
+            }}
+          />
 
           {/* Podcast Series */}
           <Stack.Screen name="podcast-series"    options={{ animation: 'slide_from_right' }} />
@@ -226,11 +217,7 @@ function AppLayoutInner() {
         {(isOffline || prevOffline.current) && <OfflineScreen />}
       </Animated.View>
 
-      {/*
-        MiniPlayer — only shown when NOT on the full podcast-player screen.
-        MiniPlayer.tsx now subscribes to GlobalAudioEngine directly.
-        No state prop needed — it reads its own isVisible/progress/etc from the engine.
-      */}
+      {/* Mini Player — hidden while voice-debate-player or podcast-player is open */}
       {!isOnPlayerScreen && <MiniPlayer />}
     </View>
   );

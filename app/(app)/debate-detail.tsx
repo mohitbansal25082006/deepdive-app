@@ -1,11 +1,11 @@
 // app/(app)/debate-detail.tsx
-// Part 16 UPDATE — Added workspace share button + ShareDebateToWorkspaceModal.
+// Part 40 UPDATE — Integrates Voice Debate card into Overview tab.
 //
-// Changes from Part 9:
-//   • Share-to-workspace icon button added to navigation header (top-right)
-//   • ShareDebateToWorkspaceModal integrated
-//   • useDebateSharedWorkspaces hook shows shared badge count in header
-//   • All existing functionality (3 tabs, export bar) unchanged
+// Changes from Part 16:
+//   • Imports useVoiceDebate hook
+//   • VoiceDebateCard rendered in OverviewTab below stats/verdict/stance grid
+//   • useVoiceDebate(session) called at top level of DebateDetailScreen
+//   • All existing functionality (tabs, export bar, workspace share) unchanged
 
 import React, {
   useState,
@@ -34,7 +34,9 @@ import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/the
 import { DebatePerspectiveView }                   from '../../src/components/debate/DebatePerspectiveView';
 import { ModeratorSummary }                        from '../../src/components/debate/ModeratorSummary';
 import { ShareDebateToWorkspaceModal }             from '../../src/components/workspace/ShareDebateToWorkspaceModal';
+import { VoiceDebateCard }                         from '../../src/components/debate/VoiceDebateCard';
 import { useDebateSharedWorkspaces }               from '../../src/hooks/useDebateSharing';
+import { useVoiceDebate }                          from '../../src/hooks/useVoiceDebate';
 import {
   exportDebateAsPDF,
   copyDebateSummary,
@@ -108,13 +110,9 @@ function ExportBar({ session }: { session: DebateSession }) {
   const handlePDF = async () => {
     if (busy) return;
     setBusy('pdf');
-    try {
-      await exportDebateAsPDF(session);
-    } catch (err) {
-      Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not generate PDF. Try again.');
-    } finally {
-      setBusy(null);
-    }
+    try { await exportDebateAsPDF(session); }
+    catch (err) { Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not generate PDF.'); }
+    finally { setBusy(null); }
   };
 
   const handleCopy = async () => {
@@ -124,23 +122,16 @@ function ExportBar({ session }: { session: DebateSession }) {
       await copyDebateSummary(session);
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
-    } catch {
-      Alert.alert('Error', 'Could not copy to clipboard.');
-    } finally {
-      setBusy(null);
-    }
+    } catch { Alert.alert('Error', 'Could not copy to clipboard.'); }
+    finally { setBusy(null); }
   };
 
   const handleShare = async () => {
     if (busy) return;
     setBusy('share');
-    try {
-      await shareDebateText(session);
-    } catch {
-      // user cancelled share sheet
-    } finally {
-      setBusy(null);
-    }
+    try { await shareDebateText(session); }
+    catch { /* user cancelled */ }
+    finally { setBusy(null); }
   };
 
   type ExportOption = {
@@ -195,9 +186,16 @@ function ExportBar({ session }: { session: DebateSession }) {
   );
 }
 
-// ─── Overview tab ─────────────────────────────────────────────────────────────
+// ─── Overview Tab ─────────────────────────────────────────────────────────────
+// Part 40: VoiceDebateCard is passed in as a prop and rendered at the bottom.
 
-function OverviewTab({ session }: { session: DebateSession }) {
+function OverviewTab({
+  session,
+  voiceDebateSlot,
+}: {
+  session:         DebateSession;
+  voiceDebateSlot: React.ReactNode;
+}) {
   const forCount     = session.perspectives.filter(
     p => p.stanceType === 'for' || p.stanceType === 'strongly_for').length;
   const againstCount = session.perspectives.filter(
@@ -307,6 +305,9 @@ function OverviewTab({ session }: { session: DebateSession }) {
         ))}
       </View>
 
+      {/* ── Part 40: Voice Debate Card ─────────────────────────────────── */}
+      {voiceDebateSlot}
+
       {completedDate && (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: SPACING.sm }}>
           <Ionicons name="time-outline" size={13} color={COLORS.textMuted} />
@@ -319,7 +320,7 @@ function OverviewTab({ session }: { session: DebateSession }) {
   );
 }
 
-// ─── Main screen ──────────────────────────────────────────────────────────────
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function DebateDetailScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
@@ -333,6 +334,14 @@ export default function DebateDetailScreen() {
   const [showShareModal, setShowShareModal] = useState(false);
   const { workspaceIds: sharedToIds, reload: reloadShared } =
     useDebateSharedWorkspaces(sessionId);
+
+  // ── Part 40: Voice debate generation hook ─────────────────────────────────
+  const {
+    state:           voiceDebateGenState,
+    isGenerating:    isVoiceGenerating,
+    isLoadingExisting,
+    generate:        generateVoiceDebate,
+  } = useVoiceDebate(session);
 
   // ── Load session ──────────────────────────────────────────────────────────
 
@@ -401,6 +410,19 @@ export default function DebateDetailScreen() {
     );
   }
 
+  // ── Voice debate card slot ─────────────────────────────────────────────────
+  // Only show if the debate is completed (can't voice a debate that's still running)
+
+  const voiceDebateSlot = session.status === 'completed' ? (
+    <VoiceDebateCard
+      session={session}
+      existingDebate={voiceDebateGenState.voiceDebate}
+      genState={voiceDebateGenState}
+      onGenerate={generateVoiceDebate}
+      isGenerating={isVoiceGenerating}
+    />
+  ) : null;
+
   // ── Main render ───────────────────────────────────────────────────────────
 
   return (
@@ -436,10 +458,13 @@ export default function DebateDetailScreen() {
             </Text>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
               {session.perspectives.length} perspectives · {session.searchResultsCount} sources
+              {voiceDebateGenState.voiceDebate?.status === 'completed'
+                ? ' · 🎙 Voice ready'
+                : ''}
             </Text>
           </View>
 
-          {/* ── Part 16: Share to workspace button (UPDATED ICON) ── */}
+          {/* Part 16: Share to workspace button */}
           <TouchableOpacity
             onPress={() => setShowShareModal(true)}
             style={{
@@ -459,11 +484,10 @@ export default function DebateDetailScreen() {
             }}
           >
             <Ionicons
-              name="people-outline"  // Changed from "share-social-outline" to "people-outline" for two-person icon
+              name="people-outline"
               size={18}
               color={sharedToIds.length > 0 ? COLORS.success : COLORS.textSecondary}
             />
-            {/* Badge showing count of workspaces it's shared to */}
             {sharedToIds.length > 0 && (
               <View style={{
                 position:        'absolute',
@@ -539,7 +563,12 @@ export default function DebateDetailScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {activeTab === 'overview' && <OverviewTab session={session} />}
+          {activeTab === 'overview' && (
+            <OverviewTab
+              session={session}
+              voiceDebateSlot={voiceDebateSlot}
+            />
+          )}
 
           {activeTab === 'perspectives' && (
             <Animated.View entering={FadeIn.duration(300)}>
@@ -565,7 +594,6 @@ export default function DebateDetailScreen() {
           onClose={() => setShowShareModal(false)}
           onShared={(_workspaceId, workspaceName) => {
             reloadShared();
-            // Optionally show a toast — the badge update is enough feedback
             console.log(`[DebateDetail] Shared to workspace: ${workspaceName}`);
           }}
         />

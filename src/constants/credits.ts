@@ -4,15 +4,7 @@
 // Part 38b — Added paper_ai_* entries for Academic Paper Editor AI tools
 // Part 38e FIX — Added paper_ai_generate_citations (2 cr).
 // Part 39 FIX — Added podcast_quality_high (5 cr) and podcast_quality_lossless (10 cr).
-//               These are charged as add-ons on top of the base duration cost when
-//               the user selects High or Lossless audio quality.
-//               Standard quality remains free (0 cr bonus) — no change to base costs.
-//
-// Credit deduction flow for podcasts:
-//   1. Base cost  = podcastDurationToFeature(minutes)     e.g. podcast_10min = 20 cr
-//   2. Quality    = podcastQualityToFeature(audioQuality) e.g. high = +5 cr (or null)
-//   3. Both deducted atomically via two guardedConsume calls in handleGenerate.
-//      Standard quality → only base cost deducted (quality feature is null → skipped).
+// Part 40 — Added voice_debate (25 cr) — full audio debate with 7 TTS voice personas.
 
 import type { CreditPack, CreditFeature } from '../types/credits';
 
@@ -39,6 +31,8 @@ export const FEATURE_COSTS: Record<CreditFeature, number> = {
   academic_paper:  25,
   presentation:    10,
   debate:          15,
+  // Part 40: Voice Debate — 7 TTS voice personas + full debate audio
+  voice_debate:    50,
   // Slide editor AI
   slide_ai_rewrite:  1,
   slide_ai_generate: 2,
@@ -70,6 +64,8 @@ export const FEATURE_LABELS: Record<CreditFeature, string> = {
   academic_paper:  'Academic Paper',
   presentation:    'AI Presentation',
   debate:          'AI Debate',
+  // Part 40
+  voice_debate:    'Voice Debate',
   slide_ai_rewrite:  'AI Slide Rewrite',
   slide_ai_generate: 'AI Generate Slide',
   slide_ai_notes:    'AI Speaker Notes',
@@ -100,6 +96,8 @@ export const FEATURE_ICONS: Record<CreditFeature, string> = {
   academic_paper:  'school-outline',
   presentation:    'easel-outline',
   debate:          'people-outline',
+  // Part 40
+  voice_debate:    'mic-outline',
   slide_ai_rewrite:  'pencil-outline',
   slide_ai_generate: 'add-circle-outline',
   slide_ai_notes:    'document-text-outline',
@@ -195,13 +193,6 @@ export function podcastDurationToFeature(minutes: number): CreditFeature {
 /**
  * Returns the quality add-on CreditFeature for podcast generation,
  * or null if no extra charge applies (standard quality is free).
- *
- * Usage in podcast.tsx:
- *   const qualityFeature = podcastQualityToFeature(audioQuality);
- *   if (qualityFeature) {
- *     const ok = await guardedConsume(qualityFeature);
- *     if (!ok) return; // roll back base cost via refund or abort
- *   }
  */
 export function podcastQualityToFeature(
   quality: 'standard' | 'high' | 'lossless',
@@ -209,13 +200,12 @@ export function podcastQualityToFeature(
   switch (quality) {
     case 'high':     return 'podcast_quality_high';
     case 'lossless': return 'podcast_quality_lossless';
-    default:         return null;  // standard = free, no add-on
+    default:         return null;
   }
 }
 
 /**
  * Returns the total credit cost for a podcast generation including quality add-on.
- * Useful for showing the combined cost in the UI before the user taps Generate.
  */
 export function podcastTotalCost(
   minutes: number,

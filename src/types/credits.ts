@@ -4,8 +4,7 @@
 // Part 38b — Added paper_ai_* feature types for Academic Paper Editor
 // Part 38e FIX — Added paper_ai_generate_citations (2 cr, single atomic deduction)
 // Part 39 FIX — Added podcast_quality_high and podcast_quality_lossless.
-//               These are add-on charges deducted in addition to the base podcast
-//               duration cost when the user selects High or Lossless audio quality.
+// Part 40 — Added voice_debate (25 cr)
 
 export type CreditFeature =
   // ── Core research ────────────────────────────────────────────────────────
@@ -24,6 +23,8 @@ export type CreditFeature =
   | 'academic_paper'
   | 'presentation'
   | 'debate'
+  // ── Part 40: Voice Debate ─────────────────────────────────────────────────
+  | 'voice_debate'              // 25 cr — full audio debate with 7 TTS voices
   // ── Slide editor AI (per-operation) ───────────────────────────────────────
   | 'slide_ai_rewrite'    // 1 cr
   | 'slide_ai_generate'   // 2 cr
