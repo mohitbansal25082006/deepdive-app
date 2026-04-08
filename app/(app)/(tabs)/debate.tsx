@@ -1,8 +1,11 @@
 // app/(app)/(tabs)/debate.tsx
 // Part 35 — UPDATED: Added Collections support.
-//   • Long-press completed debate card → "Add to Collection" sheet
-//   • Search button in header (global search)
-// All Part 24 / Part 20 functionality preserved unchanged.
+// Part 40 Fix — UPDATED:
+//   1. Auto-fills topic input from report.query when a report is imported.
+//   2. Suggested topic chips use a callback with useCallback to avoid stale closure.
+//   3. "Start Debate" button is disabled when topic is empty (shows clear feedback).
+//   4. Topic input shows a visual hint when auto-filled from a report.
+//   All Part 24 / Part 20 / Part 35 functionality preserved unchanged.
 
 import React, {
   useState, useEffect, useCallback, useRef,
@@ -34,7 +37,7 @@ import { useCreditGate }            from '../../../src/hooks/useCreditGate';
 import { FEATURE_COSTS }            from '../../../src/constants/credits';
 // Part 35: Collections
 import { AddToCollectionSheet }     from '../../../src/components/collections/AddToCollectionSheet';
-import type { DebateSession }       from '../../../src/types';
+import type { DebateSession, ResearchReport } from '../../../src/types';
 
 // ─── Suggested topics ─────────────────────────────────────────────────────────
 
@@ -154,12 +157,29 @@ function DebateHistoryCard({
 
 // ─── Suggested topic chip ─────────────────────────────────────────────────────
 
-function SuggestedTopicChip({ topic, onPress }: { topic: string; onPress: () => void }) {
+function SuggestedTopicChip({
+  topic,
+  onPress,
+}: {
+  topic: string;
+  // FIX: callback receives the topic string directly — avoids stale closure
+  onPress: (t: string) => void;
+}) {
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.8}
-      style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border, marginRight: SPACING.sm, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+    <TouchableOpacity
+      onPress={() => onPress(topic)}
+      activeOpacity={0.8}
+      style={{
+        backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
+        paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1,
+        borderColor: COLORS.border, marginRight: SPACING.sm,
+        marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: 6,
+      }}
+    >
       <Ionicons name="bulb-outline" size={13} color={COLORS.primary} />
-      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, maxWidth: 200 }} numberOfLines={1}>{topic}</Text>
+      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, maxWidth: 200 }} numberOfLines={1}>
+        {topic}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -174,7 +194,14 @@ export default function DebateScreen() {
   const { voiceState, startVoice, stopVoice, cancelVoice, clearError: clearVoiceError } =
     useDebateVoice({ onTranscribed: (text) => { setTopic(text); Keyboard.dismiss(); } });
 
-  const { importedReport, reportContext, handleReportSelected, clearReport, hasReport } = useDebateReportImport();
+  const {
+    importedReport,
+    reportContext,
+    suggestedTopic,   // FIX (Part 40): auto-fill topic from report
+    handleReportSelected,
+    clearReport,
+    hasReport,
+  } = useDebateReportImport();
 
   const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
@@ -185,13 +212,36 @@ export default function DebateScreen() {
 
   const topicInputRef = useRef<TextInput>(null);
 
+  // ── FIX (Part 40): auto-fill topic when a report is imported ──────────────
+  // When the user picks a research report, populate the topic field with the
+  // report's original query so the debate is immediately grounded in that topic.
+  useEffect(() => {
+    if (suggestedTopic && suggestedTopic.trim().length > 0) {
+      setTopic(suggestedTopic);
+    }
+  }, [suggestedTopic]);
+
+  // Clear topic when report is removed
+  const handleClearReport = useCallback(() => {
+    clearReport();
+    // Don't auto-clear the topic — user may have edited it. They can clear manually.
+  }, [clearReport]);
+
   useEffect(() => { if (phase === 'done') refresh(); }, [phase]);
   useEffect(() => { if (voiceState.error) { const t = setTimeout(clearVoiceError, 4000); return () => clearTimeout(t); } }, [voiceState.error]);
 
   const handleStart = useCallback(async () => {
     const trimmed = topic.trim();
-    if (!trimmed) { Alert.alert('Topic Required', 'Enter a debate topic or select one below.'); return; }
-    if (trimmed.length < 10) { Alert.alert('Too Short', 'Please enter a more specific debate topic (at least 10 characters).'); return; }
+    if (!trimmed) {
+      Alert.alert('Topic Required', 'Enter a debate topic or select one below.');
+      topicInputRef.current?.focus();
+      return;
+    }
+    if (trimmed.length < 10) {
+      Alert.alert('Too Short', 'Please enter a more specific debate topic (at least 10 characters).');
+      topicInputRef.current?.focus();
+      return;
+    }
     Keyboard.dismiss();
     const ok = await guardedConsume('debate');
     if (!ok) return;
@@ -211,6 +261,17 @@ export default function DebateScreen() {
   const handleVoicePress = useCallback(() => {
     if (voiceState.isRecording) stopVoice(); else if (!voiceState.isTranscribing) startVoice();
   }, [voiceState.isRecording, voiceState.isTranscribing, startVoice, stopVoice]);
+
+  // FIX: use a stable callback that sets topic directly — avoids stale closures
+  const handleSuggestedTopicPress = useCallback((t: string) => {
+    setTopic(t);
+    Keyboard.dismiss();
+  }, []);
+
+  const handleReportSelectedWrapper = useCallback((report: ResearchReport) => {
+    handleReportSelected(report);
+    // Report's query will auto-fill via the useEffect above
+  }, [handleReportSelected]);
 
   const showProgress = phase === 'debating' || phase === 'moderating';
   const showForm     = !isGenerating;
@@ -313,18 +374,54 @@ export default function DebateScreen() {
                   New Debate
                 </Text>
 
-                <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: voiceState.isRecording ? `${COLORS.error}60` : COLORS.border, marginBottom: SPACING.md }}>
+                {/* FIX: Topic input — shows a subtle "auto-filled" tint when filled from report */}
+                <View style={{
+                  backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
+                  borderWidth: 1,
+                  borderColor: voiceState.isRecording
+                    ? `${COLORS.error}60`
+                    : (hasReport && topic === suggestedTopic && topic.length > 0)
+                    ? `${COLORS.success}50`
+                    : COLORS.border,
+                  marginBottom: SPACING.md,
+                }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', padding: SPACING.md, gap: 10 }}>
                     <Ionicons name="chatbubbles-outline" size={20} color={COLORS.primary} style={{ marginTop: 2 }} />
                     <TextInput
-                      ref={topicInputRef} value={topic} onChangeText={setTopic}
-                      placeholder="E.g. Will AI replace programmers? Should social media be regulated?"
-                      placeholderTextColor={COLORS.textMuted} multiline numberOfLines={3}
+                      ref={topicInputRef}
+                      value={topic}
+                      onChangeText={setTopic}
+                      placeholder={
+                        hasReport
+                          ? 'Debate topic (auto-filled from report — edit if needed)'
+                          : 'E.g. Will AI replace programmers? Should social media be regulated?'
+                      }
+                      placeholderTextColor={COLORS.textMuted}
+                      multiline
+                      numberOfLines={3}
                       editable={!voiceState.isRecording && !voiceState.isTranscribing}
-                      style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, lineHeight: 22, minHeight: 70, textAlignVertical: 'top' }}
+                      style={{
+                        flex: 1,
+                        color: COLORS.textPrimary,
+                        fontSize: FONTS.sizes.base,
+                        lineHeight: 22,
+                        minHeight: 70,
+                        textAlignVertical: 'top',
+                      }}
                     />
                     <VoiceInputButton voiceState={voiceState} onStart={handleVoicePress} onStop={handleVoicePress} style={{ marginTop: 2 }} />
                   </View>
+
+                  {/* FIX: Show hint when topic was auto-filled from report */}
+                  {hasReport && topic === suggestedTopic && topic.length > 0 && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm }}>
+                      <Ionicons name="document-text-outline" size={12} color={COLORS.success} />
+                      <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.xs }}>
+                        Topic auto-filled from report — edit or keep it
+                      </Text>
+                    </View>
+                  )}
+
                   {voiceState.isRecording && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm }}>
                       <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.error }} />
@@ -339,12 +436,20 @@ export default function DebateScreen() {
                 </View>
 
                 {hasReport && importedReport && (
-                  <ImportedReportChip reportTitle={importedReport.title} sectionsCount={importedReport.sections.length} sourcesCount={importedReport.sourcesCount} onRemove={clearReport} />
+                  <ImportedReportChip
+                    reportTitle={importedReport.title}
+                    sectionsCount={importedReport.sections.length}
+                    sourcesCount={importedReport.sourcesCount}
+                    onRemove={handleClearReport}
+                  />
                 )}
 
                 <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: COLORS.border }}>
-                  <TouchableOpacity onPress={() => setShowReportSheet(true)} activeOpacity={0.8}
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingBottom: SPACING.sm, marginBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+                  <TouchableOpacity
+                    onPress={() => setShowReportSheet(true)}
+                    activeOpacity={0.8}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingBottom: SPACING.sm, marginBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}
+                  >
                     <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: hasReport ? `${COLORS.success}15` : `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: hasReport ? `${COLORS.success}25` : `${COLORS.primary}25` }}>
                       <Ionicons name={hasReport ? 'document-text' : 'add-circle-outline'} size={17} color={hasReport ? COLORS.success : COLORS.primary} />
                     </View>
@@ -353,7 +458,9 @@ export default function DebateScreen() {
                         {hasReport ? 'Report Attached ✓' : 'Import Research Report'}
                       </Text>
                       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
-                        {hasReport ? 'Agents will use verified facts from your report' : 'Ground debate in your existing research data'}
+                        {hasReport
+                          ? 'Topic auto-filled · agents use verified facts from your report'
+                          : 'Ground debate in your existing research data'}
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
@@ -379,14 +486,26 @@ export default function DebateScreen() {
                   </View>
                 </View>
 
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
-                  Suggested Topics
-                </Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: SPACING.lg }}>
-                  {SUGGESTED_TOPICS.map(t => (
-                    <SuggestedTopicChip key={t} topic={t} onPress={() => setTopic(t)} />
-                  ))}
-                </View>
+                {/* Suggested topics — only shown when no report is attached */}
+                {!hasReport && (
+                  <>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
+                      Suggested Topics
+                    </Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: SPACING.lg }}>
+                      {SUGGESTED_TOPICS.map(t => (
+                        <SuggestedTopicChip
+                          key={t}
+                          topic={t}
+                          onPress={handleSuggestedTopicPress}
+                        />
+                      ))}
+                    </View>
+                  </>
+                )}
+
+                {/* Spacer when report is attached (chips hidden) */}
+                {hasReport && <View style={{ marginBottom: SPACING.lg }} />}
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
@@ -399,17 +518,39 @@ export default function DebateScreen() {
                   <CreditBalance balance={balance} size="sm" />
                 </View>
 
-                <TouchableOpacity onPress={handleStart} disabled={isConsuming} activeOpacity={0.85}>
-                  <LinearGradient colors={[COLORS.primary, COLORS.primaryDark]}
-                    style={{ borderRadius: RADIUS.lg, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                <TouchableOpacity
+                  onPress={handleStart}
+                  disabled={isConsuming || topic.trim().length === 0}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={
+                      topic.trim().length === 0
+                        ? [COLORS.border, COLORS.border]
+                        : [COLORS.primary, COLORS.primaryDark]
+                    }
+                    style={{
+                      borderRadius: RADIUS.lg, paddingVertical: 16,
+                      flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+                      opacity: (isConsuming || topic.trim().length === 0) ? 0.6 : 1,
+                    }}
+                  >
                     <Ionicons name="people" size={20} color="#FFF" />
                     <Text style={{ color: '#FFF', fontSize: FONTS.sizes.md, fontWeight: '700' }}>
-                      {isConsuming ? 'Checking credits...' : hasReport ? 'Start Debate (with Report)' : 'Start Debate'}
+                      {isConsuming
+                        ? 'Checking credits...'
+                        : topic.trim().length === 0
+                        ? 'Enter a topic to start'
+                        : hasReport
+                        ? 'Start Debate (with Report)'
+                        : 'Start Debate'}
                     </Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
-                      <Ionicons name="flash" size={10} color="#FFF" />
-                      <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{FEATURE_COSTS.debate} cr</Text>
-                    </View>
+                    {topic.trim().length > 0 && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
+                        <Ionicons name="flash" size={10} color="#FFF" />
+                        <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{FEATURE_COSTS.debate} cr</Text>
+                      </View>
+                    )}
                   </LinearGradient>
                 </TouchableOpacity>
               </Animated.View>
@@ -426,7 +567,9 @@ export default function DebateScreen() {
                 ))}
                 {debates.map((session, i) => (
                   <DebateHistoryCard
-                    key={session.id} session={session} index={i}
+                    key={session.id}
+                    session={session}
+                    index={i}
                     onPress={() => router.push({ pathname: '/(app)/debate-detail' as any, params: { sessionId: session.id } })}
                     onDelete={() => handleDelete(session.id, session.topic)}
                     onLongPress={session.status === 'completed' ? () => setCollectionTarget(session) : undefined}
@@ -450,7 +593,12 @@ export default function DebateScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
 
-        <ReportImportSheet visible={showReportSheet} onClose={() => setShowReportSheet(false)} onSelectReport={handleReportSelected} selectedReportId={importedReport?.id ?? null} />
+        <ReportImportSheet
+          visible={showReportSheet}
+          onClose={() => setShowReportSheet(false)}
+          onSelectReport={handleReportSelectedWrapper}
+          selectedReportId={importedReport?.id ?? null}
+        />
         <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
 
       </SafeAreaView>

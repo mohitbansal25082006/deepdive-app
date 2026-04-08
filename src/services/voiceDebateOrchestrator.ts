@@ -1,23 +1,19 @@
 // src/services/voiceDebateOrchestrator.ts
 // Part 40 — Voice Debate Engine
+// Part 40 Fix — Cancel/Regenerate support
 //
-// Coordinates the full voice debate generation pipeline:
-//   1. Validate session + auth
-//   2. Create DB row (voice_debates)
-//   3. Call voiceDebateScriptAgent → VoiceDebateScript
-//   4. Call voiceDebateTTSService → audio files per turn
-//   5. Finalize DB row with audio paths + status
-//   6. Background upload to Supabase Storage (non-blocking)
-//
-// Mirrors the architecture of podcastOrchestrator.ts.
-// Error handling: script failure → fatal; individual TTS segment failure → non-fatal
-// (≥60% success required to mark as completed).
+// KEY FIXES:
+//   1. Before inserting a new DB row, check for any existing row for the session
+//      (stale 'generating_script'/'generating_audio'/'failed' rows from a cancelled run)
+//      and DELETE it first — so INSERT always succeeds.
+//   2. AbortError path deletes the in-progress row cleanly.
+//   3. onError('AbortError') sentinel is kept so the hook can reset to idle silently.
+//   4. All other pipeline logic is unchanged.
 
 import { supabase }                        from '../lib/supabase';
 import { generateVoiceDebateScript }       from './agents/voiceDebateScriptAgent';
 import {
   generateAllTurnAudio,
-  getSegmentPath,
   ensureVoiceDebateDirectory,
   estimateSegmentDurationMs,
 }                                          from './voiceDebateTTSService';
@@ -80,13 +76,40 @@ export async function fetchVoiceDebateForSession(
   }
 }
 
+// ─── Delete any stale (non-completed) voice debate for a session ──────────────
+// Called before starting a fresh generation run so we never hit the UNIQUE
+// constraint on debate_session_id.
+
+async function deleteStaleVoiceDebate(
+  userId:    string,
+  sessionId: string,
+): Promise<void> {
+  try {
+    // Only delete rows that are NOT completed — a completed row should be
+    // preserved (the user must explicitly delete it via the UI if they want
+    // to regenerate).
+    const { error } = await supabase
+      .from('voice_debates')
+      .delete()
+      .eq('user_id', userId)
+      .eq('debate_session_id', sessionId)
+      .neq('status', 'completed');
+
+    if (error) {
+      console.warn('[VoiceDebateOrchestrator] Could not delete stale row:', error.message);
+    }
+  } catch (err) {
+    console.warn('[VoiceDebateOrchestrator] deleteStaleVoiceDebate error (non-fatal):', err);
+  }
+}
+
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 
 export async function runVoiceDebatePipeline(
   userId:    string,
   session:   DebateSession,
   callbacks: VoiceDebateOrchestratorCallbacks,
-  signal?:   AbortSignal,            // ← FIX: 4th optional param for cancellation
+  signal?:   AbortSignal,
 ): Promise<void> {
 
   // ── Abort helper ───────────────────────────────────────────────────────────
@@ -123,6 +146,13 @@ export async function runVoiceDebatePipeline(
     callbacks.onError('No debate perspectives found. Run the debate first.');
     return;
   }
+
+  // ── FIX: Delete any stale (cancelled/failed) row before attempting insert ──
+  // This prevents the UNIQUE constraint on debate_session_id from blocking a
+  // fresh generation attempt after a cancelled or failed run.
+  checkAbort();
+  await deleteStaleVoiceDebate(userId, session.id);
+  checkAbort();
 
   // ── Helper: update DB status ───────────────────────────────────────────────
 
@@ -165,7 +195,10 @@ export async function runVoiceDebatePipeline(
   if (insertError || !dbRow) {
     const msg = insertError?.message ?? 'Unknown database error';
     if (msg.includes('duplicate') || msg.includes('unique')) {
-      callbacks.onError('A voice debate already exists for this session. Refresh to load it.');
+      // A completed row already exists for this session — tell user to delete it first
+      callbacks.onError(
+        'A completed voice debate already exists for this session.\n\nDelete it first using the trash icon, then regenerate.',
+      );
     } else if (msg.includes('does not exist') || msg.includes('relation')) {
       callbacks.onError('Database table not found.\n\nRun schema_part40.sql in your Supabase SQL Editor.');
     } else {
@@ -197,7 +230,6 @@ export async function runVoiceDebatePipeline(
         onPhaseProgress: (label, agentName) => {
           if (isAborted()) return;
 
-          // Map script agent phase labels → orchestrator phases + percents
           let phase: VoiceDebateGenerationPhase = 'phase1';
           let pct   = 20;
 
@@ -209,7 +241,6 @@ export async function runVoiceDebatePipeline(
         },
       });
     } catch (err) {
-      // Re-throw abort errors so the outer catch handles them cleanly
       if (err instanceof DOMException && err.name === 'AbortError') throw err;
       const msg = err instanceof Error ? err.message : 'Script generation failed';
       await updateStatus('failed', { error_message: msg });
@@ -251,7 +282,6 @@ export async function runVoiceDebatePipeline(
             callbacks.onAudioProgress(turnIndex + 1, total);
             const pct = 75 + Math.round(((turnIndex + 1) / total) * 25);
 
-            // ── FIX (TS7053): cast speaker to VoicePersonaKey before indexing ──
             const turn        = script.turns[turnIndex];
             const speakerKey  = (turn?.speaker ?? 'moderator') as VoicePersonaKey;
             const displayName = VOICE_PERSONAS[speakerKey]?.displayName ?? '';
@@ -291,9 +321,7 @@ export async function runVoiceDebatePipeline(
 
     // ── STEP 3: Finalize ───────────────────────────────────────────────────
 
-    // Attach audio paths to turns + compute durations
     const turnsWithAudio: VoiceDebateTurn[] = script.turns.map((turn, i) => {
-      // ── FIX (TS7053): cast speaker to VoicePersonaKey before indexing ──
       const speakerKey = (turn.speaker ?? 'moderator') as VoicePersonaKey;
       const persona    = VOICE_PERSONAS[speakerKey] ?? VOICE_PERSONAS['moderator'];
       return {
@@ -329,7 +357,6 @@ export async function runVoiceDebatePipeline(
 
     if (finalError) {
       console.warn('[VoiceDebateOrchestrator] Final save failed:', finalError.message);
-      // Try minimal update
       await supabase
         .from('voice_debates')
         .update({
@@ -371,13 +398,17 @@ export async function runVoiceDebatePipeline(
     // ── Cancelled: clean up DB row and exit silently ───────────────────────
     if (error instanceof DOMException && error.name === 'AbortError') {
       if (voiceDebateId) {
-        // Delete the in-progress row so it doesn't appear as a ghost record
-        await supabase
+        // Delete the in-progress row so future regeneration attempts succeed
+        const { error: delError } = await supabase
           .from('voice_debates')
           .delete()
-          .eq('id', voiceDebateId);
+          .eq('id', voiceDebateId)
+          .neq('status', 'completed'); // Safety guard: never delete a completed row
+        if (delError) {
+          console.warn('[VoiceDebateOrchestrator] Could not delete cancelled row:', delError.message);
+        }
       }
-      // onError in the hook will detect abortRef.current and reset to idle
+      // Signal the hook to reset to idle (hook detects 'AbortError' sentinel)
       callbacks.onError('AbortError');
       return;
     }
@@ -392,8 +423,6 @@ export async function runVoiceDebatePipeline(
 }
 
 // ─── Background Cloud Upload ───────────────────────────────────────────────────
-// Uploads audio to Supabase Storage so other devices can stream.
-// Non-blocking — failure is logged but doesn't affect the user.
 
 async function uploadAudioBackground(
   voiceDebateId: string,
@@ -405,7 +434,7 @@ async function uploadAudioBackground(
   if (localPaths.length === 0) return;
 
   try {
-    const bucket = 'podcast-audio'; // shared bucket
+    const bucket = 'podcast-audio';
     const uploadResults: (string | null)[] = [];
 
     for (let i = 0; i < audioPaths.length; i++) {

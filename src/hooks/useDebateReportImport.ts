@@ -1,27 +1,29 @@
 // src/hooks/useDebateReportImport.ts
 // Part 20 — Manages an imported research report in the Debate tab.
+// Part 40 Fix — Added suggestedTopic: the report's query is exposed so
+//   the Debate screen can auto-fill the topic input when a report is imported.
 //
-// Converts a full ResearchReport into a lean DebateReportContext that
-// is injected into each debate agent's prompt to ground responses in
-// verified facts and statistics.
+// Changes from Part 20:
+//   • `suggestedTopic` field added to return value — set to report.query
+//     (trimmed, question-mark-normalised) when a report is selected, null otherwise.
+//   • clearReport() also clears suggestedTopic.
+//   • Everything else is identical.
 
 import { useState, useCallback } from 'react';
 import type { ResearchReport, DebateReportContext } from '../types';
 
-// ─── Helper: build context ─────────────────────────────────────────────────────
+// ─── Helper: normalise a query/title into a debate-ready topic string ─────────
 
-/**
- * Distil a full ResearchReport into the lean DebateReportContext that
- * gets injected into debate-agent prompts.
- *
- * We cap collections to avoid blowing out the context window:
- *   keyFindings  → first 8
- *   statistics   → first 10
- *   keyThemes    → inferred from section titles (first 6)
- *   citations    → first 10 (title + url + snippet)
- */
+function normaliseAsTopic(text: string): string {
+  const trimmed = text.trim();
+  // If it already looks like a question, keep it; otherwise, leave as-is
+  // (the orchestrator's refineTopicToQuestion will shape it into a proper question)
+  return trimmed;
+}
+
+// ─── Helper: build context ────────────────────────────────────────────────────
+
 function buildReportContext(report: ResearchReport): DebateReportContext {
-  // Pull key themes from section titles if keyThemes isn't on the report
   const keyThemes = report.sections
     .slice(0, 6)
     .map(s => s.title)
@@ -64,6 +66,14 @@ export interface UseDebateReportImportReturn {
   importedReport: ResearchReport | null;
   /** The lean context object ready to be passed to the orchestrator. */
   reportContext:  DebateReportContext | null;
+  /**
+   * FIX (Part 40): The report's original query, ready to use as a debate topic.
+   * The Debate screen sets the topic input to this value when a report is imported,
+   * so the user always has a sensible starting point and the debate is properly
+   * grounded in the report's subject matter.
+   * null when no report is imported.
+   */
+  suggestedTopic: string | null;
   /** Call with the report selected from ReportImportSheet. */
   handleReportSelected: (report: ResearchReport) => void;
   /** Clear the imported report. */
@@ -75,20 +85,25 @@ export interface UseDebateReportImportReturn {
 export function useDebateReportImport(): UseDebateReportImportReturn {
   const [importedReport, setImportedReport] = useState<ResearchReport | null>(null);
   const [reportContext,  setReportContext]  = useState<DebateReportContext | null>(null);
+  const [suggestedTopic, setSuggestedTopic] = useState<string | null>(null);
 
   const handleReportSelected = useCallback((report: ResearchReport) => {
     setImportedReport(report);
     setReportContext(buildReportContext(report));
+    // FIX: expose the report's query so the debate screen can auto-fill the topic
+    setSuggestedTopic(normaliseAsTopic(report.query || report.title));
   }, []);
 
   const clearReport = useCallback(() => {
     setImportedReport(null);
     setReportContext(null);
+    setSuggestedTopic(null);
   }, []);
 
   return {
     importedReport,
     reportContext,
+    suggestedTopic,
     handleReportSelected,
     clearReport,
     hasReport: importedReport !== null,

@@ -1,15 +1,23 @@
 // src/hooks/useVoiceDebate.ts
-// Part 40 Fix — Added cancel generation support
+// Part 40 Fix — Complete cancel/regenerate support
 //
-// Changes:
-//   1. Added cancelGeneration() — sets abortRef, calls orchestrator abort signal
-//   2. Exports isCancelling state
-//   3. abortController ref used to signal runVoiceDebatePipeline to stop mid-flight
-//   4. All existing functionality preserved
+// KEY FIXES:
+//   1. cancelGeneration() aborts the pipeline, resets state to INITIAL_STATE,
+//      and clears abortRef so generate() can run cleanly again.
+//   2. generate() always resets abortRef = false at the start so a re-run
+//      after cancel works without stale abort state.
+//   3. onError in the pipeline receives 'AbortError' sentinel → hook resets
+//      to idle silently (no error UI shown to user).
+//   4. isLoadingExisting is now guarded so it doesn't overwrite an
+//      in-progress generation state.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth }                          from '../context/AuthContext';
-import { runVoiceDebatePipeline, fetchVoiceDebateForSession, mapRowToVoiceDebate } from '../services/voiceDebateOrchestrator';
+import {
+  runVoiceDebatePipeline,
+  fetchVoiceDebateForSession,
+  mapRowToVoiceDebate,
+}                                           from '../services/voiceDebateOrchestrator';
 import { supabase }                         from '../lib/supabase';
 import type { DebateSession }               from '../types';
 import type {
@@ -33,12 +41,16 @@ const INITIAL_STATE: VoiceDebateGenerationState = {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useVoiceDebate(session: DebateSession | null) {
-  const { user }                      = useAuth();
-  const [state, setState]             = useState<VoiceDebateGenerationState>(INITIAL_STATE);
+  const { user }                            = useAuth();
+  const [state, setState]                   = useState<VoiceDebateGenerationState>(INITIAL_STATE);
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
-  const [isCancelling, setIsCancelling] = useState(false);
-  const abortRef                      = useRef(false);
-  const abortControllerRef            = useRef<AbortController | null>(null);
+  const [isCancelling, setIsCancelling]     = useState(false);
+
+  // abortRef: true means we are cancelling — patch() calls are ignored
+  const abortRef           = useRef(false);
+  // generatingRef: true means a pipeline is actively running
+  const generatingRef      = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const patch = useCallback((partial: Partial<VoiceDebateGenerationState>) => {
     if (!abortRef.current) {
@@ -57,8 +69,15 @@ export function useVoiceDebate(session: DebateSession | null) {
     fetchVoiceDebateForSession(session.id)
       .then(existing => {
         if (cancelled) return;
+        // Don't overwrite an active generation
+        if (generatingRef.current) return;
         if (existing) {
-          patch({ voiceDebate: existing, phase: 'done', progressPercent: 100 });
+          setState(prev => ({
+            ...prev,
+            voiceDebate:     existing,
+            phase:           'done',
+            progressPercent: 100,
+          }));
         }
       })
       .catch(err => {
@@ -87,6 +106,7 @@ export function useVoiceDebate(session: DebateSession | null) {
           filter: `debate_session_id=eq.${session.id}`,
         },
         payload => {
+          if (abortRef.current) return;
           if (payload.new && typeof payload.new === 'object') {
             const updated = mapRowToVoiceDebate(payload.new as Record<string, any>);
             patch({ voiceDebate: updated });
@@ -120,10 +140,12 @@ export function useVoiceDebate(session: DebateSession | null) {
       return;
     }
 
-    abortRef.current = false;
+    // ── FIX: Always reset abort state before a new run ─────────────────────
+    abortRef.current     = false;
+    generatingRef.current = true;
     setIsCancelling(false);
 
-    // Create new AbortController for this generation run
+    // Create a fresh AbortController for this generation run
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -137,7 +159,12 @@ export function useVoiceDebate(session: DebateSession | null) {
 
     await runVoiceDebatePipeline(user.id, session, {
 
-      onPhaseUpdate: (phase: VoiceDebateGenerationPhase, label: string, percent: number, agentName?: string) => {
+      onPhaseUpdate: (
+        phase: VoiceDebateGenerationPhase,
+        label: string,
+        percent: number,
+        agentName?: string,
+      ) => {
         if (abortRef.current) return;
         patch({
           phase,
@@ -154,6 +181,7 @@ export function useVoiceDebate(session: DebateSession | null) {
 
       onComplete: (voiceDebate: VoiceDebate) => {
         if (abortRef.current) return;
+        generatingRef.current = false;
         setIsCancelling(false);
         patch({
           voiceDebate,
@@ -166,12 +194,16 @@ export function useVoiceDebate(session: DebateSession | null) {
       },
 
       onError: (message: string) => {
-        if (abortRef.current) {
-          // Cancelled — reset to idle
+        generatingRef.current = false;
+
+        // ── FIX: AbortError sentinel = user cancelled → reset to idle silently
+        if (message === 'AbortError' || abortRef.current) {
           setState(INITIAL_STATE);
           setIsCancelling(false);
+          abortRef.current = false;
           return;
         }
+
         patch({
           phase:           'error',
           phaseLabel:      'Generation failed',
@@ -180,38 +212,52 @@ export function useVoiceDebate(session: DebateSession | null) {
           error:           message,
         });
       },
+
     }, controller.signal);
+
+    // Ensure generatingRef is cleared even if pipeline returns without calling callbacks
+    generatingRef.current = false;
   }, [user, session, patch]);
 
   // ── Cancel generation ──────────────────────────────────────────────────────
 
   const cancelGeneration = useCallback(() => {
-    abortRef.current = true;
+    // Mark as aborting — all patch() calls will be ignored from now on
+    abortRef.current     = true;
+    generatingRef.current = false;
     setIsCancelling(true);
 
-    // Signal the orchestrator to stop
+    // Signal the orchestrator's AbortSignal
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
 
-    // Reset to idle after a brief delay (allow cleanup)
+    // Reset UI immediately — don't wait for the pipeline to clean up the DB row
+    // The orchestrator will delete the stale row in the background.
+    // We use a short delay so any in-flight patch() calls that fire before
+    // the abort propagates don't get shown.
     setTimeout(() => {
       setState(INITIAL_STATE);
       setIsCancelling(false);
-    }, 600);
+      // Reset abortRef AFTER setState so subsequent generate() calls work
+      abortRef.current = false;
+    }, 800);
   }, []);
 
   // ── Reset ──────────────────────────────────────────────────────────────────
 
   const reset = useCallback(() => {
-    abortRef.current = true;
+    abortRef.current      = true;
+    generatingRef.current = false;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
     setIsCancelling(false);
     setState(INITIAL_STATE);
+    // Allow new runs after reset
+    setTimeout(() => { abortRef.current = false; }, 100);
   }, []);
 
   // ── Delete voice debate ────────────────────────────────────────────────────
@@ -226,14 +272,9 @@ export function useVoiceDebate(session: DebateSession | null) {
       .eq('user_id', user.id);
 
     if (!error) {
-      patch({
-        voiceDebate:     null,
-        phase:           'idle',
-        progressPercent: 0,
-        error:           null,
-      });
+      setState(INITIAL_STATE);
     }
-  }, [user, state.voiceDebate, patch]);
+  }, [user, state.voiceDebate]);
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
