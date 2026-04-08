@@ -86,7 +86,17 @@ export async function runVoiceDebatePipeline(
   userId:    string,
   session:   DebateSession,
   callbacks: VoiceDebateOrchestratorCallbacks,
+  signal?:   AbortSignal,            // ← FIX: 4th optional param for cancellation
 ): Promise<void> {
+
+  // ── Abort helper ───────────────────────────────────────────────────────────
+  const isAborted = () => signal?.aborted ?? false;
+
+  const checkAbort = () => {
+    if (isAborted()) {
+      throw new DOMException('Voice debate generation was cancelled.', 'AbortError');
+    }
+  };
 
   // ── Pre-flight ─────────────────────────────────────────────────────────────
 
@@ -95,6 +105,8 @@ export async function runVoiceDebatePipeline(
     callbacks.onError('OpenAI API key is missing.\n\nAdd EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart.');
     return;
   }
+
+  checkAbort();
 
   const { data: sessionData } = await supabase.auth.getSession();
   if (!sessionData?.session || sessionData.session.user.id !== userId) {
@@ -132,6 +144,8 @@ export async function runVoiceDebatePipeline(
 
   callbacks.onPhaseUpdate('briefing', 'Briefing agents with debate context...', 5);
 
+  checkAbort();
+
   // ── Create DB row ──────────────────────────────────────────────────────────
 
   const { data: dbRow, error: insertError } = await supabase
@@ -166,6 +180,8 @@ export async function runVoiceDebatePipeline(
 
     // ── STEP 1: Script Generation ──────────────────────────────────────────
 
+    checkAbort();
+
     callbacks.onPhaseUpdate('phase1', 'Phase 1: Agents forming opening arguments...', 10);
 
     let script: VoiceDebateScript;
@@ -179,6 +195,8 @@ export async function runVoiceDebatePipeline(
           ['optimist', 'skeptic', 'economist', 'technologist', 'ethicist', 'futurist'].includes(r)
         ) as any,
         onPhaseProgress: (label, agentName) => {
+          if (isAborted()) return;
+
           // Map script agent phase labels → orchestrator phases + percents
           let phase: VoiceDebateGenerationPhase = 'phase1';
           let pct   = 20;
@@ -191,11 +209,15 @@ export async function runVoiceDebatePipeline(
         },
       });
     } catch (err) {
+      // Re-throw abort errors so the outer catch handles them cleanly
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
       const msg = err instanceof Error ? err.message : 'Script generation failed';
       await updateStatus('failed', { error_message: msg });
       callbacks.onError(`Script generation failed: ${msg}`);
       return;
     }
+
+    checkAbort();
 
     // Save script to DB
     await supabase
@@ -210,6 +232,8 @@ export async function runVoiceDebatePipeline(
 
     // ── STEP 2: TTS Audio Generation ──────────────────────────────────────
 
+    checkAbort();
+
     callbacks.onPhaseUpdate('audio', 'Generating voice audio for each speaker...', 75, 'Starting audio...');
     callbacks.onAudioProgress(0, script.turns.length);
 
@@ -222,10 +246,12 @@ export async function runVoiceDebatePipeline(
         voiceDebateId,
         {
           onSegmentComplete: (turnIndex, total, audioPath, succeeded) => {
+            if (isAborted()) return;
+
             callbacks.onAudioProgress(turnIndex + 1, total);
             const pct = 75 + Math.round(((turnIndex + 1) / total) * 25);
 
-            // ── FIX 1 (TS7053): cast speaker to VoicePersonaKey before indexing ──
+            // ── FIX (TS7053): cast speaker to VoicePersonaKey before indexing ──
             const turn        = script.turns[turnIndex];
             const speakerKey  = (turn?.speaker ?? 'moderator') as VoicePersonaKey;
             const displayName = VOICE_PERSONAS[speakerKey]?.displayName ?? '';
@@ -238,16 +264,20 @@ export async function runVoiceDebatePipeline(
             );
           },
           onProgress: (message) => {
+            if (isAborted()) return;
             callbacks.onPhaseUpdate('audio', message, 80);
           },
         },
       );
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
       const msg = err instanceof Error ? err.message : 'Audio generation failed';
       await updateStatus('failed', { error_message: msg });
       callbacks.onError(`Audio generation failed: ${msg}`);
       return;
     }
+
+    checkAbort();
 
     const successCount = audioPaths.filter(Boolean).length;
     const minRequired  = Math.ceil(script.turns.length * 0.60);
@@ -263,7 +293,7 @@ export async function runVoiceDebatePipeline(
 
     // Attach audio paths to turns + compute durations
     const turnsWithAudio: VoiceDebateTurn[] = script.turns.map((turn, i) => {
-      // ── FIX 2 (TS7053): cast speaker to VoicePersonaKey before indexing ──
+      // ── FIX (TS7053): cast speaker to VoicePersonaKey before indexing ──
       const speakerKey = (turn.speaker ?? 'moderator') as VoicePersonaKey;
       const persona    = VOICE_PERSONAS[speakerKey] ?? VOICE_PERSONAS['moderator'];
       return {
@@ -338,6 +368,20 @@ export async function runVoiceDebatePipeline(
     uploadAudioBackground(voiceDebateId, audioPaths);
 
   } catch (error) {
+    // ── Cancelled: clean up DB row and exit silently ───────────────────────
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (voiceDebateId) {
+        // Delete the in-progress row so it doesn't appear as a ghost record
+        await supabase
+          .from('voice_debates')
+          .delete()
+          .eq('id', voiceDebateId);
+      }
+      // onError in the hook will detect abortRef.current and reset to idle
+      callbacks.onError('AbortError');
+      return;
+    }
+
     const message = error instanceof Error ? error.message : 'Unknown voice debate pipeline error';
     console.error('[VoiceDebateOrchestrator] Fatal pipeline error:', error);
     if (voiceDebateId) {
@@ -361,7 +405,6 @@ async function uploadAudioBackground(
   if (localPaths.length === 0) return;
 
   try {
-    // Reuse the podcast-audio bucket if it exists, or skip gracefully
     const bucket = 'podcast-audio'; // shared bucket
     const uploadResults: (string | null)[] = [];
 

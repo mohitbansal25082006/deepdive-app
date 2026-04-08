@@ -1,16 +1,11 @@
 // src/hooks/useVoiceDebate.ts
-// Part 40 — Voice Debate Engine
+// Part 40 Fix — Added cancel generation support
 //
-// Manages voice debate generation state for the debate-detail screen.
-// Mirrors the architecture of useDebate.ts and usePodcast.ts.
-//
-// Responsibilities:
-//   - Load existing voice debate on mount (via fetchVoiceDebateForSession)
-//   - Trigger new voice debate generation (via runVoiceDebatePipeline)
-//   - Track all generation phases in local state
-//   - Auto-cache on completion (fire-and-forget)
-//
-// Used by: debate-detail.tsx (Overview tab → VoiceDebateCard)
+// Changes:
+//   1. Added cancelGeneration() — sets abortRef, calls orchestrator abort signal
+//   2. Exports isCancelling state
+//   3. abortController ref used to signal runVoiceDebatePipeline to stop mid-flight
+//   4. All existing functionality preserved
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth }                          from '../context/AuthContext';
@@ -41,7 +36,9 @@ export function useVoiceDebate(session: DebateSession | null) {
   const { user }                      = useAuth();
   const [state, setState]             = useState<VoiceDebateGenerationState>(INITIAL_STATE);
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const abortRef                      = useRef(false);
+  const abortControllerRef            = useRef<AbortController | null>(null);
 
   const patch = useCallback((partial: Partial<VoiceDebateGenerationState>) => {
     if (!abortRef.current) {
@@ -74,7 +71,7 @@ export function useVoiceDebate(session: DebateSession | null) {
     return () => { cancelled = true; };
   }, [session?.id, user?.id]);
 
-  // ── Realtime: listen for status changes (e.g. if generation is running elsewhere) ──
+  // ── Realtime: listen for status changes ───────────────────────────────────
 
   useEffect(() => {
     if (!session?.id || !user) return;
@@ -124,6 +121,11 @@ export function useVoiceDebate(session: DebateSession | null) {
     }
 
     abortRef.current = false;
+    setIsCancelling(false);
+
+    // Create new AbortController for this generation run
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     setState({
       ...INITIAL_STATE,
@@ -152,6 +154,7 @@ export function useVoiceDebate(session: DebateSession | null) {
 
       onComplete: (voiceDebate: VoiceDebate) => {
         if (abortRef.current) return;
+        setIsCancelling(false);
         patch({
           voiceDebate,
           phase:           'done',
@@ -163,7 +166,12 @@ export function useVoiceDebate(session: DebateSession | null) {
       },
 
       onError: (message: string) => {
-        if (abortRef.current) return;
+        if (abortRef.current) {
+          // Cancelled — reset to idle
+          setState(INITIAL_STATE);
+          setIsCancelling(false);
+          return;
+        }
         patch({
           phase:           'error',
           phaseLabel:      'Generation failed',
@@ -172,13 +180,37 @@ export function useVoiceDebate(session: DebateSession | null) {
           error:           message,
         });
       },
-    });
+    }, controller.signal);
   }, [user, session, patch]);
+
+  // ── Cancel generation ──────────────────────────────────────────────────────
+
+  const cancelGeneration = useCallback(() => {
+    abortRef.current = true;
+    setIsCancelling(true);
+
+    // Signal the orchestrator to stop
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // Reset to idle after a brief delay (allow cleanup)
+    setTimeout(() => {
+      setState(INITIAL_STATE);
+      setIsCancelling(false);
+    }, 600);
+  }, []);
 
   // ── Reset ──────────────────────────────────────────────────────────────────
 
   const reset = useCallback(() => {
     abortRef.current = true;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsCancelling(false);
     setState(INITIAL_STATE);
   }, []);
 
@@ -212,8 +244,10 @@ export function useVoiceDebate(session: DebateSession | null) {
     state,
     isGenerating,
     isLoadingExisting,
+    isCancelling,
     hasCompleted,
     generate,
+    cancelGeneration,
     reset,
     deleteVoiceDebate,
   };

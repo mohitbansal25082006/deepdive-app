@@ -1,11 +1,10 @@
 // app/(app)/debate-detail.tsx
-// Part 40 UPDATE — Integrates Voice Debate card into Overview tab.
+// Part 40 Fix — Passes cancelGeneration + isCancelling to VoiceDebateCard
 //
-// Changes from Part 16:
-//   • Imports useVoiceDebate hook
-//   • VoiceDebateCard rendered in OverviewTab below stats/verdict/stance grid
-//   • useVoiceDebate(session) called at top level of DebateDetailScreen
-//   • All existing functionality (tabs, export bar, workspace share) unchanged
+// Only changes from Part 40:
+//   • Destructures cancelGeneration + isCancelling from useVoiceDebate
+//   • Passes onCancel={cancelGeneration} and isCancelling={isCancelling} to VoiceDebateCard
+//   • All other functionality unchanged
 
 import React, {
   useState,
@@ -187,7 +186,6 @@ function ExportBar({ session }: { session: DebateSession }) {
 }
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
-// Part 40: VoiceDebateCard is passed in as a prop and rendered at the bottom.
 
 function OverviewTab({
   session,
@@ -305,7 +303,7 @@ function OverviewTab({
         ))}
       </View>
 
-      {/* ── Part 40: Voice Debate Card ─────────────────────────────────── */}
+      {/* Voice Debate Card */}
       {voiceDebateSlot}
 
       {completedDate && (
@@ -330,17 +328,18 @@ export default function DebateDetailScreen() {
   const [error,     setError]     = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DebateTab>('overview');
 
-  // ── Part 16: workspace share modal state ──────────────────────────────────
   const [showShareModal, setShowShareModal] = useState(false);
   const { workspaceIds: sharedToIds, reload: reloadShared } =
     useDebateSharedWorkspaces(sessionId);
 
-  // ── Part 40: Voice debate generation hook ─────────────────────────────────
+  // ── Part 40: Voice debate generation hook (with cancel support) ───────────
   const {
-    state:           voiceDebateGenState,
-    isGenerating:    isVoiceGenerating,
+    state:              voiceDebateGenState,
+    isGenerating:       isVoiceGenerating,
+    isCancelling:       isVoiceCancelling,
     isLoadingExisting,
-    generate:        generateVoiceDebate,
+    generate:           generateVoiceDebate,
+    cancelGeneration:   cancelVoiceDebate,
   } = useVoiceDebate(session);
 
   // ── Load session ──────────────────────────────────────────────────────────
@@ -411,7 +410,6 @@ export default function DebateDetailScreen() {
   }
 
   // ── Voice debate card slot ─────────────────────────────────────────────────
-  // Only show if the debate is completed (can't voice a debate that's still running)
 
   const voiceDebateSlot = session.status === 'completed' ? (
     <VoiceDebateCard
@@ -419,7 +417,9 @@ export default function DebateDetailScreen() {
       existingDebate={voiceDebateGenState.voiceDebate}
       genState={voiceDebateGenState}
       onGenerate={generateVoiceDebate}
+      onCancel={cancelVoiceDebate}
       isGenerating={isVoiceGenerating}
+      isCancelling={isVoiceCancelling}
     />
   ) : null;
 
@@ -429,7 +429,7 @@ export default function DebateDetailScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
 
-        {/* ── Navigation header ───────────────────────────────────────── */}
+        {/* Navigation header */}
         <View style={{
           flexDirection:     'row',
           alignItems:        'center',
@@ -464,7 +464,7 @@ export default function DebateDetailScreen() {
             </Text>
           </View>
 
-          {/* Part 16: Share to workspace button */}
+          {/* Share to workspace button */}
           <TouchableOpacity
             onPress={() => setShowShareModal(true)}
             style={{
@@ -508,10 +508,10 @@ export default function DebateDetailScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* ── Export action bar ────────────────────────────────────────── */}
+        {/* Export action bar */}
         <ExportBar session={session} />
 
-        {/* ── Tab bar ─────────────────────────────────────────────────── */}
+        {/* Tab bar */}
         <View style={{
           flexDirection:     'row',
           paddingHorizontal: SPACING.xl,
@@ -557,7 +557,7 @@ export default function DebateDetailScreen() {
           })}
         </View>
 
-        {/* ── Tab content ─────────────────────────────────────────────── */}
+        {/* Tab content */}
         <ScrollView
           contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 60 }}
           showsVerticalScrollIndicator={false}
@@ -583,7 +583,7 @@ export default function DebateDetailScreen() {
           )}
         </ScrollView>
 
-        {/* ── Part 16: Share to workspace modal ───────────────────────── */}
+        {/* Share to workspace modal */}
         <ShareDebateToWorkspaceModal
           visible={showShareModal}
           debateId={sessionId}

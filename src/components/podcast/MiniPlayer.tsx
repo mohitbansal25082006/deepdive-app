@@ -1,44 +1,47 @@
 // src/components/podcast/MiniPlayer.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Refactored in Part 39 Fix (final).
+// Updated in Part 40 Fix — handles both Podcast and Voice Debate playback.
 //
-// CHANGES:
-//   • MiniPlayer now subscribes to GlobalAudioEngine directly for its own state
-//   • This ensures the progress bar updates in real-time as audio plays,
-//     even when podcast-player screen is not mounted
-//   • Play/pause button now calls AudioEngine.toggle() directly (no event bus needed)
-//   • Dismiss button calls AudioEngine.stop()
-//   • Body tap navigates to podcast-player; on arrival, AudioEngine.reattach()
-//     restores exact position
+// Content type detection:
+//   contentType === 'podcast'      → navigates to podcast-player
+//   contentType === 'voice_debate' → navigates to voice-debate-player
 //
-// BACKWARD COMPAT:
-//   • MiniPlayerBus is still exported (podcast-player.tsx subscribes to 'dismiss')
-//     but 'toggle' events are no longer used (AudioEngine handles toggle directly)
-//   • MiniPlayerProps kept for any code that passes state prop
+// Toggle / dismiss:
+//   Podcast:      AudioEngine.toggle() / AudioEngine.stop()
+//   Voice Debate: VoiceDebateEngine.toggle() / VoiceDebateEngine.stop()
+//
+// Artwork:
+//   Podcast:      EpisodeArtwork (colour tile with initials)
+//   Voice Debate: Mic icon in a coloured tile
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useEffect, useState }                from 'react';
-import { View, Text, TouchableOpacity, Platform }     from 'react-native';
-import { Ionicons }                                   from '@expo/vector-icons';
+import React, { useEffect, useState }            from 'react';
+import { View, Text, TouchableOpacity, Platform } from 'react-native';
+import { Ionicons }                               from '@expo/vector-icons';
 import Animated, {
   FadeInDown, FadeOutDown,
   useSharedValue, useAnimatedStyle, withTiming,
-}                                                     from 'react-native-reanimated';
-import { router }                                     from 'expo-router';
-import { useSafeAreaInsets }                          from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACING, RADIUS }             from '../../constants/theme';
-import { EpisodeArtwork }                             from './EpisodeArtwork';
+}                                                 from 'react-native-reanimated';
+import { router }                                 from 'expo-router';
+import { useSafeAreaInsets }                      from 'react-native-safe-area-context';
+import { LinearGradient }                         from 'expo-linear-gradient';
+import { COLORS, FONTS, SPACING, RADIUS }         from '../../constants/theme';
+import { EpisodeArtwork }                         from './EpisodeArtwork';
 import {
   subscribeToEngine,
   AudioEngine,
   getEngineState,
   type EngineState,
-} from '../../services/GlobalAudioEngine';
-import type { MiniPlayerState }                       from '../../types/podcast_v2';
+}                                                 from '../../services/GlobalAudioEngine';
+import {
+  subscribeToVDEngine,
+  VoiceDebateEngine,
+  getVDEngineState,
+  type VoiceDebateEngineState,
+}                                                 from '../../services/VoiceDebateAudioEngine';
+import type { MiniPlayerState }                   from '../../types/podcast_v2';
 
-// ─── Mini Player Bus ──────────────────────────────────────────────────────────
-// Kept for backward compat. 'toggle' is no longer used but 'dismiss' is
-// still listened to by podcast-player.tsx to save progress on dismiss.
+// ─── Mini Player Bus (backward compat) ────────────────────────────────────────
 
 type MiniPlayerEvent = 'toggle' | 'dismiss';
 type MiniPlayerListener = (event: MiniPlayerEvent) => void;
@@ -56,35 +59,70 @@ class MiniPlayerEventBus {
 
 export const MiniPlayerBus = new MiniPlayerEventBus();
 
-// ─── Local State from Engine ──────────────────────────────────────────────────
+// ─── Combined Local State ─────────────────────────────────────────────────────
+
+type ContentType = 'podcast' | 'voice_debate';
 
 interface LocalState {
   isVisible:       boolean;
+  contentType:     ContentType;
+  title:           string;
+  subtitle:        string;
   podcastId:       string | null;
-  podcastTitle:    string;
-  hostName:        string;
-  guestName:       string;
+  voiceDebateId:   string | null;
   isPlaying:       boolean;
   progressPercent: number;
+  accentColor:     string;
 }
 
-function engineToLocal(es: EngineState): LocalState {
+const DEFAULT_STATE: LocalState = {
+  isVisible:       false,
+  contentType:     'podcast',
+  title:           '',
+  subtitle:        '',
+  podcastId:       null,
+  voiceDebateId:   null,
+  isPlaying:       false,
+  progressPercent: 0,
+  accentColor:     COLORS.primary,
+};
+
+function podcastToLocal(es: EngineState): LocalState {
   const podcast = es.podcast;
   return {
-    isVisible:       es.isVisible && es.podcastId !== null,
+    isVisible:       es.isVisible && !!es.podcastId,
+    contentType:     'podcast',
+    title:           podcast?.title             ?? '',
+    subtitle:        `${podcast?.config?.hostName ?? 'Host'} & ${podcast?.config?.guestName ?? 'Guest'}`,
     podcastId:       es.podcastId,
-    podcastTitle:    podcast?.title               ?? '',
-    hostName:        podcast?.config?.hostName    ?? 'Host',
-    guestName:       podcast?.config?.guestName   ?? 'Guest',
+    voiceDebateId:   null,
     isPlaying:       es.isPlaying,
     progressPercent: es.progressPercent,
+    accentColor:     COLORS.primary,
   };
 }
 
-// ─── Props (kept for backward compat but no longer required) ──────────────────
+function vdToLocal(es: VoiceDebateEngineState): LocalState {
+  const vd = es.voiceDebate;
+  // Get active speaker colour
+  const currentTurn = vd?.script?.turns?.[es.currentTurnIndex];
+  return {
+    isVisible:       es.isVisible && !!es.voiceDebateId,
+    contentType:     'voice_debate',
+    title:           vd?.topic ?? 'Voice Debate',
+    subtitle:        `Turn ${es.currentTurnIndex + 1} of ${vd?.script?.turns?.length ?? 0}`,
+    podcastId:       null,
+    voiceDebateId:   es.voiceDebateId,
+    isPlaying:       es.isPlaying,
+    progressPercent: es.progressPercent,
+    accentColor:     '#6C63FF',
+  };
+}
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface MiniPlayerProps {
-  /** @deprecated No longer used — MiniPlayer subscribes to engine directly */
+  /** @deprecated No longer used */
   state?: MiniPlayerState;
 }
 
@@ -93,22 +131,32 @@ interface MiniPlayerProps {
 export function MiniPlayer(_props: MiniPlayerProps) {
   const insets = useSafeAreaInsets();
 
-  // Subscribe to engine state directly — no prop drilling needed
-  const [local, setLocal] = useState<LocalState>(() => engineToLocal(getEngineState()));
+  const [podcastLocal, setPodcastLocal] = useState<LocalState>(() => podcastToLocal(getEngineState()));
+  const [vdLocal,      setVdLocal]      = useState<LocalState>(() => vdToLocal(getVDEngineState()));
 
   useEffect(() => {
     const unsub = subscribeToEngine((es: EngineState) => {
-      setLocal(engineToLocal(es));
+      setPodcastLocal(podcastToLocal(es));
     });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    const unsub = subscribeToVDEngine((es: VoiceDebateEngineState) => {
+      setVdLocal(vdToLocal(es));
+    });
+    return unsub;
+  }, []);
+
+  // Voice debate takes priority if both are somehow visible (shouldn't happen)
+  const local = vdLocal.isVisible ? vdLocal : podcastLocal;
 
   const progressFill = useSharedValue(local.progressPercent);
 
   useEffect(() => {
     progressFill.value = withTiming(
       Math.min(1, Math.max(0, local.progressPercent)),
-      { duration: 200 }
+      { duration: 200 },
     );
   }, [local.progressPercent]);
 
@@ -116,12 +164,17 @@ export function MiniPlayer(_props: MiniPlayerProps) {
     width: `${Math.min(100, Math.max(0, progressFill.value * 100))}%` as any,
   }));
 
-  if (!local.isVisible || !local.podcastId) return null;
+  if (!local.isVisible) return null;
 
   const tabBarHeight = 64 + insets.bottom;
 
   const handleBodyPress = () => {
-    if (local.podcastId) {
+    if (local.contentType === 'voice_debate' && local.voiceDebateId) {
+      router.push({
+        pathname: '/(app)/voice-debate-player' as any,
+        params:   { voiceDebateId: local.voiceDebateId },
+      });
+    } else if (local.podcastId) {
       router.push({
         pathname: '/(app)/podcast-player' as any,
         params:   { podcastId: local.podcastId },
@@ -130,12 +183,20 @@ export function MiniPlayer(_props: MiniPlayerProps) {
   };
 
   const handleToggle = async () => {
-    await AudioEngine.toggle();
+    if (local.contentType === 'voice_debate') {
+      await VoiceDebateEngine.toggle();
+    } else {
+      await AudioEngine.toggle();
+    }
   };
 
   const handleDismiss = async () => {
     MiniPlayerBus.emit('dismiss');
-    await AudioEngine.stop();
+    if (local.contentType === 'voice_debate') {
+      await VoiceDebateEngine.stop();
+    } else {
+      await AudioEngine.stop();
+    }
   };
 
   return (
@@ -150,7 +211,9 @@ export function MiniPlayer(_props: MiniPlayerProps) {
         backgroundColor: COLORS.backgroundCard,
         borderRadius:    RADIUS.xl,
         borderWidth:     1,
-        borderColor:     COLORS.border,
+        borderColor:     local.contentType === 'voice_debate'
+                           ? `${local.accentColor}40`
+                           : COLORS.border,
         overflow:        'hidden',
         zIndex:          9990,
         ...Platform.select({
@@ -161,7 +224,10 @@ export function MiniPlayer(_props: MiniPlayerProps) {
     >
       {/* Progress strip */}
       <View style={{ height: 2, backgroundColor: COLORS.backgroundElevated }}>
-        <Animated.View style={[progressStyle, { height: '100%', backgroundColor: COLORS.primary }]} />
+        <Animated.View style={[progressStyle, {
+          height: '100%',
+          backgroundColor: local.accentColor,
+        }]} />
       </View>
 
       {/* Content row */}
@@ -170,16 +236,35 @@ export function MiniPlayer(_props: MiniPlayerProps) {
         activeOpacity={0.85}
         style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, padding: SPACING.sm + 2 }}
       >
-        {/* Artwork */}
-        <EpisodeArtwork title={local.podcastTitle} size={40} borderRadius={12} />
+        {/* Artwork / Icon */}
+        {local.contentType === 'voice_debate' ? (
+          <LinearGradient
+            colors={['#1A1035', '#0D0820']}
+            style={{
+              width: 40, height: 40, borderRadius: 12,
+              alignItems: 'center', justifyContent: 'center',
+              borderWidth: 1, borderColor: `${local.accentColor}40`,
+            }}
+          >
+            <Ionicons name="mic" size={18} color={local.accentColor} />
+          </LinearGradient>
+        ) : (
+          <EpisodeArtwork title={local.title} size={40} borderRadius={12} />
+        )}
 
-        {/* Title + speakers */}
+        {/* Title + subtitle */}
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }} numberOfLines={1}>
-            {local.podcastTitle}
+          <Text
+            style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}
+            numberOfLines={1}
+          >
+            {local.title}
           </Text>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }} numberOfLines={1}>
-            {local.hostName} & {local.guestName}
+          <Text
+            style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}
+            numberOfLines={1}
+          >
+            {local.subtitle}
           </Text>
         </View>
 
@@ -191,7 +276,7 @@ export function MiniPlayer(_props: MiniPlayerProps) {
             width:           38,
             height:          38,
             borderRadius:    19,
-            backgroundColor: COLORS.primary,
+            backgroundColor: local.accentColor,
             alignItems:      'center',
             justifyContent:  'center',
             flexShrink:      0,
