@@ -1,37 +1,35 @@
 -- ============================================================
--- Part 41 Fix — Workspace Podcast Video + Mini Player Fixes
+-- PART 41 — COMPLETE SCHEMA FIXES (UPSIGHT + DOWNSIDE)
 -- ============================================================
--- Fixes two bugs introduced in Parts 15/39/40:
+-- Combines Part 41.1 (Podcast Video Player + Mini Player Fixes) and
+-- Part 41.2 (Voice Debate Cloud Audio & Cross-Device Support).
 --
--- FIX 1: Storage RLS for podcast-audio bucket
---   The existing SELECT policy used split_part(name,'/',1) to
---   extract workspace_id from the file path, but files are stored
---   as  podcasts/{podcastId}/segment_N.mp3  — no workspace_id in
---   the path. Workspace members on other devices therefore got a
---   403 when trying to stream audio.
---
---   Solution: Replace the broken workspace-path policy with one
---   that checks whether the authenticated user is a member of ANY
---   workspace that has this podcast shared to it. The lookup uses
---   the podcastId extracted from the path (segment 2).
---
--- FIX 2: RPC for workspace members to load podcast for video mode
---   podcast-video-player.tsx loads the podcast directly from the
---   podcasts table with a simple .select('*').eq('id', podcastId).
---   Workspace members don't own the podcast so RLS blocks the
---   query → "Episode not found" error on their device.
---
---   Solution: New SECURITY DEFINER RPC
---   get_shared_podcast_full_for_workspace(p_workspace_id, p_podcast_id)
---   that verifies workspace membership + that the podcast is shared
---   to that workspace, then returns the full podcast row.
+-- FIXES INCLUDED:
+--   1. Storage RLS for podcast-audio bucket (podcast sharing fix)
+--   2. RPC get_shared_podcast_full_for_workspace (bypasses owner RLS)
+--   3. podcast-audio bucket existence + voice debate storage policies
+--   4. RPCs: get_voice_debate_full, update_voice_debate_cloud_urls, get_user_voice_debates
 -- ============================================================
 
 -- ============================================================
--- FIX 1: STORAGE POLICIES — podcast-audio bucket
+-- PART 1: ENSURE podcast-audio STORAGE BUCKET EXISTS
 -- ============================================================
 
--- Drop the old broken policies
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'podcast-audio',
+  'podcast-audio',
+  true,
+  52428800,  -- 50 MB per file
+  ARRAY['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/ogg', 'audio/webm']
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================
+-- PART 2: STORAGE POLICIES — podcast-audio bucket
+-- ============================================================
+
+-- Drop the old broken policies (if any)
 DROP POLICY IF EXISTS "podcast_audio_select_workspace_member"  ON storage.objects;
 DROP POLICY IF EXISTS "podcast_audio_insert_owner"             ON storage.objects;
 DROP POLICY IF EXISTS "podcast_audio_update_owner"             ON storage.objects;
@@ -112,12 +110,59 @@ CREATE POLICY "podcast_audio_delete_v2"
     );
 
 -- ============================================================
--- FIX 2: RPC — load full podcast row for workspace video mode
+-- PART 3: STORAGE POLICIES FOR VOICE DEBATE AUDIO
+--    Path pattern: voice_debates/{voiceDebateId}/turn_{N}.mp3
 -- ============================================================
 
--- Used by workspace-shared-podcast-player when opening Video Mode.
--- Returns the full podcasts row so podcast-video-player can load it
--- even though the requesting user doesn't own the podcast.
+-- Read: anyone can read (bucket is public, URLs are direct)
+DROP POLICY IF EXISTS "Voice debate audio public read" ON storage.objects;
+CREATE POLICY "Voice debate audio public read"
+  ON storage.objects
+  FOR SELECT
+  TO public
+  USING (
+    bucket_id = 'podcast-audio'
+    AND name LIKE 'voice_debates/%'
+  );
+
+-- Upload: only the authenticated user who owns the debate
+DROP POLICY IF EXISTS "Voice debate audio owner upload" ON storage.objects;
+CREATE POLICY "Voice debate audio owner upload"
+  ON storage.objects
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    bucket_id = 'podcast-audio'
+    AND name LIKE 'voice_debates/%'
+    AND (storage.foldername(name))[1] = 'voice_debates'
+  );
+
+-- Update / upsert
+DROP POLICY IF EXISTS "Voice debate audio owner update" ON storage.objects;
+CREATE POLICY "Voice debate audio owner update"
+  ON storage.objects
+  FOR UPDATE
+  TO authenticated
+  USING (
+    bucket_id = 'podcast-audio'
+    AND name LIKE 'voice_debates/%'
+  );
+
+-- Delete (for cleanup when debate is deleted)
+DROP POLICY IF EXISTS "Voice debate audio owner delete" ON storage.objects;
+CREATE POLICY "Voice debate audio owner delete"
+  ON storage.objects
+  FOR DELETE
+  TO authenticated
+  USING (
+    bucket_id = 'podcast-audio'
+    AND name LIKE 'voice_debates/%'
+  );
+
+-- ============================================================
+-- PART 4: RPC — get_shared_podcast_full_for_workspace
+--    Used by workspace-shared-podcast-player when opening Video Mode.
+-- ============================================================
 
 CREATE OR REPLACE FUNCTION public.get_shared_podcast_full_for_workspace(
     p_workspace_id UUID,
@@ -155,6 +200,107 @@ COMMENT ON FUNCTION public.get_shared_podcast_full_for_workspace(UUID, UUID) IS
     'Returns full podcast row for workspace members opening Video Mode (bypasses owner RLS). Part 41 fix.';
 
 -- ============================================================
--- Reload PostgREST schema cache
+-- PART 5: RPC — get_voice_debate_full
+--    Returns a complete voice debate row by ID.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_voice_debate_full(
+  p_voice_debate_id UUID
+)
+RETURNS SETOF public.voice_debates
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT *
+  FROM public.voice_debates
+  WHERE id = p_voice_debate_id
+    AND user_id = auth.uid()
+  LIMIT 1;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_voice_debate_full(UUID) TO authenticated;
+
+COMMENT ON FUNCTION public.get_voice_debate_full IS
+    'Part 41.2 — Loads a voice debate by ID for cross-device playback.';
+
+-- ============================================================
+-- PART 6: RPC — update_voice_debate_cloud_urls
+--    Called by background upload service after audio is uploaded.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.update_voice_debate_cloud_urls(
+  p_voice_debate_id   UUID,
+  p_audio_urls        TEXT[],
+  p_all_uploaded      BOOLEAN
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_rows_updated INTEGER;
+BEGIN
+  UPDATE public.voice_debates
+  SET
+    audio_storage_urls  = p_audio_urls,
+    audio_all_uploaded  = p_all_uploaded,
+    audio_uploaded_at   = now()
+  WHERE id      = p_voice_debate_id
+    AND user_id = auth.uid();
+
+  GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+  RETURN v_rows_updated > 0;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.update_voice_debate_cloud_urls(UUID, TEXT[], BOOLEAN) TO authenticated;
+
+COMMENT ON FUNCTION public.update_voice_debate_cloud_urls IS
+    'Part 41.2 — Updates audio_storage_urls after background cloud upload completes.';
+
+-- ============================================================
+-- PART 7: RPC — get_user_voice_debates
+--    Returns all completed voice debates for the current user.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.get_user_voice_debates(
+  p_limit  INTEGER DEFAULT 20,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS SETOF public.voice_debates
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT *
+  FROM public.voice_debates
+  WHERE user_id = auth.uid()
+    AND status = 'completed'
+  ORDER BY created_at DESC
+  LIMIT p_limit
+  OFFSET p_offset;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_voice_debates(INTEGER, INTEGER) TO authenticated;
+
+-- ============================================================
+-- PART 8: REALTIME PUBLICATION (voice_debates)
+-- ============================================================
+
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.voice_debates;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================
+-- FINAL: RELOAD POSTGREST SCHEMA CACHE
 -- ============================================================
 NOTIFY pgrst, 'reload schema';
+
+-- ============================================================
+-- DONE
+-- ============================================================

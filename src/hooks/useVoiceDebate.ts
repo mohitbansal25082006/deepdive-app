@@ -1,30 +1,34 @@
 // src/hooks/useVoiceDebate.ts
-// Part 40 Fix — Complete cancel/regenerate support
+// Part 40 + Part 41.2 UPDATE
 //
-// KEY FIXES:
-//   1. cancelGeneration() aborts the pipeline, resets state to INITIAL_STATE,
-//      and clears abortRef so generate() can run cleanly again.
-//   2. generate() always resets abortRef = false at the start so a re-run
-//      after cancel works without stale abort state.
-//   3. onError in the pipeline receives 'AbortError' sentinel → hook resets
-//      to idle silently (no error UI shown to user).
-//   4. isLoadingExisting is now guarded so it doesn't overwrite an
-//      in-progress generation state.
+// CHANGES in 41.2:
+//   1. After onComplete fires, auto-cache the audio locally using
+//      voiceDebateAudioCache so it survives device restarts and is
+//      available for the cache manager.
+//   2. On mount, if an existing completed debate is loaded, its audio
+//      is also cached in the background (for the case where the user
+//      generated on this device but the cache was cleared).
+//   3. deleteVoiceDebate() also evicts cached audio.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useAuth }                          from '../context/AuthContext';
+import { useAuth }                                   from '../context/AuthContext';
 import {
   runVoiceDebatePipeline,
   fetchVoiceDebateForSession,
   mapRowToVoiceDebate,
-}                                           from '../services/voiceDebateOrchestrator';
-import { supabase }                         from '../lib/supabase';
-import type { DebateSession }               from '../types';
+}                                                    from '../services/voiceDebateOrchestrator';
+import {
+  downloadVoiceDebateAudio,
+  evictVoiceDebateAudio,
+  isVoiceDebateAudioCached,
+}                                                    from '../lib/voiceDebateAudioCache';
+import { supabase }                                  from '../lib/supabase';
+import type { DebateSession }                        from '../types';
 import type {
   VoiceDebate,
   VoiceDebateGenerationState,
   VoiceDebateGenerationPhase,
-}                                           from '../types/voiceDebate';
+}                                                    from '../types/voiceDebate';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -38,6 +42,31 @@ const INITIAL_STATE: VoiceDebateGenerationState = {
   error:           null,
 };
 
+// ─── Background audio cache helper ───────────────────────────────────────────
+
+async function cacheAudioBackground(vd: VoiceDebate): Promise<void> {
+  try {
+    const audioPaths = vd.audioSegmentPaths ?? [];
+    // Combine local + cloud paths: prefer local first, fall back to cloud
+    const sources = audioPaths.map((local, i) => {
+      if (local && !local.startsWith('http')) return local;
+      const cloud = (vd.audioStorageUrls as any)?.[i] ?? null;
+      return cloud ?? local;
+    }).filter(Boolean);
+
+    if (sources.length === 0) return;
+
+    const alreadyCached = await isVoiceDebateAudioCached(vd.id);
+    if (alreadyCached) return;
+
+    console.log(`[useVoiceDebate] 💾  Background caching ${sources.length} audio turns for voiceDebateId=${vd.id}`);
+    await downloadVoiceDebateAudio(vd.id, vd.topic, sources);
+    console.log(`[useVoiceDebate] ✅  Audio cache complete for voiceDebateId=${vd.id}`);
+  } catch (err) {
+    console.warn('[useVoiceDebate] Audio cache error (non-fatal):', err);
+  }
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useVoiceDebate(session: DebateSession | null) {
@@ -46,9 +75,7 @@ export function useVoiceDebate(session: DebateSession | null) {
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
   const [isCancelling, setIsCancelling]     = useState(false);
 
-  // abortRef: true means we are cancelling — patch() calls are ignored
   const abortRef           = useRef(false);
-  // generatingRef: true means a pipeline is actively running
   const generatingRef      = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -69,7 +96,6 @@ export function useVoiceDebate(session: DebateSession | null) {
     fetchVoiceDebateForSession(session.id)
       .then(existing => {
         if (cancelled) return;
-        // Don't overwrite an active generation
         if (generatingRef.current) return;
         if (existing) {
           setState(prev => ({
@@ -78,6 +104,11 @@ export function useVoiceDebate(session: DebateSession | null) {
             phase:           'done',
             progressPercent: 100,
           }));
+
+          // Auto-cache audio in background if not already cached
+          if (existing.status === 'completed') {
+            cacheAudioBackground(existing);
+          }
         }
       })
       .catch(err => {
@@ -140,12 +171,10 @@ export function useVoiceDebate(session: DebateSession | null) {
       return;
     }
 
-    // ── FIX: Always reset abort state before a new run ─────────────────────
-    abortRef.current     = false;
+    abortRef.current      = false;
     generatingRef.current = true;
     setIsCancelling(false);
 
-    // Create a fresh AbortController for this generation run
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -166,12 +195,7 @@ export function useVoiceDebate(session: DebateSession | null) {
         agentName?: string,
       ) => {
         if (abortRef.current) return;
-        patch({
-          phase,
-          phaseLabel:      label,
-          progressPercent: percent,
-          activeAgentName: agentName ?? '',
-        });
+        patch({ phase, phaseLabel: label, progressPercent: percent, activeAgentName: agentName ?? '' });
       },
 
       onAudioProgress: (completed: number, total: number) => {
@@ -191,12 +215,14 @@ export function useVoiceDebate(session: DebateSession | null) {
           activeAgentName: '',
           error:           null,
         });
+
+        // Part 41.2: cache audio locally in background
+        cacheAudioBackground(voiceDebate);
       },
 
       onError: (message: string) => {
         generatingRef.current = false;
 
-        // ── FIX: AbortError sentinel = user cancelled → reset to idle silently
         if (message === 'AbortError' || abortRef.current) {
           setState(INITIAL_STATE);
           setIsCancelling(false);
@@ -215,32 +241,24 @@ export function useVoiceDebate(session: DebateSession | null) {
 
     }, controller.signal);
 
-    // Ensure generatingRef is cleared even if pipeline returns without calling callbacks
     generatingRef.current = false;
   }, [user, session, patch]);
 
   // ── Cancel generation ──────────────────────────────────────────────────────
 
   const cancelGeneration = useCallback(() => {
-    // Mark as aborting — all patch() calls will be ignored from now on
-    abortRef.current     = true;
+    abortRef.current      = true;
     generatingRef.current = false;
     setIsCancelling(true);
 
-    // Signal the orchestrator's AbortSignal
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
 
-    // Reset UI immediately — don't wait for the pipeline to clean up the DB row
-    // The orchestrator will delete the stale row in the background.
-    // We use a short delay so any in-flight patch() calls that fire before
-    // the abort propagates don't get shown.
     setTimeout(() => {
       setState(INITIAL_STATE);
       setIsCancelling(false);
-      // Reset abortRef AFTER setState so subsequent generate() calls work
       abortRef.current = false;
     }, 800);
   }, []);
@@ -256,7 +274,6 @@ export function useVoiceDebate(session: DebateSession | null) {
     }
     setIsCancelling(false);
     setState(INITIAL_STATE);
-    // Allow new runs after reset
     setTimeout(() => { abortRef.current = false; }, 100);
   }, []);
 
@@ -272,6 +289,8 @@ export function useVoiceDebate(session: DebateSession | null) {
       .eq('user_id', user.id);
 
     if (!error) {
+      // Part 41.2: also evict local audio cache
+      await evictVoiceDebateAudio(state.voiceDebate.id).catch(() => {});
       setState(INITIAL_STATE);
     }
   }, [user, state.voiceDebate]);

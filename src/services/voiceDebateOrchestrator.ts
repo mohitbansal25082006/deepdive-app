@@ -1,14 +1,14 @@
 // src/services/voiceDebateOrchestrator.ts
-// Part 40 — Voice Debate Engine
-// Part 40 Fix — Cancel/Regenerate support
+// Part 40 + Part 41.2 UPDATE
 //
-// KEY FIXES:
-//   1. Before inserting a new DB row, check for any existing row for the session
-//      (stale 'generating_script'/'generating_audio'/'failed' rows from a cancelled run)
-//      and DELETE it first — so INSERT always succeeds.
-//   2. AbortError path deletes the in-progress row cleanly.
-//   3. onError('AbortError') sentinel is kept so the hook can reset to idle silently.
-//   4. All other pipeline logic is unchanged.
+// KEY CHANGES in 41.2:
+//   1. Background upload now uses voiceDebateAudioUploadService (dedicated,
+//      with retry + timeout + terminal logs) instead of the old inline function.
+//   2. Final DB save (status=completed) wrapped in a retry loop with 15s timeout
+//      each attempt — fixes "network request failed" / "timed out" errors that
+//      happened when the device was on a slow connection at end of generation.
+//   3. supabase DB calls that could hang now use a withTimeout() wrapper.
+//   4. Cleaner error messages surfaced to the UI for network failures.
 
 import { supabase }                        from '../lib/supabase';
 import { generateVoiceDebateScript }       from './agents/voiceDebateScriptAgent';
@@ -18,6 +18,7 @@ import {
   estimateSegmentDurationMs,
 }                                          from './voiceDebateTTSService';
 import { VOICE_PERSONAS }                  from '../constants/voiceDebate';
+import { uploadVoiceDebateAudioBackground } from './voiceDebateAudioUploadService';
 import type { DebateSession }              from '../types';
 import type {
   VoiceDebate,
@@ -30,29 +31,44 @@ import type {
 // ─── Derive the key type from VOICE_PERSONAS ──────────────────────────────────
 type VoicePersonaKey = keyof typeof VOICE_PERSONAS;
 
+// ─── Timeout helper ───────────────────────────────────────────────────────────
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Network timeout after ${ms / 1000}s: ${label}`)),
+      ms,
+    );
+    promise.then(
+      val => { clearTimeout(timer); resolve(val); },
+      err => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 // ─── Map DB row → VoiceDebate ─────────────────────────────────────────────────
 
-export function mapRowToVoiceDebate(row: Record<string, any>): VoiceDebate {
+export function mapRowToVoiceDebate(row: Record<string, unknown>): VoiceDebate {
   return {
-    id:                row.id,
-    userId:            row.user_id,
-    debateSessionId:   row.debate_session_id,
-    topic:             row.topic             ?? '',
-    question:          row.question          ?? '',
-    script:            row.script            ?? { turns: [], segments: [], totalWords: 0, estimatedDurationMinutes: 0, generatedAt: '' },
-    status:            row.status,
-    errorMessage:      row.error_message     ?? undefined,
-    audioSegmentPaths: row.audio_segment_paths ?? [],
-    audioStorageUrls:  row.audio_storage_urls  ?? [],
-    audioAllUploaded:  row.audio_all_uploaded  ?? false,
-    totalTurns:        row.total_turns        ?? 0,
-    completedSegments: row.completed_segments ?? 0,
-    durationSeconds:   row.duration_seconds   ?? 0,
-    wordCount:         row.word_count         ?? 0,
-    exportCount:       row.export_count       ?? 0,
-    playCount:         row.play_count         ?? 0,
-    createdAt:         row.created_at,
-    completedAt:       row.completed_at       ?? undefined,
+    id:                row.id as string,
+    userId:            row.user_id as string,
+    debateSessionId:   row.debate_session_id as string,
+    topic:             (row.topic             as string) ?? '',
+    question:          (row.question          as string) ?? '',
+    script:            (row.script            as VoiceDebateScript) ?? { turns: [], segments: [], totalWords: 0, estimatedDurationMinutes: 0, generatedAt: '' },
+    status:            row.status as VoiceDebate['status'],
+    errorMessage:      (row.error_message     as string | undefined) ?? undefined,
+    audioSegmentPaths: (row.audio_segment_paths as string[]) ?? [],
+    audioStorageUrls:  (row.audio_storage_urls  as string[]) ?? [],
+    audioAllUploaded:  (row.audio_all_uploaded  as boolean) ?? false,
+    totalTurns:        (row.total_turns        as number) ?? 0,
+    completedSegments: (row.completed_segments as number) ?? 0,
+    durationSeconds:   (row.duration_seconds   as number) ?? 0,
+    wordCount:         (row.word_count         as number) ?? 0,
+    exportCount:       (row.export_count       as number) ?? 0,
+    playCount:         (row.play_count         as number) ?? 0,
+    createdAt:         row.created_at as string,
+    completedAt:       (row.completed_at       as string | undefined) ?? undefined,
   };
 }
 
@@ -70,37 +86,75 @@ export async function fetchVoiceDebateForSession(
     }
 
     const row = Array.isArray(data) ? data[0] : data;
-    return mapRowToVoiceDebate(row as Record<string, any>);
+    return mapRowToVoiceDebate(row as Record<string, unknown>);
   } catch {
     return null;
   }
 }
 
 // ─── Delete any stale (non-completed) voice debate for a session ──────────────
-// Called before starting a fresh generation run so we never hit the UNIQUE
-// constraint on debate_session_id.
 
 async function deleteStaleVoiceDebate(
   userId:    string,
   sessionId: string,
 ): Promise<void> {
   try {
-    // Only delete rows that are NOT completed — a completed row should be
-    // preserved (the user must explicitly delete it via the UI if they want
-    // to regenerate).
-    const { error } = await supabase
+    const query = supabase
       .from('voice_debates')
       .delete()
       .eq('user_id', userId)
       .eq('debate_session_id', sessionId)
       .neq('status', 'completed');
 
+    const { error } = await withTimeout(
+      query as unknown as Promise<{ error: { message: string } | null }>,
+      10_000,
+      'deleteStaleVoiceDebate',
+    );
     if (error) {
       console.warn('[VoiceDebateOrchestrator] Could not delete stale row:', error.message);
     }
   } catch (err) {
     console.warn('[VoiceDebateOrchestrator] deleteStaleVoiceDebate error (non-fatal):', err);
   }
+}
+
+// ─── Retry-wrapped DB update ──────────────────────────────────────────────────
+// Wraps supabase.from().update() with up to 3 attempts and a per-attempt
+// timeout so we don't hang forever on slow connections.
+
+async function updateWithRetry(
+  table:   string,
+  id:      string,
+  payload: Record<string, unknown>,
+  label:   string,
+  maxAttempts = 3,
+  timeoutMs   = 15_000,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const query = supabase.from(table).update(payload).eq('id', id);
+
+      const { error } = await withTimeout(
+        query as unknown as Promise<{ error: { message: string } | null }>,
+        timeoutMs,
+        `${label} attempt ${attempt}`,
+      );
+      if (!error) {
+        return true;
+      }
+      console.warn(
+        `[VoiceDebateOrchestrator] ${label} attempt ${attempt} failed: ${error.message}`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[VoiceDebateOrchestrator] ${label} attempt ${attempt} threw: ${msg}`);
+    }
+    if (attempt < maxAttempts) {
+      await new Promise(r => setTimeout(r, 1500 * attempt));
+    }
+  }
+  return false;
 }
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
@@ -112,7 +166,6 @@ export async function runVoiceDebatePipeline(
   signal?:   AbortSignal,
 ): Promise<void> {
 
-  // ── Abort helper ───────────────────────────────────────────────────────────
   const isAborted = () => signal?.aborted ?? false;
 
   const checkAbort = () => {
@@ -121,7 +174,7 @@ export async function runVoiceDebatePipeline(
     }
   };
 
-  // ── Pre-flight ─────────────────────────────────────────────────────────────
+  // ── Pre-flight checks ──────────────────────────────────────────────────────
 
   const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!openaiKey?.trim()) {
@@ -147,14 +200,13 @@ export async function runVoiceDebatePipeline(
     return;
   }
 
-  // ── FIX: Delete any stale (cancelled/failed) row before attempting insert ──
-  // This prevents the UNIQUE constraint on debate_session_id from blocking a
-  // fresh generation attempt after a cancelled or failed run.
+  // ── Delete any stale row ───────────────────────────────────────────────────
+
   checkAbort();
   await deleteStaleVoiceDebate(userId, session.id);
   checkAbort();
 
-  // ── Helper: update DB status ───────────────────────────────────────────────
+  // ── Helper: update DB status (non-fatal) ──────────────────────────────────
 
   let voiceDebateId: string | null = null;
 
@@ -163,44 +215,55 @@ export async function runVoiceDebatePipeline(
     extra?: Record<string, unknown>,
   ) => {
     if (!voiceDebateId) return;
-    const { error } = await supabase
-      .from('voice_debates')
-      .update({ status, ...extra })
-      .eq('id', voiceDebateId);
-    if (error) console.warn('[VoiceDebateOrchestrator] Status update failed:', error.message);
+    await updateWithRetry('voice_debates', voiceDebateId, { status, ...extra }, `updateStatus(${status})`);
   };
 
   // ── Phase: Briefing ────────────────────────────────────────────────────────
 
   callbacks.onPhaseUpdate('briefing', 'Briefing agents with debate context...', 5);
-
   checkAbort();
 
   // ── Create DB row ──────────────────────────────────────────────────────────
 
-  const { data: dbRow, error: insertError } = await supabase
-    .from('voice_debates')
-    .insert({
-      user_id:           userId,
-      debate_session_id: session.id,
-      topic:             session.topic,
-      question:          session.question,
-      status:            'generating_script',
-      script:            { turns: [], segments: [], totalWords: 0, estimatedDurationMinutes: 0, generatedAt: '' },
-      audio_segment_paths: [],
-    })
-    .select()
-    .single();
+  let dbRow: Record<string, unknown> | null = null;
+  let insertError: unknown = null;
+
+  try {
+    const insertQuery = supabase
+      .from('voice_debates')
+      .insert({
+        user_id:           userId,
+        debate_session_id: session.id,
+        topic:             session.topic,
+        question:          session.question,
+        status:            'generating_script',
+        script:            { turns: [], segments: [], totalWords: 0, estimatedDurationMinutes: 0, generatedAt: '' },
+        audio_segment_paths: [],
+      })
+      .select()
+      .single();
+
+    const result = await withTimeout(
+      insertQuery as unknown as Promise<{ data: Record<string, unknown> | null; error: { message: string } | null }>,
+      15_000,
+      'INSERT voice_debates',
+    );
+    dbRow        = result.data;
+    insertError  = result.error;
+  } catch (err) {
+    insertError = err;
+  }
 
   if (insertError || !dbRow) {
-    const msg = insertError?.message ?? 'Unknown database error';
+    const msg = (insertError instanceof Error ? insertError.message : (insertError as { message?: string })?.message) ?? 'Unknown database error';
     if (msg.includes('duplicate') || msg.includes('unique')) {
-      // A completed row already exists for this session — tell user to delete it first
       callbacks.onError(
         'A completed voice debate already exists for this session.\n\nDelete it first using the trash icon, then regenerate.',
       );
     } else if (msg.includes('does not exist') || msg.includes('relation')) {
       callbacks.onError('Database table not found.\n\nRun schema_part40.sql in your Supabase SQL Editor.');
+    } else if (msg.includes('timeout') || msg.includes('Network')) {
+      callbacks.onError('Network timeout while starting generation. Please check your connection and try again.');
     } else {
       callbacks.onError(`Database error: ${msg}`);
     }
@@ -214,7 +277,6 @@ export async function runVoiceDebatePipeline(
     // ── STEP 1: Script Generation ──────────────────────────────────────────
 
     checkAbort();
-
     callbacks.onPhaseUpdate('phase1', 'Phase 1: Agents forming opening arguments...', 10);
 
     let script: VoiceDebateScript;
@@ -229,14 +291,11 @@ export async function runVoiceDebatePipeline(
         ) as any,
         onPhaseProgress: (label, agentName) => {
           if (isAborted()) return;
-
           let phase: VoiceDebateGenerationPhase = 'phase1';
           let pct   = 20;
-
           if (label.includes('Cross-analysis')) { phase = 'cross_analysis'; pct = 45; }
           else if (label.includes('Phase 2'))   { phase = 'rebuttals';      pct = 60; }
-          else if (label.includes('Assembling'))  { phase = 'assembly';      pct = 72; }
-
+          else if (label.includes('Assembling'))  { phase = 'assembly';     pct = 72; }
           callbacks.onPhaseUpdate(phase, label, pct, agentName);
         },
       });
@@ -250,21 +309,29 @@ export async function runVoiceDebatePipeline(
 
     checkAbort();
 
-    // Save script to DB
-    await supabase
-      .from('voice_debates')
-      .update({
+    // ── Save script to DB (with retry) ─────────────────────────────────────
+
+    const scriptSaved = await updateWithRetry(
+      'voice_debates',
+      voiceDebateId,
+      {
         script,
         total_turns:  script.turns.length,
         word_count:   script.totalWords,
         status:       'generating_audio',
-      })
-      .eq('id', voiceDebateId);
+      },
+      'save script',
+      3,
+      15_000,
+    );
+
+    if (!scriptSaved) {
+      console.warn('[VoiceDebateOrchestrator] Script save failed — continuing anyway (audio generation will proceed)');
+    }
 
     // ── STEP 2: TTS Audio Generation ──────────────────────────────────────
 
     checkAbort();
-
     callbacks.onPhaseUpdate('audio', 'Generating voice audio for each speaker...', 75, 'Starting audio...');
     callbacks.onAudioProgress(0, script.turns.length);
 
@@ -278,14 +345,11 @@ export async function runVoiceDebatePipeline(
         {
           onSegmentComplete: (turnIndex, total, audioPath, succeeded) => {
             if (isAborted()) return;
-
             callbacks.onAudioProgress(turnIndex + 1, total);
-            const pct = 75 + Math.round(((turnIndex + 1) / total) * 25);
-
+            const pct         = 75 + Math.round(((turnIndex + 1) / total) * 25);
             const turn        = script.turns[turnIndex];
             const speakerKey  = (turn?.speaker ?? 'moderator') as VoicePersonaKey;
             const displayName = VOICE_PERSONAS[speakerKey]?.displayName ?? '';
-
             callbacks.onPhaseUpdate(
               'audio',
               `Generating voice audio: ${turnIndex + 1}/${total} turns`,
@@ -341,30 +405,43 @@ export async function runVoiceDebatePipeline(
 
     const completedAt = new Date().toISOString();
 
-    const { error: finalError } = await supabase
-      .from('voice_debates')
-      .update({
-        script:              finalScript,
-        audio_segment_paths: audioPaths,
-        status:              'completed',
-        completed_segments:  successCount,
-        total_turns:         turnsWithAudio.length,
-        duration_seconds:    durationSeconds,
-        word_count:          script.totalWords,
-        completed_at:        completedAt,
-      })
-      .eq('id', voiceDebateId);
+    // ── Save final state to DB — retry up to 3 times, 15s timeout each ────
 
-    if (finalError) {
-      console.warn('[VoiceDebateOrchestrator] Final save failed:', finalError.message);
-      await supabase
-        .from('voice_debates')
-        .update({
-          status:       'completed',
-          completed_at: completedAt,
+    const finalPayload = {
+      script:              finalScript,
+      audio_segment_paths: audioPaths,
+      status:              'completed',
+      completed_segments:  successCount,
+      total_turns:         turnsWithAudio.length,
+      duration_seconds:    durationSeconds,
+      word_count:          script.totalWords,
+      completed_at:        completedAt,
+    };
+
+    const finalSaved = await updateWithRetry(
+      'voice_debates',
+      voiceDebateId,
+      finalPayload,
+      'final save (completed)',
+      3,
+      15_000,
+    );
+
+    if (!finalSaved) {
+      // Last-ditch attempt with minimal payload (just mark completed)
+      console.warn('[VoiceDebateOrchestrator] Full final save failed — attempting minimal save');
+      await updateWithRetry(
+        'voice_debates',
+        voiceDebateId,
+        {
+          status:              'completed',
+          completed_at:        completedAt,
           audio_segment_paths: audioPaths,
-        })
-        .eq('id', voiceDebateId);
+        },
+        'minimal final save',
+        2,
+        10_000,
+      );
     }
 
     const finalVoiceDebate: VoiceDebate = {
@@ -392,23 +469,23 @@ export async function runVoiceDebatePipeline(
     callbacks.onComplete(finalVoiceDebate);
 
     // ── STEP 4: Background cloud upload (non-blocking) ─────────────────────
-    uploadAudioBackground(voiceDebateId, audioPaths);
+    // Uses the new dedicated upload service with retry + timeout + terminal logs
+    console.log(`[VoiceDebateOrchestrator] 📡  Kicking off background audio upload for voiceDebateId=${voiceDebateId}`);
+    uploadVoiceDebateAudioBackground(voiceDebateId, audioPaths);
 
   } catch (error) {
-    // ── Cancelled: clean up DB row and exit silently ───────────────────────
+    // ── Cancelled ─────────────────────────────────────────────────────────
     if (error instanceof DOMException && error.name === 'AbortError') {
       if (voiceDebateId) {
-        // Delete the in-progress row so future regeneration attempts succeed
-        const { error: delError } = await supabase
+        supabase
           .from('voice_debates')
           .delete()
           .eq('id', voiceDebateId)
-          .neq('status', 'completed'); // Safety guard: never delete a completed row
-        if (delError) {
-          console.warn('[VoiceDebateOrchestrator] Could not delete cancelled row:', delError.message);
-        }
+          .neq('status', 'completed')
+          .then(({ error: delError }) => {
+            if (delError) console.warn('[VoiceDebateOrchestrator] Could not delete cancelled row:', delError.message);
+          });
       }
-      // Signal the hook to reset to idle (hook detects 'AbortError' sentinel)
       callbacks.onError('AbortError');
       return;
     }
@@ -416,77 +493,8 @@ export async function runVoiceDebatePipeline(
     const message = error instanceof Error ? error.message : 'Unknown voice debate pipeline error';
     console.error('[VoiceDebateOrchestrator] Fatal pipeline error:', error);
     if (voiceDebateId) {
-      await updateStatus('failed', { error_message: message });
+      await updateWithRetry('voice_debates', voiceDebateId, { status: 'failed', error_message: message }, 'mark failed', 2, 10_000);
     }
     callbacks.onError(message);
   }
-}
-
-// ─── Background Cloud Upload ───────────────────────────────────────────────────
-
-async function uploadAudioBackground(
-  voiceDebateId: string,
-  audioPaths:    string[],
-): Promise<void> {
-  const localPaths = audioPaths.filter(
-    p => p && (p.startsWith('file://') || p.startsWith('/'))
-  );
-  if (localPaths.length === 0) return;
-
-  try {
-    const bucket = 'podcast-audio';
-    const uploadResults: (string | null)[] = [];
-
-    for (let i = 0; i < audioPaths.length; i++) {
-      const localPath = audioPaths[i];
-      if (!localPath) { uploadResults.push(null); continue; }
-
-      try {
-        const { getInfoAsync: gi, readAsStringAsync } = await import('expo-file-system/legacy');
-        const info = await gi(localPath);
-        if (!info.exists) { uploadResults.push(null); continue; }
-
-        const base64 = await readAsStringAsync(localPath, { encoding: 'base64' as any });
-        const blob   = base64ToBlob(base64, 'audio/mpeg');
-        const storagePath = `voice_debates/${voiceDebateId}/turn_${i}.mp3`;
-
-        const { data, error } = await supabase.storage
-          .from(bucket)
-          .upload(storagePath, blob, {
-            contentType: 'audio/mpeg',
-            upsert:      true,
-          });
-
-        if (error) { uploadResults.push(null); continue; }
-
-        const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-        uploadResults.push(urlData.publicUrl ?? null);
-      } catch {
-        uploadResults.push(null);
-      }
-    }
-
-    const uploaded = uploadResults.filter(Boolean).length;
-    if (uploaded > 0) {
-      await supabase
-        .from('voice_debates')
-        .update({
-          audio_storage_urls:  uploadResults,
-          audio_all_uploaded:  uploaded === audioPaths.length,
-          audio_uploaded_at:   new Date().toISOString(),
-        })
-        .eq('id', voiceDebateId);
-    }
-  } catch (err) {
-    console.warn('[VoiceDebateOrchestrator] Background upload failed (non-fatal):', err);
-  }
-}
-
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const binary = atob(base64);
-  const bytes  = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new Blob([bytes], { type: mimeType });
 }
