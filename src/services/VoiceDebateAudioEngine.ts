@@ -1,19 +1,23 @@
 // src/services/VoiceDebateAudioEngine.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// SINGLE SOURCE OF TRUTH for voice debate audio playback.
+// Part 41.2 UPDATE — Offline-aware audio pause/resume.
 //
-// Mirrors GlobalAudioEngine's subscriber pattern so MiniPlayer can show
-// voice debate playback state using the same infrastructure.
+// Mirrors the same pauseForOffline / clearOfflinePause pattern added to
+// GlobalAudioEngine so the voice-debate mini player behaves consistently:
 //
-// KEY DIFFERENCES from GlobalAudioEngine:
-//   - Stores VoiceDebate instead of Podcast
-//   - Segment type tracking (opening / cross_exam / rebuttal / qa / closing / verdict)
-//   - No progress-save callback (debates don't track resume position)
-//   - Exposes voiceDebateId in engine state instead of podcastId
+//   • Going offline while debate is playing → audio pauses, mini player
+//     stays visible in "paused" state, pausedByOffline = true
+//   • Coming back online → flag cleared, audio stays paused, user taps Play
+//   • User taps Play/toggle → pausedByOffline cleared, normal playback
 //
-// MiniPlayerContext subscribes to BOTH GlobalAudioEngine and this engine.
-// Whichever one has isVisible=true wins. They are mutually exclusive —
-// starting a voice debate stops the podcast engine and vice versa.
+// NEW fields in VoiceDebateEngineState:
+//   pausedByOffline: boolean
+//
+// NEW methods on VoiceDebateEngine:
+//   pauseForOffline()    — pause + set flag
+//   clearOfflinePause()  — clear flag only, no auto-resume
+//
+// Everything else is identical to the Part 41 version.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Audio }             from 'expo-av';
@@ -38,6 +42,8 @@ export interface VoiceDebateEngineState {
   // Mini player fields
   isVisible:          boolean;
   progressPercent:    number;
+  // ── Part 41.2: offline pause flag ────────────────────────────────────────
+  pausedByOffline:    boolean;
 }
 
 const INITIAL_STATE: VoiceDebateEngineState = {
@@ -55,6 +61,7 @@ const INITIAL_STATE: VoiceDebateEngineState = {
   currentSegmentType: 'opening',
   isVisible:          false,
   progressPercent:    0,
+  pausedByOffline:    false,
 };
 
 // ─── Module singletons ────────────────────────────────────────────────────────
@@ -67,7 +74,6 @@ let currentRate                           = 1.0;
 let keepAlive                             = false;
 let cumulativeMs                          = 0;
 
-// Self-ref to avoid stale closure in didJustFinish handler
 let loadTurnRef: (index: number, autoPlay: boolean) => Promise<void> = async () => {};
 
 // ─── Subscribers ──────────────────────────────────────────────────────────────
@@ -260,6 +266,35 @@ export const VoiceDebateEngine = {
     return engineState.voiceDebateId === voiceDebateId && globalSound !== null;
   },
 
+  // ── Part 41.2: Offline pause ──────────────────────────────────────────────
+
+  /**
+   * Called when the device goes offline.
+   * Pauses audio if currently playing and sets the pausedByOffline flag.
+   */
+  async pauseForOffline(): Promise<void> {
+    if (!globalSound) return;
+    if (!engineState.isPlaying) return;
+    try {
+      await globalSound.pauseAsync();
+      broadcast({ isPlaying: false, pausedByOffline: true });
+    } catch (err) {
+      console.warn('[VDEngine] pauseForOffline error:', err);
+    }
+  },
+
+  /**
+   * Called when the device comes back online.
+   * Clears the flag — does NOT auto-resume.
+   */
+  clearOfflinePause(): void {
+    if (engineState.pausedByOffline) {
+      broadcast({ pausedByOffline: false });
+    }
+  },
+
+  // ── Existing API ──────────────────────────────────────────────────────────
+
   async start(vd: VoiceDebate, fromTurnIndex = 0): Promise<void> {
     await ensureAudioSession();
     keepAlive = false;
@@ -273,6 +308,7 @@ export const VoiceDebateEngine = {
       isVisible:        true,
       totalDurationMs:  totalDurMs,
       currentTurnIndex: fromTurnIndex,
+      pausedByOffline:  false, // clear stale flag on fresh start
     });
 
     await loadTurn(fromTurnIndex, true);
@@ -313,12 +349,20 @@ export const VoiceDebateEngine = {
 
   async play(): Promise<void> {
     if (!globalSound) return;
-    try { await globalSound.playAsync(); broadcast({ isPlaying: true }); } catch {}
+    try {
+      await globalSound.playAsync();
+      // User explicitly resumed — clear offline flag
+      broadcast({ isPlaying: true, pausedByOffline: false });
+    } catch {}
   },
 
   async pause(): Promise<void> {
     if (!globalSound) return;
-    try { await globalSound.pauseAsync(); broadcast({ isPlaying: false }); } catch {}
+    try {
+      await globalSound.pauseAsync();
+      // User-initiated — not offline
+      broadcast({ isPlaying: false, pausedByOffline: false });
+    } catch {}
   },
 
   async toggle(): Promise<void> {
@@ -328,10 +372,11 @@ export const VoiceDebateEngine = {
       if (!status.isLoaded) return;
       if (status.isPlaying) {
         await globalSound.pauseAsync();
-        broadcast({ isPlaying: false });
+        broadcast({ isPlaying: false, pausedByOffline: false });
       } else {
         await globalSound.playAsync();
-        broadcast({ isPlaying: true });
+        // User manually resumed — clear offline flag
+        broadcast({ isPlaying: true, pausedByOffline: false });
       }
     } catch {}
   },

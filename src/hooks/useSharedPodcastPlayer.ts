@@ -1,15 +1,21 @@
 // src/hooks/useSharedPodcastPlayer.ts
-// Part 15 UPDATED — Supports streaming audio from Supabase Storage HTTPS URLs.
+// Part 41 UPDATE — Two fixes:
 //
-// KEY CHANGES:
-//   • isAudioPlayable() now returns true for https:// URLs (expo-av streams them)
-//   • Audio loading accepts both local file:/// paths AND https:// URLs
-//   • hasAudio check updated: any non-empty path (local OR cloud) counts
-//   • Download/export: concatenates segments from cloud URLs by fetching them
+// FIX 1: Mini player navigates back to workspace-shared-podcast-player
+//   After startPlayback() we call AudioEngine.setSourceScreen() with the
+//   workspace-shared-podcast-player pathname and { workspaceId, sharedId,
+//   contentTitle } params. MiniPlayer reads this and navigates correctly
+//   instead of opening podcast-player (which the workspace member can't use).
+//
+// FIX 2: Expose workspaceId for Video Mode
+//   Added workspaceId to the return value so workspace-shared-podcast-player
+//   can pass it to the new get_shared_podcast_full_for_workspace RPC call
+//   made inside podcast-video-player.
+//
+// Everything else is identical to the Part 41 version in workspace-shared-podcast-player.tsx.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Alert }                                      from 'react-native';
-import { Audio }                                      from 'expo-av';
 
 import { getSharedPodcastForWorkspace }  from '../services/podcastSharingService';
 import {
@@ -20,6 +26,12 @@ import {
 import { isAudioPlayable }               from '../services/podcastAudioUploadService';
 import { exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard }
                                          from '../services/podcastExport';
+import {
+  AudioEngine,
+  subscribeToEngine,
+  getEngineState,
+  type EngineState,
+}                                        from '../services/GlobalAudioEngine';
 import { SharedPodcast, Podcast, PodcastTurn, PodcastPlayerState } from '../types';
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -58,54 +70,70 @@ const INITIAL_STATE: SharedPodcastPlayerState = {
   exportError:      null,
 };
 
+// ─── Helper ───────────────────────────────────────────────────────────────────
+
+function engineToPlayerState(es: EngineState): PodcastPlayerState {
+  return {
+    isPlaying:         es.isPlaying,
+    currentTurnIndex:  es.currentTurnIndex,
+    positionMs:        es.positionMs,
+    segmentDurationMs: es.segmentDurationMs,
+    totalPositionMs:   es.totalPositionMs,
+    totalDurationMs:   es.totalDurationMs,
+    isLoading:         es.isLoading,
+    isBuffering:       es.isBuffering,
+    playbackRate:      es.playbackRate,
+  };
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useSharedPodcastPlayer(
   workspaceId: string | null | undefined,
   sharedId:    string | null | undefined,
+  /** Optional title shown in mini player and passed back for navigation */
+  contentTitle?: string,
 ) {
   const [state, setState] = useState<SharedPodcastPlayerState>(INITIAL_STATE);
 
-  const soundRef        = useRef<Audio.Sound | null>(null);
-  const isUnmountedRef  = useRef(false);
-  const currentIndexRef = useRef(0);
-  const rateRef         = useRef(1.0);
-  const podcastRef      = useRef<Podcast | null>(null);
-  const loadTurnRef     = useRef<(idx: number, autoPlay: boolean) => Promise<void>>(
-    async () => {}
-  );
-  const playTrackedRef  = useRef(false);
+  const isUnmountedRef   = useRef(false);
+  const playTrackedRef   = useRef(false);
+  const podcastRef       = useRef<Podcast | null>(null);
+  const sharedPodcastRef = useRef<SharedPodcast | null>(null);
 
   const patch = useCallback((partial: Partial<SharedPodcastPlayerState>) => {
     if (!isUnmountedRef.current) setState(prev => ({ ...prev, ...partial }));
   }, []);
 
-  const patchPlayer = useCallback((partial: Partial<PodcastPlayerState>) => {
-    if (!isUnmountedRef.current) {
-      setState(prev => ({ ...prev, player: { ...prev.player, ...partial } }));
-    }
-  }, []);
+  // ── Subscribe to GlobalAudioEngine ────────────────────────────────────────
+  useEffect(() => {
+    const unsub = subscribeToEngine((es: EngineState) => {
+      if (isUnmountedRef.current) return;
 
-  // ── Audio session ─────────────────────────────────────────────────────────
+      const ourPodcastId = podcastRef.current?.id;
+      if (!ourPodcastId || es.podcastId !== ourPodcastId) return;
+
+      // Track first play
+      if (es.isPlaying && !playTrackedRef.current && sharedPodcastRef.current) {
+        playTrackedRef.current = true;
+        trackPodcastPlay(sharedPodcastRef.current.id);
+      }
+
+      setState(prev => ({
+        ...prev,
+        player: engineToPlayerState(es),
+      }));
+    });
+
+    return unsub;
+  }, []);
 
   useEffect(() => {
     isUnmountedRef.current = false;
-    Audio.setAudioModeAsync({
-      allowsRecordingIOS:      false,
-      playsInSilentModeIOS:    true,
-      staysActiveInBackground: false,
-    }).catch(() => {});
-
-    return () => {
-      isUnmountedRef.current = true;
-      if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => {});
-        soundRef.current = null;
-      }
-    };
+    return () => { isUnmountedRef.current = true; };
   }, []);
 
-  // ── Load shared podcast row ───────────────────────────────────────────────
+  // ── Load shared podcast ────────────────────────────────────────────────────
 
   const loadPodcast = useCallback(async () => {
     if (!workspaceId || !sharedId) return;
@@ -129,21 +157,30 @@ export function useSharedPodcastPlayer(
     }
 
     const podcast = sharedPodcastToPodcast(sp);
-    podcastRef.current = podcast;
+    podcastRef.current       = podcast;
+    sharedPodcastRef.current = sp;
 
-    // Check audio availability:
-    // - HTTPS URLs → always playable (expo-av streams them)
-    // - Local file:/// → check if exists on this device
     const paths = sp.audioSegmentPaths.filter(Boolean);
     let hasAudio = false;
 
     if (paths.length > 0) {
-      // Check the first segment to determine if audio is available
       hasAudio = await isAudioPlayable(paths[0]);
     }
 
     const turns         = podcast.script?.turns ?? [];
     const totalDuration = turns.reduce((s, t) => s + (t.durationMs ?? 0), 0);
+
+    if (AudioEngine.isActiveFor(podcast.id)) {
+      await AudioEngine.reattach(podcast);
+      patch({
+        isLoadingPodcast: false,
+        sharedPodcast:    sp,
+        podcast,
+        hasAudio,
+        player: engineToPlayerState(getEngineState()),
+      });
+      return;
+    }
 
     patch({
       isLoadingPodcast: false,
@@ -156,202 +193,74 @@ export function useSharedPodcastPlayer(
 
   useEffect(() => { loadPodcast(); }, [loadPodcast]);
 
-  // ── Core audio loader — supports both local and HTTPS ─────────────────────
-
-  const loadTurn = async (index: number, autoPlay: boolean): Promise<void> => {
-    const p = podcastRef.current;
-    if (!p) return;
-
-    const turns = p.script?.turns ?? [];
-    if (index < 0 || index >= turns.length) return;
-
-    if (soundRef.current) {
-      try { await soundRef.current.unloadAsync(); } catch {}
-      soundRef.current = null;
-    }
-    if (isUnmountedRef.current) return;
-
-    currentIndexRef.current = index;
-    patchPlayer({ currentTurnIndex: index, isLoading: true, positionMs: 0 });
-
-    const turn      = turns[index];
-    const audioPath = p.audioSegmentPaths?.[index] ?? '';
-
-    if (!audioPath) {
-      patchPlayer({ isLoading: false });
-      if (autoPlay && index < turns.length - 1) {
-        setTimeout(() => loadTurnRef.current(index + 1, true), 80);
-      }
-      return;
-    }
-
-    // Check playability:
-    // HTTPS → always true; local path → check file exists
-    const playable = await isAudioPlayable(audioPath);
-    if (!playable) {
-      patchPlayer({ isLoading: false });
-      if (autoPlay && index < turns.length - 1) {
-        setTimeout(() => loadTurnRef.current(index + 1, true), 80);
-      }
-      return;
-    }
-
-    try {
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: audioPath },
-        {
-          shouldPlay:                   autoPlay,
-          rate:                         rateRef.current,
-          progressUpdateIntervalMillis: 250,
-          shouldCorrectPitch:           true,
-        },
-      );
-
-      if (isUnmountedRef.current) { await sound.unloadAsync(); return; }
-      soundRef.current = sound;
-
-      const totalDurationMs = turns.reduce((s, t) => s + (t.durationMs ?? 0), 0);
-      const cumulativeMs    = turns.slice(0, index).reduce((s, t) => s + (t.durationMs ?? 0), 0);
-
-      // Track first play
-      if (autoPlay && index === 0 && !playTrackedRef.current) {
-        playTrackedRef.current = true;
-        setState(prev => {
-          if (prev.sharedPodcast) trackPodcastPlay(prev.sharedPodcast.id);
-          return prev;
-        });
-      }
-
-      sound.setOnPlaybackStatusUpdate((status: any) => {
-        if (!status?.isLoaded || isUnmountedRef.current) return;
-
-        const posMs = status.positionMillis ?? 0;
-        const durMs = status.durationMillis ?? (turn.durationMs ?? 0);
-
-        patchPlayer({
-          isLoading:         false,
-          isBuffering:       status.isBuffering ?? false,
-          isPlaying:         status.isPlaying   ?? false,
-          positionMs:        posMs,
-          segmentDurationMs: durMs,
-          totalPositionMs:   cumulativeMs + posMs,
-          totalDurationMs,
-        });
-
-        if (status.didJustFinish) {
-          const next = currentIndexRef.current + 1;
-          if (next < turns.length) {
-            setTimeout(() => loadTurnRef.current(next, true), 120);
-          } else {
-            patchPlayer({ isPlaying: false, positionMs: 0, totalPositionMs: totalDurationMs });
-          }
-        }
-      });
-
-      patchPlayer({ isLoading: false, isPlaying: autoPlay });
-
-    } catch (err) {
-      console.warn(`[SharedPodcastPlayer] turn ${index} error:`, err);
-      patchPlayer({ isLoading: false });
-      if (autoPlay && index < turns.length - 1) {
-        setTimeout(() => loadTurnRef.current(index + 1, true), 300);
-      }
-    }
-  };
-
-  loadTurnRef.current = loadTurn;
-
   // ── Playback controls ─────────────────────────────────────────────────────
 
+  /**
+   * Start playback and register the workspace player as the source screen
+   * so the MiniPlayer navigates back here (not to podcast-player).
+   */
   const startPlayback = useCallback(async () => {
-    await loadTurnRef.current(0, true);
-  }, []);
+    const podcast = podcastRef.current;
+    if (!podcast || !workspaceId || !sharedId) return;
 
-  const play = useCallback(async () => {
-    if (soundRef.current) {
-      await soundRef.current.playAsync();
-      patchPlayer({ isPlaying: true });
-    } else {
-      await loadTurnRef.current(currentIndexRef.current, true);
-    }
-  }, [patchPlayer]);
+    // Register source screen BEFORE starting so mini player has it immediately
+    AudioEngine.setSourceScreen(
+      '/(app)/workspace-shared-podcast-player',
+      {
+        workspaceId:  workspaceId,
+        sharedId:     sharedId,
+        contentTitle: contentTitle ?? podcast.title,
+      },
+    );
 
-  const pause = useCallback(async () => {
-    if (soundRef.current) {
-      await soundRef.current.pauseAsync();
-      patchPlayer({ isPlaying: false });
-    }
-  }, [patchPlayer]);
+    await AudioEngine.startPodcast(podcast, 0);
+  }, [workspaceId, sharedId, contentTitle]);
 
   const togglePlayPause = useCallback(async () => {
-    setState(prev => {
-      if (prev.player.isPlaying) pause();
-      else play();
-      return prev;
-    });
-  }, [play, pause]);
+    await AudioEngine.toggle();
+  }, []);
 
   const skipToTurn = useCallback(async (index: number) => {
-    const turns   = podcastRef.current?.script?.turns ?? [];
-    const clamped = Math.max(0, Math.min(index, turns.length - 1));
-    setState(prev => {
-      loadTurnRef.current(clamped, prev.player.isPlaying || prev.player.positionMs > 0);
-      return prev;
-    });
+    await AudioEngine.skipToTurn(index);
   }, []);
 
   const skipNext = useCallback(async () => {
-    const turns = podcastRef.current?.script?.turns ?? [];
-    const next  = currentIndexRef.current + 1;
-    if (next < turns.length) {
-      setState(prev => {
-        loadTurnRef.current(next, prev.player.isPlaying);
-        return prev;
-      });
-    }
+    await AudioEngine.skipNext();
   }, []);
 
   const skipPrevious = useCallback(async () => {
-    setState(prev => {
-      if (prev.player.positionMs > 2000 && soundRef.current) {
-        soundRef.current.setPositionAsync(0);
-      } else {
-        const idx = currentIndexRef.current - 1;
-        if (idx >= 0) loadTurnRef.current(idx, prev.player.isPlaying);
-      }
-      return prev;
-    });
+    await AudioEngine.skipPrevious();
   }, []);
 
   const setPlaybackRate = useCallback(async (rate: number) => {
-    rateRef.current = rate;
-    patchPlayer({ playbackRate: rate });
-    if (soundRef.current) await soundRef.current.setRateAsync(rate, true);
-  }, [patchPlayer]);
+    await AudioEngine.setRate(rate);
+  }, []);
 
   const stopPlayback = useCallback(async () => {
-    if (soundRef.current) {
-      try {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-      } catch {}
-      soundRef.current = null;
-    }
-    currentIndexRef.current = 0;
-    patchPlayer({ isPlaying: false, positionMs: 0, totalPositionMs: 0, currentTurnIndex: 0 });
-  }, [patchPlayer]);
+    await AudioEngine.stop();
+    patch({ player: INITIAL_PLAYER_STATE });
+  }, [patch]);
+
+  /**
+   * detachScreen — keep audio running in the engine (mini player continues).
+   * The source screen is already registered so MiniPlayer knows where to navigate.
+   */
+  const detachScreen = useCallback(() => {
+    AudioEngine.detach();
+  }, []);
 
   // ── Export actions ────────────────────────────────────────────────────────
 
   const downloadMP3 = useCallback(async () => {
-    const podcast = state.podcast;
+    const podcast       = state.podcast;
+    const sharedPodcast = state.sharedPodcast;
     if (!podcast || state.isExporting) return;
 
     patch({ isExporting: true, exportError: null });
     try {
       await exportPodcastAsMP3(podcast);
-      if (state.sharedPodcast) {
-        await trackPodcastDownload(state.sharedPodcast.id);
+      if (sharedPodcast) {
+        await trackPodcastDownload(sharedPodcast.id);
         setState(prev => ({
           ...prev,
           sharedPodcast: prev.sharedPodcast
@@ -369,14 +278,15 @@ export function useSharedPodcastPlayer(
   }, [state.podcast, state.sharedPodcast, state.isExporting, patch]);
 
   const downloadPDF = useCallback(async () => {
-    const podcast = state.podcast;
+    const podcast       = state.podcast;
+    const sharedPodcast = state.sharedPodcast;
     if (!podcast || state.isExporting) return;
 
     patch({ isExporting: true, exportError: null });
     try {
       await exportPodcastAsPDF(podcast);
-      if (state.sharedPodcast) {
-        await trackPodcastDownload(state.sharedPodcast.id);
+      if (sharedPodcast) {
+        await trackPodcastDownload(sharedPodcast.id);
         setState(prev => ({
           ...prev,
           sharedPodcast: prev.sharedPodcast
@@ -408,9 +318,7 @@ export function useSharedPodcastPlayer(
 
   const formatTime = useCallback((ms: number): string => {
     const totalSec = Math.floor(Math.max(0, ms) / 1000);
-    const minutes  = Math.floor(totalSec / 60);
-    const seconds  = totalSec % 60;
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, '0')}`;
   }, []);
 
   const progressPercent = state.player.totalDurationMs > 0
@@ -425,18 +333,19 @@ export function useSharedPodcastPlayer(
     currentTurn,
     progressPercent,
     startPlayback,
-    play,
-    pause,
     togglePlayPause,
     skipToTurn,
     skipNext,
     skipPrevious,
     setPlaybackRate,
     stopPlayback,
+    detachScreen,
     downloadMP3,
     downloadPDF,
     copyScript,
     formatTime,
     reload: loadPodcast,
+    /** Exposed so workspace-shared-podcast-player can pass to video mode RPC */
+    workspaceId: workspaceId ?? null,
   };
 }

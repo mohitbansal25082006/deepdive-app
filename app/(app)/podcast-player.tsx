@@ -1,5 +1,12 @@
 // app/(app)/podcast-player.tsx
-// Part 40 UPDATE — Removed "Video Mode" promo card (kept videocam icon in header)
+// Part 41 UPDATE — Register source screen with AudioEngine after playback starts.
+//
+// Change is minimal: after startPlayback() / resumeFrom() succeeds, call
+//   AudioEngine.setSourceScreen('/(app)/podcast-player', { podcastId })
+// so that if the user navigates away and the MiniPlayer appears, tapping it
+// brings them back to podcast-player (the correct screen for owned podcasts).
+//
+// This is the ONLY change from the Part 40 version. All other code is identical.
 
 import React, {
   useEffect, useState, useRef, useCallback, useMemo,
@@ -437,7 +444,14 @@ export default function PodcastPlayerScreen() {
     if (!podcast || loadingPodcast || hasStarted) return;
     setHasStarted(true);
     (async () => {
-      if (isGlobalAudioActiveForPodcast(podcast.id)) return;
+      if (isGlobalAudioActiveForPodcast(podcast.id)) {
+        // Already playing (e.g. navigated back from video mode) — just re-register source
+        AudioEngine.setSourceScreen('/(app)/podcast-player', { podcastId: podcast.id });
+        return;
+      }
+      // ── Part 41: register source screen so MiniPlayer navigates correctly ──
+      AudioEngine.setSourceScreen('/(app)/podcast-player', { podcastId: podcast.id });
+
       if (user) {
         try {
           const { data } = await supabase
@@ -485,6 +499,7 @@ export default function PodcastPlayerScreen() {
 
   const openVideoMode = useCallback(() => {
     if (!podcast) return;
+    // Video mode keeps source as podcast-player (it's owned)
     router.push({
       pathname: '/(app)/podcast-video-player' as any,
       params:   { podcastId: podcast.id },
@@ -558,17 +573,8 @@ export default function PodcastPlayerScreen() {
           </View>
 
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            {/* Video Mode button */}
-            <TouchableOpacity
-              onPress={openVideoMode}
-              hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-              style={{
-                width: 40, height: 40, borderRadius: 12,
-                backgroundColor: `${COLORS.primary}15`,
-                alignItems: 'center', justifyContent: 'center',
-                borderWidth: 1, borderColor: `${COLORS.primary}35`,
-              }}
-            >
+            <TouchableOpacity onPress={openVideoMode} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+              style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}35` }}>
               <Ionicons name="videocam-outline" size={18} color={COLORS.primary} />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setSeriesSheetVisible(true)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}

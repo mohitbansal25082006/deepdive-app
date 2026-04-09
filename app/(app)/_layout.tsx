@@ -1,16 +1,18 @@
 // app/(app)/_layout.tsx
-// Part 40 UPDATE — Registered voice-debate-player screen.
+// Part 41.2 UPDATE — Pause audio on offline, clear flag on reconnect.
 //
-// FIXES applied:
-//   • Removed <Stack.Screen name="public-report" .../> — file does not exist,
-//     caused "[Layout children]: No route named 'public-report'" warning.
-//   • Removed <Stack.Screen name="edit-profile" .../> — file does not exist,
-//     caused "[Layout children]: No route named 'edit-profile'" warning.
-//     Edit profile is handled via an inline Modal inside profile.tsx, not a
-//     separate route screen.
+// WHAT CHANGED:
+//   Added a useEffect that watches `isOffline` (from NetworkContext).
+//   • When isOffline becomes true  → calls AudioEngine.pauseForOffline()
+//     and VoiceDebateEngine.pauseForOffline() on both engines.
+//   • When isOffline becomes false → calls AudioEngine.clearOfflinePause()
+//     and VoiceDebateEngine.clearOfflinePause() to clear the flag.
+//     Audio stays paused — user must tap Play.
 //
-// All other screens, mini player logic, offline handling, onboarding,
-// suspended/deleted overlays are 100% preserved from Part 40.
+// The isConnecting guard prevents the brief "connecting" window from
+// triggering spurious pauses during network handoffs.
+//
+// Everything else is 100% identical to Part 41.
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
@@ -30,6 +32,10 @@ import {
 } from '../../src/context/MiniPlayerContext';
 import { stopGlobalAudio }               from '../../src/hooks/usePodcastPlayer';
 
+// ── Part 41.2: import offline-pause methods ────────────────────────────────
+import { AudioEngine }        from '../../src/services/GlobalAudioEngine';
+import { VoiceDebateEngine }  from '../../src/services/VoiceDebateAudioEngine';
+
 // ─── Inner layout ──────────────────────────────────────────────────────────────
 
 function AppLayoutInner() {
@@ -42,7 +48,7 @@ function AppLayoutInner() {
   const offlineFade = useRef(new Animated.Value(0)).current;
   const prevOffline = useRef(false);
 
-  // Offline fade animation
+  // ── Offline fade animation ────────────────────────────────────────────────
   useEffect(() => {
     if (isConnecting) return;
     const goingOffline = isOffline && !prevOffline.current;
@@ -56,13 +62,42 @@ function AppLayoutInner() {
     }
   }, [isOffline, isConnecting]);
 
-  // Deep-link routing from notification taps
+  // ── Part 41.2: Pause audio when going offline, clear flag when online ────
+  //
+  // We only act on SETTLED transitions (isConnecting=false) to avoid
+  // spurious pauses during brief network handoffs (e.g. wifi ↔ cellular).
+  //
+  // Going offline  → pause both engines (sets pausedByOffline=true)
+  // Coming online  → clear the flag (does NOT auto-resume — user taps Play)
+  const audioPrevOffline = useRef(false);
+
+  useEffect(() => {
+    // Wait until the connecting phase is over before acting
+    if (isConnecting) return;
+
+    const goingOffline = isOffline && !audioPrevOffline.current;
+    const comingOnline = !isOffline && audioPrevOffline.current;
+
+    if (goingOffline) {
+      audioPrevOffline.current = true;
+      // Fire-and-forget — these are fast async operations
+      AudioEngine.pauseForOffline().catch(() => {});
+      VoiceDebateEngine.pauseForOffline().catch(() => {});
+    } else if (comingOnline) {
+      audioPrevOffline.current = false;
+      // Just clear the flag — do NOT resume automatically
+      AudioEngine.clearOfflinePause();
+      VoiceDebateEngine.clearOfflinePause();
+    }
+  }, [isOffline, isConnecting]);
+
+  // ── Deep-link routing from notification taps ──────────────────────────────
   useEffect(() => {
     const unsubscribe = registerNotificationTapHandler((href) => { router.push(href as any); });
     return unsubscribe;
   }, []);
 
-  // Mini player bus — global subscriber
+  // ── Mini player bus — global subscriber ───────────────────────────────────
   useEffect(() => {
     const unsub = MiniPlayerBus.subscribe(async (event: string) => {
       if (event === 'dismiss') {
@@ -73,7 +108,7 @@ function AppLayoutInner() {
     return unsub;
   }, [hideMiniPlayer]);
 
-  // Onboarding check
+  // ── Onboarding check ──────────────────────────────────────────────────────
   const onboardingChecked = useRef(false);
 
   useEffect(() => {
@@ -150,7 +185,7 @@ function AppLayoutInner() {
           {/* Debate */}
           <Stack.Screen name="debate-detail"     options={{ animation: 'slide_from_right' }} />
 
-          {/* Part 40: Voice Debate Player ─────────────────────────────── */}
+          {/* Voice Debate Player */}
           <Stack.Screen
             name="voice-debate-player"
             options={{
@@ -211,7 +246,7 @@ function AppLayoutInner() {
         </View>
       )}
 
-      {/* Offline overlay */}
+      {/* Offline overlay — stack stays mounted underneath */}
       <Animated.View
         pointerEvents={isOffline && !isConnecting ? 'auto' : 'none'}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: offlineFade, zIndex: 9998 }}
@@ -219,7 +254,8 @@ function AppLayoutInner() {
         {(isOffline || prevOffline.current) && <OfflineScreen />}
       </Animated.View>
 
-      {/* Mini Player — hidden while voice-debate-player or podcast-player is open */}
+      {/* Mini Player — hidden while full player screens are open.
+          Remains visible when offline so user can see paused state and tap Play. */}
       {!isOnPlayerScreen && <MiniPlayer />}
     </View>
   );
