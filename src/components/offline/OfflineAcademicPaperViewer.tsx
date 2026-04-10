@@ -1,9 +1,19 @@
 // src/components/offline/OfflineAcademicPaperViewer.tsx
-// Part 23 — Full offline academic paper viewer.
+// Part 41.4 — Full export modal added to offline academic paper viewer.
 //
-// Renders the complete academic paper experience from cache — identical to the
-// online academic-paper.tsx screen with section navigator, subsections,
-// abstract box, stats row, PDF export and markdown share working fully offline.
+// CHANGES from Part 23:
+//   • Old simple PDF download button + share markdown button replaced by
+//     a single "Export" button that opens the full <AcademicExportModal>.
+//   • AcademicExportModal is passed `skipDbUpdate={true}` so no Supabase
+//     network call is attempted (safe in offline / airplane mode).
+//   • All other UI (section navigator, section cards, stats row, title block)
+//     is unchanged from Part 23.
+//
+// Export capabilities now available offline:
+//   • Export PDF  — publication-quality layout via expo-print (no network)
+//   • Export DOCX — Word document via academicDocxExport (no network)
+//   Both use academicPdfExport / academicDocxExport which are pure HTML/JS
+//   renderers that never make remote requests.
 
 import React, { useState, useCallback, useRef } from 'react';
 import {
@@ -11,17 +21,16 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
-  Alert,
   FlatList,
   Share,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 import type { AcademicPaper, AcademicSection } from '../../types';
 import type { CacheEntry } from '../../types/cache';
+import { AcademicExportModal } from '../research/AcademicExportModal';
 
 // ─── Section type config ──────────────────────────────────────────────────────
 
@@ -45,8 +54,8 @@ function SectionCard({ section, isActive }: { section: AcademicSection; isActive
   const [expanded, setExpanded] = useState(isActive);
   const cfg = getSectionConfig(section.type);
 
-  const isAbstract    = section.type === 'abstract';
-  const isReferences  = section.type === 'references';
+  const isAbstract   = section.type === 'abstract';
+  const isReferences = section.type === 'references';
 
   return (
     <View style={{
@@ -57,10 +66,13 @@ function SectionCard({ section, isActive }: { section: AcademicSection; isActive
       marginBottom: SPACING.sm,
       overflow: 'hidden',
     }}>
-      {/* Section header */}
       <TouchableOpacity onPress={() => setExpanded(v => !v)} activeOpacity={0.8}
         style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md }}>
-        <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: `${cfg.color}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderWidth: 1, borderColor: `${cfg.color}30` }}>
+        <View style={{
+          width: 36, height: 36, borderRadius: 10,
+          backgroundColor: `${cfg.color}18`, alignItems: 'center', justifyContent: 'center',
+          flexShrink: 0, borderWidth: 1, borderColor: `${cfg.color}30`,
+        }}>
           <Ionicons name={cfg.icon as any} size={16} color={cfg.color} />
         </View>
         <Text style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
@@ -72,14 +84,24 @@ function SectionCard({ section, isActive }: { section: AcademicSection; isActive
       {expanded && (
         <View style={{ paddingHorizontal: SPACING.md, paddingBottom: SPACING.md }}>
           {isAbstract && (
-            <View style={{ backgroundColor: `${cfg.color}08`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${cfg.color}20`, marginBottom: SPACING.sm }}>
-              <Text style={{ color: cfg.color, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Abstract</Text>
-              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22, fontStyle: 'italic' }}>{section.content}</Text>
+            <View style={{
+              backgroundColor: `${cfg.color}08`, borderRadius: RADIUS.lg,
+              padding: SPACING.md, borderWidth: 1, borderColor: `${cfg.color}20`, marginBottom: SPACING.sm,
+            }}>
+              <Text style={{ color: cfg.color, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>
+                Abstract
+              </Text>
+              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22, fontStyle: 'italic' }}>
+                {section.content}
+              </Text>
             </View>
           )}
 
           {!isAbstract && !isReferences && section.content ? (
-            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22, marginBottom: section.subsections?.length ? SPACING.md : 0 }}>
+            <Text style={{
+              color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22,
+              marginBottom: section.subsections?.length ? SPACING.md : 0,
+            }}>
               {section.content}
             </Text>
           ) : null}
@@ -88,8 +110,12 @@ function SectionCard({ section, isActive }: { section: AcademicSection; isActive
             <View>
               {section.content.split('\n').filter(Boolean).map((ref, i) => (
                 <View key={i} style={{ flexDirection: 'row', gap: 8, marginBottom: 8, paddingLeft: 4 }}>
-                  <Text style={{ color: cfg.color, fontSize: FONTS.sizes.xs, fontWeight: '700', flexShrink: 0, minWidth: 28 }}>[{i + 1}]</Text>
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18, flex: 1 }}>{ref}</Text>
+                  <Text style={{ color: cfg.color, fontSize: FONTS.sizes.xs, fontWeight: '700', flexShrink: 0, minWidth: 28 }}>
+                    [{i + 1}]
+                  </Text>
+                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, lineHeight: 18, flex: 1 }}>
+                    {ref}
+                  </Text>
                 </View>
               ))}
             </View>
@@ -97,7 +123,10 @@ function SectionCard({ section, isActive }: { section: AcademicSection; isActive
 
           {section.subsections?.map((sub, si) => (
             <View key={sub.id ?? si} style={{ marginBottom: SPACING.sm }}>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 6, paddingTop: si === 0 ? 0 : SPACING.sm }}>
+              <Text style={{
+                color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700',
+                marginBottom: 6, paddingTop: si === 0 ? 0 : SPACING.sm,
+              }}>
                 {sub.title}
               </Text>
               <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>
@@ -117,14 +146,20 @@ function StatsRow({ paper }: { paper: AcademicPaper }) {
   return (
     <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
       {[
-        { icon: 'text-outline',     label: 'Words',    value: `~${paper.wordCount.toLocaleString()}`, color: COLORS.primary   },
-        { icon: 'document-outline', label: 'Pages',    value: `~${paper.pageEstimate}`,               color: COLORS.info      },
-        { icon: 'list-outline',     label: 'Sections', value: String(paper.sections.length),           color: COLORS.accent    },
-        { icon: 'link-outline',     label: 'Citations',value: String(paper.citations.length),          color: COLORS.secondary },
+        { icon: 'text-outline',     label: 'Words',     value: `~${paper.wordCount.toLocaleString()}`, color: COLORS.primary   },
+        { icon: 'document-outline', label: 'Pages',     value: `~${paper.pageEstimate}`,               color: COLORS.info      },
+        { icon: 'list-outline',     label: 'Sections',  value: String(paper.sections.length),           color: COLORS.accent    },
+        { icon: 'link-outline',     label: 'Citations', value: String(paper.citations.length),          color: COLORS.secondary },
       ].map(stat => (
-        <View key={stat.label} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.sm, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+        <View key={stat.label} style={{
+          flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
+          padding: SPACING.sm, alignItems: 'center',
+          borderWidth: 1, borderColor: COLORS.border,
+        }}>
           <Ionicons name={stat.icon as any} size={14} color={stat.color} />
-          <Text style={{ color: stat.color, fontSize: FONTS.sizes.sm, fontWeight: '800', marginTop: 3 }}>{stat.value}</Text>
+          <Text style={{ color: stat.color, fontSize: FONTS.sizes.sm, fontWeight: '800', marginTop: 3 }}>
+            {stat.value}
+          </Text>
           <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 1 }}>{stat.label}</Text>
         </View>
       ))}
@@ -135,9 +170,9 @@ function StatsRow({ paper }: { paper: AcademicPaper }) {
 // ─── Horizontal section navigator ────────────────────────────────────────────
 
 function SectionNavigator({ paper, activeSectionId, onSelect }: {
-  paper: AcademicPaper;
+  paper:           AcademicPaper;
   activeSectionId: string | null;
-  onSelect: (id: string) => void;
+  onSelect:        (id: string) => void;
 }) {
   return (
     <FlatList
@@ -150,13 +185,15 @@ function SectionNavigator({ paper, activeSectionId, onSelect }: {
         const isActive = activeSectionId === section.id;
         const cfg      = getSectionConfig(section.type);
         return (
-          <TouchableOpacity onPress={() => onSelect(section.id)}
+          <TouchableOpacity
+            onPress={() => onSelect(section.id)}
             style={{
               flexDirection: 'row', alignItems: 'center', gap: 6,
               paddingHorizontal: 12, paddingVertical: 7, borderRadius: RADIUS.full,
               backgroundColor: isActive ? cfg.color : COLORS.backgroundCard,
               borderWidth: 1, borderColor: isActive ? cfg.color : COLORS.border,
-            }}>
+            }}
+          >
             <Ionicons name={cfg.icon as any} size={11} color={isActive ? '#FFF' : cfg.color} />
             <Text style={{ color: isActive ? '#FFF' : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
               {section.title.length > 18 ? section.title.slice(0, 18) + '…' : section.title}
@@ -171,10 +208,14 @@ function SectionNavigator({ paper, activeSectionId, onSelect }: {
 // ─── Markdown builder ─────────────────────────────────────────────────────────
 
 function buildMarkdown(paper: AcademicPaper): string {
-  const lines = [`# ${paper.title}`, '', `**Keywords:** ${paper.keywords.join(', ')}`, `**Word Count:** ~${paper.wordCount} · ~${paper.pageEstimate} pages`, '', '---', ''];
+  const lines = [
+    `# ${paper.title}`, '',
+    `**Keywords:** ${paper.keywords.join(', ')}`,
+    `**Word Count:** ~${paper.wordCount} · ~${paper.pageEstimate} pages`,
+    '', '---', '',
+  ];
   for (const section of paper.sections) {
-    if (section.type === 'abstract') continue;
-    if (section.type === 'references') continue;
+    if (section.type === 'abstract' || section.type === 'references') continue;
     lines.push(`## ${section.title}`, '', section.content || '', '');
     for (const sub of section.subsections ?? []) {
       lines.push(`### ${sub.title}`, '', sub.content, '');
@@ -191,16 +232,25 @@ interface OfflineAcademicPaperViewerProps {
   paper:     AcademicPaper;
   entry:     CacheEntry;
   onClose:   () => void;
+  /** Legacy prop kept for backward compat — no longer used internally */
   onExport:  () => void;
+  /** Legacy prop kept for backward compat — no longer used internally */
   exporting: boolean;
 }
 
-export function OfflineAcademicPaperViewer({ paper, entry, onClose, onExport, exporting }: OfflineAcademicPaperViewerProps) {
+export function OfflineAcademicPaperViewer({
+  paper,
+  entry,
+  onClose,
+}: OfflineAcademicPaperViewerProps) {
   const insets          = useSafeAreaInsets();
   const scrollRef       = useRef<ScrollView>(null);
   const sectionRefs     = useRef<Record<string, number>>({});
-  const [activeSectionId, setActiveSectionId] = useState<string | null>(paper.sections[0]?.id ?? null);
-  const [sharing, setSharing] = useState(false);
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(
+    paper.sections[0]?.id ?? null,
+  );
+  const [sharing,          setSharing]          = useState(false);
+  const [showExportModal,  setShowExportModal]  = useState(false);
 
   const handleSelectSection = useCallback((id: string) => {
     setActiveSectionId(id);
@@ -223,20 +273,44 @@ export function OfflineAcademicPaperViewer({ paper, entry, onClose, onExport, ex
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       {/* Header */}
-      <View style={{ paddingTop: insets.top + SPACING.sm, paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        <TouchableOpacity onPress={onClose}
-          style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+      <View style={{
+        paddingTop: insets.top + SPACING.sm,
+        paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm,
+        borderBottomWidth: 1, borderBottomColor: COLORS.border,
+        flexDirection: 'row', alignItems: 'center', gap: 10,
+      }}>
+        <TouchableOpacity
+          onPress={onClose}
+          style={{
+            width: 36, height: 36, borderRadius: 10,
+            backgroundColor: COLORS.backgroundElevated,
+            alignItems: 'center', justifyContent: 'center',
+            borderWidth: 1, borderColor: COLORS.border,
+          }}
+        >
           <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
         </TouchableOpacity>
 
-        <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: `${'#43E97B'}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <View style={{
+          width: 32, height: 32, borderRadius: 10,
+          backgroundColor: `${'#43E97B'}18`,
+          alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
           <Ionicons name="school-outline" size={15} color="#43E97B" />
         </View>
 
         <View style={{ flex: 1 }}>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }} numberOfLines={1}>{paper.title}</Text>
+          <Text
+            style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}
+            numberOfLines={1}
+          >
+            {paper.title}
+          </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
-            <View style={{ backgroundColor: `${COLORS.info}20`, borderRadius: RADIUS.sm, paddingHorizontal: 6, paddingVertical: 1 }}>
+            <View style={{
+              backgroundColor: `${COLORS.info}20`, borderRadius: RADIUS.sm,
+              paddingHorizontal: 6, paddingVertical: 1,
+            }}>
               <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '700' }}>OFFLINE</Text>
             </View>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
@@ -246,38 +320,83 @@ export function OfflineAcademicPaperViewer({ paper, entry, onClose, onExport, ex
         </View>
 
         {/* Share markdown */}
-        <TouchableOpacity onPress={handleShareMarkdown} disabled={sharing}
-          style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: `${'#43E97B'}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${'#43E97B'}25` }}>
-          {sharing ? <ActivityIndicator size="small" color="#43E97B" /> : <Ionicons name="share-outline" size={16} color="#43E97B" />}
+        <TouchableOpacity
+          onPress={handleShareMarkdown}
+          disabled={sharing}
+          style={{
+            width: 34, height: 34, borderRadius: 10,
+            backgroundColor: `${'#43E97B'}15`,
+            alignItems: 'center', justifyContent: 'center',
+            borderWidth: 1, borderColor: `${'#43E97B'}25`,
+          }}
+        >
+          <Ionicons name="share-outline" size={16} color="#43E97B" />
         </TouchableOpacity>
 
-        {/* PDF export */}
-        <TouchableOpacity onPress={onExport} disabled={exporting}
-          style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
-          {exporting ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="download-outline" size={16} color={COLORS.primary} />}
+        {/* Export — opens full AcademicExportModal (PDF + DOCX) */}
+        <TouchableOpacity
+          onPress={() => setShowExportModal(true)}
+          style={{
+            flexDirection: 'row', alignItems: 'center', gap: 4,
+            backgroundColor: `${COLORS.primary}15`,
+            borderRadius: RADIUS.lg,
+            paddingHorizontal: 10, paddingVertical: 7,
+            borderWidth: 1, borderColor: `${COLORS.primary}25`,
+          }}
+        >
+          <Ionicons name="download-outline" size={14} color={COLORS.primary} />
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+            Export
+          </Text>
         </TouchableOpacity>
       </View>
 
       {/* Section navigator */}
       <View style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-        <SectionNavigator paper={paper} activeSectionId={activeSectionId} onSelect={handleSelectSection} />
+        <SectionNavigator
+          paper={paper}
+          activeSectionId={activeSectionId}
+          onSelect={handleSelectSection}
+        />
       </View>
 
       {/* Main content */}
-      <ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 80 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 80 }}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Title block */}
-        <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center', marginBottom: SPACING.sm, lineHeight: 28 }}>
+        <LinearGradient
+          colors={['#1A1A35', '#12122A']}
+          style={{
+            borderRadius: RADIUS.xl, padding: SPACING.lg,
+            marginBottom: SPACING.lg,
+            borderWidth: 1, borderColor: `${COLORS.primary}25`,
+          }}
+        >
+          <Text style={{
+            color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800',
+            textAlign: 'center', marginBottom: SPACING.sm, lineHeight: 28,
+          }}>
             {paper.title}
           </Text>
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginBottom: SPACING.md }}>
-            {paper.citationStyle.toUpperCase()} · Generated {new Date(paper.generatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            {paper.citationStyle.toUpperCase()} · Generated{' '}
+            {new Date(paper.generatedAt).toLocaleDateString('en-US', {
+              month: 'short', day: 'numeric', year: 'numeric',
+            })}
           </Text>
 
           {/* Keywords */}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
             {paper.keywords.map((kw, i) => (
-              <View key={i} style={{ backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
+              <View key={i} style={{
+                backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
+                paddingHorizontal: 10, paddingVertical: 3,
+                borderWidth: 1, borderColor: `${COLORS.primary}25`,
+              }}>
                 <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '600' }}>{kw}</Text>
               </View>
             ))}
@@ -300,6 +419,14 @@ export function OfflineAcademicPaperViewer({ paper, entry, onClose, onExport, ex
           </View>
         ))}
       </ScrollView>
+
+      {/* Full export modal — PDF + DOCX, skipDbUpdate since we're offline */}
+      <AcademicExportModal
+        visible={showExportModal}
+        paper={paper}
+        onClose={() => setShowExportModal(false)}
+        skipDbUpdate={true}
+      />
     </View>
   );
 }

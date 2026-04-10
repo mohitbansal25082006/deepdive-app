@@ -1,24 +1,26 @@
 // app/(app)/workspace-shared-viewer.tsx
-// Part 31 FIX — Presentation viewer loads the EDITED version (mergeEditorData).
-// Part 14 UI FIX — AcademicPaperViewer now uses the exact same <AcademicPaperView>
-//   component as academic-paper.tsx, so workspace members see an identical UI.
+// Part 41.5 — FIX: Non-owners can now open shared presentations and academic papers.
 //
-// ROOT CAUSE of broken academic paper UI:
-//   The original AcademicPaperViewer built its own bespoke section navigator,
-//   ScrollView, abstract box, subsection renderer, and citations list — all
-//   inline inside workspace-shared-viewer.tsx. This custom UI was missing styles,
-//   had layout bugs, and looked completely different from the real paper viewer.
+// ROOT CAUSE (Part 14/31 bug):
+//   PresentationViewer and AcademicPaperViewer queried the tables directly:
+//     supabase.from('presentations').select(...).eq('id', contentId).single()
+//     supabase.from('academic_papers').select('*').eq('id', contentId).single()
+//   These queries are blocked by RLS for any user who is NOT the row owner,
+//   producing "not found" / "you no longer have access" errors for workspace members.
 //
-// FIX:
-//   AcademicPaperViewer now:
-//     1. Fetches the paper from Supabase (same mapping as useAcademicPaper).
-//     2. Maps raw DB row → AcademicPaper typed object.
-//     3. Passes it directly to <AcademicPaperView> — the exact same component
-//        that academic-paper.tsx uses — so the UI is identical.
-//     4. Shows the AttributionBanner above the viewer.
-//     5. Keeps the PDF / Markdown export buttons below (using academicPdfExport).
+// FIX (Part 41.5):
+//   Use the existing SECURITY DEFINER RPCs that were created exactly for this purpose:
+//     get_shared_presentation_for_workspace(p_workspace_id, p_presentation_id)
+//     get_shared_academic_paper_for_workspace(p_workspace_id, p_paper_id)
+//   These RPCs verify the caller is a workspace member AND that the content is shared
+//   to that workspace, then fetch the row bypassing RLS.
 //
-// PresentationViewer is unchanged from Part 31.
+//   To pass workspaceId to the viewer, the screen now accepts a `workspaceId` param.
+//   All callers (workspace-detail.tsx SharedContentCard "Open" button) must pass it.
+//   The param is optional-safe: if absent, falls back to the old direct query so
+//   the owner's own navigation continues to work without changes.
+//
+// Part 41.4 changes (AcademicExportModal) are fully preserved.
 
 import React, { useEffect, useState, useCallback } from 'react';
 import {
@@ -33,9 +35,9 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { supabase }                     from '../../src/lib/supabase';
 import { SlidePreviewPanel }            from '../../src/components/research/SlidePreviewPanel';
 import { AcademicPaperView }            from '../../src/components/research/AcademicPaperView';
+import { AcademicExportModal }          from '../../src/components/research/AcademicExportModal';
 import { LoadingOverlay }               from '../../src/components/common/LoadingOverlay';
 import { mergeEditorData }              from '../../src/services/slideEditorService';
-import { exportAcademicPaperAsPDF }     from '../../src/services/academicPdfExport';
 import {
   getThemeTokens,
   generatePPTX,
@@ -52,10 +54,11 @@ import type {
 // ─── Params ───────────────────────────────────────────────────────────────────
 
 type Params = {
-  contentType: string;
-  contentId:   string;
-  sharerName?: string;
-  sharedAt?:   string;
+  contentType:  string;
+  contentId:    string;
+  workspaceId?: string;   // NEW in Part 41.5 — required for non-owner RPC path
+  sharerName?:  string;
+  sharedAt?:    string;
 };
 
 // ─── Attribution Banner ───────────────────────────────────────────────────────
@@ -103,16 +106,20 @@ function AttributionBanner({
   );
 }
 
-// ─── Presentation Viewer (unchanged from Part 31) ─────────────────────────────
+// ─── Presentation Viewer ──────────────────────────────────────────────────────
+// Part 41.5: Uses get_shared_presentation_for_workspace RPC when workspaceId
+// is available, so non-owners bypass RLS. Falls back to direct query for owners.
 
 function PresentationViewer({
   contentId,
+  workspaceId,
   sharerName,
   sharedAt,
 }: {
-  contentId:   string;
-  sharerName?: string;
-  sharedAt?:   string;
+  contentId:    string;
+  workspaceId?: string;
+  sharerName?:  string;
+  sharedAt?:    string;
 }) {
   const [presentation, setPresentation] = useState<GeneratedPresentation | null>(null);
   const [isLoading,    setIsLoading]    = useState(true);
@@ -124,35 +131,79 @@ function PresentationViewer({
     setIsLoading(true);
     setLoadError(null);
     try {
-      const { data, error } = await supabase
-        .from('presentations')
-        .select('id, title, subtitle, theme, slides, editor_data, font_family, report_id, user_id, generated_at, export_count, total_slides')
-        .eq('id', contentId)
-        .single();
+      let data: Record<string, unknown> | null = null;
 
-      if (error || !data) {
+      // ── Part 41.5 FIX: use SECURITY DEFINER RPC for non-owner workspace members ──
+      if (workspaceId) {
+        const { data: rpcData, error: rpcError } = await supabase.rpc(
+          'get_shared_presentation_for_workspace',
+          {
+            p_workspace_id:    workspaceId,
+            p_presentation_id: contentId,
+          },
+        );
+
+        if (rpcError) {
+          console.error('[PresentationViewer] RPC error:', rpcError);
+          // Provide a clear, user-friendly message for the two expected error codes
+          if (
+            rpcError.message?.includes('not_member') ||
+            rpcError.message?.includes('P0005')
+          ) {
+            setLoadError('You are not a member of this workspace.');
+          } else if (
+            rpcError.message?.includes('not_shared') ||
+            rpcError.message?.includes('P0006')
+          ) {
+            setLoadError('This presentation is no longer shared in this workspace.');
+          } else {
+            setLoadError('Presentation not found or you no longer have access.');
+          }
+          return;
+        }
+
+        // RPC returns an array (SETOF); take first row
+        const rows = Array.isArray(rpcData) ? rpcData : (rpcData ? [rpcData] : []);
+        data = (rows[0] as Record<string, unknown>) ?? null;
+      } else {
+        // Owner fallback: direct query (RLS allows owner to read their own row)
+        const { data: directData, error: directError } = await supabase
+          .from('presentations')
+          .select('id, title, subtitle, theme, slides, editor_data, font_family, report_id, user_id, generated_at, export_count, total_slides')
+          .eq('id', contentId)
+          .single();
+
+        if (directError || !directData) {
+          setLoadError('Presentation not found or you no longer have access.');
+          return;
+        }
+        data = directData as Record<string, unknown>;
+      }
+
+      if (!data) {
         setLoadError('Presentation not found or you no longer have access.');
         return;
       }
 
       const theme: PresentationTheme = (data.theme as PresentationTheme) ?? 'dark';
-      const rawSlides:     any[] = Array.isArray(data.slides)      ? data.slides      : [];
-      const editorDataArr: any[] = Array.isArray(data.editor_data) ? data.editor_data : [];
-      const mergedSlides         = mergeEditorData(rawSlides, editorDataArr);
+      const rawSlides:     unknown[] = Array.isArray(data.slides)      ? data.slides      : [];
+      const editorDataArr: unknown[] = Array.isArray(data.editor_data) ? data.editor_data : [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mergedSlides             = mergeEditorData(rawSlides as any[], editorDataArr as any[]);
 
       const pres: GeneratedPresentation & { fontFamily?: string } = {
-        id:          data.id,
-        reportId:    data.report_id,
-        userId:      data.user_id,
-        title:       data.title,
-        subtitle:    data.subtitle ?? '',
+        id:          data.id          as string,
+        reportId:    data.report_id   as string,
+        userId:      data.user_id     as string,
+        title:       data.title       as string,
+        subtitle:    (data.subtitle   as string) ?? '',
         theme,
         themeTokens: getThemeTokens(theme),
         slides:      mergedSlides,
         totalSlides: mergedSlides.length,
-        generatedAt: data.generated_at,
-        exportCount: data.export_count ?? 0,
-        fontFamily:  data.font_family ?? 'system',
+        generatedAt: data.generated_at as string,
+        exportCount: (data.export_count as number) ?? 0,
+        fontFamily:  (data.font_family  as string) ?? 'system',
       };
 
       setPresentation(pres);
@@ -162,7 +213,7 @@ function PresentationViewer({
     } finally {
       setIsLoading(false);
     }
-  }, [contentId]);
+  }, [contentId, workspaceId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -311,55 +362,99 @@ function PresentationViewer({
 }
 
 // ─── Academic Paper Viewer ────────────────────────────────────────────────────
-// FIX: Now uses <AcademicPaperView> — the exact same component as
-//      academic-paper.tsx — so workspace members see identical UI.
+// Part 41.5: Uses get_shared_academic_paper_for_workspace RPC when workspaceId
+// is available, so non-owners bypass RLS. Falls back to direct query for owners.
+// Part 41.4: Uses <AcademicExportModal> for full PDF + DOCX export.
 
 function AcademicPaperViewer({
   contentId,
+  workspaceId,
   sharerName,
   sharedAt,
 }: {
-  contentId:   string;
-  sharerName?: string;
-  sharedAt?:   string;
+  contentId:    string;
+  workspaceId?: string;
+  sharerName?:  string;
+  sharedAt?:    string;
 }) {
-  const [paper,       setPaper]       = useState<AcademicPaper | null>(null);
-  const [isLoading,   setIsLoading]   = useState(true);
-  const [loadError,   setLoadError]   = useState<string | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
+  const [paper,            setPaper]            = useState<AcademicPaper | null>(null);
+  const [isLoading,        setIsLoading]        = useState(true);
+  const [loadError,        setLoadError]        = useState<string | null>(null);
+  const [showExportModal,  setShowExportModal]  = useState(false);
 
   const load = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const { data, error } = await supabase
-        .from('academic_papers')
-        .select('*')
-        .eq('id', contentId)
-        .single();
+      let data: Record<string, unknown> | null = null;
 
-      if (error || !data) {
+      // ── Part 41.5 FIX: use SECURITY DEFINER RPC for non-owner workspace members ──
+      if (workspaceId) {
+        const { data: rpcData, error: rpcError } = await supabase.rpc(
+          'get_shared_academic_paper_for_workspace',
+          {
+            p_workspace_id: workspaceId,
+            p_paper_id:     contentId,
+          },
+        );
+
+        if (rpcError) {
+          console.error('[AcademicPaperViewer] RPC error:', rpcError);
+          if (
+            rpcError.message?.includes('not_member') ||
+            rpcError.message?.includes('P0005')
+          ) {
+            setLoadError('You are not a member of this workspace.');
+          } else if (
+            rpcError.message?.includes('not_shared') ||
+            rpcError.message?.includes('P0006')
+          ) {
+            setLoadError('This paper is no longer shared in this workspace.');
+          } else {
+            setLoadError('Academic paper not found or you no longer have access.');
+          }
+          return;
+        }
+
+        // RPC returns SETOF (array); take first row
+        const rows = Array.isArray(rpcData) ? rpcData : (rpcData ? [rpcData] : []);
+        data = (rows[0] as Record<string, unknown>) ?? null;
+      } else {
+        // Owner fallback: direct query (RLS allows owner to read their own row)
+        const { data: directData, error: directError } = await supabase
+          .from('academic_papers')
+          .select('*')
+          .eq('id', contentId)
+          .single();
+
+        if (directError || !directData) {
+          setLoadError('Academic paper not found or you no longer have access.');
+          return;
+        }
+        data = directData as Record<string, unknown>;
+      }
+
+      if (!data) {
         setLoadError('Academic paper not found or you no longer have access.');
         return;
       }
 
-      // Identical mapping to useAcademicPaper hook
       const mapped: AcademicPaper = {
-        id:            data.id,
-        reportId:      data.report_id,
-        userId:        data.user_id,
-        title:         data.title,
-        runningHead:   data.running_head   ?? '',
-        abstract:      data.abstract       ?? '',
-        keywords:      data.keywords       ?? [],
-        sections:      data.sections       ?? [],
-        citations:     data.citations      ?? [],
-        citationStyle: data.citation_style ?? 'apa',
-        wordCount:     data.word_count     ?? 0,
-        pageEstimate:  data.page_estimate  ?? 0,
-        institution:   data.institution    ?? undefined,
-        generatedAt:   data.generated_at,
-        exportCount:   data.export_count   ?? 0,
+        id:            data.id             as string,
+        reportId:      data.report_id      as string,
+        userId:        data.user_id        as string,
+        title:         data.title          as string,
+        runningHead:   (data.running_head  as string) ?? '',
+        abstract:      (data.abstract      as string) ?? '',
+        keywords:      (data.keywords      as string[]) ?? [],
+        sections:      (data.sections      as AcademicPaper['sections']) ?? [],
+        citations:     (data.citations     as AcademicPaper['citations']) ?? [],
+        citationStyle: (data.citation_style as AcademicPaper['citationStyle']) ?? 'apa',
+        wordCount:     (data.word_count    as number) ?? 0,
+        pageEstimate:  (data.page_estimate as number) ?? 0,
+        institution:   (data.institution   as string) ?? undefined,
+        generatedAt:   data.generated_at   as string,
+        exportCount:   (data.export_count  as number) ?? 0,
       };
 
       setPaper(mapped);
@@ -369,24 +464,11 @@ function AcademicPaperViewer({
     } finally {
       setIsLoading(false);
     }
-  }, [contentId]);
+  }, [contentId, workspaceId]);
 
   useEffect(() => { load(); }, [load]);
 
-  // PDF export — same service as academic-paper.tsx
-  const handleExportPDF = useCallback(async () => {
-    if (!paper) return;
-    setIsExporting(true);
-    try {
-      await exportAcademicPaperAsPDF(paper);
-    } catch (err) {
-      Alert.alert('Export Failed', err instanceof Error ? err.message : 'Could not export PDF.');
-    } finally {
-      setIsExporting(false);
-    }
-  }, [paper]);
-
-  // Markdown / share — same logic as useAcademicPaper hook
+  // Markdown share
   const handleExportMarkdown = useCallback(async () => {
     if (!paper) return;
     try {
@@ -455,32 +537,85 @@ function AcademicPaperViewer({
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Attribution banner above the paper viewer */}
+      {/* Attribution banner */}
       <AttributionBanner sharerName={sharerName} sharedAt={sharedAt} />
 
-      {/* View-only notice */}
+      {/* View-only notice + Export button row */}
       <View style={{
         flexDirection:     'row',
         alignItems:        'center',
-        gap:               6,
+        justifyContent:    'space-between',
         paddingHorizontal: SPACING.lg,
-        paddingVertical:   6,
-        backgroundColor:   `${COLORS.warning}0A`,
+        paddingVertical:   8,
+        backgroundColor:   `${COLORS.warning}08`,
         borderBottomWidth: 1,
         borderBottomColor: `${COLORS.warning}20`,
+        gap:               SPACING.sm,
       }}>
-        <Ionicons name="lock-closed-outline" size={11} color={COLORS.warning} />
-        <Text style={{ color: COLORS.warning, fontSize: 10, fontWeight: '600' }}>
-          View only — re-generation not available for shared papers
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flex: 1 }}>
+          <Ionicons name="lock-closed-outline" size={11} color={COLORS.warning} />
+          <Text style={{ color: COLORS.warning, fontSize: 10, fontWeight: '600' }}>
+            View only — re-generation not available
+          </Text>
+        </View>
+
+        {/* Export button — opens full AcademicExportModal */}
+        <Pressable
+          onPress={() => setShowExportModal(true)}
+          style={{
+            flexDirection:     'row',
+            alignItems:        'center',
+            gap:               5,
+            backgroundColor:   `${COLORS.primary}18`,
+            borderRadius:      RADIUS.lg,
+            paddingHorizontal: 10,
+            paddingVertical:   6,
+            borderWidth:       1,
+            borderColor:       `${COLORS.primary}35`,
+          }}
+        >
+          <Ionicons name="download-outline" size={13} color={COLORS.primary} />
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+            Export
+          </Text>
+        </Pressable>
+
+        {/* Share Markdown button */}
+        <Pressable
+          onPress={handleExportMarkdown}
+          style={{
+            flexDirection:     'row',
+            alignItems:        'center',
+            gap:               5,
+            backgroundColor:   `${COLORS.success}15`,
+            borderRadius:      RADIUS.lg,
+            paddingHorizontal: 10,
+            paddingVertical:   6,
+            borderWidth:       1,
+            borderColor:       `${COLORS.success}30`,
+          }}
+        >
+          <Ionicons name="share-outline" size={13} color={COLORS.success} />
+          <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+            Share
+          </Text>
+        </Pressable>
       </View>
 
-      {/* ── Same component as academic-paper.tsx ── */}
+      {/* Paper content */}
       <AcademicPaperView
         paper={paper}
-        onExportPDF={handleExportPDF}
+        onExportPDF={() => setShowExportModal(true)}
         onExportMarkdown={handleExportMarkdown}
-        isExporting={isExporting}
+        isExporting={false}
+      />
+
+      {/* Full export modal — PDF + DOCX with institution/author/font/spacing */}
+      <AcademicExportModal
+        visible={showExportModal}
+        paper={paper}
+        onClose={() => setShowExportModal(false)}
+        skipDbUpdate={false}
       />
     </View>
   );
@@ -494,6 +629,7 @@ export default function WorkspaceSharedViewer() {
   const {
     contentType,
     contentId,
+    workspaceId,   // NEW — passed by SharedContentCard "Open" button
     sharerName,
     sharedAt,
   } = useLocalSearchParams<Params>();
@@ -603,12 +739,14 @@ export default function WorkspaceSharedViewer() {
         {contentType === 'presentation' ? (
           <PresentationViewer
             contentId={contentId}
+            workspaceId={workspaceId}
             sharerName={sharerName}
             sharedAt={sharedAt}
           />
         ) : (
           <AcademicPaperViewer
             contentId={contentId}
+            workspaceId={workspaceId}
             sharerName={sharerName}
             sharedAt={sharedAt}
           />

@@ -1,8 +1,9 @@
--- ═══════════════════════════════════════════════════════════════════════════
+-- ============================================================
 -- DeepDive AI — Part 41 COMPLETE SCHEMA
 -- Combines Part 41.1 (Podcast Video Player + Mini Player Fixes),
 --            Part 41.2 (Voice Debate Cloud Audio & Cross-Device Support),
---            Part 41.3 (Stats & Public Profile Fixes)
+--            Part 41.3 (Stats & Public Profile Fixes),
+--            Part 41.5 (Workspace Members Can Open Shared Presentations & Papers)
 --
 -- SECTIONS:
 --   §1  Drop existing functions (allow type changes)
@@ -16,12 +17,15 @@
 --   §9  RPC: get_user_research_stats                 (Part 41.3)
 --   §10 RPC: get_public_profile                      (Part 41.3)
 --   §11 RPC: get_public_reports_for_user             (Part 41.3)
---   §12 Realtime publication (voice_debates)
---   §13 Reload PostgREST schema cache
+--   §12 RPC: get_shared_presentation_for_workspace   (Part 41.5)
+--   §13 RPC: get_shared_academic_paper_for_workspace (Part 41.5)
+--   §14 Fix shared_workspace_content content_type check (Part 41.5)
+--   §15 Realtime publication (voice_debates)
+--   §16 Reload PostgREST schema cache
 --
 -- Safe to re-run — uses DROP/CREATE for functions with type changes,
 -- ON CONFLICT DO NOTHING for bucket, and DROP POLICY IF EXISTS throughout.
--- ═══════════════════════════════════════════════════════════════════════════
+-- ============================================================
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +39,8 @@ DROP FUNCTION IF EXISTS public.get_shared_podcast_full_for_workspace(UUID, UUID)
 DROP FUNCTION IF EXISTS public.get_voice_debate_full(UUID)                            CASCADE;
 DROP FUNCTION IF EXISTS public.update_voice_debate_cloud_urls(UUID, TEXT[], BOOLEAN)  CASCADE;
 DROP FUNCTION IF EXISTS public.get_user_voice_debates(INTEGER, INTEGER)               CASCADE;
+DROP FUNCTION IF EXISTS public.get_shared_presentation_for_workspace(UUID, UUID)      CASCADE;
+DROP FUNCTION IF EXISTS public.get_shared_academic_paper_for_workspace(UUID, UUID)    CASCADE;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -631,7 +637,123 @@ COMMENT ON FUNCTION public.get_public_reports_for_user(TEXT, INT, INT) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §12 REALTIME — add voice_debates to supabase_realtime publication
+-- §12 RPC: get_shared_presentation_for_workspace                 (Part 41.5)
+--     Returns full presentation row for workspace members.
+--     Bypasses owner RLS so non-owner workspace members can load the row.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.get_shared_presentation_for_workspace(
+  p_workspace_id    UUID,
+  p_presentation_id UUID
+)
+RETURNS SETOF public.presentations
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  -- Verify caller is a workspace member
+  IF NOT EXISTS (
+    SELECT 1 FROM public.workspace_members wm
+    WHERE wm.workspace_id = p_workspace_id
+      AND wm.user_id      = auth.uid()
+  ) THEN
+    RAISE EXCEPTION 'not_member' USING ERRCODE = 'P0005';
+  END IF;
+
+  -- Verify the presentation is actually shared to this workspace
+  IF NOT EXISTS (
+    SELECT 1 FROM public.shared_workspace_content swc
+    WHERE swc.workspace_id = p_workspace_id
+      AND swc.content_type = 'presentation'
+      AND swc.content_id   = p_presentation_id
+  ) THEN
+    RAISE EXCEPTION 'not_shared' USING ERRCODE = 'P0006';
+  END IF;
+
+  -- Return the row (bypasses RLS because SECURITY DEFINER)
+  RETURN QUERY
+  SELECT * FROM public.presentations
+  WHERE id = p_presentation_id
+  LIMIT 1;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_shared_presentation_for_workspace(UUID, UUID) TO authenticated;
+
+COMMENT ON FUNCTION public.get_shared_presentation_for_workspace(UUID, UUID) IS
+    'Part 41.5 — Returns full presentation row for workspace members (bypasses owner RLS).';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §13 RPC: get_shared_academic_paper_for_workspace               (Part 41.5)
+--     Returns full academic paper row for workspace members.
+--     Bypasses owner RLS so non-owner workspace members can load the row.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.get_shared_academic_paper_for_workspace(
+  p_workspace_id UUID,
+  p_paper_id     UUID
+)
+RETURNS SETOF public.academic_papers
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  -- Verify caller is a workspace member
+  IF NOT EXISTS (
+    SELECT 1 FROM public.workspace_members wm
+    WHERE wm.workspace_id = p_workspace_id
+      AND wm.user_id      = auth.uid()
+  ) THEN
+    RAISE EXCEPTION 'not_member' USING ERRCODE = 'P0005';
+  END IF;
+
+  -- Verify the paper is actually shared to this workspace
+  IF NOT EXISTS (
+    SELECT 1 FROM public.shared_workspace_content swc
+    WHERE swc.workspace_id = p_workspace_id
+      AND swc.content_type = 'academic_paper'
+      AND swc.content_id   = p_paper_id
+  ) THEN
+    RAISE EXCEPTION 'not_shared' USING ERRCODE = 'P0006';
+  END IF;
+
+  -- Return the row (bypasses RLS because SECURITY DEFINER)
+  RETURN QUERY
+  SELECT * FROM public.academic_papers
+  WHERE id = p_paper_id
+  LIMIT 1;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_shared_academic_paper_for_workspace(UUID, UUID) TO authenticated;
+
+COMMENT ON FUNCTION public.get_shared_academic_paper_for_workspace(UUID, UUID) IS
+    'Part 41.5 — Returns full academic paper row for workspace members (bypasses owner RLS).';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §14 Fix shared_workspace_content content_type check            (Part 41.5)
+--     Ensures content_type allows 'presentation' and 'academic_paper'
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DO $$
+BEGIN
+  -- Drop old constraint if it doesn't include academic_paper
+  ALTER TABLE public.shared_workspace_content
+    DROP CONSTRAINT IF EXISTS shared_workspace_content_content_type_check;
+
+  -- Re-add with all four supported types
+  ALTER TABLE public.shared_workspace_content
+    ADD CONSTRAINT shared_workspace_content_content_type_check
+    CHECK (content_type IN ('presentation', 'academic_paper', 'podcast', 'debate'));
+
+EXCEPTION WHEN duplicate_object THEN
+  -- Constraint already exists with same name — ignore
+  NULL;
+END $$;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §15 REALTIME — add voice_debates to supabase_realtime publication
 -- ─────────────────────────────────────────────────────────────────────────────
 
 DO $$ BEGIN
@@ -641,11 +763,11 @@ END $$;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §13 RELOAD POSTGREST SCHEMA CACHE
+-- §16 RELOAD POSTGREST SCHEMA CACHE
 -- ─────────────────────────────────────────────────────────────────────────────
 
 NOTIFY pgrst, 'reload schema';
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- END OF PART 41 COMPLETE SCHEMA (41.1 + 41.2 + 41.3)
+-- END OF PART 41 COMPLETE SCHEMA (41.1 + 41.2 + 41.3 + 41.5)
 -- ═══════════════════════════════════════════════════════════════════════════

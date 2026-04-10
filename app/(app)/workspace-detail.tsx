@@ -2,8 +2,11 @@
 // Part 17 UPDATE — Added Team Chat button in the top bar (chatbubbles icon).
 // Part 14 FIX — handleOpenSharedContent now correctly passes sharerName and sharedAt
 //               so the AcademicPaperViewer attribution banner renders properly.
+// Part 41.5 PATCH — handleOpenSharedContent now also passes workspaceId
+//               (via item.workspaceId) so non-owners can open presentations
+//               and academic papers in workspace-shared-viewer.
 //
-// ROOT CAUSE of broken academic paper UI:
+// ROOT CAUSE of broken academic paper UI (pre-Part 14):
 //   handleOpenSharedContent was passing contentType and contentId but NOT
 //   sharerName or sharedAt. The workspace-shared-viewer received undefined for
 //   both, so the AttributionBanner showed "Shared in workspace" with no date,
@@ -12,7 +15,12 @@
 //   correct "sharerName" and "sharedAt" keys expected by useLocalSearchParams
 //   in workspace-shared-viewer.tsx.
 //
-// FIX: Pass item.sharerName and item.sharedAt through router params.
+// Part 41.5 ROOT CAUSE (non-owner breakage):
+//   workspace-shared-viewer now expects workspaceId when the user is not the
+//   original sharer/owner. Without it, navigation failed silently for viewers.
+//
+// FIX (Part 41.5): Always pass workspaceId: item.workspaceId (guaranteed to exist
+// on SharedWorkspaceContent via mapSharedContentRow() in workspaceSharingService.ts).
 // Everything else (chat, pinning, debate, podcast) is unchanged from Part 17.
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -194,16 +202,17 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id, workspace?.name, userRole]);
 
-  // ── FIX: Open shared content — now correctly passes sharerName & sharedAt ──
-  // Previously this passed "contentTitle" (a key not read by workspace-shared-viewer)
-  // and omitted sharerName/sharedAt entirely, breaking the attribution banner
-  // and leaving the academic paper viewer with no sharer info.
+  // ── Part 41.5 PATCH: Open shared content — now passes workspaceId + sharerName/sharedAt ──
+  // This is the single shared handler used by both presentations and academic papers
+  // (via SharedContentCard's onOpen prop). item.workspaceId is always present on
+  // SharedWorkspaceContent thanks to mapSharedContentRow() in workspaceSharingService.ts.
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({
       pathname: '/(app)/workspace-shared-viewer' as any,
       params:   {
         contentType: item.contentType,
         contentId:   item.contentId,
+        workspaceId: item.workspaceId,          // ← Part 41.5: critical for non-owners
         sharerName:  item.sharerName  ?? '',
         sharedAt:    item.sharedAt    ?? '',
       },
