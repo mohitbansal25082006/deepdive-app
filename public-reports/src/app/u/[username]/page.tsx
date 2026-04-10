@@ -1,16 +1,19 @@
 // Public-Reports/src/app/u/[username]/page.tsx
-// DeepDive AI — Part 36: Web Public User Profile Page
+// DeepDive AI — Part 36 (fixed in Part 41.3)
 //
-// FIXES & IMPROVEMENTS:
-//  1. Avatar fully visible — removed negative margin hack that cut it in half.
-//     Avatar now sits cleanly below the banner, fully contained.
-//  2. Full responsive layout — proper two-column grid on desktop (≥769px),
-//     stacked single column on mobile with correct padding/spacing.
-//  3. Profile card sidebar is sticky on desktop, static on mobile.
-//  4. Tags parsed correctly from jsonb arrays.
-//  5. Sticky footer is always visible and doesn't overlap content (padding-bottom on page).
-//  6. Report cards link to actual share URLs.
-//  7. Clean, polished dark theme with glass cards and gradient accents.
+// Part 41.3 fixes:
+//  1. Removed onClick event handler from report tag <a> elements —
+//     event handlers cannot be used in Next.js Server Components and
+//     caused "this page couldn't load" at runtime.
+//  2. Fixed nested <a> tag HTML — the outer report card was an <a>
+//     wrapping inner <a> tag chips, which is invalid HTML. Fixed by
+//     using the CSS "stretched link" pattern:
+//       - Outer card is now a <div class="rcard">
+//       - A full-cover <a class="rcard-cover"> sits absolutely inside it
+//       - Tag <a> chips have position:relative z-index:1 so they sit above
+//         the cover link and remain independently clickable
+//  3. get_public_profile RPC now grants anon role (schema_part41_3.sql)
+//     so service-role Next.js calls always succeed.
 
 import { notFound }      from 'next/navigation';
 import type { Metadata } from 'next';
@@ -53,7 +56,10 @@ async function fetchProfile(username: string): Promise<WebPublicProfile | null> 
   const sb = createSupabaseServer();
   try {
     const { data, error } = await sb.rpc('get_public_profile', { p_username: username });
-    if (error || !data) return null;
+    if (error || !data) {
+      if (error) console.error('[profile] RPC error:', error.message, error.code);
+      return null;
+    }
     const raw = data as Record<string, unknown>;
     return {
       id:              String(raw.id              ?? ''),
@@ -290,17 +296,13 @@ export default async function PublicProfilePage({
           padding: 0 20px; height: 56px;
           display: flex; align-items: center; gap: 12px;
         }
-        .nav-brand {
-          display: flex; align-items: center; gap: 9px;
-        }
+        .nav-brand { display: flex; align-items: center; gap: 9px; }
         .nav-brand-icon {
           width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
           background: linear-gradient(135deg,#6C63FF,#8B5CF6);
           display: flex; align-items: center; justify-content: center;
         }
-        .nav-brand-name {
-          font-size: 0.9rem; font-weight: 700; color: var(--text-1);
-        }
+        .nav-brand-name { font-size: 0.9rem; font-weight: 700; color: var(--text-1); }
         .nav-spacer { flex: 1; }
         .nav-link {
           display: flex; align-items: center; gap: 5px;
@@ -312,13 +314,8 @@ export default async function PublicProfilePage({
         .nav-link:hover { color: var(--text-1); border-color: var(--border-hi); }
 
         /* ── Page shell ── */
-        .shell {
-          max-width: 1120px; margin: 0 auto;
-          padding: 32px 20px 100px;
-        }
-        @media (max-width: 640px) {
-          .shell { padding: 20px 14px 96px; }
-        }
+        .shell { max-width: 1120px; margin: 0 auto; padding: 32px 20px 100px; }
+        @media (max-width: 640px) { .shell { padding: 20px 14px 96px; } }
 
         /* ── Two-col layout ── */
         .grid {
@@ -327,9 +324,7 @@ export default async function PublicProfilePage({
           gap: 24px;
           align-items: start;
         }
-        @media (max-width: 768px) {
-          .grid { grid-template-columns: 1fr; gap: 20px; }
-        }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; gap: 20px; } }
 
         /* ── Profile card ── */
         .profile-card {
@@ -338,12 +333,8 @@ export default async function PublicProfilePage({
           border-radius: var(--radius-xl);
           overflow: hidden;
         }
-        /* sticky only on desktop */
-        @media (min-width: 769px) {
-          .profile-card { position: sticky; top: 72px; }
-        }
+        @media (min-width: 769px) { .profile-card { position: sticky; top: 72px; } }
 
-        /* Banner */
         .banner {
           height: 72px;
           background: linear-gradient(135deg, #1A1A40 0%, #0E0E2E 100%);
@@ -355,32 +346,22 @@ export default async function PublicProfilePage({
           background: radial-gradient(ellipse 80% 120% at 50% 110%, rgba(108,99,255,0.28) 0%, transparent 65%);
         }
 
-        /* Avatar — sits BELOW the banner, not overlapping it */
         .avatar-section {
           padding: 14px 20px 0;
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px;
+          display: flex; align-items: flex-start;
+          justify-content: space-between; gap: 10px;
         }
         .avatar-ring {
           width: 74px; height: 74px; border-radius: 50%;
           border: 3px solid var(--bg-card);
-          background: var(--bg);
-          flex-shrink: 0;
-          overflow: hidden;
-          /* FIX: no negative margin — avatar is fully visible */
+          background: var(--bg); flex-shrink: 0; overflow: hidden;
         }
-        .avatar-img {
-          width: 100%; height: 100%;
-          object-fit: cover; display: block;
-        }
+        .avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .avatar-initials {
           width: 100%; height: 100%;
           display: flex; align-items: center; justify-content: center;
           background: linear-gradient(135deg,#6C63FF,#8B5CF6);
-          color: #fff; font-weight: 800; font-size: 1.6rem;
-          letter-spacing: -0.02em;
+          color: #fff; font-weight: 800; font-size: 1.6rem; letter-spacing: -0.02em;
         }
         .follow-pill {
           display: inline-flex; align-items: center; gap: 6px;
@@ -388,53 +369,32 @@ export default async function PublicProfilePage({
           background: linear-gradient(135deg,#6C63FF,#8B5CF6);
           color: #fff; font-size: 0.78rem; font-weight: 700;
           transition: opacity 0.18s, transform 0.15s;
-          white-space: nowrap; flex-shrink: 0;
-          margin-top: 4px;
+          white-space: nowrap; flex-shrink: 0; margin-top: 4px;
         }
         .follow-pill:hover { opacity: 0.88; transform: translateY(-1px); }
 
-        /* Profile body */
         .profile-body { padding: 12px 20px 22px; }
-        .profile-name {
-          font-size: 1.18rem; font-weight: 800; color: var(--text-1);
-          letter-spacing: -0.015em; line-height: 1.2; margin-bottom: 2px;
-        }
+        .profile-name { font-size: 1.18rem; font-weight: 800; color: var(--text-1); letter-spacing: -0.015em; line-height: 1.2; margin-bottom: 2px; }
         .profile-handle { color: var(--purple-lt); font-size: 0.8rem; margin-bottom: 10px; }
-        .profile-occupation {
-          display: flex; align-items: center; gap: 5px;
-          color: var(--text-3); font-size: 0.75rem; margin-bottom: 10px;
-        }
-        .profile-bio {
-          color: var(--text-2); font-size: 0.8rem; line-height: 1.65;
-          margin-bottom: 14px;
-        }
+        .profile-occupation { display: flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 0.75rem; margin-bottom: 10px; }
+        .profile-bio { color: var(--text-2); font-size: 0.8rem; line-height: 1.65; margin-bottom: 14px; }
 
-        /* Interests */
         .interests { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 16px; }
         .interest-tag {
           padding: 3px 9px; border-radius: 999px;
-          background: rgba(108,99,255,0.1);
-          border: 1px solid rgba(108,99,255,0.22);
+          background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.22);
           color: var(--purple); font-size: 0.68rem; font-weight: 600;
         }
 
-        /* Stats grid */
-        .stats-grid {
-          display: grid; grid-template-columns: 1fr 1fr;
-          gap: 7px;
-        }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
         .stat-box {
           background: var(--bg-elev); border: 1px solid var(--border);
-          border-radius: var(--radius-sm); padding: 10px 12px;
-          text-align: center;
+          border-radius: var(--radius-sm); padding: 10px 12px; text-align: center;
         }
         .stat-val { font-size: 1.1rem; font-weight: 800; color: var(--text-1); line-height: 1; }
-        .stat-lbl {
-          font-size: 0.6rem; color: var(--text-3); margin-top: 3px;
-          font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
-        }
+        .stat-lbl { font-size: 0.6rem; color: var(--text-3); margin-top: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
 
-        /* ── CTA card (below profile on desktop) ── */
+        /* ── CTA card ── */
         .cta-card {
           margin-top: 16px;
           background: linear-gradient(135deg, #1A1A35 0%, #0E0E28 100%);
@@ -443,8 +403,7 @@ export default async function PublicProfilePage({
           text-align: center; position: relative; overflow: hidden;
         }
         .cta-card::before {
-          content: '';
-          position: absolute; inset: 0; pointer-events: none;
+          content: ''; position: absolute; inset: 0; pointer-events: none;
           background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(108,99,255,0.18) 0%, transparent 70%);
         }
         .cta-inner { position: relative; }
@@ -454,14 +413,8 @@ export default async function PublicProfilePage({
           display: flex; align-items: center; justify-content: center;
           box-shadow: 0 0 28px rgba(108,99,255,0.3);
         }
-        .cta-title {
-          font-size: 1rem; font-weight: 800; color: var(--text-1);
-          letter-spacing: -0.01em; margin-bottom: 6px; line-height: 1.3;
-        }
-        .cta-desc {
-          color: var(--text-3); font-size: 0.75rem;
-          line-height: 1.6; margin-bottom: 16px;
-        }
+        .cta-title { font-size: 1rem; font-weight: 800; color: var(--text-1); letter-spacing: -0.01em; margin-bottom: 6px; line-height: 1.3; }
+        .cta-desc { color: var(--text-3); font-size: 0.75rem; line-height: 1.6; margin-bottom: 16px; }
         .play-btn {
           display: inline-flex; align-items: center; gap: 9px;
           padding: 11px 20px; border-radius: 11px;
@@ -475,14 +428,8 @@ export default async function PublicProfilePage({
         .cta-note { font-size: 0.67rem; color: var(--text-3); }
 
         /* ── Reports column ── */
-        .reports-header {
-          display: flex; align-items: center;
-          justify-content: space-between; margin-bottom: 16px;
-        }
-        .reports-heading {
-          display: flex; align-items: center; gap: 10px;
-          font-size: 1rem; font-weight: 700; color: var(--text-1);
-        }
+        .reports-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        .reports-heading { display: flex; align-items: center; gap: 10px; font-size: 1rem; font-weight: 700; color: var(--text-1); }
         .heading-icon {
           width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
           background: linear-gradient(135deg,#6C63FF,#8B5CF6);
@@ -490,16 +437,14 @@ export default async function PublicProfilePage({
         }
         .count-badge {
           padding: 2px 9px; border-radius: 999px;
-          background: rgba(108,99,255,0.1);
-          border: 1px solid rgba(108,99,255,0.22);
+          background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.22);
           color: var(--purple); font-size: 0.68rem; font-weight: 700;
         }
-
         .reports-list { display: grid; gap: 11px; }
 
-        /* Report card */
+        /* ── Report card — FIXED: uses div + stretched cover link ── */
         .rcard {
-          display: block;
+          position: relative;       /* FIX: needed for the cover link */
           background: var(--bg-card); border: 1px solid var(--border);
           border-radius: var(--radius-md); overflow: hidden;
           transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
@@ -509,8 +454,13 @@ export default async function PublicProfilePage({
           transform: translateY(-2px);
           box-shadow: 0 8px 24px rgba(108,99,255,0.1);
         }
+        /* Full-cover invisible link — makes the whole card clickable */
+        .rcard-cover {
+          position: absolute; inset: 0; z-index: 0;
+          border-radius: var(--radius-md);
+        }
         .rcard-accent { height: 3px; }
-        .rcard-body { padding: 14px 16px; }
+        .rcard-body { padding: 14px 16px; position: relative; }
         .rcard-title {
           font-size: 0.88rem; font-weight: 700; color: var(--text-1);
           line-height: 1.45; margin-bottom: 6px;
@@ -518,32 +468,24 @@ export default async function PublicProfilePage({
           -webkit-box-orient: vertical; overflow: hidden;
         }
         .rcard-summary {
-          color: var(--text-3); font-size: 0.74rem; line-height: 1.6;
-          margin-bottom: 9px;
+          color: var(--text-3); font-size: 0.74rem; line-height: 1.6; margin-bottom: 9px;
           display: -webkit-box; -webkit-line-clamp: 2;
           -webkit-box-orient: vertical; overflow: hidden;
         }
         .rcard-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
+        /* FIX: position:relative + z-index:1 so tags sit above the cover link */
         .rcard-tag {
+          position: relative; z-index: 1;
           padding: 2px 8px;
-          background: rgba(108,99,255,0.09);
-          border: 1px solid rgba(108,99,255,0.18);
+          background: rgba(108,99,255,0.09); border: 1px solid rgba(108,99,255,0.18);
           border-radius: 999px; font-size: 0.63rem;
           color: var(--purple-lt); font-weight: 600;
           transition: background 0.15s;
         }
         .rcard-tag:hover { background: rgba(108,99,255,0.18); }
-        .rcard-meta {
-          display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-        }
-        .depth-chip {
-          padding: 2px 8px; border-radius: 999px;
-          font-size: 0.63rem; font-weight: 700;
-        }
-        .view-ct {
-          display: flex; align-items: center; gap: 3px;
-          font-size: 0.68rem; color: var(--text-3);
-        }
+        .rcard-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; position: relative; z-index: 1; }
+        .depth-chip { padding: 2px 8px; border-radius: 999px; font-size: 0.63rem; font-weight: 700; }
+        .view-ct { display: flex; align-items: center; gap: 3px; font-size: 0.68rem; color: var(--text-3); }
         .rcard-date { font-size: 0.63rem; color: var(--text-3); margin-left: auto; }
 
         /* Empty state */
@@ -553,10 +495,8 @@ export default async function PublicProfilePage({
           border: 1px dashed rgba(255,255,255,0.06);
         }
         .empty-icon {
-          width: 44px; height: 44px; border-radius: 12px;
-          background: var(--bg-elev);
-          display: flex; align-items: center; justify-content: center;
-          margin: 0 auto 14px;
+          width: 44px; height: 44px; border-radius: 12px; background: var(--bg-elev);
+          display: flex; align-items: center; justify-content: center; margin: 0 auto 14px;
         }
         .empty-title { font-size: 0.92rem; font-weight: 700; color: var(--text-1); margin-bottom: 5px; }
         .empty-desc  { font-size: 0.77rem; color: var(--text-3); line-height: 1.6; max-width: 260px; margin: 0 auto; }
@@ -565,15 +505,12 @@ export default async function PublicProfilePage({
         .footer {
           position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
           background: rgba(10,10,26,0.95);
-          backdrop-filter: blur(18px);
-          -webkit-backdrop-filter: blur(18px);
-          border-top: 1px solid var(--border);
-          padding: 10px 20px;
+          backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+          border-top: 1px solid var(--border); padding: 10px 20px;
         }
         .footer-inner {
           max-width: 1120px; margin: 0 auto;
-          display: flex; align-items: center;
-          justify-content: space-between; gap: 16px;
+          display: flex; align-items: center; justify-content: space-between; gap: 16px;
         }
         .footer-brand { display: flex; align-items: center; gap: 9px; }
         .footer-icon {
@@ -587,16 +524,11 @@ export default async function PublicProfilePage({
           padding: 8px 18px; border-radius: 999px;
           background: linear-gradient(135deg,#6C63FF,#8B5CF6);
           color: #fff; font-size: 0.78rem; font-weight: 700;
-          white-space: nowrap; flex-shrink: 0;
-          transition: opacity 0.18s;
+          white-space: nowrap; flex-shrink: 0; transition: opacity 0.18s;
         }
         .footer-cta:hover { opacity: 0.88; }
 
-        /* Mobile adjustments */
-        @media (max-width: 480px) {
-          .profile-name { font-size: 1rem; }
-          .footer-tag { display: none; }
-        }
+        @media (max-width: 480px) { .profile-name { font-size: 1rem; } .footer-tag { display: none; } }
       ` }} />
 
       <div style={{ minHeight: '100vh', background: '#0A0A1A' }}>
@@ -624,20 +556,13 @@ export default async function PublicProfilePage({
             {/* ─── Left sidebar: Profile ─── */}
             <aside>
               <div className="profile-card">
-
-                {/* Gradient banner — no avatar overlap */}
                 <div className="banner" />
 
-                {/* Avatar row — fully below banner, no negative margin */}
                 <div className="avatar-section">
                   <div className="avatar-ring">
                     {profile.avatar_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={profile.avatar_url}
-                        alt={displayName}
-                        className="avatar-img"
-                      />
+                      <img src={profile.avatar_url} alt={displayName} className="avatar-img" />
                     ) : (
                       <div className="avatar-initials">{initials || '?'}</div>
                     )}
@@ -653,7 +578,6 @@ export default async function PublicProfilePage({
                   </a>
                 </div>
 
-                {/* Profile body */}
                 <div className="profile-body">
                   <h1 className="profile-name">{displayName}</h1>
                   <p className="profile-handle">@{username}</p>
@@ -694,7 +618,7 @@ export default async function PublicProfilePage({
                 </div>
               </div>
 
-              {/* Download CTA — desktop sidebar */}
+              {/* Download CTA */}
               <div className="cta-card">
                 <div className="cta-inner">
                   <div className="cta-app-icon"><SearchIcon /></div>
@@ -746,12 +670,24 @@ export default async function PublicProfilePage({
                   {reports.map(report => {
                     const dc = DEPTH_CONFIG[report.depth] ?? DEPTH_CONFIG.deep;
                     return (
-                      <a
-                        key={report.share_id}
-                        href={`${APP_URL}/r/${report.share_id}`}
-                        className="rcard"
-                      >
+                      /*
+                       * FIX: Card is now a <div> with position:relative.
+                       * A full-cover <a class="rcard-cover"> makes the whole
+                       * card clickable. Tag links have z-index:1 so they sit
+                       * above the cover and remain independently clickable.
+                       * This replaces the old pattern of an <a> card wrapping
+                       * inner <a> chips (invalid HTML + Server Component onClick).
+                       */
+                      <div key={report.share_id} className="rcard">
+                        {/* Full-cover invisible link */}
+                        <a
+                          href={`${APP_URL}/r/${report.share_id}`}
+                          className="rcard-cover"
+                          aria-label={report.title}
+                        />
+
                         <div className="rcard-accent" style={{ background: dc.color, opacity: 0.65 }} />
+
                         <div className="rcard-body">
                           <h3 className="rcard-title">{report.title}</h3>
 
@@ -762,10 +698,14 @@ export default async function PublicProfilePage({
                           {report.tags.length > 0 && (
                             <div className="rcard-tags">
                               {report.tags.slice(0, 3).map(tag => (
+                                /*
+                                 * FIX: No onClick here — this is a Server Component.
+                                 * The tag link navigates independently because it has
+                                 * position:relative + z-index:1 (above rcard-cover).
+                                 */
                                 <a
                                   key={tag}
                                   href={`/topic/${encodeURIComponent(tag.toLowerCase())}`}
-                                  onClick={(e) => e.stopPropagation()}
                                   className="rcard-tag"
                                 >
                                   {tag}
@@ -803,7 +743,7 @@ export default async function PublicProfilePage({
                             <span className="rcard-date">{formatDate(report.created_at)}</span>
                           </div>
                         </div>
-                      </a>
+                      </div>
                     );
                   })}
                 </div>

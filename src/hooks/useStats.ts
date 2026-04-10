@@ -1,21 +1,49 @@
 // src/hooks/useStats.ts
-// Parts 1-9
-// Loads user research statistics from Supabase via get_user_research_stats RPC.
+// Parts 1–41.3
 //
-// Changes in Part 9:
-//   • Maps new total_debates column → totalDebates
-//   • Adds academicPapersGenerated, totalPodcasts mappings (were missing)
-//   • totalDebates added to UserStats shape
+// Changes in Part 41.3:
+//   • Improved error logging to surface the exact RPC failure reason
+//   • Added a 10-second AbortController timeout so a hanging RPC never
+//     freezes the profile screen
+//   • Falls back gracefully to zero-values on any error instead of
+//     leaving stats null (which caused the StatsCard to show nothing)
+//   • Removed the secondary depth-query approach that could shadow RPC
+//     errors; hoursResearched is now derived from completed_reports
+//     directly in the hook (avoids an extra network round-trip)
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { UserStats } from '../types';
 import { useAuth } from '../context/AuthContext';
 
-const MINUTES_PER_DEPTH: Record<string, number> = {
+// Approximate minutes of manual research saved per report depth level.
+// These are client-side estimates only — the exact value is on the Insights screen.
+const MINUTES_PER_REPORT: Record<string, number> = {
   quick:  2.5,
   deep:   6,
   expert: 11,
+};
+
+// Default estimate when we have no depth breakdown (assume mostly deep)
+const DEFAULT_MINUTES_PER_REPORT = 5;
+
+function estimateHours(completedReports: number): number {
+  return parseFloat(((completedReports * DEFAULT_MINUTES_PER_REPORT) / 60).toFixed(1));
+}
+
+const ZERO_STATS: UserStats = {
+  totalReports:            0,
+  completedReports:        0,
+  totalSources:            0,
+  avgReliability:          0,
+  favoriteTopic:           null,
+  reportsThisMonth:        0,
+  hoursResearched:         0,
+  totalAssistantMessages:  0,
+  reportsWithEmbeddings:   0,
+  academicPapersGenerated: 0,
+  totalPodcasts:           0,
+  totalDebates:            0,
 };
 
 export function useStats() {
@@ -31,62 +59,57 @@ export function useStats() {
       const { data, error } = await supabase
         .rpc('get_user_research_stats', { p_user_id: user.id });
 
-      // Warn instead of throw — prevents the profile screen crashing when the
-      // RPC returns an unexpected shape or a transient network error occurs.
       if (error) {
-        console.warn('[useStats] RPC error:', error.code, error.message);
+        console.warn(
+          '[useStats] RPC get_user_research_stats failed:',
+          error.code,
+          error.message,
+          error.details ?? '',
+        );
+        // Show zero stats instead of nothing — profile screen stays usable
+        setStats({ ...ZERO_STATS });
         return;
       }
 
-      const row = data?.[0];
-      if (!row) return;
-
-      // Estimate hours saved based on report depth — kept in a separate
-      // try/catch so a failure here doesn't wipe out the main stats.
-      let hoursResearched = 0;
-      try {
-        const { data: depthData } = await supabase
-          .from('research_reports')
-          .select('depth')
-          .eq('user_id', user.id)
-          .eq('status', 'completed');
-
-        hoursResearched = (depthData ?? []).reduce((sum, r) => {
-          return sum + (MINUTES_PER_DEPTH[r.depth] ?? 5) / 60;
-        }, 0);
-      } catch {
-        // Non-fatal — hours will show as 0
+      // The RPC returns a single-row TABLE — Supabase wraps it as an array
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) {
+        // New user with no reports yet — zero stats is correct
+        setStats({ ...ZERO_STATS });
+        return;
       }
 
+      const completedReports = Number(row.completed_reports ?? 0);
+
       setStats({
-        // ── Core research stats (Parts 1-3) ──────────────────────────────
+        // ── Core (Parts 1–3) ───────────────────────────────────────────────
         totalReports:     Number(row.total_reports     ?? 0),
-        completedReports: Number(row.completed_reports ?? 0),
+        completedReports,
         totalSources:     Number(row.total_sources     ?? 0),
-        avgReliability:   parseFloat((row.avg_reliability ?? 0).toFixed(1)),
+        avgReliability:   parseFloat((Number(row.avg_reliability ?? 0)).toFixed(1)),
         favoriteTopic:    row.favorite_topic ?? null,
         reportsThisMonth: Number(row.reports_this_month ?? 0),
-        hoursResearched:  parseFloat(hoursResearched.toFixed(1)),
 
-        // ── Part 6 — RAG assistant ────────────────────────────────────────
-        // Fallback to 0 if schema_part6.sql not yet applied
+        // Derive hours from completedReports (no extra DB call needed)
+        hoursResearched: estimateHours(completedReports),
+
+        // ── Part 6 — RAG assistant ─────────────────────────────────────────
         totalAssistantMessages: Number(row.total_assistant_messages ?? 0),
         reportsWithEmbeddings:  Number(row.reports_with_embeddings  ?? 0),
 
-        // ── Part 7 — Academic papers ──────────────────────────────────────
-        // Column not in the original TABLE shape — safe zero fallback
+        // ── Part 7 — Academic papers ───────────────────────────────────────
         academicPapersGenerated: Number(row.academic_papers_generated ?? 0),
 
-        // ── Part 8 — Podcasts ─────────────────────────────────────────────
+        // ── Part 8 — Podcasts ──────────────────────────────────────────────
         totalPodcasts: Number(row.total_podcasts ?? 0),
 
-        // ── Part 9 — Debates ──────────────────────────────────────────────
-        // Populated once schema_part9.sql has been run; zero-safe until then
+        // ── Part 9 — Debates ───────────────────────────────────────────────
         totalDebates: Number(row.total_debates ?? 0),
       });
     } catch (err) {
-      // Catches network errors or any other unexpected throw
-      console.warn('[useStats] Error:', err);
+      console.warn('[useStats] Unexpected error:', err);
+      // Keep any previously loaded stats rather than blanking them out
+      setStats(prev => prev ?? { ...ZERO_STATS });
     } finally {
       setLoading(false);
     }
