@@ -1,10 +1,16 @@
 // app/(app)/slide-preview.tsx
-// Part 30 — FIXED: export uses freshPresentation (with editorData)
-// ─────────────────────────────────────────────────────────────────────────────
-// Fix: exportPPTX, exportPDF, exportHTML from useSlideGenerator always used
-// the original unedited generatedPresentation. Now they are replaced with
-// direct calls to generatePPTX / exportAsSlidePDF / exportAsHTMLSlides using
-// freshPresentation (which carries merged editorData from the last DB refresh).
+// Part 41.6 — Screenshot-based export
+//
+// CHANGES from Part 30:
+//   1. Added SlideExportRenderer (off-screen) + SlideExportRendererRef
+//   2. handleExportPPTX / handleExportPDF / handleExportHTML now:
+//        a. Show "Capturing slides…" progress to user
+//        b. Call rendererRef.current.captureAll() to get PNG data-URIs
+//        c. Pass captured images to generatePPTXFromImages /
+//           exportAsSlidePDFFromImages / exportAsHTMLSlidesFromImages
+//        d. Fall back to legacy vector export if capture returns all nulls
+//   3. Export progress state added (captureProgress)
+//   4. All other logic identical to Part 30.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -34,6 +40,15 @@ import {
   exportAsSlidePDF,
   exportAsHTMLSlides,
 } from '../../src/services/pptxExport';
+import {
+  generatePPTXFromImages,
+  exportAsSlidePDFFromImages,
+  exportAsHTMLSlidesFromImages,
+} from '../../src/services/slideCaptureExport';
+import {
+  SlideExportRenderer,
+  type SlideExportRendererRef,
+} from '../../src/components/research/SlideExportRenderer';
 import { mergeEditorData } from '../../src/services/slideEditorService';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import type {
@@ -123,14 +138,18 @@ export default function SlidePreviewScreen() {
   const [screenPhase,    setScreenPhase]    = useState<'setup' | 'generating' | 'preview'>('setup');
   const [showShareModal, setShowShareModal] = useState(false);
 
-  // FIX: freshPresentation carries editorData from DB — always export THIS
+  // freshPresentation carries editorData from DB
   const [freshPresentation, setFreshPresentation] = useState<GeneratedPresentation | null>(null);
   const [refreshKey,        setRefreshKey]         = useState(0);
   const hasMountedRef = useRef(false);
 
-  // FIX: local export state — no longer delegating to useSlideGenerator for export
-  const [isExporting,   setIsExporting]   = useState(false);
-  const [exportFormat,  setExportFormat]  = useState<'pptx' | 'pdf' | 'html' | null>(null);
+  // Export state
+  const [isExporting,      setIsExporting]      = useState(false);
+  const [exportFormat,     setExportFormat]      = useState<'pptx' | 'pdf' | 'html' | null>(null);
+  const [captureProgress,  setCaptureProgress]   = useState<{ done: number; total: number } | null>(null);
+
+  // Off-screen renderer ref for screenshot capture
+  const rendererRef = useRef<SlideExportRendererRef>(null);
 
   const {
     presentation: generatedPresentation,
@@ -141,7 +160,7 @@ export default function SlidePreviewScreen() {
 
   const { balance, guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  // The presentation used for PREVIEW (freshPresentation wins when available)
+  // The presentation used for preview (freshPresentation wins when available)
   const presentation = freshPresentation ?? generatedPresentation;
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
@@ -155,7 +174,7 @@ export default function SlidePreviewScreen() {
     if (paramPresentationId && !generatedPresentation) loadPresentation(paramPresentationId);
   }, [paramPresentationId]);
 
-  // Re-fetch full presentation on every focus return (same as Part 29)
+  // Re-fetch full presentation on every focus return
   useFocusEffect(
     useCallback(() => {
       const presId = presentation?.id ?? paramPresentationId;
@@ -189,7 +208,6 @@ export default function SlidePreviewScreen() {
             totalSlides: mergedSlides.length,
             generatedAt: data.generated_at,
             exportCount: data.export_count ?? 0,
-            // FIX: carry font_family so export applies the correct typeface
             fontFamily:  data.font_family ?? 'system',
           };
 
@@ -234,45 +252,108 @@ export default function SlidePreviewScreen() {
     }
   };
 
-  const handleBack        = useCallback(() => router.back(), []);
-  const handleOpenEditor  = useCallback(() => {
+  const handleBack       = useCallback(() => router.back(), []);
+  const handleOpenEditor = useCallback(() => {
     if (!presentation) return;
     const params: Record<string, string> = { presentationId: presentation.id };
     if (report?.id) params.reportId = report.id;
     router.push({ pathname: '/(app)/slide-editor' as any, params });
   }, [presentation, report]);
 
-  // FIX: Export functions use freshPresentation (which has editorData intact)
-  // instead of delegating to useSlideGenerator's export (which uses unedited data)
+  // ─── Capture + export helpers ─────────────────────────────────────────────
+
+  /**
+   * Core capture: renders each SlideCard off-screen via SlideExportRenderer
+   * and returns an array of base64 PNG data-URIs.
+   * Falls back to null array if react-native-view-shot is unavailable.
+   */
+  const captureSlides = useCallback(async (
+    pres:   GeneratedPresentation,
+    format: 'pptx' | 'pdf' | 'html',
+  ): Promise<(string | null)[]> => {
+    const total = pres.slides.length;
+
+    // Capture the ref in a local variable so TypeScript narrows it as non-null
+    const renderer = rendererRef.current;
+    if (!renderer) {
+      console.warn('[SlidePreview] renderer not mounted — falling back to vector export');
+      return new Array(total).fill(null);
+    }
+
+    setCaptureProgress({ done: 0, total });
+    const images = await renderer.captureAll();
+    setCaptureProgress(null);
+    return images;
+  }, []);
+
   const handleExportPPTX = useCallback(async () => {
     const pres = freshPresentation ?? generatedPresentation;
     if (!pres) return;
     setIsExporting(true);
     setExportFormat('pptx');
-    try { await generatePPTX(pres); }
-    catch (e) { Alert.alert('Export failed', String(e)); }
-    finally { setIsExporting(false); setExportFormat(null); }
-  }, [freshPresentation, generatedPresentation]);
+    try {
+      const images = await captureSlides(pres, 'pptx');
+      const allFailed = images.every(i => i === null);
+      if (allFailed) {
+        // Full vector fallback
+        await generatePPTX(pres);
+      } else {
+        await generatePPTXFromImages(images, pres);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', String(e));
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+      setCaptureProgress(null);
+    }
+  }, [freshPresentation, generatedPresentation, captureSlides]);
 
   const handleExportPDF = useCallback(async () => {
     const pres = freshPresentation ?? generatedPresentation;
     if (!pres) return;
     setIsExporting(true);
     setExportFormat('pdf');
-    try { await exportAsSlidePDF(pres); }
-    catch (e) { Alert.alert('Export failed', String(e)); }
-    finally { setIsExporting(false); setExportFormat(null); }
-  }, [freshPresentation, generatedPresentation]);
+    try {
+      const images = await captureSlides(pres, 'pdf');
+      const allFailed = images.every(i => i === null);
+      if (allFailed) {
+        await exportAsSlidePDF(pres);
+      } else {
+        await exportAsSlidePDFFromImages(images, pres);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', String(e));
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+      setCaptureProgress(null);
+    }
+  }, [freshPresentation, generatedPresentation, captureSlides]);
 
   const handleExportHTML = useCallback(async () => {
     const pres = freshPresentation ?? generatedPresentation;
     if (!pres) return;
     setIsExporting(true);
     setExportFormat('html');
-    try { await exportAsHTMLSlides(pres); }
-    catch (e) { Alert.alert('Export failed', String(e)); }
-    finally { setIsExporting(false); setExportFormat(null); }
-  }, [freshPresentation, generatedPresentation]);
+    try {
+      const images = await captureSlides(pres, 'html');
+      const allFailed = images.every(i => i === null);
+      if (allFailed) {
+        await exportAsHTMLSlides(pres);
+      } else {
+        await exportAsHTMLSlidesFromImages(images, pres);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', String(e));
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+      setCaptureProgress(null);
+    }
+  }, [freshPresentation, generatedPresentation, captureSlides]);
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   const handleGenerate = useCallback(async () => {
     if (!report || isGenerating || isConsuming) return;
@@ -302,9 +383,26 @@ export default function SlidePreviewScreen() {
 
   if (screenPhase === 'preview' && presentation) {
     const selectedThemeObj = THEME_OPTIONS.find(t => t.id === (presentation.theme ?? 'dark'))!;
+
+    // Build the export button label with capture progress
+    function exportLabel(format: 'pptx' | 'pdf' | 'html', defaultLabel: string): string {
+      if (!isExporting || exportFormat !== format) return defaultLabel;
+      if (captureProgress) {
+        return `Capturing ${captureProgress.done}/${captureProgress.total}…`;
+      }
+      return 'Exporting…';
+    }
+
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+          {/* Off-screen renderer — mounted but invisible, used for capture */}
+          <SlideExportRenderer
+            ref={rendererRef}
+            presentation={presentation}
+            onProgress={(done, total) => setCaptureProgress({ done, total })}
+          />
+
           <SlidePreviewPanel
             key={refreshKey}
             presentation={presentation}
@@ -329,7 +427,7 @@ export default function SlidePreviewScreen() {
                     ? <ActivityIndicator size="small" color="#FFF" />
                     : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
                   <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
-                    {isExporting && exportFormat === 'pptx' ? 'Exporting…' : 'Export PPTX'}
+                    {exportLabel('pptx', 'Export PPTX')}
                   </Text>
                 </LinearGradient>
               </Pressable>
@@ -342,7 +440,9 @@ export default function SlidePreviewScreen() {
                   {isExporting && exportFormat === 'pdf'
                     ? <ActivityIndicator size="small" color={COLORS.textSecondary} />
                     : <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />}
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>PDF</Text>
+                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+                    {exportLabel('pdf', 'PDF')}
+                  </Text>
                 </View>
               </Pressable>
             </View>
@@ -357,7 +457,9 @@ export default function SlidePreviewScreen() {
                 {isExporting && exportFormat === 'html'
                   ? <ActivityIndicator size="small" color={COLORS.textMuted} />
                   : <Ionicons name="globe-outline" size={15} color={COLORS.textMuted} />}
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>HTML</Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                  {exportLabel('html', 'HTML')}
+                </Text>
               </Pressable>
 
               <Pressable
@@ -384,6 +486,14 @@ export default function SlidePreviewScreen() {
                 <Ionicons name="refresh-outline" size={15} color={COLORS.textMuted} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Redo</Text>
               </Pressable>
+            </View>
+
+            {/* Export quality note */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, justifyContent: 'center' }}>
+              <Ionicons name="camera-outline" size={11} color={COLORS.textMuted} />
+              <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
+                Exports capture slides exactly as shown
+              </Text>
             </View>
 
             {/* Stats row */}

@@ -1,18 +1,13 @@
 // app/(app)/slide-editor.tsx
-// Part 30 — FIX: online image stale closure, icon insert
-// ─────────────────────────────────────────────────────────────────────────────
-// The ONLY changes from part30B_slide-editor.tsx are:
+// Part 41.6 — Screenshot-based export from editor
 //
-// 1. handleOnlineImageInsert: use useRef to hold addBlock so it never goes stale
-//    The old useCallback([editor]) captured a stale editor reference when the
-//    panel was open. addBlock reads from stateRef (a ref) so it never goes stale
-//    — but the function reference itself was recreated each render, meaning the
-//    useCallback with [editor] dependency would miss updates.
-//    Fix: store editor.addBlock in a ref and call it directly.
-//
-// 2. handleIconifyInsert: same fix.
-//
-// All other code is identical to part30B_slide-editor.tsx.
+// CHANGES from Part 30:
+//   1. Added SlideExportRenderer mounted off-screen
+//   2. handleExport now captures slides via SlideExportRenderer before
+//      building PPTX/PDF, so all editor changes (icons, charts, colors,
+//      custom fonts, Iconify SVGs, online images) export exactly as seen
+//   3. Falls back to vector generatePPTX / exportAsSlidePDF if capture fails
+//   4. All other logic identical to Part 30.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useCallback, useState, useRef } from 'react';
@@ -30,6 +25,14 @@ import { useAuth }                         from '../../src/context/AuthContext';
 import { useCredits }                      from '../../src/context/CreditsContext';
 import { useSlideEditor }                  from '../../src/hooks/useSlideEditor';
 import { generatePPTX, exportAsSlidePDF } from '../../src/services/pptxExport';
+import {
+  generatePPTXFromImages,
+  exportAsSlidePDFFromImages,
+} from '../../src/services/slideCaptureExport';
+import {
+  SlideExportRenderer,
+  type SlideExportRendererRef,
+} from '../../src/components/research/SlideExportRenderer';
 
 import { SlideEditorCanvas }        from '../../src/components/editor/SlideEditorCanvas';
 import { SlideThumbnailStrip }      from '../../src/components/editor/SlideThumbnailStrip';
@@ -67,12 +70,16 @@ export default function SlideEditorScreen() {
   const [infographicData,  setInfographicData]  = useState<InfographicData | null>(null);
   const [activeToolTab,    setActiveToolTab]     = useState<EditorTool>('select');
   const [isExporting,      setIsExporting]       = useState(false);
+  const [exportLabel,      setExportLabel]       = useState('');
   const [showOnlineImageSearch, setShowOnlineImageSearch] = useState(false);
   const [showIconifyPicker,     setShowIconifyPicker]     = useState(false);
   const [showTemplateHistory,   setShowTemplateHistory]   = useState(false);
 
   // FIX: keep a ref to addBlock so callbacks never go stale
   const addBlockRef = useRef<((block: AdditionalBlock) => void) | null>(null);
+
+  // Off-screen renderer for screenshot capture
+  const rendererRef = useRef<SlideExportRendererRef>(null);
 
   // Load report
   useEffect(() => {
@@ -141,12 +148,71 @@ export default function SlideEditorScreen() {
     }
   }, [editor]);
 
+  // ─── Screenshot-based export ──────────────────────────────────────────────
+
   const handleExport = useCallback(async () => {
     const exportPres = editor.getExportPresentation();
     if (!exportPres) return;
+
     Alert.alert('Export Slides', 'Choose export format:', [
-      { text: 'PPTX', onPress: async () => { setIsExporting(true); try { await generatePPTX(exportPres); } finally { setIsExporting(false); } } },
-      { text: 'PDF',  onPress: async () => { setIsExporting(true); try { await exportAsSlidePDF(exportPres); } finally { setIsExporting(false); } } },
+      {
+        text: 'PPTX',
+        onPress: async () => {
+          setIsExporting(true);
+          try {
+            if (rendererRef.current) {
+              const total  = exportPres.slides.length;
+              setExportLabel(`Capturing 0/${total}…`);
+              const images = await rendererRef.current.captureAll();
+              const failed = images.every(i => i === null);
+              if (failed) {
+                setExportLabel('Exporting…');
+                await generatePPTX(exportPres);
+              } else {
+                setExportLabel(`Exporting PPTX…`);
+                await generatePPTXFromImages(images, exportPres);
+              }
+            } else {
+              setExportLabel('Exporting…');
+              await generatePPTX(exportPres);
+            }
+          } catch (e) {
+            Alert.alert('Export failed', String(e));
+          } finally {
+            setIsExporting(false);
+            setExportLabel('');
+          }
+        },
+      },
+      {
+        text: 'PDF',
+        onPress: async () => {
+          setIsExporting(true);
+          try {
+            if (rendererRef.current) {
+              const total  = exportPres.slides.length;
+              setExportLabel(`Capturing 0/${total}…`);
+              const images = await rendererRef.current.captureAll();
+              const failed = images.every(i => i === null);
+              if (failed) {
+                setExportLabel('Exporting…');
+                await exportAsSlidePDF(exportPres);
+              } else {
+                setExportLabel('Exporting PDF…');
+                await exportAsSlidePDFFromImages(images, exportPres);
+              }
+            } else {
+              setExportLabel('Exporting…');
+              await exportAsSlidePDF(exportPres);
+            }
+          } catch (e) {
+            Alert.alert('Export failed', String(e));
+          } finally {
+            setIsExporting(false);
+            setExportLabel('');
+          }
+        },
+      },
       { text: 'Cancel', style: 'cancel' },
     ]);
   }, [editor]);
@@ -167,12 +233,12 @@ export default function SlideEditorScreen() {
   const handleOnlineImageInsert = useCallback((block: ImageBlock) => {
     addBlockRef.current?.(block as any);
     setShowOnlineImageSearch(false);
-  }, []); // empty deps — always reads latest addBlock from ref
+  }, []);
 
   const handleIconifyInsert = useCallback((block: IconBlock) => {
     addBlockRef.current?.(block as any);
     setShowIconifyPicker(false);
-  }, []); // empty deps — always reads latest addBlock from ref
+  }, []);
 
   if (isLoading) return <LoadingOverlay visible message="Loading editor…" />;
 
@@ -194,6 +260,14 @@ export default function SlideEditorScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+
+          {/* Off-screen renderer for screenshot export */}
+          {presentation && (
+            <SlideExportRenderer
+              ref={rendererRef}
+              presentation={editor.getExportPresentation() ?? presentation}
+            />
+          )}
 
           {/* ── HEADER ── */}
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.sm }}>
@@ -233,11 +307,21 @@ export default function SlideEditorScreen() {
             <Pressable onPress={editor.saveNow} disabled={!state.isDirty || state.isSaving} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: state.isDirty ? `${COLORS.primary}18` : COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: state.isDirty ? `${COLORS.primary}40` : COLORS.border, opacity: (state.isDirty && !state.isSaving) ? 1 : 0.35 }}>
               {state.isSaving ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="cloud-upload-outline" size={17} color={state.isDirty ? COLORS.primary : COLORS.textMuted} />}
             </Pressable>
-            <Pressable onPress={handleExport} disabled={isExporting} style={{ height: 34, paddingHorizontal: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', opacity: isExporting ? 0.5 : 1 }}>
+            <Pressable onPress={handleExport} disabled={isExporting} style={{ height: 34, paddingHorizontal: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', opacity: isExporting ? 0.7 : 1 }}>
               <LinearGradient colors={['#6C63FF', '#8B5CF6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 10 }} />
-              {isExporting ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="share-outline" size={17} color="#FFF" />}
+              {isExporting
+                ? <ActivityIndicator size="small" color="#FFF" />
+                : <Ionicons name="share-outline" size={17} color="#FFF" />}
             </Pressable>
           </View>
+
+          {/* Export progress banner */}
+          {isExporting && exportLabel ? (
+            <Animated.View entering={FadeIn.duration(200)} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, paddingHorizontal: SPACING.lg, paddingVertical: 8, backgroundColor: `${COLORS.primary}15`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}25` }}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>{exportLabel}</Text>
+            </Animated.View>
+          ) : null}
 
           {/* ── TOOL TABS ── */}
           <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.xs }}>

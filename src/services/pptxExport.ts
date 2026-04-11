@@ -1,18 +1,10 @@
 // src/services/pptxExport.ts
-// Part 30 — FINAL FIX
-//
-// Bugs fixed vs previous version:
-//   1. Charts not appearing in PPTX — slide reference was obtained via
-//      (pres as any).slides[last] which is unreliable. Fix: each builder
-//      now RETURNS the slide object; addSlideToPresentation passes it directly.
-//   2. Divider only shows one line regardless of style — PPTX now renders
-//      dashed as a series of small rectangles and diamond as rotated squares.
-//   3. Red dots in PPTX bullets — bullet:true adds default bullet markers.
-//      Fix: use explicit bullet:{code:'2022'} with matching color, or render
-//      bullets as plain text with a unicode bullet prefix so color is correct.
-//   4. Black shadow boxes in PPTX and PDF — makeShadow() removed everywhere.
-//   5. PDF page exactly 1280×720 per slide (already correct, kept intact).
-//   6. Image apply fix — pass both uri and onlineUrl; SlideCard reads uri first.
+// Part 41.6 — fixes:
+//   1. imageUrlToBase64: try fetch() FIRST for file:// URIs to bypass
+//      expo-file-system permission errors on iOS ImagePicker cache files.
+//   2. blobToDataUrl: extracted helper so both paths share the same converter.
+//   3. PDF icon overlay: uses stored svgData (Iconify) for inline SVG rendering.
+//   4. All other code identical to Part 30.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -139,27 +131,65 @@ function fmtOpts(
   return out;
 }
 
-// ─── Image URL → base64 ───────────────────────────────────────────────────────
+// ─── PART 41.6 FIX: blobToDataUrl helper ────────────────────────────────────
+// Extracted so both the fetch path and the fallback path can use it.
+
+function blobToDataUrl(blob: Blob): Promise<string | null> {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string) ?? null);
+    reader.onerror   = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// ─── PART 41.6 FIX: imageUrlToBase64 ────────────────────────────────────────
+// Root cause of the iOS error:
+//   expo-file-system readAsStringAsync cannot read files in the ImagePicker
+//   temporary cache sandbox (/Library/Caches/ExponentExperienceData/…/ImagePicker/).
+//   React Native's built-in fetch() CAN read those file:// URIs.
+//
+// New strategy:
+//   1. For file:// URIs — try fetch() first (no permission issues).
+//   2. If fetch() fails (e.g. file deleted) — try readAsStringAsync as fallback.
+//   3. For http/https — fetch() directly (unchanged from Part 30).
+//   4. Any failure → return null → image block is silently skipped in export.
 
 async function imageUrlToBase64(url: string): Promise<string | null> {
   if (!url) return null;
   try {
     if (url.startsWith('data:')) return url;
+
     if (url.startsWith('file://') || url.startsWith('/')) {
-      const b64  = await readAsStringAsync(url, { encoding: EncodingType.Base64 });
-      const ext  = url.split('.').pop()?.toLowerCase() ?? 'jpeg';
-      const mime = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
-      return `data:${mime};base64,${b64}`;
+      // Strategy 1: React Native fetch handles ImagePicker sandbox
+      try {
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const data = await blobToDataUrl(blob);
+          if (data) return data;
+        }
+      } catch (_fetchErr) {
+        // fetch failed for this local URI — try FileSystem next
+      }
+
+      // Strategy 2: expo-file-system fallback (works for documentDirectory files)
+      try {
+        const b64  = await readAsStringAsync(url, { encoding: EncodingType.Base64 });
+        const ext  = url.split('.').pop()?.toLowerCase() ?? 'jpeg';
+        const mime = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+        return `data:${mime};base64,${b64}`;
+      } catch (_fsErr) {
+        console.warn('[pptxExport] imageUrlToBase64: local file not readable (skipping):', url);
+        return null;
+      }
     }
+
+    // Remote URL
     const resp = await fetch(url, { headers: { 'Accept': 'image/*' } });
     if (!resp.ok) return null;
     const blob = await resp.blob();
-    return await new Promise<string | null>(resolve => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string ?? null);
-      reader.onerror   = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
+    return await blobToDataUrl(blob);
   } catch (err) {
     console.warn('[pptxExport] imageUrlToBase64 failed:', url, err);
     return null;
@@ -185,11 +215,6 @@ async function resolveAllImages(presentation: GeneratedPresentation): Promise<Ma
 }
 
 // ─── PPTX overlay blocks ──────────────────────────────────────────────────────
-// FIX: takes the actual pptxSlide returned by the builder, not (pres as any).slides[last]
-// FIX: chart uses correct pptxgenjs addChart API with proper data format
-// FIX: divider renders dashed as dashes and diamond as rotated squares
-// FIX: no shadow on any shape (shadow was causing black boxes)
-// FIX: bullets use unicode prefix + plain text to avoid colored bullet dots
 
 async function addEditorOverlaysToPPTX(
   pptxSlide: ReturnType<pptxgen['addSlide']>,
@@ -213,7 +238,6 @@ async function addEditorOverlaysToPPTX(
 
     switch (block.type) {
 
-      // ── IMAGE ──────────────────────────────────────────────────────────────
       case 'image': {
         const rawUrl = (block as any).onlineUrl || block.uri;
         if (!rawUrl) break;
@@ -226,6 +250,7 @@ async function addEditorOverlaysToPPTX(
           } else if (rawUrl.startsWith('http')) {
             pptxSlide.addImage({ path: rawUrl, x, y, w, h });
           }
+          // If local file couldn't be resolved (deleted cache), silently skip
           if (block.caption) {
             pptxSlide.addText(block.caption, { x, y: y + h, w, h: 0.22, fontSize: 8, color: 'AAAAAA', align: 'center', fontFace });
           }
@@ -233,13 +258,10 @@ async function addEditorOverlaysToPPTX(
         break;
       }
 
-      // ── STAT ───────────────────────────────────────────────────────────────
       case 'stat': {
         const colHex = px((block as any).color ?? slide.accentColor ?? t.primary);
         const cardH  = hFrac !== undefined ? hFrac * H : 0.9;
-        // Background — NO shadow
         pptxSlide.addShape(RECT, { x, y, w, h: cardH, fill: { color: px(t.surface) }, line: { color: colHex, width: 1 } });
-        // Top accent bar
         pptxSlide.addShape(RECT, { x, y, w, h: 0.06, fill: { color: colHex }, line: { color: colHex, width: 0 } });
         pptxSlide.addText(block.value, { x, y: y + 0.08, w, h: 0.45, fontSize: 28, bold: true, color: colHex, align: 'center', fontFace });
         pptxSlide.addText(block.label, { x, y: y + 0.56, w, h: 0.28, fontSize: 10, color: px(t.textMuted), align: 'center', fontFace });
@@ -247,9 +269,6 @@ async function addEditorOverlaysToPPTX(
         break;
       }
 
-      // ── CHART ──────────────────────────────────────────────────────────────
-      // FIX: pptxgenjs addChart requires data as [{name, labels, values}]
-      // The 'bar' chart type string must match pptxgenjs ChartType — use 'bar' directly.
       case 'chart': {
         const cd     = block.chart;
         const chartH = hFrac !== undefined ? hFrac * H : 1.5;
@@ -261,7 +280,6 @@ async function addEditorOverlaysToPPTX(
               labels: cd.labels as string[],
               values: cd.datasets![0].data as number[],
             }];
-            // pptxgenjs accepts 'bar' as first param via ChartType enum or string
             (pptxSlide as any).addChart('bar', chartData, {
               x, y, w, h: chartH,
               barDir:        'col',
@@ -276,11 +294,9 @@ async function addEditorOverlaysToPPTX(
               chartColors:   ['6C63FF', '43E97B', 'FFA726', 'FF6584', '29B6F6', 'AB47BC'],
             });
           } catch (chartErr) {
-            // Fallback: render as a styled placeholder with data labels
             console.warn('[pptxExport] addChart failed, using fallback:', chartErr);
             pptxSlide.addShape(RECT, { x, y, w, h: chartH, fill: { color: px(t.surface) }, line: { color: accentHex, width: 1 } });
             pptxSlide.addText(cd.title || 'Chart', { x, y: y + 0.1, w, h: 0.3, fontSize: 10, bold: true, color: accentHex, align: 'center', fontFace });
-            // Render bars manually as narrow rectangles
             const data   = cd.datasets![0].data as number[];
             const labels = cd.labels as string[];
             const maxV   = Math.max(...data, 1);
@@ -297,7 +313,6 @@ async function addEditorOverlaysToPPTX(
         break;
       }
 
-      // ── QUOTE BLOCK ────────────────────────────────────────────────────────
       case 'quote_block': {
         const qh = 0.9;
         pptxSlide.addShape(RECT, { x, y, w, h: qh, fill: { color: px(t.surface) }, line: { color: accentHex, width: 2 } });
@@ -309,17 +324,12 @@ async function addEditorOverlaysToPPTX(
         break;
       }
 
-      // ── DIVIDER ────────────────────────────────────────────────────────────
-      // FIX: render all 3 styles correctly — solid line, dashed segments, diamond dots
       case 'divider': {
         const colH = px((block as any).color ?? slide.accentColor ?? t.primary);
         const style = block.style ?? 'solid';
-
         if (style === 'solid') {
           pptxSlide.addShape(RECT, { x, y: y + 0.04, w, h: 0.03, fill: { color: colH }, line: { color: colH, width: 0 } });
-
         } else if (style === 'dashed') {
-          // Render as alternating small rectangles to simulate dashes
           const dashW   = 0.18;
           const gapW    = 0.08;
           const step    = dashW + gapW;
@@ -330,9 +340,7 @@ async function addEditorOverlaysToPPTX(
               fill: { color: colH }, line: { color: colH, width: 0 },
             });
           }
-
         } else if (style === 'diamond') {
-          // Render as small rotated-square shapes spaced across width
           const dotSize = 0.07;
           const dotGap  = 0.12;
           const count   = Math.floor(w / dotGap);
@@ -352,15 +360,13 @@ async function addEditorOverlaysToPPTX(
         break;
       }
 
-      // ── ICON ───────────────────────────────────────────────────────────────
       case 'icon': {
+        // PPTX cannot render SVG natively — draw a styled circle with label
         const sz  = Math.max((block.size ?? 40) / 96, 0.2);
         const ic  = px((block as any).color ?? slide.accentColor ?? t.primary);
         const bSz = sz + 0.14;
-        // Circle background — NO shadow
         pptxSlide.addShape(OVAL, { x, y, w: bSz, h: bSz, fill: { color: ic, transparency: 85 }, line: { color: ic, width: 1 } });
-        // Show label or icon name as text inside the circle
-        const iconLabel = block.label || '';
+        const iconLabel = block.label || (block as any).iconifyId?.split(':')[1] || '';
         if (iconLabel) {
           pptxSlide.addText(iconLabel, { x, y: y + bSz + 0.04, w: bSz + 0.5, h: 0.25, fontSize: 9, color: ic, align: 'center', fontFace });
         }
@@ -372,9 +378,6 @@ async function addEditorOverlaysToPPTX(
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PPTX LAYOUT BUILDERS
-// FIX: each builder returns the pptxgen slide object so overlays can be added.
-// FIX: all makeShadow() calls removed — they caused black shadow boxes.
-// FIX: bullet lists use plain text with '• ' prefix to avoid colored dot issue.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type PptxSlide = ReturnType<pptxgen['addSlide']>;
@@ -446,14 +449,11 @@ function buildContentSlide(pres: pptxgen, d: PresentationSlide, t: PresentationT
 function buildBulletsSlide(pres: pptxgen, d: PresentationSlide, t: PresentationThemeTokens, fontFace: string, sm: number): PptxSlide {
   const slide = pres.addSlide();
   applyBgOverride(slide, d, t.background);
-  const ac      = d.accentColor ?? t.primary;
-  const acHex   = px(ac);
+  const ac = d.accentColor ?? t.primary;
   slide.addShape(RECT, { x:0,y:0,w:W,h:1.05, fill:{color:px(t.surface)}, line:{color:px(t.border),width:0} });
   slide.addText(d.title, fmtOpts({ x:0.5,y:0.15,w:W-1,h:0.75,fontSize:24,bold:true,color:px(t.textPrimary),align:'left',valign:'middle' }, d, 'title', fontFace, sm));
   slide.addShape(RECT, { x:0,y:1.05,w:W,h:0.04, fill:{color:px(ac)}, line:{color:px(t.border),width:0} });
   const bullets = (d.bullets ?? []).slice(0, 6);
-  // FIX: use plain text with unicode bullet prefix instead of bullet:true
-  // bullet:true adds a default colored dot that doesn't respect the text color
   bullets.forEach((b, i) => {
     slide.addText(`\u2022  ${b}`, {
       x: 0.5, y: (1.28 + i * 0.68) * sm, w: W-1, h: 0.58,
@@ -478,7 +478,6 @@ function buildStatsSlide(pres: pptxgen, d: PresentationSlide, t: PresentationThe
   stats.forEach((stat, i) => {
     const x   = startX + i * (cW + gap);
     const col = px(stat.color ?? ac);
-    // NO shadow
     slide.addShape(RECT, { x,y:1.3*sm,w:cW,h:cH, fill:{color:px(t.surface)}, line:{color:col,width:1} });
     slide.addShape(RECT, { x,y:1.3*sm,w:cW,h:0.07, fill:{color:col}, line:{color:col,width:0} });
     slide.addText(stat.value, { x:x+0.08,y:1.5*sm,w:cW-0.16,h:1.0,fontSize:28,bold:true,color:col,align:'center',valign:'middle',fontFace });
@@ -506,7 +505,6 @@ function buildChartRefSlide(pres: pptxgen, d: PresentationSlide, t: Presentation
   const ac = d.accentColor ?? t.primary;
   slide.addShape(RECT, { x:0,y:0,w:0.06,h:H, fill:{color:px(ac)}, line:{color:px(t.border),width:0} });
   slide.addText(d.title, fmtOpts({ x:0.4,y:0.25,w:W-0.8,h:0.65,fontSize:26,bold:true,color:px(t.textPrimary),align:'left',valign:'middle' }, d, 'title', fontFace, sm));
-  // NO shadow
   slide.addShape(RECT, { x:0.4,y:1.0*sm,w:4.5,h:3.5, fill:{color:px(t.surface)}, line:{color:px(t.border),width:1} });
   slide.addText('[ Interactive Chart\nAvailable in App ]', { x:0.4,y:1.0*sm,w:4.5,h:3.5,fontSize:13,color:px(t.textMuted),align:'center',valign:'middle',italic:true,fontFace });
   if (d.body) slide.addText(d.body, fmtOpts({ x:5.2,y:1.0,w:4.5,h:3.5,fontSize:13,color:px(t.textSecondary),align:'left',valign:'top',lineSpacingMultiple:1.4 }, d, 'body', fontFace, sm));
@@ -539,7 +537,6 @@ function buildReferencesSlide(pres: pptxgen, d: PresentationSlide, t: Presentati
   slide.addText(d.title, fmtOpts({ x:0.5,y:0.15,w:W-1,h:0.75,fontSize:24,bold:true,color:px(t.textPrimary),align:'left',valign:'middle' }, d, 'title', fontFace, sm));
   slide.addShape(RECT, { x:0,y:1.05,w:W,h:0.04, fill:{color:px(ac)}, line:{color:px(t.border),width:0} });
   const refs = (d.bullets ?? []).slice(0, 7);
-  // FIX: plain text with [N] prefix instead of bullet:number
   refs.forEach((ref, i) => {
     slide.addText(`[${i+1}]  ${ref}`, {
       x:0.5, y:(1.28+i*0.56)*sm, w:W-1, h:0.5,
@@ -562,7 +559,6 @@ function buildClosingSlide(pres: pptxgen, d: PresentationSlide, t: PresentationT
   return slide;
 }
 
-// FIX: each builder returns its slide; pass directly to addEditorOverlaysToPPTX
 async function addSlideToPresentation(
   pres:     pptxgen,
   d:        PresentationSlide,
@@ -588,7 +584,6 @@ async function addSlideToPresentation(
     default:            builtSlide = buildContentSlide(pres, d, t, fontFace, sm);     break;
   }
 
-  // FIX: pass the directly-returned slide object — no more (pres as any).slides hack
   await addEditorOverlaysToPPTX(builtSlide, d, t, fontFace, imgMap);
 }
 
@@ -628,7 +623,6 @@ export async function generatePPTX(presentation: GeneratedPresentation): Promise
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PDF RENDERER
-// FIX: no shadow CSS, correct @page size (1280×720px = one slide per page)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const PW = 1280;
@@ -663,7 +657,8 @@ function deckFontCSS(presentation: GeneratedPresentation): string {
   }
 }
 
-// PDF overlay blocks — no box-shadow, base64 images
+// ─── PART 41.6 FIX: PDF icon overlay now uses svgData for Iconify icons ──────
+
 function renderOverlayBlocksHTML(slide: PresentationSlide, accentColor: string, imgMap: Map<string, string>): string {
   const blocks = getOverlayBlocks(slide);
   if (!blocks.length) return '';
@@ -689,7 +684,6 @@ function renderOverlayBlocksHTML(slide: PresentationSlide, accentColor: string, 
 
       case 'stat': {
         const cardH = hFrac !== undefined ? Math.round(PH * hFrac) : 96;
-        // NO box-shadow
         return `<div style="position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${cardH}px;background:#1A1A35;border-radius:5px;border-top:4px solid ${col};border:1px solid ${col}40;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 8px"><div style="color:${col};font-size:${pp(0.22)}px;font-weight:900;line-height:1;margin-bottom:4px">${block.value}</div><div style="color:rgba(255,255,255,0.5);font-size:${pp(0.09)}px;text-align:center;text-transform:uppercase;letter-spacing:0.5px">${block.label}</div>${block.unit ? `<div style="color:${col}AA;font-size:${pp(0.07)}px;margin-top:2px">${block.unit}</div>` : ''}</div>`;
       }
 
@@ -707,7 +701,6 @@ function renderOverlayBlocksHTML(slide: PresentationSlide, accentColor: string, 
         const bars    = data.slice(0,8).map((v,i) => {
           const barH = Math.max(Math.round((v/maxV)*barAreaH), 4);
           const bc   = CCOLS[i % CCOLS.length];
-          // NO box-shadow on bars
           return `<div style="display:flex;flex-direction:column;align-items:center;width:${barW-4}px;margin:0 2px"><div style="width:100%;height:${barH}px;background:${bc};border-radius:2px 2px 0 0;margin-top:${barAreaH-barH}px"></div><div style="font-size:9px;color:rgba(255,255,255,0.5);margin-top:2px;overflow:hidden;white-space:nowrap;max-width:${barW-4}px">${labels[i]??''}</div></div>`;
         }).join('');
         return `<div style="position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${chartH}px;background:#1A1A35CC;border-radius:5px;padding:8px 10px"><div style="color:rgba(255,255,255,0.7);font-size:12px;font-weight:700;margin-bottom:6px">${cd.title}</div><div style="display:flex;align-items:flex-end;height:${barAreaH}px">${bars}</div></div>`;
@@ -722,10 +715,8 @@ function renderOverlayBlocksHTML(slide: PresentationSlide, accentColor: string, 
         if (style === 'solid') {
           return `<div style="position:absolute;left:${left}px;top:${top+4}px;width:${width}px;height:3px;background:${dc};border-radius:2px"></div>`;
         } else if (style === 'dashed') {
-          // CSS dashed border — works fine in PDF WebView
           return `<div style="position:absolute;left:${left}px;top:${top+4}px;width:${width}px;height:0;border-top:3px dashed ${dc}"></div>`;
         } else {
-          // Diamond: use a series of small rotated divs
           const dotSize = 8;
           const spacing = 16;
           const count   = Math.floor(width / spacing);
@@ -737,12 +728,33 @@ function renderOverlayBlocksHTML(slide: PresentationSlide, accentColor: string, 
         }
       }
 
+      // PART 41.6 FIX: use svgData for inline SVG rendering in PDF
       case 'icon': {
-        const sz  = (block.size ?? 40) * 0.5;
-        const ic  = hx((block as any).color ?? accentColor);
-        const bSz = sz + 14;
-        // NO box-shadow — just a simple circle background
-        return `<div style="position:absolute;left:${left}px;top:${top}px;width:${bSz}px;height:${bSz}px;border-radius:50%;background:${ic}18;border:1px solid ${ic}35;display:flex;align-items:center;justify-content:center"><div style="color:${ic};font-size:${sz*0.7}px;font-weight:700">${block.label ?? '●'}</div></div>`;
+        const sz     = (block.size ?? 40) * 0.5;
+        const ic     = hx((block as any).color ?? accentColor);
+        const bSz    = sz + 14;
+        const svgXml = (block as any).svgData as string | undefined;
+
+        let innerIcon: string;
+        if (svgXml && svgXml.includes('<svg')) {
+          // Full SVG from Iconify — recolor by replacing fill/color attributes
+          innerIcon = svgXml
+            .replace(/<svg\b([^>]*)>/, (_, attrs) => {
+              const cleaned = attrs
+                .replace(/width="[^"]*"/, '')
+                .replace(/height="[^"]*"/, '');
+              return `<svg${cleaned} width="${Math.round(sz * 0.7)}px" height="${Math.round(sz * 0.7)}px" style="fill:${ic};color:${ic}" >`;
+            })
+            .replace(/currentColor/g, ic);
+        } else if (svgXml) {
+          // Path data only
+          innerIcon = `<svg width="${Math.round(sz*0.7)}px" height="${Math.round(sz*0.7)}px" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="${svgXml}" fill="${ic}"/></svg>`;
+        } else {
+          // Fallback: ionicon name as text label
+          innerIcon = `<span style="color:${ic};font-size:${Math.round(sz*0.7)}px;font-weight:700">${block.label ?? '●'}</span>`;
+        }
+
+        return `<div style="position:absolute;left:${left}px;top:${top}px;width:${bSz}px;height:${bSz}px;border-radius:50%;background:${ic}18;border:1px solid ${ic}35;display:flex;align-items:center;justify-content:center;overflow:hidden">${innerIcon}${block.label ? `<div style="position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);color:${ic};font-size:9px;white-space:nowrap;font-weight:600">${block.label}</div>` : ''}</div>`;
       }
 
       default: return '';
@@ -772,7 +784,6 @@ function pdfStatsSlide(d: PresentationSlide, t: PresentationThemeTokens, ff: str
   const ac=hx(d.accentColor??t.primary),bg=hx(getED(d)?.backgroundColor??t.background),sm=getSpacingMultiplier(getED(d)),stats=(d.stats??[]).slice(0,4);
   if(!stats.length) return pdfContentSlide(d,t,ff,imgMap);
   const cW=pp(2.0),cH=pp(2.4),gap=pp(0.25),total=stats.length*cW+(stats.length-1)*gap,startX=(PW-total)/2;
-  // NO box-shadow on stat cards
   return `<div style="position:absolute;inset:0;background:${bg}"></div><div style="position:absolute;top:${pp(0.25*sm)}px;left:0;right:0;text-align:center"><span style="color:${hx(t.textPrimary)};font-size:${pp(0.26)}px;font-weight:800;${fieldStyle(d,'title',`font-size:${pp(0.26)}px`)}">${d.title}</span></div><div style="position:absolute;left:${PW/2-pp(1)}px;top:${pp(0.95*sm)}px;width:${pp(2)}px;height:5px;background:${ac};border-radius:3px"></div>${stats.map((stat,i)=>{const x=startX+i*(cW+gap);const col=hx(stat.color??d.accentColor??t.primary);return`<div style="position:absolute;left:${x}px;top:${pp(1.3*sm)}px;width:${cW}px;height:${cH}px;background:${hx(t.surface)};border-radius:${pp(0.08)}px;border:1px solid ${col};overflow:hidden"><div style="height:${pp(0.07)}px;background:${col}"></div><div style="padding:${pp(0.12)}px ${pp(0.08)}px 0;text-align:center"><div style="color:${col};font-size:${pp(0.28)}px;font-weight:900;line-height:1">${stat.value}</div><div style="color:${hx(t.textMuted)};font-size:${pp(0.11)}px;margin-top:${pp(0.1)}px;text-transform:uppercase;letter-spacing:0.5px">${stat.label}</div></div></div>`;}).join('')}${renderOverlayBlocksHTML(d,ac,imgMap)}`;
 }
 function pdfQuoteSlide(d: PresentationSlide, t: PresentationThemeTokens, ff: string, imgMap: Map<string, string>): string {
@@ -832,7 +843,6 @@ function buildPDFHTML(presentation: GeneratedPresentation, imgMap: Map<string, s
 <meta name="viewport" content="width=1280, initial-scale=1.0, maximum-scale=1.0"/>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  /* One slide = one PDF page, exactly 1280×720 (16:9) */
   @page { size: 1280px 720px; margin: 0 !important; }
   html, body {
     margin: 0 !important; padding: 0 !important;
@@ -846,7 +856,6 @@ function buildPDFHTML(presentation: GeneratedPresentation, imgMap: Map<string, s
     width: 1280px;
     height: 720px;
     overflow: hidden;
-    /* No page-break — natural flow breaks at exactly 720px boundary */
   }
 </style>
 </head>
