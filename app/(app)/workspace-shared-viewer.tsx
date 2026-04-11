@@ -1,28 +1,14 @@
 // app/(app)/workspace-shared-viewer.tsx
-// Part 41.5 — FIX: Non-owners can now open shared presentations and academic papers.
+// Part 41.7 — Screenshot-based export integrated for workspace presentations.
 //
-// ROOT CAUSE (Part 14/31 bug):
-//   PresentationViewer and AcademicPaperViewer queried the tables directly:
-//     supabase.from('presentations').select(...).eq('id', contentId).single()
-//     supabase.from('academic_papers').select('*').eq('id', contentId).single()
-//   These queries are blocked by RLS for any user who is NOT the row owner,
-//   producing "not found" / "you no longer have access" errors for workspace members.
-//
-// FIX (Part 41.5):
-//   Use the existing SECURITY DEFINER RPCs that were created exactly for this purpose:
-//     get_shared_presentation_for_workspace(p_workspace_id, p_presentation_id)
-//     get_shared_academic_paper_for_workspace(p_workspace_id, p_paper_id)
-//   These RPCs verify the caller is a workspace member AND that the content is shared
-//   to that workspace, then fetch the row bypassing RLS.
-//
-//   To pass workspaceId to the viewer, the screen now accepts a `workspaceId` param.
-//   All callers (workspace-detail.tsx SharedContentCard "Open" button) must pass it.
-//   The param is optional-safe: if absent, falls back to the old direct query so
-//   the owner's own navigation continues to work without changes.
-//
-// Part 41.4 changes (AcademicExportModal) are fully preserved.
+// CHANGES from Part 41.5:
+//   PresentationViewer now uses SlideExportRenderer (off-screen) + captureAllSlides
+//   for all three export formats (PPTX, PDF, HTML), identical to slide-preview.tsx.
+//   Falls back to vector export if all captures return null.
+//   Capture progress shown in export button labels.
+//   All other logic (RPC-based loading, academic paper viewer, attribution) unchanged.
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, Pressable, ActivityIndicator,
   Alert, Share,
@@ -44,6 +30,15 @@ import {
   exportAsSlidePDF,
   exportAsHTMLSlides,
 } from '../../src/services/pptxExport';
+import {
+  generatePPTXFromImages,
+  exportAsSlidePDFFromImages,
+  exportAsHTMLSlidesFromImages,
+} from '../../src/services/slideCaptureExport';
+import {
+  SlideExportRenderer,
+  type SlideExportRendererRef,
+} from '../../src/components/research/SlideExportRenderer';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import type {
   GeneratedPresentation,
@@ -56,7 +51,7 @@ import type {
 type Params = {
   contentType:  string;
   contentId:    string;
-  workspaceId?: string;   // NEW in Part 41.5 — required for non-owner RPC path
+  workspaceId?: string;
   sharerName?:  string;
   sharedAt?:    string;
 };
@@ -107,8 +102,8 @@ function AttributionBanner({
 }
 
 // ─── Presentation Viewer ──────────────────────────────────────────────────────
-// Part 41.5: Uses get_shared_presentation_for_workspace RPC when workspaceId
-// is available, so non-owners bypass RLS. Falls back to direct query for owners.
+// Part 41.7: Screenshot-based export (PPTX, PDF, HTML) using SlideExportRenderer.
+// Falls back to vector export if all captures fail.
 
 function PresentationViewer({
   contentId,
@@ -125,7 +120,11 @@ function PresentationViewer({
   const [isLoading,    setIsLoading]    = useState(true);
   const [isExporting,  setIsExporting]  = useState(false);
   const [exportFormat, setExportFormat] = useState<'pptx' | 'pdf' | 'html' | null>(null);
+  const [captureProgress, setCaptureProgress] = useState<{ done: number; total: number } | null>(null);
   const [loadError,    setLoadError]    = useState<string | null>(null);
+
+  // Off-screen renderer ref for screenshot-based export (Part 41.7)
+  const rendererRef = useRef<SlideExportRendererRef>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -133,7 +132,6 @@ function PresentationViewer({
     try {
       let data: Record<string, unknown> | null = null;
 
-      // ── Part 41.5 FIX: use SECURITY DEFINER RPC for non-owner workspace members ──
       if (workspaceId) {
         const { data: rpcData, error: rpcError } = await supabase.rpc(
           'get_shared_presentation_for_workspace',
@@ -145,7 +143,6 @@ function PresentationViewer({
 
         if (rpcError) {
           console.error('[PresentationViewer] RPC error:', rpcError);
-          // Provide a clear, user-friendly message for the two expected error codes
           if (
             rpcError.message?.includes('not_member') ||
             rpcError.message?.includes('P0005')
@@ -162,11 +159,9 @@ function PresentationViewer({
           return;
         }
 
-        // RPC returns an array (SETOF); take first row
         const rows = Array.isArray(rpcData) ? rpcData : (rpcData ? [rpcData] : []);
         data = (rows[0] as Record<string, unknown>) ?? null;
       } else {
-        // Owner fallback: direct query (RLS allows owner to read their own row)
         const { data: directData, error: directError } = await supabase
           .from('presentations')
           .select('id, title, subtitle, theme, slides, editor_data, font_family, report_id, user_id, generated_at, export_count, total_slides')
@@ -188,7 +183,6 @@ function PresentationViewer({
       const theme: PresentationTheme = (data.theme as PresentationTheme) ?? 'dark';
       const rawSlides:     unknown[] = Array.isArray(data.slides)      ? data.slides      : [];
       const editorDataArr: unknown[] = Array.isArray(data.editor_data) ? data.editor_data : [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mergedSlides             = mergeEditorData(rawSlides as any[], editorDataArr as any[]);
 
       const pres: GeneratedPresentation & { fontFamily?: string } = {
@@ -217,29 +211,94 @@ function PresentationViewer({
 
   useEffect(() => { load(); }, [load]);
 
+  // ── Part 41.7: Screenshot-based capture ──────────────────────────────────
+
+  const captureSlides = useCallback(async (
+    pres: GeneratedPresentation,
+  ): Promise<(string | null)[]> => {
+    const renderer = rendererRef.current;
+    if (!renderer) {
+      console.warn('[PresentationViewer] renderer not mounted — vector fallback');
+      return new Array(pres.slides.length).fill(null);
+    }
+    setCaptureProgress({ done: 0, total: pres.slides.length });
+    const images = await renderer.captureAll();
+    setCaptureProgress(null);
+    return images;
+  }, []);
+
   const handleExportPPTX = useCallback(async () => {
     if (!presentation) return;
-    setIsExporting(true); setExportFormat('pptx');
-    try { await generatePPTX(presentation); }
-    catch (e) { Alert.alert('Export failed', String(e)); }
-    finally   { setIsExporting(false); setExportFormat(null); }
-  }, [presentation]);
+    setIsExporting(true);
+    setExportFormat('pptx');
+    try {
+      const images    = await captureSlides(presentation);
+      const allFailed = images.every(i => i === null);
+      if (allFailed) {
+        await generatePPTX(presentation);
+      } else {
+        await generatePPTXFromImages(images, presentation);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', String(e));
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+      setCaptureProgress(null);
+    }
+  }, [presentation, captureSlides]);
 
   const handleExportPDF = useCallback(async () => {
     if (!presentation) return;
-    setIsExporting(true); setExportFormat('pdf');
-    try { await exportAsSlidePDF(presentation); }
-    catch (e) { Alert.alert('Export failed', String(e)); }
-    finally   { setIsExporting(false); setExportFormat(null); }
-  }, [presentation]);
+    setIsExporting(true);
+    setExportFormat('pdf');
+    try {
+      const images    = await captureSlides(presentation);
+      const allFailed = images.every(i => i === null);
+      if (allFailed) {
+        await exportAsSlidePDF(presentation);
+      } else {
+        await exportAsSlidePDFFromImages(images, presentation);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', String(e));
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+      setCaptureProgress(null);
+    }
+  }, [presentation, captureSlides]);
 
   const handleExportHTML = useCallback(async () => {
     if (!presentation) return;
-    setIsExporting(true); setExportFormat('html');
-    try { await exportAsHTMLSlides(presentation); }
-    catch (e) { Alert.alert('Export failed', String(e)); }
-    finally   { setIsExporting(false); setExportFormat(null); }
-  }, [presentation]);
+    setIsExporting(true);
+    setExportFormat('html');
+    try {
+      const images    = await captureSlides(presentation);
+      const allFailed = images.every(i => i === null);
+      if (allFailed) {
+        await exportAsHTMLSlides(presentation);
+      } else {
+        await exportAsHTMLSlidesFromImages(images, presentation);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', String(e));
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+      setCaptureProgress(null);
+    }
+  }, [presentation, captureSlides]);
+
+  // ── Helpers for button labels ─────────────────────────────────────────────
+
+  function exportLabel(format: 'pptx' | 'pdf' | 'html', defaultLabel: string): string {
+    if (!isExporting || exportFormat !== format) return defaultLabel;
+    if (captureProgress) {
+      return `Capturing ${captureProgress.done}/${captureProgress.total}…`;
+    }
+    return 'Exporting…';
+  }
 
   if (isLoading) return <LoadingOverlay visible message="Loading presentation…" />;
 
@@ -268,6 +327,13 @@ function PresentationViewer({
 
   return (
     <View style={{ flex: 1 }}>
+      {/* Off-screen renderer — mounted but invisible, used for capture */}
+      <SlideExportRenderer
+        ref={rendererRef}
+        presentation={presentation}
+        onProgress={(done, total) => setCaptureProgress({ done, total })}
+      />
+
       <AttributionBanner sharerName={sharerName} sharedAt={sharedAt} />
 
       <SlidePreviewPanel
@@ -285,6 +351,7 @@ function PresentationViewer({
         borderTopColor:    COLORS.border,
         gap:               SPACING.sm,
       }}>
+        {/* PPTX — primary */}
         <Pressable
           onPress={handleExportPPTX}
           disabled={isExporting}
@@ -303,11 +370,12 @@ function PresentationViewer({
               ? <ActivityIndicator size="small" color="#FFF" />
               : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
             <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
-              {isExporting && exportFormat === 'pptx' ? 'Exporting…' : 'Export PPTX'}
+              {exportLabel('pptx', 'Export PPTX')}
             </Text>
           </LinearGradient>
         </Pressable>
 
+        {/* PDF + HTML row */}
         <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
           <Pressable
             onPress={handleExportPDF}
@@ -322,7 +390,9 @@ function PresentationViewer({
             {isExporting && exportFormat === 'pdf'
               ? <ActivityIndicator size="small" color={COLORS.textSecondary} />
               : <Ionicons name="document-outline" size={16} color={COLORS.textSecondary} />}
-            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>PDF</Text>
+            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+              {exportLabel('pdf', 'PDF')}
+            </Text>
           </Pressable>
 
           <Pressable
@@ -338,10 +408,21 @@ function PresentationViewer({
             {isExporting && exportFormat === 'html'
               ? <ActivityIndicator size="small" color={COLORS.textMuted} />
               : <Ionicons name="globe-outline" size={15} color={COLORS.textMuted} />}
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>HTML</Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+              {exportLabel('html', 'HTML')}
+            </Text>
           </Pressable>
         </View>
 
+        {/* Screenshot quality note */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, justifyContent: 'center' }}>
+          <Ionicons name="camera-outline" size={11} color={COLORS.textMuted} />
+          <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
+            Exports capture slides exactly as shown
+          </Text>
+        </View>
+
+        {/* Stats row */}
         <View style={{ flexDirection: 'row', justifyContent: 'center', gap: SPACING.lg }}>
           {[
             { label: 'Slides',   value: String(presentation.totalSlides) },
@@ -361,10 +442,7 @@ function PresentationViewer({
   );
 }
 
-// ─── Academic Paper Viewer ────────────────────────────────────────────────────
-// Part 41.5: Uses get_shared_academic_paper_for_workspace RPC when workspaceId
-// is available, so non-owners bypass RLS. Falls back to direct query for owners.
-// Part 41.4: Uses <AcademicExportModal> for full PDF + DOCX export.
+// ─── Academic Paper Viewer (unchanged from Part 41.5 / 41.4) ─────────────────
 
 function AcademicPaperViewer({
   contentId,
@@ -388,7 +466,6 @@ function AcademicPaperViewer({
     try {
       let data: Record<string, unknown> | null = null;
 
-      // ── Part 41.5 FIX: use SECURITY DEFINER RPC for non-owner workspace members ──
       if (workspaceId) {
         const { data: rpcData, error: rpcError } = await supabase.rpc(
           'get_shared_academic_paper_for_workspace',
@@ -416,11 +493,9 @@ function AcademicPaperViewer({
           return;
         }
 
-        // RPC returns SETOF (array); take first row
         const rows = Array.isArray(rpcData) ? rpcData : (rpcData ? [rpcData] : []);
         data = (rows[0] as Record<string, unknown>) ?? null;
       } else {
-        // Owner fallback: direct query (RLS allows owner to read their own row)
         const { data: directData, error: directError } = await supabase
           .from('academic_papers')
           .select('*')
@@ -468,7 +543,6 @@ function AcademicPaperViewer({
 
   useEffect(() => { load(); }, [load]);
 
-  // Markdown share
   const handleExportMarkdown = useCallback(async () => {
     if (!paper) return;
     try {
@@ -537,10 +611,8 @@ function AcademicPaperViewer({
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Attribution banner */}
       <AttributionBanner sharerName={sharerName} sharedAt={sharedAt} />
 
-      {/* View-only notice + Export button row */}
       <View style={{
         flexDirection:     'row',
         alignItems:        'center',
@@ -559,7 +631,6 @@ function AcademicPaperViewer({
           </Text>
         </View>
 
-        {/* Export button — opens full AcademicExportModal */}
         <Pressable
           onPress={() => setShowExportModal(true)}
           style={{
@@ -580,7 +651,6 @@ function AcademicPaperViewer({
           </Text>
         </Pressable>
 
-        {/* Share Markdown button */}
         <Pressable
           onPress={handleExportMarkdown}
           style={{
@@ -602,7 +672,6 @@ function AcademicPaperViewer({
         </Pressable>
       </View>
 
-      {/* Paper content */}
       <AcademicPaperView
         paper={paper}
         onExportPDF={() => setShowExportModal(true)}
@@ -610,7 +679,6 @@ function AcademicPaperViewer({
         isExporting={false}
       />
 
-      {/* Full export modal — PDF + DOCX with institution/author/font/spacing */}
       <AcademicExportModal
         visible={showExportModal}
         paper={paper}
@@ -629,7 +697,7 @@ export default function WorkspaceSharedViewer() {
   const {
     contentType,
     contentId,
-    workspaceId,   // NEW — passed by SharedContentCard "Open" button
+    workspaceId,
     sharerName,
     sharedAt,
   } = useLocalSearchParams<Params>();

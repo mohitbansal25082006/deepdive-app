@@ -1,16 +1,15 @@
 // src/hooks/useSlideEditor.ts
-// Part 31 — Credit deduction fix only. All other logic identical to Part 30.
+// Part 41.7 — Re-cache after every save so offline viewer shows edited slides.
 //
-// WHAT CHANGED (Part 31 only — search "PART 31 FIX"):
-//   aiRewriteField:        consume('research_quick')×1 [5 cr] → consume('slide_ai_rewrite') [1 cr]
-//   aiRewriteBullets:      consume('research_quick')×1 [5 cr] → consume('slide_ai_rewrite') [1 cr]
-//   aiRewriteSingleBullet: consume('research_quick')×1 [5 cr] → consume('slide_ai_rewrite') [1 cr]
-//   aiGenerateSlide:       consume('research_quick')×2 [10 cr]→ consume('slide_ai_generate') [2 cr]
-//   aiGenerateSpeakerNotes:consume('research_quick')×1 [5 cr] → consume('slide_ai_notes')   [1 cr]
+// CHANGES from Part 31:
+//   1. Auto-save timer: after successful saveEditorState(), calls
+//      autoCachePresentation(getExportPresentation()) fire-and-forget.
+//   2. saveNow(): same — re-caches after successful save.
+//   These two additions ensure the offline cache is always up to date
+//   with every editor change (field edits, layout switches, block additions,
+//   theme changes, etc.).
 //
-// The balance CHECKS already showed the correct EDITOR_CREDIT_COSTS amounts.
-// Only the actual consume() calls were wrong — they always charged 5 cr regardless.
-// These changes ensure transaction history shows the right feature label & amount.
+// All other logic is byte-for-byte identical to Part 31.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -47,6 +46,9 @@ import {
   DEFAULT_FONT,
 } from '../constants/editor';
 import { useTemplateHistory } from './useTemplateHistory';
+
+// Part 41.7: import for re-caching after save
+import { autoCachePresentation } from '../lib/autoCacheMiddleware';
 
 import type {
   EditableSlide,
@@ -248,11 +250,9 @@ export interface UseSlideEditorReturn {
   dismissLayoutSuggestion: () => void;
   applyLayoutSuggestion:   () => void;
 
-  // Part 29+
   applyTemplate:  (template: SlideTemplate) => void;
   insertTemplate: (template: SlideTemplate) => void;
 
-  // Part 30+
   templateHistory:      ReturnType<typeof useTemplateHistory>['historyState'];
   loadTemplateHistory:  (presentationId: string) => Promise<void>;
   restoreFromHistory:   (entry: TemplateHistoryEntry) => void;
@@ -317,6 +317,22 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'PUSH_UNDO', snapshot: [...stateRef.current.slides] });
   }, []);
 
+  // ─── getExportPresentation (used in save re-cache below) ──────────────────
+  // Defined early so scheduleSave and saveNow can reference it.
+
+  const getExportPresentation = useCallback((): GeneratedPresentation | null => {
+    const pres  = presRef.current;
+    const state = stateRef.current;
+    if (!pres) return null;
+    const slidesWithEdits = state.slides as unknown as GeneratedPresentation['slides'];
+    return {
+      ...pres,
+      slides:      slidesWithEdits,
+      totalSlides: state.slides.length,
+      fontFamily:  state.fontFamily,
+    } as GeneratedPresentation & { fontFamily: string };
+  }, []);
+
   // ─── AUTO-SAVE ─────────────────────────────────────────────────────────────
 
   const scheduleSave = useCallback(() => {
@@ -331,13 +347,21 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
         aiEditsRef.current = 0;
         dispatch({ type: 'SET_DIRTY',      dirty: false });
         dispatch({ type: 'SET_SAVE_ERROR', error: null });
+
+        // ── Part 41.7: Re-cache with merged edits after auto-save ──────────
+        // autoCachePresentation fetches fresh editor_data from DB and merges
+        // before writing to cache — fire-and-forget, never blocks UI.
+        const exportPres = getExportPresentation();
+        if (exportPres) {
+          autoCachePresentation(exportPres).catch(() => {});
+        }
       } catch {
         dispatch({ type: 'SET_SAVE_ERROR', error: 'Auto-save failed.' });
       } finally {
         dispatch({ type: 'SET_SAVING', saving: false });
       }
     }, 1500);
-  }, [user]);
+  }, [user, getExportPresentation]);
 
   useEffect(() => {
     if (editorState.isDirty) scheduleSave();
@@ -354,12 +378,18 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
       aiEditsRef.current = 0;
       dispatch({ type: 'SET_DIRTY',      dirty: false });
       dispatch({ type: 'SET_SAVE_ERROR', error: null });
+
+      // ── Part 41.7: Re-cache with merged edits after manual save ───────────
+      const exportPres = getExportPresentation();
+      if (exportPres) {
+        autoCachePresentation(exportPres).catch(() => {});
+      }
     } catch {
       dispatch({ type: 'SET_SAVE_ERROR', error: 'Save failed. Please try again.' });
     } finally {
       dispatch({ type: 'SET_SAVING', saving: false });
     }
-  }, [user]);
+  }, [user, getExportPresentation]);
 
   // ─── NAVIGATION ───────────────────────────────────────────────────────────
 
@@ -538,7 +568,6 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }));
     dispatch({ type: 'SET_SLIDES', payload: slides });
     dispatch({ type: 'SET_DIRTY', dirty: true });
-    // Persist theme column immediately (fire-and-forget)
     if (user) {
       supabase.from('presentations').update({ theme })
         .eq('id', pres.id).eq('user_id', user.id)
@@ -684,44 +713,12 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   const undo = useCallback(() => { dispatch({ type: 'UNDO' }); scheduleSave(); }, [scheduleSave]);
   const redo = useCallback(() => { dispatch({ type: 'REDO' }); scheduleSave(); }, [scheduleSave]);
 
-  // ─── EXPORT ───────────────────────────────────────────────────────────────
+  // ─── AI OPERATIONS (Part 31 credit fix — unchanged) ──────────────────────
 
-  const getExportPresentation = useCallback((): GeneratedPresentation | null => {
-    const pres  = presRef.current;
-    const state = stateRef.current;
-    if (!pres) return null;
-    // Pass EditableSlide[] (with editorData intact) so pptxExport reads overlays.
-    const slidesWithEdits = state.slides as unknown as GeneratedPresentation['slides'];
-    return {
-      ...pres,
-      slides:      slidesWithEdits,
-      totalSlides: state.slides.length,
-      fontFamily:  state.fontFamily,
-    } as GeneratedPresentation & { fontFamily: string };
-  }, []);
-
-  // ─── AI OPERATIONS — PART 31 CREDIT FIX ──────────────────────────────────
-  //
-  // Root cause: every AI call previously called consume('research_quick') which
-  // costs 5 credits each.  The EDITOR_CREDIT_COSTS constants were always right
-  // (1 cr, 2 cr) but the consume() calls used the wrong feature key.
-  //
-  // Fix: map each AI operation to its dedicated slide_ai_* feature:
-  //   rewrite / rewrite bullets / rewrite single bullet → 'slide_ai_rewrite'  (1 cr)
-  //   generate new slide                                → 'slide_ai_generate' (2 cr)
-  //   generate speaker notes                           → 'slide_ai_notes'    (1 cr)
-  //
-  // The Alert messages already showed the correct cost; now the DB deduction
-  // and transaction history both reflect the same correct amount.
-
-  // ── Rewrite a single text field ───────────────────────────────────────────
   const aiRewriteField = useCallback(async (field: EditableFieldKey, style: AIRewriteStyle) => {
     const slide    = stateRef.current.slides[stateRef.current.activeSlideIndex];
     const original = (slide as any)[field] as string | undefined;
-    if (!original?.trim()) {
-      Alert.alert('Nothing to rewrite', 'This field is empty.');
-      return;
-    }
+    if (!original?.trim()) { Alert.alert('Nothing to rewrite', 'This field is empty.'); return; }
     if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
       Alert.alert('Not enough credits', `Rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit. You have ${balance}.`);
       return;
@@ -729,8 +726,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: `Rewriting ${field} as "${style}"…` });
     try {
       const result = await rewriteText(original, style, report, field);
-      // PART 31 FIX: was consume('research_quick') = 5 cr
-      await consume('slide_ai_rewrite');          // ← 1 cr, correct feature label
+      await consume('slide_ai_rewrite');
       aiEditsRef.current += 1;
       pushUndo();
       dispatch({ type: 'PATCH_SLIDE', index: stateRef.current.activeSlideIndex, patch: { [field]: result } as any });
@@ -743,13 +739,9 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
   }, [balance, consume, report, pushUndo, closePanel]);
 
-  // ── Rewrite all bullets ───────────────────────────────────────────────────
   const aiRewriteBullets = useCallback(async (style: AIRewriteStyle) => {
     const slide = stateRef.current.slides[stateRef.current.activeSlideIndex];
-    if (!slide?.bullets?.length) {
-      Alert.alert('No bullets', 'No bullet points to rewrite.');
-      return;
-    }
+    if (!slide?.bullets?.length) { Alert.alert('No bullets', 'No bullet points to rewrite.'); return; }
     if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
       Alert.alert('Not enough credits', `Bullet rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit.`);
       return;
@@ -757,8 +749,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: `Rewriting all bullets as "${style}"…` });
     try {
       const result = await rewriteBulletsAgent(slide.bullets, style, report);
-      // PART 31 FIX: was consume('research_quick') = 5 cr
-      await consume('slide_ai_rewrite');          // ← 1 cr
+      await consume('slide_ai_rewrite');
       aiEditsRef.current += 1;
       pushUndo();
       dispatch({ type: 'PATCH_SLIDE', index: stateRef.current.activeSlideIndex, patch: { bullets: result } });
@@ -771,14 +762,10 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
   }, [balance, consume, report, pushUndo, closePanel]);
 
-  // ── Rewrite a single bullet ───────────────────────────────────────────────
   const aiRewriteSingleBullet = useCallback(async (bulletIndex: number, style: AIRewriteStyle) => {
     const slide  = stateRef.current.slides[stateRef.current.activeSlideIndex];
     const bullet = slide?.bullets?.[bulletIndex];
-    if (!bullet?.trim()) {
-      Alert.alert('Empty bullet', 'This bullet is empty.');
-      return;
-    }
+    if (!bullet?.trim()) { Alert.alert('Empty bullet', 'This bullet is empty.'); return; }
     if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
       Alert.alert('Not enough credits', `Costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit.`);
       return;
@@ -786,8 +773,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: `Rewriting bullet ${bulletIndex + 1}…` });
     try {
       const result = await rewriteSingleBulletAgent(bullet, style);
-      // PART 31 FIX: was consume('research_quick') = 5 cr
-      await consume('slide_ai_rewrite');          // ← 1 cr
+      await consume('slide_ai_rewrite');
       aiEditsRef.current += 1;
       pushUndo();
       const idx        = stateRef.current.activeSlideIndex;
@@ -802,7 +788,6 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
   }, [balance, consume, report, pushUndo]);
 
-  // ── Generate a new slide ──────────────────────────────────────────────────
   const aiGenerateSlide = useCallback(async (req: AIGenerateSlideRequest) => {
     if (balance < EDITOR_CREDIT_COSTS.ai_generate) {
       Alert.alert('Not enough credits', `Generation costs ${EDITOR_CREDIT_COSTS.ai_generate} credits. You have ${balance}.`);
@@ -811,8 +796,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_AI_PROCESSING', processing: true, label: 'Generating slide…' });
     try {
       const newSlideData = await generateSlideAgent(req, report, stateRef.current.slides.length);
-      // PART 31 FIX: was consume('research_quick')×2 = 10 cr total
-      await consume('slide_ai_generate');         // ← 2 cr, single call, correct label
+      await consume('slide_ai_generate');
       aiEditsRef.current += 1;
       pushUndo();
       const slides = [...stateRef.current.slides];
@@ -829,15 +813,11 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
   }, [balance, consume, report, pushUndo, closePanel]);
 
-  // ── Generate speaker notes ────────────────────────────────────────────────
   const aiGenerateSpeakerNotes = useCallback(async (slideIndex?: number) => {
     const currentState = stateRef.current;
     const idx   = slideIndex !== undefined ? slideIndex : currentState.activeSlideIndex;
     const slide = currentState.slides[idx];
-    if (!slide || !slide.layout) {
-      Alert.alert('No slide found', 'Please select a slide first.');
-      return;
-    }
+    if (!slide || !slide.layout) { Alert.alert('No slide found', 'Please select a slide first.'); return; }
     if (balance < EDITOR_CREDIT_COSTS.ai_notes) {
       Alert.alert('Not enough credits', `Speaker notes cost ${EDITOR_CREDIT_COSTS.ai_notes} credit. You have ${balance}.`);
       return;
@@ -846,8 +826,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     try {
       const notes = await generateSpeakerNotes({ ...slide }, report);
       if (!notes?.trim()) throw new Error('AI returned empty notes. Please try again.');
-      // PART 31 FIX: was consume('research_quick') = 5 cr
-      await consume('slide_ai_notes');            // ← 1 cr, correct label
+      await consume('slide_ai_notes');
       aiEditsRef.current += 1;
       pushUndo();
       dispatch({ type: 'PATCH_SLIDE', index: stateRef.current.activeSlideIndex, patch: { speakerNotes: notes } });
@@ -859,7 +838,6 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
   }, [balance, consume, report, pushUndo]);
 
-  // ── Suggest layout (free — no credit) ────────────────────────────────────
   const aiSuggestLayout = useCallback(async () => {
     const idx   = stateRef.current.activeSlideIndex;
     const slide = stateRef.current.slides[idx];
@@ -884,7 +862,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_LAYOUT_SUGGEST', suggestion: null });
   }, [switchLayout]);
 
-  // ─── TEMPLATE OPERATIONS (Part 29 + Part 30 history snapshots) ───────────
+  // ─── TEMPLATE OPERATIONS ──────────────────────────────────────────────────
 
   const applyTemplate = useCallback((template: SlideTemplate) => {
     Alert.alert(
