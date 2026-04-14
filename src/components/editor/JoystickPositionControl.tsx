@@ -1,19 +1,18 @@
 // src/components/editor/JoystickPositionControl.tsx
-// Part 30 — Joystick / Trackpad element positioning control
-// ─────────────────────────────────────────────────────────────────────────────
-// Replaces the numeric fraction sliders from Part 29 with an intuitive
-// trackpad joystick UI that lets users drag elements around the slide canvas.
-//
-// Features:
-//   • 2D trackpad pad — drag to set xFrac / yFrac
-//   • Separate width slider (horizontal strip below pad)
-//   • Separate height slider (for blocks that support hFrac)
-//   • Live mini slide canvas preview showing where element will land
-//   • Quick preset buttons (Top, Center, Bottom, Left½, Right½, Top-Left)
-//   • Inline / Overlay mode toggle at the top
-//   • Numbers shown as percentage labels (not raw fractions)
-//
-// Uses React Native's built-in PanResponder (no extra dependencies).
+// Part 41.9 — Bug fixes:
+//   1. Trackpad now covers the FULL slide (both x and y axes use their own
+//      dimension for fraction math — previously yFrac was divided by padWidth
+//      instead of padHeight, so only the top ~56% of the slide was reachable).
+//   2. Width/height sliders no longer reset position — the onChange callback
+//      now uses a ref to always read the latest position, preventing stale
+//      closure overwrites of xFrac/yFrac when the slider fires.
+//   3. SMOOTHNESS FIX — all decorative children inside the trackpad pad now
+//      have pointerEvents="none" so locationX/Y are ALWAYS relative to the
+//      pad container, never to a child grid-line, label, or the dot itself.
+//      PanResponder switched to capture-phase (StartCapture / MoveCapture) so
+//      the pad grabs every gesture before any child can steal it.
+//   4. commitPosition is accessed via a ref inside the PanResponder so the
+//      single-creation PanResponder always calls the latest closure.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -31,35 +30,38 @@ import type { InlineBlockPosition }       from '../../types/editor';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PAD_SIZE  = Math.min(Dimensions.get('window').width - SPACING.lg * 2 - 48, 280);
+const SCREEN_W  = Dimensions.get('window').width;
+// Pad width fits inside the bottom sheet with standard horizontal padding
+const PAD_W     = Math.min(SCREEN_W - SPACING.lg * 2 - 48, 280);
+// Pad height maintains 16:9 aspect ratio, matching the actual slide ratio
+const PAD_H     = Math.round(PAD_W * (9 / 16));
 const DOT_SIZE  = 26;
 const HALF_DOT  = DOT_SIZE / 2;
 
 /** Quick preset positions */
 const POSITION_PRESETS = [
-  { label: 'Top',       xFrac: 0.05, yFrac: 0.06, wFrac: 0.9,  icon: 'arrow-up-outline'    },
-  { label: 'Center',    xFrac: 0.05, yFrac: 0.35, wFrac: 0.9,  icon: 'contract-outline'    },
-  { label: 'Bottom',    xFrac: 0.05, yFrac: 0.70, wFrac: 0.9,  icon: 'arrow-down-outline'  },
-  { label: 'Left ½',    xFrac: 0.05, yFrac: 0.35, wFrac: 0.43, icon: 'arrow-back-outline'  },
-  { label: 'Right ½',   xFrac: 0.52, yFrac: 0.35, wFrac: 0.43, icon: 'arrow-forward-outline'},
-  { label: 'Top-Left',  xFrac: 0.05, yFrac: 0.06, wFrac: 0.45, icon: 'navigate-outline'    },
+  { label: 'Top',       xFrac: 0.05, yFrac: 0.06, wFrac: 0.9,  icon: 'arrow-up-outline'     },
+  { label: 'Center',    xFrac: 0.05, yFrac: 0.35, wFrac: 0.9,  icon: 'contract-outline'     },
+  { label: 'Bottom',    xFrac: 0.05, yFrac: 0.70, wFrac: 0.9,  icon: 'arrow-down-outline'   },
+  { label: 'Left ½',    xFrac: 0.05, yFrac: 0.35, wFrac: 0.43, icon: 'arrow-back-outline'   },
+  { label: 'Right ½',   xFrac: 0.52, yFrac: 0.35, wFrac: 0.43, icon: 'arrow-forward-outline' },
+  { label: 'Top-Left',  xFrac: 0.05, yFrac: 0.06, wFrac: 0.45, icon: 'navigate-outline'     },
 ] as const;
 
 // ─── Slider component (used for width and height) ─────────────────────────────
 
 interface SliderProps {
   label:       string;
-  value:       number;   // 0–1
+  value:       number;    // 0–1
   minValue?:   number;
   onChange:    (v: number) => void;
   accentColor: string;
-  unit?:       string;   // "W" or "H"
+  unit?:       string;    // "W" or "H"
 }
 
 function FractionSlider({
   label, value, minValue = 0.1, onChange, accentColor, unit = 'W',
 }: SliderProps) {
-  const trackRef  = useRef<View>(null);
   const trackWidthRef = useRef(0);
 
   const panResponder = useRef(
@@ -70,10 +72,10 @@ function FractionSlider({
         if (trackWidthRef.current > 0) {
           const x    = evt.nativeEvent.locationX;
           const frac = Math.max(minValue, Math.min(1.0, x / trackWidthRef.current));
-          onChange(Math.round(frac * 20) / 20); // snap to 0.05 steps
+          onChange(Math.round(frac * 20) / 20);
         }
       },
-      onPanResponderMove: (evt, gs) => {
+      onPanResponderMove: (evt) => {
         if (trackWidthRef.current > 0) {
           const x    = evt.nativeEvent.locationX;
           const frac = Math.max(minValue, Math.min(1.0, x / trackWidthRef.current));
@@ -96,7 +98,6 @@ function FractionSlider({
         </View>
       </View>
       <View
-        ref={trackRef}
         onLayout={e => { trackWidthRef.current = e.nativeEvent.layout.width; }}
         {...panResponder.panHandlers}
         style={{
@@ -109,24 +110,30 @@ function FractionSlider({
           justifyContent:  'center',
         }}
       >
-        <View style={{
-          position:        'absolute',
-          left:            0,
-          top:             0,
-          bottom:          0,
-          width:           fill as ViewStyle['width'],
-          backgroundColor: `${accentColor}30`,
-          borderRadius:    RADIUS.full,
-        } as ViewStyle} />
-        <View style={{
-          position:        'absolute',
-          left:            `${Math.max(0, value * 100 - 2)}%` as ViewStyle['left'],
-          width:           4,
-          top:             4,
-          bottom:          4,
-          backgroundColor: accentColor,
-          borderRadius:    2,
-        } as ViewStyle} />
+        <View
+          pointerEvents="none"
+          style={{
+            position:        'absolute',
+            left:            0,
+            top:             0,
+            bottom:          0,
+            width:           fill as ViewStyle['width'],
+            backgroundColor: `${accentColor}30`,
+            borderRadius:    RADIUS.full,
+          } as ViewStyle}
+        />
+        <View
+          pointerEvents="none"
+          style={{
+            position:        'absolute',
+            left:            `${Math.max(0, value * 100 - 2)}%` as ViewStyle['left'],
+            width:           4,
+            top:             4,
+            bottom:          4,
+            backgroundColor: accentColor,
+            borderRadius:    2,
+          } as ViewStyle}
+        />
       </View>
     </View>
   );
@@ -135,11 +142,11 @@ function FractionSlider({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 interface JoystickPositionControlProps {
-  position:      InlineBlockPosition;
-  onChange:      (pos: InlineBlockPosition) => void;
+  position:        InlineBlockPosition;
+  onChange:        (pos: InlineBlockPosition) => void;
   /** Whether this block type supports an independent height (image, stat) */
   supportsHeight?: boolean;
-  accentColor?:  string;
+  accentColor?:    string;
 }
 
 export function JoystickPositionControl({
@@ -156,66 +163,104 @@ export function JoystickPositionControl({
   const wFrac = Math.max(0.05, Math.min(1.0, position.wFrac ?? 0.9));
   const hFrac = position.hFrac;
 
-  // Pad layout refs
-  const padRef      = useRef<View>(null);
-  const padSizeRef  = useRef(PAD_SIZE);
-
-  // Track live drag position for the dot
-  const [dotX, setDotX] = useState(xFrac * PAD_SIZE);
-  const [dotY, setDotY] = useState(yFrac * PAD_SIZE);
-
-  // Sync dot when position changes externally
+  // ── FIX 2: Keep a ref to the latest position so slider callbacks never
+  //           read a stale closure and accidentally overwrite x/y values.
+  const positionRef = useRef(position);
   useEffect(() => {
-    setDotX(xFrac * PAD_SIZE);
-    setDotY(yFrac * PAD_SIZE);
+    positionRef.current = position;
+  });
+
+  // Actual pixel dimensions of the pad — measured at runtime
+  const padWRef = useRef(PAD_W);
+  const padHRef = useRef(PAD_H);
+
+  // Live dot pixel position on the trackpad
+  const [dotX, setDotX] = useState(xFrac * PAD_W);
+  const [dotY, setDotY] = useState(yFrac * PAD_H);  // FIX 1: use PAD_H not PAD_W
+
+  // Sync dot when position prop changes externally (e.g. preset applied)
+  useEffect(() => {
+    setDotX(xFrac * padWRef.current);
+    setDotY(yFrac * padHRef.current);  // FIX 1: use height dimension
   }, [xFrac, yFrac]);
 
-  // ── Joystick pan responder ──────────────────────────────────────────────────
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => isOverlay,
-      onMoveShouldSetPanResponder:  () => isOverlay,
-
-      onPanResponderGrant: (evt) => {
-        const x = Math.max(0, Math.min(padSizeRef.current, evt.nativeEvent.locationX));
-        const y = Math.max(0, Math.min(padSizeRef.current, evt.nativeEvent.locationY));
-        setDotX(x);
-        setDotY(y);
-        commitPosition(x, y);
-      },
-
-      onPanResponderMove: (evt, gs) => {
-        const rawX = evt.nativeEvent.locationX;
-        const rawY = evt.nativeEvent.locationY;
-        const x = Math.max(0, Math.min(padSizeRef.current, rawX));
-        const y = Math.max(0, Math.min(padSizeRef.current, rawY));
-        setDotX(x);
-        setDotY(y);
-        commitPosition(x, y);
-      },
-
-      onPanResponderRelease: () => {
-        // Already committed on every move
-      },
-    }),
-  ).current;
-
+  // ── FIX 1: commitPosition receives explicit w/h arguments so xFrac and
+  //           yFrac are each divided by their own correct dimension.
   const commitPosition = useCallback(
-    (x: number, y: number) => {
-      const ps   = padSizeRef.current || PAD_SIZE;
-      // Snap to 0.05 steps for x, 0.025 steps for y
-      const newX = Math.round((x / ps) * 20) / 20;
-      const newY = Math.round((y / ps) * 40) / 40;
+    (px: number, py: number, w: number, h: number) => {
+      // Snap x to 0.05 steps, y to 0.025 steps
+      const newX = Math.round((px / w) * 20) / 20;
+      const newY = Math.round((py / h) * 40) / 40;
+      // FIX 2: spread positionRef.current so we always include latest wFrac/hFrac
       onChange({
-        ...position,
+        ...positionRef.current,
         type:  'overlay',
         xFrac: Math.max(0, Math.min(0.95, newX)),
         yFrac: Math.max(0, Math.min(0.95, newY)),
       });
     },
-    [position, onChange],
+    [onChange],
   );
+
+  // ── FIX 4: keep commitPosition in a ref so the single-creation PanResponder
+  //           below always calls the latest version without needing to recreate.
+  const commitPositionRef = useRef(commitPosition);
+  useEffect(() => {
+    commitPositionRef.current = commitPosition;
+  }, [commitPosition]);
+
+  // ── FIX 3: isOverlay must also be read from a ref inside the PanResponder
+  //           so the single-creation handler always has the current value.
+  const isOverlayRef = useRef(isOverlay);
+  useEffect(() => {
+    isOverlayRef.current = isOverlay;
+  }, [isOverlay]);
+
+  // ── Joystick pan responder ──────────────────────────────────────────────────
+  //
+  // FIX 3 (SMOOTHNESS):
+  //   • Use *Capture* variants so this view grabs the gesture at the capture
+  //     phase, before any child can receive it. This prevents child views
+  //     (grid lines, labels, the dot) from stealing the touch.
+  //   • Because the pad's children all have pointerEvents="none" (see JSX
+  //     below), locationX/Y will always be relative to the pad container and
+  //     will never jump when the finger slides over a child element.
+
+  const panResponder = useRef(
+    PanResponder.create({
+      // ── Capture phase: grab the gesture before any child steals it ──────
+      onStartShouldSetPanResponderCapture: () => isOverlayRef.current,
+      onMoveShouldSetPanResponderCapture:  () => isOverlayRef.current,
+
+      // Keep non-capture versions as fallback (belt + braces)
+      onStartShouldSetPanResponder: () => isOverlayRef.current,
+      onMoveShouldSetPanResponder:  () => isOverlayRef.current,
+
+      onPanResponderGrant: (evt) => {
+        const w = padWRef.current || PAD_W;
+        const h = padHRef.current || PAD_H;
+        // locationX/Y are safe here because all children have pointerEvents="none"
+        const x = Math.max(0, Math.min(w, evt.nativeEvent.locationX));
+        const y = Math.max(0, Math.min(h, evt.nativeEvent.locationY));
+        setDotX(x);
+        setDotY(y);
+        commitPositionRef.current(x, y, w, h);
+      },
+
+      onPanResponderMove: (evt) => {
+        const w = padWRef.current || PAD_W;
+        const h = padHRef.current || PAD_H;
+        const x = Math.max(0, Math.min(w, evt.nativeEvent.locationX));
+        const y = Math.max(0, Math.min(h, evt.nativeEvent.locationY));
+        setDotX(x);
+        setDotY(y);
+        commitPositionRef.current(x, y, w, h);
+      },
+
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderRelease: () => { /* nothing needed */ },
+    }),
+  ).current;
 
   // ── Preset handler ──────────────────────────────────────────────────────────
 
@@ -226,11 +271,11 @@ export function JoystickPositionControl({
         xFrac: preset.xFrac,
         yFrac: preset.yFrac,
         wFrac: preset.wFrac,
-        hFrac: position.hFrac,
+        hFrac: positionRef.current.hFrac,
       };
       onChange(newPos);
     },
-    [position.hFrac, onChange],
+    [onChange],
   );
 
   // ── Toggle overlay / inline ─────────────────────────────────────────────────
@@ -252,8 +297,8 @@ export function JoystickPositionControl({
       {/* Mode toggle */}
       <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: 3, borderWidth: 1, borderColor: COLORS.border }}>
         {[
-          { type: 'inline',  label: '⬇ Below Slide',   desc: 'Stacks under slide content' },
-          { type: 'overlay', label: '🎯 Inside Slide',  desc: 'Placed on the slide canvas' },
+          { type: 'inline',  label: '⬇ Below Slide',  desc: 'Stacks under slide content' },
+          { type: 'overlay', label: '🎯 Inside Slide', desc: 'Placed on the slide canvas' },
         ].map(opt => (
           <Pressable
             key={opt.type}
@@ -261,12 +306,12 @@ export function JoystickPositionControl({
               if (opt.type !== position.type) toggleType();
             }}
             style={{
-              flex:            1,
-              alignItems:      'center',
-              paddingVertical: 9,
+              flex:              1,
+              alignItems:        'center',
+              paddingVertical:   9,
               paddingHorizontal: SPACING.sm,
-              borderRadius:    RADIUS.lg,
-              backgroundColor: position.type === opt.type ? accentColor : 'transparent',
+              borderRadius:      RADIUS.lg,
+              backgroundColor:   position.type === opt.type ? accentColor : 'transparent',
             }}
           >
             <Text style={{ color: position.type === opt.type ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
@@ -288,15 +333,15 @@ export function JoystickPositionControl({
                   onPress={() => applyPreset(preset)}
                   activeOpacity={0.7}
                   style={{
-                    flexDirection:   'row',
-                    alignItems:      'center',
-                    gap:             5,
-                    backgroundColor: `${accentColor}15`,
-                    borderRadius:    RADIUS.full,
+                    flexDirection:     'row',
+                    alignItems:        'center',
+                    gap:               5,
+                    backgroundColor:   `${accentColor}15`,
+                    borderRadius:      RADIUS.full,
                     paddingHorizontal: 10,
-                    paddingVertical:  6,
-                    borderWidth:     1,
-                    borderColor:     `${accentColor}30`,
+                    paddingVertical:   6,
+                    borderWidth:       1,
+                    borderColor:       `${accentColor}30`,
                   }}
                 >
                   <Ionicons name={preset.icon as any} size={12} color={accentColor} />
@@ -318,15 +363,23 @@ export function JoystickPositionControl({
               </Text>
             </View>
 
-            {/* The draggable pad */}
+            {/* The draggable pad — 16:9 aspect ratio matching real slide
+                FIX 3: overflow is 'hidden' only visually; ALL child Views
+                below carry pointerEvents="none" so every touch event lands
+                directly on this container, keeping locationX/Y stable. */}
             <View style={{ alignItems: 'center' }}>
               <View
-                ref={padRef}
-                onLayout={e => { padSizeRef.current = e.nativeEvent.layout.width; }}
+                onLayout={e => {
+                  padWRef.current = e.nativeEvent.layout.width;
+                  padHRef.current = e.nativeEvent.layout.height;
+                  // Re-sync dot after layout so it renders at the correct pixel position
+                  setDotX(xFrac * e.nativeEvent.layout.width);
+                  setDotY(yFrac * e.nativeEvent.layout.height);
+                }}
                 {...panResponder.panHandlers}
                 style={{
-                  width:           PAD_SIZE,
-                  height:          Math.round(PAD_SIZE * (9 / 16)), // 16:9 ratio mirrors slide
+                  width:           PAD_W,
+                  height:          PAD_H,
                   backgroundColor: COLORS.backgroundElevated,
                   borderRadius:    RADIUS.xl,
                   borderWidth:     1.5,
@@ -335,51 +388,48 @@ export function JoystickPositionControl({
                   position:        'relative',
                 }}
               >
-                {/* Grid lines */}
-                <View style={{ position: 'absolute', top: '33.3%', left: 0, right: 0, height: 1, backgroundColor: `${accentColor}15` }} />
-                <View style={{ position: 'absolute', top: '66.6%', left: 0, right: 0, height: 1, backgroundColor: `${accentColor}15` }} />
-                <View style={{ position: 'absolute', left: '33.3%', top: 0, bottom: 0, width: 1, backgroundColor: `${accentColor}15` }} />
-                <View style={{ position: 'absolute', left: '66.6%', top: 0, bottom: 0, width: 1, backgroundColor: `${accentColor}15` }} />
+                {/* ─── ALL children are pointerEvents="none" (FIX 3) ─────────
+                    This makes every touch fall through to the parent pad View,
+                    so locationX/Y are always relative to the pad, not to a
+                    grid line, label, or the dot gradient. ─────────────────── */}
+
+                {/* Grid lines — thirds both axes */}
+                <View pointerEvents="none" style={{ position: 'absolute', top: '33.3%', left: 0, right: 0, height: 1, backgroundColor: `${accentColor}15` }} />
+                <View pointerEvents="none" style={{ position: 'absolute', top: '66.6%', left: 0, right: 0, height: 1, backgroundColor: `${accentColor}15` }} />
+                <View pointerEvents="none" style={{ position: 'absolute', left: '33.3%', top: 0, bottom: 0, width: 1, backgroundColor: `${accentColor}15` }} />
+                <View pointerEvents="none" style={{ position: 'absolute', left: '66.6%', top: 0, bottom: 0, width: 1, backgroundColor: `${accentColor}15` }} />
 
                 {/* Corner labels */}
-                <Text style={{ position: 'absolute', top: 4, left: 6, color: `${accentColor}55`, fontSize: 8 }}>TL</Text>
-                <Text style={{ position: 'absolute', top: 4, right: 6, color: `${accentColor}55`, fontSize: 8 }}>TR</Text>
-                <Text style={{ position: 'absolute', bottom: 4, left: 6, color: `${accentColor}55`, fontSize: 8 }}>BL</Text>
-                <Text style={{ position: 'absolute', bottom: 4, right: 6, color: `${accentColor}55`, fontSize: 8 }}>BR</Text>
+                <Text pointerEvents="none" style={{ position: 'absolute', top: 4, left: 6, color: `${accentColor}55`, fontSize: 8 }}>TL</Text>
+                <Text pointerEvents="none" style={{ position: 'absolute', top: 4, right: 6, color: `${accentColor}55`, fontSize: 8 }}>TR</Text>
+                <Text pointerEvents="none" style={{ position: 'absolute', bottom: 4, left: 6, color: `${accentColor}55`, fontSize: 8 }}>BL</Text>
+                <Text pointerEvents="none" style={{ position: 'absolute', bottom: 4, right: 6, color: `${accentColor}55`, fontSize: 8 }}>BR</Text>
 
                 {/* Center cross */}
-                <View style={{ position: 'absolute', top: '50%', left: '50%', transform: [{ translateX: -10 }, { translateY: -0.5 }], width: 20, height: 1, backgroundColor: `${accentColor}25` }} />
-                <View style={{ position: 'absolute', top: '50%', left: '50%', transform: [{ translateX: -0.5 }, { translateY: -10 }], width: 1, height: 20, backgroundColor: `${accentColor}25` }} />
+                <View pointerEvents="none" style={{ position: 'absolute', top: '50%', left: '50%', transform: [{ translateX: -10 }, { translateY: -0.5 }], width: 20, height: 1, backgroundColor: `${accentColor}25` }} />
+                <View pointerEvents="none" style={{ position: 'absolute', top: '50%', left: '50%', transform: [{ translateX: -0.5 }, { translateY: -10 }], width: 1, height: 20, backgroundColor: `${accentColor}25` }} />
 
-                {/* Width indicator line */}
-                <View style={{
-                  position:        'absolute',
-                  left:            dotX,
-                  top:             dotY + HALF_DOT,
-                  width:           (padSizeRef.current || PAD_SIZE) * wFrac - (dotX - (xFrac * (padSizeRef.current || PAD_SIZE))),
-                  height:          2,
-                  backgroundColor: `${accentColor}30`,
-                }} />
-
-                {/* Draggable DOT */}
+                {/* Draggable DOT — also pointerEvents="none" so the finger
+                    can pass through it to the pad container seamlessly */}
                 <LinearGradient
+                  pointerEvents="none"
                   colors={[accentColor, `${accentColor}CC`]}
                   style={{
-                    position:        'absolute',
-                    left:            dotX - HALF_DOT,
-                    top:             dotY - HALF_DOT,
-                    width:           DOT_SIZE,
-                    height:          DOT_SIZE,
-                    borderRadius:    DOT_SIZE / 2,
-                    alignItems:      'center',
-                    justifyContent:  'center',
-                    shadowColor:     accentColor,
-                    shadowOffset:    { width: 0, height: 2 },
-                    shadowOpacity:   0.5,
-                    shadowRadius:    4,
-                    elevation:       4,
-                    borderWidth:     2,
-                    borderColor:     '#FFF',
+                    position:       'absolute',
+                    left:           dotX - HALF_DOT,
+                    top:            dotY - HALF_DOT,
+                    width:          DOT_SIZE,
+                    height:         DOT_SIZE,
+                    borderRadius:   DOT_SIZE / 2,
+                    alignItems:     'center',
+                    justifyContent: 'center',
+                    shadowColor:    accentColor,
+                    shadowOffset:   { width: 0, height: 2 },
+                    shadowOpacity:  0.5,
+                    shadowRadius:   4,
+                    elevation:      4,
+                    borderWidth:    2,
+                    borderColor:    '#FFF',
                   }}
                 >
                   <Ionicons name="move-outline" size={13} color="#FFF" />
@@ -391,29 +441,31 @@ export function JoystickPositionControl({
               </Text>
             </View>
 
-            {/* Width slider */}
+            {/* Width slider
+                FIX 2: onChange reads positionRef.current so it never overwrites
+                        the latest x/y values from the trackpad. */}
             <FractionSlider
               label="Width"
               value={wFrac}
               minValue={0.1}
-              onChange={v => onChange({ ...position, wFrac: v })}
+              onChange={v => onChange({ ...positionRef.current, wFrac: v })}
               accentColor={accentColor}
               unit="W"
             />
 
-            {/* Height slider — only shown for blocks that support it */}
+            {/* Height slider — only for blocks that support it */}
             {supportsHeight && (
               <View>
                 <FractionSlider
                   label="Height (optional)"
                   value={hFrac ?? 0.3}
                   minValue={0.05}
-                  onChange={v => onChange({ ...position, hFrac: v })}
+                  onChange={v => onChange({ ...positionRef.current, hFrac: v })}
                   accentColor={accentColor}
                   unit="H"
                 />
                 <Pressable
-                  onPress={() => onChange({ ...position, hFrac: undefined })}
+                  onPress={() => onChange({ ...positionRef.current, hFrac: undefined })}
                   style={{ marginTop: 4, alignSelf: 'flex-start' }}
                 >
                   <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>
@@ -460,4 +512,4 @@ export function JoystickPositionControl({
       )}
     </View>
   );
-} 
+}

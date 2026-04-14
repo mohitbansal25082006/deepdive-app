@@ -1,15 +1,8 @@
 // src/hooks/useSlideEditor.ts
-// Part 41.7 — Re-cache after every save so offline viewer shows edited slides.
-//
-// CHANGES from Part 31:
-//   1. Auto-save timer: after successful saveEditorState(), calls
-//      autoCachePresentation(getExportPresentation()) fire-and-forget.
-//   2. saveNow(): same — re-caches after successful save.
-//   These two additions ensure the offline cache is always up to date
-//   with every editor change (field edits, layout switches, block additions,
-//   theme changes, etc.).
-//
-// All other logic is byte-for-byte identical to Part 31.
+// Part 41.9 — Added setGlobalFontScale, setGlobalTextColor methods.
+//             applyPickedColor now handles 'global_text_color' scope.
+//             UseSlideEditorReturn updated with new methods.
+// All other logic identical to Part 41.7.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -46,8 +39,6 @@ import {
   DEFAULT_FONT,
 } from '../constants/editor';
 import { useTemplateHistory } from './useTemplateHistory';
-
-// Part 41.7: import for re-caching after save
 import { autoCachePresentation } from '../lib/autoCacheMiddleware';
 
 import type {
@@ -181,11 +172,11 @@ const INITIAL_STATE: SlideEditorState = {
 // ─── Hook Return Type ─────────────────────────────────────────────────────────
 
 export interface UseSlideEditorReturn {
-  state:       SlideEditorState;
+  state:        SlideEditorState;
   presentation: GeneratedPresentation | null;
-  isLoading:   boolean;
-  loadError:   string | null;
-  activeSlide: EditableSlide | null;
+  isLoading:    boolean;
+  loadError:    string | null;
+  activeSlide:  EditableSlide | null;
 
   loadEditor: (presentationId: string) => Promise<void>;
 
@@ -213,12 +204,16 @@ export interface UseSlideEditorReturn {
   setFieldColor:     (field: EditableFieldKey, color: string) => void;
   getFormatting:     (field: EditableFieldKey) => FieldFormatting;
 
-  switchLayout:       (layout: SlideLayout) => void;
-  setBackgroundColor: (color: string, applyAll?: boolean) => void;
-  setAccentColor:     (color: string, applyAll?: boolean) => void;
-  setTheme:           (theme: PresentationTheme) => void;
-  setFontFamily:      (font: FontFamily) => void;
-  setSpacing:         (spacing: SpacingLevel, applyAll?: boolean) => void;
+  switchLayout:         (layout: SlideLayout) => void;
+  setBackgroundColor:   (color: string, applyAll?: boolean) => void;
+  setAccentColor:       (color: string, applyAll?: boolean) => void;
+  setTheme:             (theme: PresentationTheme) => void;
+  setFontFamily:        (font: FontFamily) => void;
+  setSpacing:           (spacing: SpacingLevel, applyAll?: boolean) => void;
+  /** Part 41.9 */
+  setGlobalFontScale:   (scale: number, applyAll?: boolean) => void;
+  /** Part 41.9 — undefined = reset to default */
+  setGlobalTextColor:   (color: string | undefined, applyAll?: boolean) => void;
 
   openColorPicker:  (target: ColorPickerTarget) => void;
   applyPickedColor: (color: string) => void;
@@ -317,8 +312,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'PUSH_UNDO', snapshot: [...stateRef.current.slides] });
   }, []);
 
-  // ─── getExportPresentation (used in save re-cache below) ──────────────────
-  // Defined early so scheduleSave and saveNow can reference it.
+  // ─── getExportPresentation ────────────────────────────────────────────────
 
   const getExportPresentation = useCallback((): GeneratedPresentation | null => {
     const pres  = presRef.current;
@@ -347,14 +341,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
         aiEditsRef.current = 0;
         dispatch({ type: 'SET_DIRTY',      dirty: false });
         dispatch({ type: 'SET_SAVE_ERROR', error: null });
-
-        // ── Part 41.7: Re-cache with merged edits after auto-save ──────────
-        // autoCachePresentation fetches fresh editor_data from DB and merges
-        // before writing to cache — fire-and-forget, never blocks UI.
         const exportPres = getExportPresentation();
-        if (exportPres) {
-          autoCachePresentation(exportPres).catch(() => {});
-        }
+        if (exportPres) { autoCachePresentation(exportPres).catch(() => {}); }
       } catch {
         dispatch({ type: 'SET_SAVE_ERROR', error: 'Auto-save failed.' });
       } finally {
@@ -378,12 +366,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
       aiEditsRef.current = 0;
       dispatch({ type: 'SET_DIRTY',      dirty: false });
       dispatch({ type: 'SET_SAVE_ERROR', error: null });
-
-      // ── Part 41.7: Re-cache with merged edits after manual save ───────────
       const exportPres = getExportPresentation();
-      if (exportPres) {
-        autoCachePresentation(exportPres).catch(() => {});
-      }
+      if (exportPres) { autoCachePresentation(exportPres).catch(() => {}); }
     } catch {
       dispatch({ type: 'SET_SAVE_ERROR', error: 'Save failed. Please try again.' });
     } finally {
@@ -399,8 +383,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   }, []);
 
   const goToNext = useCallback(() => {
-    const { activeSlideIndex, slides } = stateRef.current;
-    goToSlide(Math.min(activeSlideIndex + 1, slides.length - 1));
+    goToSlide(Math.min(stateRef.current.activeSlideIndex + 1, stateRef.current.slides.length - 1));
   }, [goToSlide]);
 
   const goToPrev = useCallback(() => {
@@ -590,6 +573,55 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
+  // ─── Part 41.9: Global Font Scale ─────────────────────────────────────────
+
+  const setGlobalFontScale = useCallback((scale: number, applyAll = false) => {
+    pushUndo();
+    const state = stateRef.current;
+    const clampedScale = Math.max(0.5, Math.min(2.5, scale));
+    if (applyAll) {
+      dispatch({
+        type:    'SET_SLIDES',
+        payload: state.slides.map(s => ({
+          ...s,
+          editorData: { ...(s.editorData ?? {}), globalFontScale: clampedScale },
+        })),
+      });
+    } else {
+      const idx = state.activeSlideIndex;
+      dispatch({
+        type:  'PATCH_SLIDE',
+        index: idx,
+        patch: { editorData: { ...(state.slides[idx].editorData ?? {}), globalFontScale: clampedScale } },
+      });
+    }
+    dispatch({ type: 'SET_DIRTY', dirty: true });
+  }, [pushUndo]);
+
+  // ─── Part 41.9: Global Text Color ─────────────────────────────────────────
+
+  const setGlobalTextColor = useCallback((color: string | undefined, applyAll = false) => {
+    pushUndo();
+    const state = stateRef.current;
+    if (applyAll) {
+      dispatch({
+        type:    'SET_SLIDES',
+        payload: state.slides.map(s => ({
+          ...s,
+          editorData: { ...(s.editorData ?? {}), globalTextColor: color },
+        })),
+      });
+    } else {
+      const idx = state.activeSlideIndex;
+      dispatch({
+        type:  'PATCH_SLIDE',
+        index: idx,
+        patch: { editorData: { ...(state.slides[idx].editorData ?? {}), globalTextColor: color } },
+      });
+    }
+    dispatch({ type: 'SET_DIRTY', dirty: true });
+  }, [pushUndo]);
+
   // ─── COLOR PICKER ─────────────────────────────────────────────────────────
 
   const openColorPicker = useCallback((target: ColorPickerTarget) => {
@@ -601,9 +633,10 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     const target = stateRef.current.colorPickerTarget;
     if (!target) return;
     switch (target.scope) {
-      case 'slide_bg': setBackgroundColor(color, false); break;
-      case 'accent':   setAccentColor(color, false); break;
-      case 'field':    setFieldColor((target as any).fieldKey, color); break;
+      case 'slide_bg':          setBackgroundColor(color, false); break;
+      case 'accent':            setAccentColor(color, false);     break;
+      case 'field':             setFieldColor((target as any).fieldKey, color); break;
+      case 'global_text_color': setGlobalTextColor(color, false); break; // Part 41.9
       case 'block': {
         const idx    = stateRef.current.activeSlideIndex;
         const slide  = stateRef.current.slides[idx];
@@ -616,7 +649,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     }
     dispatch({ type: 'SET_COLOR_TARGET', target: null });
     dispatch({ type: 'SET_PANEL', panel: 'none' });
-  }, [setBackgroundColor, setAccentColor, setFieldColor]);
+  }, [setBackgroundColor, setAccentColor, setFieldColor, setGlobalTextColor]);
 
   // ─── SLIDE MANAGEMENT ─────────────────────────────────────────────────────
 
@@ -713,7 +746,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   const undo = useCallback(() => { dispatch({ type: 'UNDO' }); scheduleSave(); }, [scheduleSave]);
   const redo = useCallback(() => { dispatch({ type: 'REDO' }); scheduleSave(); }, [scheduleSave]);
 
-  // ─── AI OPERATIONS (Part 31 credit fix — unchanged) ──────────────────────
+  // ─── AI OPERATIONS ────────────────────────────────────────────────────────
 
   const aiRewriteField = useCallback(async (field: EditableFieldKey, style: AIRewriteStyle) => {
     const slide    = stateRef.current.slides[stateRef.current.activeSlideIndex];
@@ -961,6 +994,8 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     applyFormatting, toggleBold, toggleItalic,
     cycleFontSizeUp, cycleFontSizeDown, setAlignment, setFieldColor, getFormatting,
     switchLayout, setBackgroundColor, setAccentColor, setTheme, setFontFamily, setSpacing,
+    setGlobalFontScale,   // Part 41.9
+    setGlobalTextColor,   // Part 41.9
     openColorPicker, applyPickedColor,
     addSlide, deleteSlide, reorderSlides, duplicateSlide,
     addBlock, updateBlock, deleteBlock, reorderBlocks,

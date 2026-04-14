@@ -1,13 +1,8 @@
 // app/(app)/slide-editor.tsx
-// Part 41.6 — Screenshot-based export from editor
-//
-// CHANGES from Part 30:
-//   1. Added SlideExportRenderer mounted off-screen
-//   2. handleExport now captures slides via SlideExportRenderer before
-//      building PPTX/PDF, so all editor changes (icons, charts, colors,
-//      custom fonts, Iconify SVGs, online images) export exactly as seen
-//   3. Falls back to vector generatePPTX / exportAsSlidePDF if capture fails
-//   4. All other logic identical to Part 30.
+// Part 41.9 — DesignPanel now receives currentGlobalFontScale, currentGlobalTextColor,
+//             onSetGlobalFontScale, onSetGlobalTextColor, and updated onOpenColorPicker
+//             signature to include 'global_text_color' scope.
+// All other logic identical to Part 41.6.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useCallback, useState, useRef } from 'react';
@@ -49,11 +44,11 @@ import { IconifyIconPicker }        from '../../src/components/editor/IconifyIco
 import { LoadingOverlay }           from '../../src/components/common/LoadingOverlay';
 import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
 
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import { EDITOR_TOOL_TABS }                        from '../../src/constants/editor';
-import type { ResearchReport, InfographicData }    from '../../src/types';
+import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { EDITOR_TOOL_TABS }               from '../../src/constants/editor';
+import type { ResearchReport, InfographicData } from '../../src/types';
 import type { EditorTool, ImageBlock, IconBlock, AdditionalBlock } from '../../src/types/editor';
-import { supabase }                                from '../../src/lib/supabase';
+import { supabase }                       from '../../src/lib/supabase';
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -66,19 +61,16 @@ export default function SlideEditorScreen() {
   const { user }    = useAuth();
   const { balance } = useCredits();
 
-  const [report,           setReport]           = useState<ResearchReport | null>(null);
-  const [infographicData,  setInfographicData]  = useState<InfographicData | null>(null);
-  const [activeToolTab,    setActiveToolTab]     = useState<EditorTool>('select');
-  const [isExporting,      setIsExporting]       = useState(false);
-  const [exportLabel,      setExportLabel]       = useState('');
+  const [report,                setReport]                = useState<ResearchReport | null>(null);
+  const [infographicData,       setInfographicData]       = useState<InfographicData | null>(null);
+  const [activeToolTab,         setActiveToolTab]         = useState<EditorTool>('select');
+  const [isExporting,           setIsExporting]           = useState(false);
+  const [exportLabel,           setExportLabel]           = useState('');
   const [showOnlineImageSearch, setShowOnlineImageSearch] = useState(false);
   const [showIconifyPicker,     setShowIconifyPicker]     = useState(false);
   const [showTemplateHistory,   setShowTemplateHistory]   = useState(false);
 
-  // FIX: keep a ref to addBlock so callbacks never go stale
   const addBlockRef = useRef<((block: AdditionalBlock) => void) | null>(null);
-
-  // Off-screen renderer for screenshot capture
   const rendererRef = useRef<SlideExportRendererRef>(null);
 
   // Load report
@@ -103,8 +95,6 @@ export default function SlideEditorScreen() {
   }, [reportId]);
 
   const editor = useSlideEditor(report);
-
-  // FIX: update ref every render so it always points to the latest addBlock
   addBlockRef.current = editor.addBlock;
 
   useEffect(() => {
@@ -132,10 +122,20 @@ export default function SlideEditorScreen() {
   const colorPickerCurrent = (() => {
     const t = state.colorPickerTarget;
     if (!t) return accentColor;
-    if (t.scope === 'slide_bg') return activeSlide?.editorData?.backgroundColor ?? tokens.background;
-    if (t.scope === 'accent')   return activeSlide?.accentColor ?? tokens.primary;
-    if (t.scope === 'field')    return editor.getFormatting((t as any).fieldKey).color ?? accentColor;
+    if (t.scope === 'slide_bg')          return activeSlide?.editorData?.backgroundColor ?? tokens.background;
+    if (t.scope === 'accent')            return activeSlide?.accentColor ?? tokens.primary;
+    if (t.scope === 'field')             return editor.getFormatting((t as any).fieldKey).color ?? accentColor;
+    if (t.scope === 'global_text_color') return activeSlide?.editorData?.globalTextColor ?? tokens.textPrimary; // Part 41.9
     return accentColor;
+  })();
+
+  const colorPickerTitle = (() => {
+    const t = state.colorPickerTarget;
+    if (!t) return 'Color Picker';
+    if (t.scope === 'slide_bg')          return 'Slide Background Color';
+    if (t.scope === 'accent')            return 'Accent Color';
+    if (t.scope === 'global_text_color') return 'Text Color Override'; // Part 41.9
+    return `${(t as any)?.fieldKey ?? 'Field'} Color`;
   })();
 
   const handleToolTab = useCallback((tab: EditorTool) => {
@@ -169,7 +169,7 @@ export default function SlideEditorScreen() {
                 setExportLabel('Exporting…');
                 await generatePPTX(exportPres);
               } else {
-                setExportLabel(`Exporting PPTX…`);
+                setExportLabel('Exporting PPTX…');
                 await generatePPTXFromImages(images, exportPres);
               }
             } else {
@@ -229,7 +229,6 @@ export default function SlideEditorScreen() {
     }
   }, [state.isDirty, editor]);
 
-  // FIX: use the ref so this callback never captures a stale addBlock
   const handleOnlineImageInsert = useCallback((block: ImageBlock) => {
     addBlockRef.current?.(block as any);
     setShowOnlineImageSearch(false);
@@ -289,7 +288,6 @@ export default function SlideEditorScreen() {
               </View>
             </View>
 
-            {/* Template History button */}
             <Pressable
               onPress={() => setShowTemplateHistory(true)}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -426,11 +424,7 @@ export default function SlideEditorScreen() {
         currentColor={colorPickerCurrent}
         onSelectColor={editor.applyPickedColor}
         onClose={() => editor.closePanel()}
-        title={
-          state.colorPickerTarget?.scope === 'slide_bg' ? 'Slide Background Color'
-          : state.colorPickerTarget?.scope === 'accent' ? 'Accent Color'
-          : `${(state.colorPickerTarget as any)?.fieldKey ?? 'Field'} Color`
-        }
+        title={colorPickerTitle}
       />
 
       <LayoutSwitcher
@@ -470,6 +464,7 @@ export default function SlideEditorScreen() {
         onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
 
+      {/* Part 41.9: DesignPanel now receives font size + text color props */}
       <DesignPanel
         visible={isDesignOpen}
         tokens={tokens}
@@ -477,13 +472,17 @@ export default function SlideEditorScreen() {
         currentAccent={activeSlide?.accentColor}
         currentSpacing={activeSlide?.editorData?.spacing ?? 'default'}
         currentFont={state.fontFamily}
+        currentGlobalFontScale={activeSlide?.editorData?.globalFontScale}
+        currentGlobalTextColor={activeSlide?.editorData?.globalTextColor}
         onSetBackground={(color, applyAll) => editor.setBackgroundColor(color, applyAll)}
         onSetAccent={(color, applyAll) => editor.setAccentColor(color, applyAll)}
         onSetSpacing={editor.setSpacing}
         onSetFont={editor.setFontFamily}
+        onSetGlobalFontScale={(scale, applyAll) => editor.setGlobalFontScale(scale, applyAll)}
+        onSetGlobalTextColor={(color, applyAll) => editor.setGlobalTextColor(color, applyAll)}
         onOpenColorPicker={scope => {
           editor.closePanel();
-          setTimeout(() => editor.openColorPicker({ scope }), 250);
+          setTimeout(() => editor.openColorPicker({ scope } as any), 250);
         }}
         onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
