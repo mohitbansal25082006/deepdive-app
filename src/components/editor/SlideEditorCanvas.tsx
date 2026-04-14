@@ -1,12 +1,8 @@
 // src/components/editor/SlideEditorCanvas.tsx
-// Part 30 — FULL REWRITE
-// Changes from Part 29:
-//   1. PositionControl replaced with JoystickPositionControl (trackpad + sliders)
-//   2. ImagePanel: added "Search Online" tab using OnlineImageSearchPanel
-//   3. IconPanel block type: opens IconifyIconPicker instead of old IconPicker
-//   4. Block type tabs: fixed horizontal scroll container (prevents squishing)
-//   5. OverlayBlockCard: uses JoystickPositionControl for in-place editing
-//   6. "Template History" shortcut button in canvas header area
+// Part 41.9 — Added StatEditModal + interactive editable stats section.
+//             New props: onUpdateStat, onDeleteStat, onAddStatToSlide.
+//             All Part 30 logic (JoystickPositionControl, OnlineImageSearchPanel,
+//             IconifyIconPicker, block inserter) unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useCallback, useState } from 'react';
@@ -39,6 +35,7 @@ import type {
   InlineBlockPosition,
 } from '../../types/editor';
 import type { PresentationThemeTokens, InfographicData } from '../../types';
+import type { StatItem } from '../../hooks/useSlideEditor';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -174,6 +171,269 @@ function BulletEditor({ bullets, accentColor, onUpdate, onAdd, onRemove }: {
   );
 }
 
+// ─── Part 41.9: Stat Edit Modal ───────────────────────────────────────────────
+
+function StatEditModal({
+  visible,
+  stat,
+  title,
+  accentColor,
+  onSave,
+  onClose,
+}: {
+  visible:     boolean;
+  stat:        StatItem | null;
+  title:       string;
+  accentColor: string;
+  onSave:      (updated: StatItem) => void;
+  onClose:     () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const [value, setValue] = useState('');
+  const [label, setLabel] = useState('');
+  const [color, setColor] = useState(accentColor);
+
+  // Sync from incoming stat when modal opens
+  React.useEffect(() => {
+    if (visible && stat) {
+      setValue(stat.value);
+      setLabel(stat.label);
+      setColor(stat.color ?? accentColor);
+    }
+  }, [visible, stat]);
+
+  const handleSave = useCallback(() => {
+    if (!value.trim()) { Alert.alert('Value required', 'Enter a stat value.'); return; }
+    if (!label.trim()) { Alert.alert('Label required', 'Enter a stat label.'); return; }
+    onSave({ value: value.trim(), label: label.trim(), color });
+    onClose();
+  }, [value, label, color, onSave, onClose]);
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' }} onPress={onClose}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <Pressable onPress={e => e.stopPropagation()} style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: insets.bottom + SPACING.lg, borderTopWidth: 1, borderTopColor: COLORS.border, gap: SPACING.md }}>
+
+            {/* Handle */}
+            <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center' }} />
+
+            {/* Header */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
+              <LinearGradient colors={[color, `${color}BB`]} style={{ width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="stats-chart-outline" size={17} color="#FFF" />
+              </LinearGradient>
+              <Text style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>{title}</Text>
+              <Pressable onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close" size={22} color={COLORS.textMuted} />
+              </Pressable>
+            </View>
+
+            {/* Live preview */}
+            <View style={{ backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${color}35`, alignItems: 'center', borderTopWidth: 3, borderTopColor: color }}>
+              <Text style={{ color: color, fontSize: 32, fontWeight: '900', lineHeight: 38 }}>{value || '—'}</Text>
+              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 4, textAlign: 'center' }}>{label || 'Stat label'}</Text>
+            </View>
+
+            {/* Value input */}
+            <View style={{ backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, borderWidth: 1.5, borderColor: `${color}40`, paddingHorizontal: SPACING.md }}>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 8, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 }}>Value *</Text>
+              <TextInput
+                value={value}
+                onChangeText={setValue}
+                placeholder="e.g. 87%, $4.2B, 3x"
+                placeholderTextColor={COLORS.textMuted}
+                style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '900', paddingVertical: 8 }}
+                autoFocus
+              />
+            </View>
+
+            {/* Label input */}
+            <View style={{ backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, borderWidth: 1.5, borderColor: COLORS.border, paddingHorizontal: SPACING.md }}>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 8, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 }}>Label *</Text>
+              <TextInput
+                value={label}
+                onChangeText={setLabel}
+                placeholder="e.g. Market Growth, Users, Revenue"
+                placeholderTextColor={COLORS.textMuted}
+                style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, paddingVertical: 8 }}
+              />
+            </View>
+
+            {/* Color picker */}
+            <View>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: SPACING.sm }}>Accent Color</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {THEME_ACCENT_COLORS.map(c => (
+                  <Pressable
+                    key={c}
+                    onPress={() => setColor(c)}
+                    style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: c, borderWidth: color === c ? 3 : 1.5, borderColor: color === c ? '#FFF' : `${c}50`, alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    {color === c && <Ionicons name="checkmark" size={15} color="#FFF" />}
+                  </Pressable>
+                ))}
+                {/* Additional standard colors */}
+                {['#43E97B', '#FFA726', '#FF6584', '#29B6F6', '#FF4757', '#FFD700'].map(c => (
+                  <Pressable
+                    key={c}
+                    onPress={() => setColor(c)}
+                    style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: c, borderWidth: color === c ? 3 : 1.5, borderColor: color === c ? '#FFF' : `${c}50`, alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    {color === c && <Ionicons name="checkmark" size={15} color="#FFF" />}
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {/* Save button */}
+            <Pressable onPress={handleSave}>
+              <LinearGradient colors={[color, `${color}CC`]} style={{ borderRadius: RADIUS.full, paddingVertical: 14, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}>
+                <Ionicons name="checkmark-circle-outline" size={18} color="#FFF" />
+                <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Save Stat</Text>
+              </LinearGradient>
+            </Pressable>
+
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ─── Part 41.9: Interactive Stats Section ─────────────────────────────────────
+
+function EditableStatsSection({
+  stats,
+  accentColor,
+  onUpdate,
+  onDelete,
+  onAdd,
+}: {
+  stats:       Array<{ value: string; label: string; color?: string }>;
+  accentColor: string;
+  onUpdate:    (index: number, patch: Partial<StatItem>) => void;
+  onDelete:    (index: number) => void;
+  onAdd:       (stat: StatItem) => void;
+}) {
+  const [editingIndex, setEditingIndex]   = useState<number | null>(null);
+  const [showAddModal, setShowAddModal]   = useState(false);
+
+  const editingStat = editingIndex !== null ? stats[editingIndex] ?? null : null;
+
+  return (
+    <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${accentColor}25`, gap: SPACING.sm }}>
+
+      {/* Header */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <Ionicons name="stats-chart-outline" size={14} color={accentColor} />
+        <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1, flex: 1 }}>
+          Statistics ({stats.length})
+        </Text>
+        <Pressable
+          onPress={() => setShowAddModal(true)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${accentColor}18`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: `${accentColor}35` }}
+        >
+          <Ionicons name="add" size={13} color={accentColor} />
+          <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Add</Text>
+        </Pressable>
+      </View>
+
+      {/* Stat rows */}
+      {stats.map((stat, i) => {
+        const statColor = stat.color ?? accentColor;
+        return (
+          <View
+            key={i}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: statColor }}
+          >
+            {/* Color dot */}
+            <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: statColor, flexShrink: 0 }} />
+
+            {/* Value + Label */}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text numberOfLines={1} style={{ color: statColor, fontSize: FONTS.sizes.lg, fontWeight: '900', lineHeight: 24 }}>{stat.value}</Text>
+              <Text numberOfLines={1} style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600', marginTop: 1 }}>{stat.label}</Text>
+            </View>
+
+            {/* Edit button */}
+            <TouchableOpacity
+              onPress={() => setEditingIndex(i)}
+              activeOpacity={0.6}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{ width: 30, height: 30, borderRadius: RADIUS.md, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}30` }}
+            >
+              <Ionicons name="pencil-outline" size={14} color={COLORS.primary} />
+            </TouchableOpacity>
+
+            {/* Delete button */}
+            <TouchableOpacity
+              onPress={() =>
+                Alert.alert(
+                  'Delete Stat',
+                  `Remove "${stat.value} — ${stat.label}"?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Delete', style: 'destructive', onPress: () => onDelete(i) },
+                  ]
+                )
+              }
+              activeOpacity={0.6}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{ width: 30, height: 30, borderRadius: RADIUS.md, backgroundColor: `${COLORS.error}15`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.error}30` }}
+            >
+              <Ionicons name="trash-outline" size={14} color={COLORS.error} />
+            </TouchableOpacity>
+          </View>
+        );
+      })}
+
+      {/* Empty state */}
+      {stats.length === 0 && (
+        <Pressable
+          onPress={() => setShowAddModal(true)}
+          style={{ paddingVertical: SPACING.md, alignItems: 'center', gap: 6, borderWidth: 1.5, borderColor: `${accentColor}30`, borderRadius: RADIUS.lg, borderStyle: 'dashed' }}
+        >
+          <Ionicons name="add-circle-outline" size={22} color={COLORS.textMuted} />
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic' }}>No stats yet — tap Add to create one</Text>
+        </Pressable>
+      )}
+
+      {/* Hint */}
+      {stats.length > 0 && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 }}>
+          <Ionicons name="information-circle-outline" size={12} color={COLORS.textMuted} />
+          <Text style={{ color: COLORS.textMuted, fontSize: 9, flex: 1 }}>Tap ✏ to edit value, label or color · Tap 🗑 to remove</Text>
+        </View>
+      )}
+
+      {/* Edit existing stat modal */}
+      <StatEditModal
+        visible={editingIndex !== null}
+        stat={editingStat}
+        title={`Edit Stat ${editingIndex !== null ? editingIndex + 1 : ''}`}
+        accentColor={accentColor}
+        onSave={updated => {
+          if (editingIndex !== null) onUpdate(editingIndex, updated);
+          setEditingIndex(null);
+        }}
+        onClose={() => setEditingIndex(null)}
+      />
+
+      {/* Add new stat modal */}
+      <StatEditModal
+        visible={showAddModal}
+        stat={{ value: '', label: '', color: accentColor }}
+        title="Add New Stat"
+        accentColor={accentColor}
+        onSave={stat => { onAdd(stat); setShowAddModal(false); }}
+        onClose={() => setShowAddModal(false)}
+      />
+    </View>
+  );
+}
+
 // ─── Block type tabs metadata ─────────────────────────────────────────────────
 
 type BlockTabId = 'image' | 'stat' | 'chart' | 'quote_block' | 'divider' | 'spacer' | 'icon';
@@ -195,7 +455,7 @@ const BLOCK_TABS: BlockTabMeta[] = [
   { id: 'icon',        label: 'Icon',    icon: 'shapes-outline',      color: '#29B6F6' },
 ];
 
-// ─── ImagePanel (Part 30: with online search tab) ─────────────────────────────
+// ─── ImagePanel ───────────────────────────────────────────────────────────────
 
 function ImagePanel({
   position,
@@ -220,14 +480,8 @@ function ImagePanel({
     }
   }, [position, onInsert]);
 
-  const handleOnlineInsert = useCallback((block: ImageBlock) => {
-    // Online image block already has position injected inside OnlineImageSearchPanel
-    onInsert(block);
-  }, [onInsert]);
-
   return (
     <View style={{ gap: SPACING.md }}>
-      {/* Tab toggle: Local vs Online */}
       <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: 3, borderWidth: 1, borderColor: COLORS.border }}>
         {[
           { id: false, label: '📱 From Device', desc: 'Pick from your photo library' },
@@ -244,7 +498,6 @@ function ImagePanel({
         ))}
       </View>
 
-      {/* Local picker */}
       {!showOnlineSearch && (
         <Pressable onPress={handlePickLocal}>
           <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, alignItems: 'center', gap: SPACING.sm }}>
@@ -255,7 +508,6 @@ function ImagePanel({
         </Pressable>
       )}
 
-      {/* Online search inline */}
       {showOnlineSearch && (
         <View style={{ backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.info}20` }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm }}>
@@ -265,9 +517,6 @@ function ImagePanel({
             </Text>
           </View>
           <Pressable onPress={() => {
-            // We trigger the full modal from the parent via a flag; use a workaround:
-            // close this inserter and reopen with online_image_search panel
-            // Signal via a special onInsert call with a sentinel value
             onInsert({ type: 'image', id: '__OPEN_ONLINE_SEARCH__', uri: '', position } as any);
           }}>
             <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.full, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
@@ -277,18 +526,11 @@ function ImagePanel({
           </Pressable>
         </View>
       )}
-
-      {position.type === 'overlay' && !showOnlineSearch && (
-        <View style={{ backgroundColor: `${COLORS.success}10`, borderRadius: RADIUS.lg, padding: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Ionicons name="checkmark-circle-outline" size={13} color={COLORS.success} />
-          <Text style={{ color: COLORS.success, fontSize: 9 }}>Image will be placed on the slide canvas at the position set above</Text>
-        </View>
-      )}
     </View>
   );
 }
 
-// ─── StatPanel ────────────────────────────────────────────────────────────────
+// ─── StatPanel (for AdditionalBlock stat overlay — separate from slide.stats) ──
 
 function StatPanel({ position, onInsert, infographicData }: { position: InlineBlockPosition; onInsert: (b: StatBlock) => void; infographicData?: InfographicData | null }) {
   const [value, setValue] = useState('');
@@ -320,7 +562,7 @@ function StatPanel({ position, onInsert, infographicData }: { position: InlineBl
           <View style={{ height: 1, backgroundColor: COLORS.border }} />
         </>
       )}
-      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' }}>Custom Stat</Text>
+      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' }}>Custom Overlay Stat</Text>
       {[
         { label: 'Value *', value, set: setValue, placeholder: 'e.g. 87% or $4.2B' },
         { label: 'Label *', value: label, set: setLabel, placeholder: 'e.g. Market Growth' },
@@ -344,7 +586,7 @@ function StatPanel({ position, onInsert, infographicData }: { position: InlineBl
       <Pressable onPress={handleAdd}>
         <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ borderRadius: RADIUS.full, paddingVertical: 13, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}>
           <Ionicons name="add" size={18} color="#FFF" />
-          <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Add Stat Card</Text>
+          <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Add Stat Overlay</Text>
         </LinearGradient>
       </Pressable>
     </View>
@@ -471,7 +713,7 @@ function SpacerPanel({ position, onInsert }: { position: InlineBlockPosition; on
   );
 }
 
-// ─── OverlayBlockCard (Part 30: uses JoystickPositionControl) ─────────────────
+// ─── OverlayBlockCard ─────────────────────────────────────────────────────────
 
 function OverlayBlockCard({
   block,
@@ -497,19 +739,16 @@ function OverlayBlockCard({
 
   return (
     <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: isOverlay ? `${COLORS.primary}40` : COLORS.border, overflow: 'hidden' }}>
-      {/* Header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingVertical: 10, backgroundColor: isOverlay ? `${COLORS.primary}12` : `${col}12`, borderBottomWidth: 1, borderBottomColor: isOverlay ? `${COLORS.primary}20` : `${col}20` }}>
         <Ionicons name={blockIcon[block.type] as any} size={13} color={isOverlay ? COLORS.primary : col} />
         <Text style={{ color: isOverlay ? COLORS.primary : col, fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1, flex: 1 }}>
           {block.type.replace('_', ' ')} · {isOverlay ? '🎯 On Slide' : '⬇ Below Slide'}
         </Text>
-        {/* Edit joystick toggle */}
         {isOverlay && (
           <Pressable onPress={() => setEditPos(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name={editPos ? 'chevron-up' : 'locate-outline'} size={13} color={COLORS.primary} />
           </Pressable>
         )}
-        {/* Delete */}
         <TouchableOpacity
           onPress={() => Alert.alert('Delete Block', `Remove this ${block.type.replace('_', ' ')} block?`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => onDelete(block.id) }])}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -520,7 +759,6 @@ function OverlayBlockCard({
         </TouchableOpacity>
       </View>
 
-      {/* Part 30: Joystick position editor */}
       {isOverlay && editPos && (
         <View style={{ padding: SPACING.md }}>
           <JoystickPositionControl
@@ -532,7 +770,6 @@ function OverlayBlockCard({
         </View>
       )}
 
-      {/* Block summary */}
       {!editPos && (
         <View style={{ paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm }}>
           {block.type === 'stat' && (
@@ -570,7 +807,7 @@ function OverlayBlockCard({
   );
 }
 
-// ─── InlineBlockInserterModal (Part 30: fully updated) ────────────────────────
+// ─── InlineBlockInserterModal ─────────────────────────────────────────────────
 
 function InlineBlockInserterModal({
   visible,
@@ -602,7 +839,6 @@ function InlineBlockInserterModal({
   });
 
   const handleInsert = useCallback((block: AdditionalBlock) => {
-    // Sentinel for "open online search" from ImagePanel
     if ((block as any).id === '__OPEN_ONLINE_SEARCH__') {
       onClose();
       setTimeout(onOpenOnlineImageSearch, 150);
@@ -616,10 +852,8 @@ function InlineBlockInserterModal({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={onClose}>
         <Pressable onPress={e => e.stopPropagation()} style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.md, maxHeight: SCREEN_H * 0.92, borderTopWidth: 1, borderTopColor: COLORS.border }}>
-          {/* Handle */}
           <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
 
-          {/* Header */}
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
             <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
               <Ionicons name="add" size={19} color="#FFF" />
@@ -633,19 +867,10 @@ function InlineBlockInserterModal({
             </Pressable>
           </View>
 
-          {/* Block type tabs
-              Part 30 FIX: wrapped in ScrollView with horizontal scrolling
-              so tabs are never squished on narrow screens */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{
-              paddingHorizontal: SPACING.lg,
-              gap:               SPACING.sm,
-              marginBottom:      SPACING.md,
-              // Ensure minimum height so chips don't get compressed
-              alignItems:        'center',
-            }}
+            contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: SPACING.sm, marginBottom: SPACING.md, alignItems: 'center' }}
             style={{ flexGrow: 0, flexShrink: 0 }}
           >
             {BLOCK_TABS.map(tab => {
@@ -655,32 +880,14 @@ function InlineBlockInserterModal({
                 <Pressable
                   key={tab.id}
                   onPress={() => {
-                    if (isIconTab) {
-                      // Close this modal and open Iconify picker
-                      onClose();
-                      setTimeout(onOpenIconifyPicker, 150);
-                      return;
-                    }
+                    if (isIconTab) { onClose(); setTimeout(onOpenIconifyPicker, 150); return; }
                     setActiveTab(tab.id);
                   }}
-                  style={{
-                    flexDirection:   'row',
-                    alignItems:      'center',
-                    gap:             5,
-                    backgroundColor: active ? `${tab.color}18` : COLORS.backgroundElevated,
-                    borderRadius:    RADIUS.full,
-                    paddingHorizontal: 14,
-                    paddingVertical: 9,
-                    borderWidth:     1,
-                    borderColor:     active ? tab.color : COLORS.border,
-                    // Prevent flex shrink so chips stay their natural size
-                    flexShrink:      0,
-                  }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: active ? `${tab.color}18` : COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 9, borderWidth: 1, borderColor: active ? tab.color : COLORS.border, flexShrink: 0 }}
                 >
                   <Ionicons name={tab.icon as any} size={14} color={active ? tab.color : COLORS.textMuted} />
                   <Text style={{ color: active ? tab.color : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: active ? '700' : '500' }}>
-                    {tab.label}
-                    {isIconTab ? ' ✦' : ''}
+                    {tab.label}{isIconTab ? ' ✦' : ''}
                   </Text>
                 </Pressable>
               );
@@ -688,14 +895,11 @@ function InlineBlockInserterModal({
           </ScrollView>
 
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg, gap: SPACING.lg }}>
-
-            {/* Placement / Joystick — always shown at top */}
             <View style={{ gap: SPACING.sm }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Ionicons name="layers-outline" size={13} color={COLORS.textMuted} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>Placement</Text>
               </View>
-              {/* Part 30: Joystick replaces coordinate sliders */}
               <JoystickPositionControl
                 position={position}
                 onChange={setPosition}
@@ -703,21 +907,11 @@ function InlineBlockInserterModal({
                 accentColor={accentColor}
               />
             </View>
-
             <View style={{ height: 1, backgroundColor: COLORS.border }} />
-
-            {/* Block-specific panel */}
-            {activeTab === 'image'       && (
-              <ImagePanel
-                position={position}
-                slideTitle={slide.title}
-                slideLayout={slide.layout}
-                onInsert={handleInsert}
-              />
-            )}
-            {activeTab === 'stat'        && <StatPanel    position={position} onInsert={handleInsert} infographicData={infographicData} />}
-            {activeTab === 'chart'       && <ChartPanel   position={position} onInsert={handleInsert} infographicData={infographicData} />}
-            {activeTab === 'quote_block' && <QuotePanel   position={position} onInsert={handleInsert} />}
+            {activeTab === 'image'       && <ImagePanel position={position} slideTitle={slide.title} slideLayout={slide.layout} onInsert={handleInsert} />}
+            {activeTab === 'stat'        && <StatPanel  position={position} onInsert={handleInsert} infographicData={infographicData} />}
+            {activeTab === 'chart'       && <ChartPanel position={position} onInsert={handleInsert} infographicData={infographicData} />}
+            {activeTab === 'quote_block' && <QuotePanel position={position} onInsert={handleInsert} />}
             {activeTab === 'divider'     && <DividerPanel position={position} onInsert={handleInsert} accentColor={accentColor} />}
             {activeTab === 'spacer'      && <SpacerPanel  position={position} onInsert={handleInsert} />}
           </ScrollView>
@@ -746,9 +940,12 @@ interface SlideEditorCanvasProps {
   onDeleteBlock:       (blockId: string) => void;
   onUpdateBlock:       (blockId: string, patch: Partial<AdditionalBlock>) => void;
   onAddBlock:          (block: AdditionalBlock) => void;
-  /** Part 30: called when user requests the online image search panel */
+  /** Part 41.9: handlers for slide.stats (pre-generated stats in stats layout) */
+  onUpdateStat?:       (index: number, patch: Partial<StatItem>) => void;
+  onDeleteStat?:       (index: number) => void;
+  onAddStatToSlide?:   (stat: StatItem) => void;
+  /** Part 30 */
   onOpenOnlineImageSearch?: () => void;
-  /** Part 30: called when user requests the Iconify picker panel */
   onOpenIconifyPicker?: () => void;
 }
 
@@ -759,6 +956,7 @@ export function SlideEditorCanvas({
   onFieldTap, onEditingTextChange, onCommitField,
   onUpdateBullet, onAddBullet, onRemoveBullet,
   onDeleteBlock, onUpdateBlock, onAddBlock,
+  onUpdateStat, onDeleteStat, onAddStatToSlide,
   onOpenOnlineImageSearch,
   onOpenIconifyPicker,
 }: SlideEditorCanvasProps) {
@@ -861,21 +1059,15 @@ export function SlideEditorCanvas({
           <BulletEditor bullets={slide.bullets ?? []} accentColor={accentColor} onUpdate={onUpdateBullet} onAdd={onAddBullet} onRemove={onRemoveBullet} />
         )}
 
-        {/* Stats */}
-        {slide.layout === 'stats' && (slide.stats?.length ?? 0) > 0 && (
-          <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${accentColor}25`, gap: SPACING.sm }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-              <Ionicons name="stats-chart-outline" size={14} color={accentColor} />
-              <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 }}>Statistics ({slide.stats!.length})</Text>
-            </View>
-            {slide.stats!.map((stat, i) => (
-              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, padding: SPACING.sm }}>
-                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: stat.color ?? accentColor, flexShrink: 0 }} />
-                <Text style={{ color: stat.color ?? accentColor, fontSize: 20, fontWeight: '900', minWidth: 60 }}>{stat.value}</Text>
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 }}>{stat.label}</Text>
-              </View>
-            ))}
-          </View>
+        {/* ── Part 41.9: Interactive editable stats section ── */}
+        {slide.layout === 'stats' && (
+          <EditableStatsSection
+            stats={slide.stats ?? []}
+            accentColor={accentColor}
+            onUpdate={(index, patch) => onUpdateStat?.(index, patch)}
+            onDelete={index => onDeleteStat?.(index)}
+            onAdd={stat => onAddStatToSlide?.(stat)}
+          />
         )}
 
         {/* Speaker notes */}

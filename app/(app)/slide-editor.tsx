@@ -1,7 +1,6 @@
 // app/(app)/slide-editor.tsx
-// Part 41.9 — DesignPanel now receives currentGlobalFontScale, currentGlobalTextColor,
-//             onSetGlobalFontScale, onSetGlobalTextColor, and updated onOpenColorPicker
-//             signature to include 'global_text_color' scope.
+// Part 41.9 — Added onUpdateStat, onDeleteStat, onAddStatToSlide props to SlideEditorCanvas.
+//             DesignPanel receives globalFontScale + globalTextColor props.
 // All other logic identical to Part 41.6.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -125,7 +124,7 @@ export default function SlideEditorScreen() {
     if (t.scope === 'slide_bg')          return activeSlide?.editorData?.backgroundColor ?? tokens.background;
     if (t.scope === 'accent')            return activeSlide?.accentColor ?? tokens.primary;
     if (t.scope === 'field')             return editor.getFormatting((t as any).fieldKey).color ?? accentColor;
-    if (t.scope === 'global_text_color') return activeSlide?.editorData?.globalTextColor ?? tokens.textPrimary; // Part 41.9
+    if (t.scope === 'global_text_color') return activeSlide?.editorData?.globalTextColor ?? tokens.textPrimary;
     return accentColor;
   })();
 
@@ -134,7 +133,7 @@ export default function SlideEditorScreen() {
     if (!t) return 'Color Picker';
     if (t.scope === 'slide_bg')          return 'Slide Background Color';
     if (t.scope === 'accent')            return 'Accent Color';
-    if (t.scope === 'global_text_color') return 'Text Color Override'; // Part 41.9
+    if (t.scope === 'global_text_color') return 'Text Color Override';
     return `${(t as any)?.fieldKey ?? 'Field'} Color`;
   })();
 
@@ -376,6 +375,10 @@ export default function SlideEditorScreen() {
                 onDeleteBlock={editor.deleteBlock}
                 onUpdateBlock={editor.updateBlock}
                 onAddBlock={editor.addBlock}
+                // Part 41.9 — stat CRUD handlers
+                onUpdateStat={editor.updateStat}
+                onDeleteStat={editor.deleteStat}
+                onAddStatToSlide={editor.addStatToSlide}
                 onOpenOnlineImageSearch={() => setShowOnlineImageSearch(true)}
                 onOpenIconifyPicker={() => setShowIconifyPicker(true)}
               />
@@ -464,7 +467,7 @@ export default function SlideEditorScreen() {
         onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
 
-      {/* Part 41.9: DesignPanel now receives font size + text color props */}
+      {/* Part 41.9: DesignPanel with font scale + text color */}
       <DesignPanel
         visible={isDesignOpen}
         tokens={tokens}

@@ -1,8 +1,8 @@
 // src/hooks/useSlideEditor.ts
 // Part 41.9 — Added setGlobalFontScale, setGlobalTextColor methods.
 //             applyPickedColor now handles 'global_text_color' scope.
-//             UseSlideEditorReturn updated with new methods.
-// All other logic identical to Part 41.7.
+//             Added updateStat, deleteStat, addStatToSlide for editable pre-generated stats.
+//             switchLayout completely rewritten with full content migration across all layouts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -63,6 +63,10 @@ import type {
   SlideLayout,
   ResearchReport,
 } from '../types';
+
+// ─── Stat item type ───────────────────────────────────────────────────────────
+
+export type StatItem = { value: string; label: string; color?: string };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
 
@@ -227,6 +231,13 @@ export interface UseSlideEditorReturn {
   updateBlock:  (blockId: string, patch: Partial<AdditionalBlock>) => void;
   deleteBlock:  (blockId: string) => void;
   reorderBlocks:(from: number, to: number) => void;
+
+  /** Part 41.9 — edit a pre-generated stat in the stats layout */
+  updateStat:     (index: number, patch: Partial<StatItem>) => void;
+  /** Part 41.9 — remove a pre-generated stat */
+  deleteStat:     (index: number) => void;
+  /** Part 41.9 — add a new stat to the stats layout */
+  addStatToSlide: (stat: StatItem) => void;
 
   undo:    () => void;
   redo:    () => void;
@@ -491,26 +502,118 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
 
   // ─── DESIGN ───────────────────────────────────────────────────────────────
 
+  /**
+   * Part 41.9 — Comprehensive layout switching with full content migration.
+   *
+   * Migration matrix (only fills fields that don't already have content):
+   *   → bullet layouts  : body→bullets, stats→bullets, quote→bullet[0]
+   *   → body layouts    : bullets→body, stats→body, quote→body
+   *   → stats layout    : bullets→stat stubs, body→stat stub
+   *   → quote layout    : body→quote, bullets[0]→quote, stats→quote
+   *   → title/closing   : body/bullets/stats→subtitle
+   *   → section         : body→sectionTag (if missing)
+   */
   const switchLayout = useCallback((layout: SlideLayout) => {
     pushUndo();
     const idx   = stateRef.current.activeSlideIndex;
     const slide = stateRef.current.slides[idx];
     const patch: Partial<EditableSlide> = { layout };
+
+    const hasBody    = !!slide.body?.trim();
+    const hasBullets = (slide.bullets?.filter(b => b.trim()).length ?? 0) > 0;
+    const hasStats   = (slide.stats?.filter(s => s.value || s.label).length ?? 0) > 0;
+    const hasQuote   = !!slide.quote?.trim();
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /** Join bullets into a single body paragraph */
+    const bulletsToBody = (): string =>
+      (slide.bullets ?? [])
+        .filter(b => b.trim())
+        .map(b => b.trim().replace(/[^.!?]$/, s => s + '.'))
+        .join(' ');
+
+    /** Split body into bullet sentences (max 6) */
+    const bodyToBullets = (): string[] => {
+      const raw = slide.body ?? '';
+      const parts = raw.split(/(?<=[.!?])\s+|;\s*/).map(s => s.trim()).filter(s => s.length > 2);
+      return parts.length > 0 ? parts.slice(0, 6) : [raw.trim()];
+    };
+
+    /** Convert stats to bullet strings: "87% — Market Growth" */
+    const statsToBullets = (): string[] =>
+      (slide.stats ?? []).map(s => `${s.value} — ${s.label}`);
+
+    /** Convert stats to a prose sentence */
+    const statsToBody = (): string =>
+      (slide.stats ?? []).map(s => `${s.value}: ${s.label}`).join('. ') + '.';
+
+    /** Try to parse a bullet as a stat (e.g. "87% — Market Growth") */
+    const bulletToStat = (b: string): StatItem => {
+      const m = b.match(/^([\d,.]+[%$BMKkbmx+×]*)\s*[-—:]\s*(.+)/);
+      return m
+        ? { value: m[1].trim(), label: m[2].trim().slice(0, 30) }
+        : { value: '—', label: b.trim().slice(0, 30) };
+    };
+
+    // ── target-layout migrations ─────────────────────────────────────────────
+
     const isBulletTarget = ['bullets', 'agenda', 'predictions', 'references'].includes(layout);
     const isBodyTarget   = ['content', 'chart_ref'].includes(layout);
-    if (isBulletTarget && (!slide.bullets || slide.bullets.length === 0) && slide.body) {
-      const sentences = slide.body.split(/(?<=[.!?])\s+|;\s*/).map(s => s.trim()).filter(s => s.length > 2).slice(0, 6);
-      patch.bullets = sentences.length > 0 ? sentences : [slide.body.trim()];
+
+    if (isBulletTarget) {
+      if (!hasBullets) {
+        if (hasBody)        patch.bullets = bodyToBullets();
+        else if (hasStats)  patch.bullets = statsToBullets();
+        else if (hasQuote)  patch.bullets = [slide.quote!.trim()];
+      }
     }
-    if (isBodyTarget && !slide.body && slide.bullets?.length) {
-      patch.body = slide.bullets.filter(b => b.trim()).map(b => b.trim().replace(/[^.!?]$/, s => s + '.')).join(' ');
+
+    if (isBodyTarget) {
+      if (!hasBody) {
+        if (hasBullets)     patch.body = bulletsToBody();
+        else if (hasStats)  patch.body = statsToBody();
+        else if (hasQuote)  patch.body = slide.quote?.trim();
+      }
     }
-    if (layout === 'quote' && !slide.quote) {
-      patch.quote = slide.body?.trim() || slide.bullets?.[0]?.trim();
+
+    if (layout === 'stats') {
+      if (!hasStats) {
+        if (hasBullets) {
+          patch.stats = (slide.bullets ?? [])
+            .filter(b => b.trim())
+            .slice(0, 4)
+            .map(bulletToStat);
+        } else if (hasBody) {
+          const firstSentence = slide.body!.split(/[.!?]/)[0]?.trim();
+          patch.stats = [{ value: '—', label: firstSentence?.slice(0, 30) ?? 'Key Stat' }];
+        }
+      }
     }
-    if ((layout === 'closing' || layout === 'title') && !slide.subtitle) {
-      patch.subtitle = slide.body?.split(/[.!?]/)[0]?.trim() || slide.bullets?.[0]?.trim();
+
+    if (layout === 'quote') {
+      if (!hasQuote) {
+        if (hasBody)         patch.quote = slide.body?.trim();
+        else if (hasBullets) patch.quote = slide.bullets?.[0]?.trim();
+        else if (hasStats)   patch.quote = (slide.stats ?? []).map(s => `${s.value} ${s.label}`).join(', ');
+      }
     }
+
+    if (layout === 'title' || layout === 'closing') {
+      if (!slide.subtitle) {
+        if (hasBody)         patch.subtitle = slide.body?.split(/[.!?]/)[0]?.trim();
+        else if (hasBullets) patch.subtitle = slide.bullets?.[0]?.trim();
+        else if (hasStats)   patch.subtitle = (slide.stats ?? []).map(s => s.value).join(' · ');
+      }
+    }
+
+    if (layout === 'section') {
+      if (!slide.sectionTag) {
+        if (hasBody)         patch.sectionTag = slide.body?.split(/[.!?]/)[0]?.trim().slice(0, 20);
+        else if (hasBullets) patch.sectionTag = slide.bullets?.[0]?.trim().slice(0, 20);
+      }
+    }
+
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch });
     dispatch({ type: 'SET_DIRTY', dirty: true });
     dispatch({ type: 'SET_PANEL', panel: 'none' });
@@ -622,6 +725,40 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
+  // ─── Part 41.9: Stat CRUD ─────────────────────────────────────────────────
+
+  const updateStat = useCallback((statIndex: number, patch: Partial<StatItem>) => {
+    const idx   = stateRef.current.activeSlideIndex;
+    const slide = stateRef.current.slides[idx];
+    const stats = [...(slide.stats ?? [])];
+    if (statIndex < 0 || statIndex >= stats.length) return;
+    stats[statIndex] = { ...stats[statIndex], ...patch };
+    dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { stats } });
+    dispatch({ type: 'SET_DIRTY', dirty: true });
+  }, []);
+
+  const deleteStat = useCallback((statIndex: number) => {
+    pushUndo();
+    const idx   = stateRef.current.activeSlideIndex;
+    const slide = stateRef.current.slides[idx];
+    const stats = (slide.stats ?? []).filter((_, i) => i !== statIndex);
+    dispatch({
+      type:  'PATCH_SLIDE',
+      index: idx,
+      patch: { stats: stats.length > 0 ? stats : undefined },
+    });
+    dispatch({ type: 'SET_DIRTY', dirty: true });
+  }, [pushUndo]);
+
+  const addStatToSlide = useCallback((stat: StatItem) => {
+    pushUndo();
+    const idx   = stateRef.current.activeSlideIndex;
+    const slide = stateRef.current.slides[idx];
+    const stats = [...(slide.stats ?? []), stat];
+    dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { stats } });
+    dispatch({ type: 'SET_DIRTY', dirty: true });
+  }, [pushUndo]);
+
   // ─── COLOR PICKER ─────────────────────────────────────────────────────────
 
   const openColorPicker = useCallback((target: ColorPickerTarget) => {
@@ -636,7 +773,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
       case 'slide_bg':          setBackgroundColor(color, false); break;
       case 'accent':            setAccentColor(color, false);     break;
       case 'field':             setFieldColor((target as any).fieldKey, color); break;
-      case 'global_text_color': setGlobalTextColor(color, false); break; // Part 41.9
+      case 'global_text_color': setGlobalTextColor(color, false); break;
       case 'block': {
         const idx    = stateRef.current.activeSlideIndex;
         const slide  = stateRef.current.slides[idx];
@@ -994,11 +1131,14 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     applyFormatting, toggleBold, toggleItalic,
     cycleFontSizeUp, cycleFontSizeDown, setAlignment, setFieldColor, getFormatting,
     switchLayout, setBackgroundColor, setAccentColor, setTheme, setFontFamily, setSpacing,
-    setGlobalFontScale,   // Part 41.9
-    setGlobalTextColor,   // Part 41.9
+    setGlobalFontScale,
+    setGlobalTextColor,
     openColorPicker, applyPickedColor,
     addSlide, deleteSlide, reorderSlides, duplicateSlide,
     addBlock, updateBlock, deleteBlock, reorderBlocks,
+    updateStat,     // Part 41.9
+    deleteStat,     // Part 41.9
+    addStatToSlide, // Part 41.9
     undo, redo,
     canUndo: editorState.undoStack.length > 0,
     canRedo: editorState.redoStack.length > 0,
