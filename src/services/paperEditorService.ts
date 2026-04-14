@@ -1,17 +1,12 @@
 // src/services/paperEditorService.ts
 // Part 38 — Paper editor: save, load, versioning helpers
-// Part 38c FIXES:
-//   FIX #1 — fetchCitationFromUrl: replaced direct HTML fetch (fails on mobile
-//             due to CORS) with an OpenAI GPT call that extracts metadata from
-//             the URL string itself when fetch fails, or parses the HTML when
-//             fetch succeeds via a proxy-friendly approach.
-//   FIX #3 — savePaperCitations: new function that atomically writes updated
-//             citations array back to academic_papers table so changes from
-//             Citation Manager survive screen revisits.
+// Part 41.8 FIX (Problem 1) — savePaperEdits now passes p_editor_data: null
+//   so PostgREST always hits the single 6-arg overload instead of failing
+//   with PGRST203 "could not choose best candidate" when two overloads exist.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { supabase }   from '../lib/supabase';
-import { openaiClient } from './openaiClient';
+import { supabase }       from '../lib/supabase';
+import { openaiClient }   from './openaiClient';
 import type {
   AcademicSection,
   AcademicCitationStyle,
@@ -23,6 +18,7 @@ import type {
 } from '../types/paperEditor';
 
 // ─── Save edits ───────────────────────────────────────────────────────────────
+// FIX: always pass p_editor_data so PostgREST hits the single 6-arg function.
 
 export async function savePaperEdits(
   paperId:   string,
@@ -33,11 +29,12 @@ export async function savePaperEdits(
 ): Promise<boolean> {
   try {
     const { error } = await supabase.rpc('save_paper_editor', {
-      p_paper_id:   paperId,
-      p_user_id:    userId,
-      p_sections:   sections as any,
-      p_abstract:   abstract,
-      p_word_count: wordCount,
+      p_paper_id:    paperId,
+      p_user_id:     userId,
+      p_sections:    sections as any,
+      p_abstract:    abstract,
+      p_word_count:  wordCount,
+      p_editor_data: null,   // ← explicit null avoids overload ambiguity
     });
     if (error) {
       console.warn('[paperEditorService] savePaperEdits error:', error.message);
@@ -50,9 +47,7 @@ export async function savePaperEdits(
   }
 }
 
-// ─── FIX #3: Save citations atomically ───────────────────────────────────────
-// Called by useCitationManager whenever citations array changes so that
-// closing and reopening paper-editor shows the updated list.
+// ─── Save citations atomically ────────────────────────────────────────────────
 
 export async function savePaperCitations(
   paperId:   string,
@@ -204,13 +199,7 @@ export async function incrementPaperAIEdits(
   }
 }
 
-// ─── FIX #1: Citation URL fetcher (OpenAI-powered) ───────────────────────────
-// The original direct HTML fetch failed on mobile (CORS/RN network restrictions).
-// Strategy:
-//   1. Try a direct fetch for the page HTML (works on some servers).
-//   2. Regardless of fetch success, use OpenAI to extract/infer metadata because
-//      GPT-4o knows many academic URLs and can infer author/year/publisher from
-//      the URL structure even without the HTML body.
+// ─── Citation URL fetcher (OpenAI-powered) ────────────────────────────────────
 
 export async function fetchCitationFromUrl(url: string): Promise<{
   title:     string;
@@ -222,7 +211,6 @@ export async function fetchCitationFromUrl(url: string): Promise<{
   try {
     let htmlSnippet = '';
 
-    // Step 1: Attempt a plain fetch (best-effort; may fail due to CORS on mobile)
     try {
       const controller = new AbortController();
       const timeoutId  = setTimeout(() => controller.abort(), 6000);
@@ -233,21 +221,15 @@ export async function fetchCitationFromUrl(url: string): Promise<{
       clearTimeout(timeoutId);
 
       if (response.ok) {
-        const html = await response.text();
-        // Extract only the <head> section to keep tokens low
+        const html      = await response.text();
         const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-        htmlSnippet = headMatch ? headMatch[1].slice(0, 3000) : html.slice(0, 3000);
+        htmlSnippet     = headMatch ? headMatch[1].slice(0, 3000) : html.slice(0, 3000);
       }
     } catch {
-      // Fetch failed (CORS, timeout, network) — continue to OpenAI-only path
+      // CORS / timeout — continue to OpenAI-only path
     }
 
-    // Step 2: Use OpenAI to extract citation metadata
-    // Works from URL alone (GPT knows arXiv, DOI, PubMed, nature.com, etc.)
-    // or from the HTML snippet if available.
-    const contextBlock = htmlSnippet
-      ? `HTML HEAD SNIPPET:\n${htmlSnippet}\n\n`
-      : '';
+    const contextBlock = htmlSnippet ? `HTML HEAD SNIPPET:\n${htmlSnippet}\n\n` : '';
 
     const prompt = `${contextBlock}URL: ${url}
 
@@ -270,24 +252,18 @@ Do not include any text outside the JSON object.`;
       max_tokens:  200,
       temperature: 0,
       messages: [
-        {
-          role:    'system',
-          content: 'You are an academic citation extractor. Return only valid JSON.',
-        },
-        { role: 'user', content: prompt },
+        { role: 'system', content: 'You are an academic citation extractor. Return only valid JSON.' },
+        { role: 'user',   content: prompt },
       ],
     });
 
-    const text = raw.choices[0]?.message?.content?.trim() ?? '';
-
-    // Strip markdown code fences if present
+    const text     = raw.choices[0]?.message?.content?.trim() ?? '';
     const jsonText = text
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```\s*$/, '')
       .trim();
 
     const parsed = JSON.parse(jsonText);
-
     return {
       title:     (parsed.title     ?? '').trim(),
       authors:   (parsed.authors   ?? '').trim(),

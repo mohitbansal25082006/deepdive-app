@@ -5,6 +5,7 @@
 // Part 38e FIX — Added paper_ai_generate_citations (2 cr).
 // Part 39 FIX — Added podcast_quality_high (5 cr) and podcast_quality_lossless (10 cr).
 // Part 40 — Added voice_debate (25 cr) — full audio debate with 7 TTS voice personas.
+// Part 41.8 — Added paper_ai_generate_section (4 cr) — AI full section generation.
 
 import type { CreditPack, CreditFeature } from '../types/credits';
 
@@ -19,19 +20,19 @@ export const FEATURE_COSTS: Record<CreditFeature, number> = {
   research_quick:  5,
   research_deep:   10,
   research_expert: 15,
-  // Podcast — base duration costs (quality add-on is separate below)
+  // Podcast — base duration costs
   podcast_5min:    10,
   podcast_10min:   20,
   podcast_15min:   30,
   podcast_20min:   40,
-  // Podcast quality add-ons (charged on top of duration cost)
-  podcast_quality_high:     5,   // +5 cr for High quality (tts-1-hd + mp3)
-  podcast_quality_lossless: 10,  // +10 cr for Lossless quality (tts-1-hd + wav)
+  // Podcast quality add-ons
+  podcast_quality_high:     5,
+  podcast_quality_lossless: 10,
   // Content
   academic_paper:  25,
   presentation:    10,
   debate:          15,
-  // Part 40: Voice Debate — 7 TTS voice personas + full debate audio
+  // Part 40: Voice Debate
   voice_debate:    50,
   // Slide editor AI
   slide_ai_rewrite:  1,
@@ -45,8 +46,10 @@ export const FEATURE_COSTS: Record<CreditFeature, number> = {
   paper_ai_counterargument: 2,
   paper_ai_regenerate:      3,
   paper_ai_subtitle:        1,
-  // Part 38e FIX: Citation Manager AI generator — single 2-credit deduction
+  // Part 38e FIX: Citation Manager AI generator
   paper_ai_generate_citations: 2,
+  // Part 41.8: Full section generation (title + content + subsections)
+  paper_ai_generate_section: 4,
 };
 
 // ─── Feature Labels ───────────────────────────────────────────────────────────
@@ -64,12 +67,10 @@ export const FEATURE_LABELS: Record<CreditFeature, string> = {
   academic_paper:  'Academic Paper',
   presentation:    'AI Presentation',
   debate:          'AI Debate',
-  // Part 40
   voice_debate:    'Voice Debate',
   slide_ai_rewrite:  'AI Slide Rewrite',
   slide_ai_generate: 'AI Generate Slide',
   slide_ai_notes:    'AI Speaker Notes',
-  // Part 38b
   paper_ai_expand:          'Paper AI — Expand',
   paper_ai_shorten:         'Paper AI — Shorten',
   paper_ai_formalize:       'Paper AI — Formalize',
@@ -77,8 +78,9 @@ export const FEATURE_LABELS: Record<CreditFeature, string> = {
   paper_ai_counterargument: 'Paper AI — Add Counterargument',
   paper_ai_regenerate:      'Paper AI — Regenerate Section',
   paper_ai_subtitle:        'Paper AI — Generate Subsection Title',
-  // Part 38e FIX
   paper_ai_generate_citations: 'Paper AI — Generate Citations',
+  // Part 41.8
+  paper_ai_generate_section: 'Paper AI — Generate Section',
 };
 
 // ─── Feature Icons ─────────────────────────────────────────────────────────────
@@ -96,12 +98,10 @@ export const FEATURE_ICONS: Record<CreditFeature, string> = {
   academic_paper:  'school-outline',
   presentation:    'easel-outline',
   debate:          'people-outline',
-  // Part 40
   voice_debate:    'mic-outline',
   slide_ai_rewrite:  'pencil-outline',
   slide_ai_generate: 'add-circle-outline',
   slide_ai_notes:    'document-text-outline',
-  // Part 38b
   paper_ai_expand:          'expand-outline',
   paper_ai_shorten:         'contract-outline',
   paper_ai_formalize:       'business-outline',
@@ -109,8 +109,9 @@ export const FEATURE_ICONS: Record<CreditFeature, string> = {
   paper_ai_counterargument: 'git-compare-outline',
   paper_ai_regenerate:      'refresh-circle-outline',
   paper_ai_subtitle:        'text-outline',
-  // Part 38e FIX
   paper_ai_generate_citations: 'sparkles-outline',
+  // Part 41.8
+  paper_ai_generate_section: 'add-circle-outline',
 };
 
 // ─── Credit Packs ─────────────────────────────────────────────────────────────
@@ -190,10 +191,6 @@ export function podcastDurationToFeature(minutes: number): CreditFeature {
   return 'podcast_20min';
 }
 
-/**
- * Returns the quality add-on CreditFeature for podcast generation,
- * or null if no extra charge applies (standard quality is free).
- */
 export function podcastQualityToFeature(
   quality: 'standard' | 'high' | 'lossless',
 ): CreditFeature | null {
@@ -204,9 +201,6 @@ export function podcastQualityToFeature(
   }
 }
 
-/**
- * Returns the total credit cost for a podcast generation including quality add-on.
- */
 export function podcastTotalCost(
   minutes: number,
   quality: 'standard' | 'high' | 'lossless',

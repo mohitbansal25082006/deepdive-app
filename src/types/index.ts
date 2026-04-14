@@ -1,10 +1,13 @@
 // src/types/index.ts
 // DeepDive AI — Complete Type Definitions
-// Parts 1–39 — All types in one file
+// Parts 1–41.8
 //
-// Part 39 change: PodcastTurn.speaker widened to include 'guest1' | 'guest2'
-// for 3-speaker V2 support. Backward compatible — 'guest' still valid.
-// All other types are identical to Part 36.
+// Part 41.8 change: AcademicSection.type widened from AcademicSectionType to string
+// so that custom sections added in the editor (e.g. 'discussion', 'limitations',
+// 'custom') are accepted by the type system without needing to extend the
+// AcademicSectionType union. AcademicSectionType is kept as the canonical enum
+// for the 7 standard section types used by the academic paper agent.
+// All other types are identical to Part 39.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
@@ -20,11 +23,7 @@ export interface Profile {
   profile_completed:   boolean;
   created_at:          string;
   updated_at:          string;
-  // Part 32: admin-controlled status field.
   account_status?:     'active' | 'suspended' | 'flagged' | 'deleted';
-  // Part 36: Social & Discovery fields.
-  // Optional (?) so existing Profile objects without these columns still type-check.
-  // Added by schema_part36.sql.
   is_public?:          boolean;
   follower_count?:     number;
   following_count?:    number;
@@ -524,6 +523,13 @@ export interface ReportEmbeddingStats {
 
 export type AcademicCitationStyle = 'apa' | 'mla' | 'chicago' | 'ieee';
 
+/**
+ * Canonical academic section types used by the AI paper agent.
+ * Part 41.8: AcademicSection.type is now `string` (not `AcademicSectionType`)
+ * so custom section types added in the editor ('discussion', 'limitations',
+ * 'custom', etc.) are accepted. AcademicSectionType is kept as a named type
+ * for use in the paper agent and validator code that only deals with canonical sections.
+ */
 export type AcademicSectionType =
   | 'abstract' | 'introduction' | 'literature_review'
   | 'methodology' | 'findings' | 'conclusion' | 'references';
@@ -534,9 +540,15 @@ export interface AcademicSubsection {
   content: string;
 }
 
+/**
+ * Part 41.8: `type` is now `string` instead of `AcademicSectionType`.
+ * This allows the paper editor to add custom section types like 'discussion',
+ * 'limitations', 'future_research', 'custom', etc. without a type error.
+ * Code that needs only canonical types can narrow using `AcademicSectionType`.
+ */
 export interface AcademicSection {
   id:           string;
-  type:         AcademicSectionType;
+  type:         string;   // widened from AcademicSectionType — see note above
   title:        string;
   content:      string;
   subsections?: AcademicSubsection[];
@@ -592,8 +604,6 @@ export interface AcademicPaperMeta {
 export type PodcastVoice  = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
 export type PodcastStatus = 'pending' | 'generating_script' | 'generating_audio' | 'completed' | 'failed';
 
-// Part 39: speaker widened to include 'guest1' | 'guest2' for 3-speaker V2 support.
-// 'guest' is kept for backward compat with V1 episodes stored in DB.
 export interface PodcastTurn {
   id:            string;
   segmentIndex:  number;
@@ -792,8 +802,6 @@ export type WorkspaceActivityAction =
   | 'comment_reply_added'     | 'access_request_sent'
   | 'access_request_approved' | 'access_request_denied';
 
-// ─── Part 11: Workspace Settings & Accent Colors ──────────────────────────────
-
 export type WorkspaceAccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'pink' | 'cyan';
 
 export const WORKSPACE_ACCENT_COLORS: Record<WorkspaceAccentColor, string> = {
@@ -903,8 +911,6 @@ export interface PresenceUser {
   reportId?: string;
 }
 
-// ─── Part 11: Comment Reactions ───────────────────────────────────────────────
-
 export const REACTION_EMOJIS = ['👍', '✅', '❓', '🔥'] as const;
 export type CommentReactionEmoji = typeof REACTION_EMOJIS[number];
 
@@ -922,16 +928,12 @@ export interface CommentReactionSummary {
   hasReacted: boolean;
 }
 
-// ─── Part 11: Avatar Picker ───────────────────────────────────────────────────
-
 export type AvatarStyle =
   | 'avataaars' | 'pixel-art' | 'lorelei' | 'bottts'
   | 'micah' | 'adventurer' | 'fun-emoji' | 'shapes';
 
 export interface AvatarStyleOption { id: AvatarStyle; label: string; emoji: string; }
 export interface AvatarOption      { url: string; style: AvatarStyle; seed: string; }
-
-// ─── Part 11: Workspace Search ────────────────────────────────────────────────
 
 export interface WorkspaceSearchResult {
   type:         'report' | 'comment' | 'member';
@@ -951,8 +953,6 @@ export interface WorkspaceSearchState {
   error:       string | null;
 }
 
-// ─── Part 11: Pinned Reports ──────────────────────────────────────────────────
-
 export interface PinnedWorkspaceReport {
   id:          string;
   workspaceId: string;
@@ -960,8 +960,6 @@ export interface PinnedWorkspaceReport {
   pinnedBy:    string;
   pinnedAt:    string;
 }
-
-// ─── Part 13B: Blocked Members ───────────────────────────────────────────────
 
 export interface BlockedMember {
   id:            string;
@@ -972,8 +970,6 @@ export interface BlockedMember {
   blockedAt:     string;
   profile?:      MiniProfile;
 }
-
-// ─── State Shapes ─────────────────────────────────────────────────────────────
 
 export interface WorkspaceListState {
   workspaces: Workspace[];
@@ -1018,8 +1014,6 @@ export interface ReactionState {
   error:              string | null;
 }
 
-// ─── Part 14: Workspace Shared Content ────────────────────────────────────────
-
 export type SharedContentType = 'presentation' | 'academic_paper' | 'podcast' | 'debate';
 
 export interface SharedWorkspaceContent {
@@ -1043,8 +1037,6 @@ export interface WorkspaceSharingState {
   isSharing: boolean;
   error:     string | null;
 }
-
-// ─── Part 15: Shared Podcast ──────────────────────────────────────────────────
 
 export interface SharedPodcast {
   id:                string;
@@ -1090,8 +1082,6 @@ export interface SharedPodcastSummary {
   sharerName?:     string;
 }
 
-// ─── Part 15: Workspace Report Download ──────────────────────────────────────
-
 export interface WorkspaceReportDownload {
   id:           string;
   workspaceId:  string;
@@ -1100,8 +1090,6 @@ export interface WorkspaceReportDownload {
   downloadedAt: string;
   format:       'pdf' | 'markdown' | 'text';
 }
-
-// ─── Part 16: Workspace Shared Debate ─────────────────────────────────────────
 
 export interface SharedDebate {
   id:                  string;
@@ -1148,8 +1136,6 @@ export interface SharedDebateSummary {
   sharerName?:        string;
 }
 
-// ─── Part 18: Workspace Notification Preferences ──────────────────────────────
-
 export interface WorkspaceNotificationPreferences {
   id:                    string;
   userId:                string;
@@ -1163,8 +1149,6 @@ export interface WorkspaceNotificationPreferences {
   createdAt:             string;
   updatedAt:             string;
 }
-
-// ─── Part 18: Member Shared Content (for MemberProfileCard) ──────────────────
 
 export interface MemberSharedStats {
   presentations: number;
@@ -1183,11 +1167,7 @@ export interface MemberSharedItem {
   sharedAt:    string;
 }
 
-// ─── Part 18: File filter for chat ───────────────────────────────────────────
-
 export type ChatFileFilterType = 'all' | 'images' | 'videos' | 'audio' | 'documents';
-
-// ─── Part 20: Debate Report Import & Voice Input ──────────────────────────────
 
 export interface DebateReportSummary {
   id:               string;
@@ -1226,8 +1206,6 @@ export interface DebateVoiceState {
   durationMs:        number;
   error:             string | null;
 }
-
-// ─── Part 25: Podcast Cloud Audio Sync ───────────────────────────────────────
 
 export interface PodcastAudioCloudSync {
   podcastId:        string;

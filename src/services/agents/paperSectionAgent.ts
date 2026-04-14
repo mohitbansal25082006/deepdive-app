@@ -1,8 +1,9 @@
 // src/services/agents/paperSectionAgent.ts
 // Part 38 — AI writing tools for academic paper sections.
 // Part 38b — Added runPaperSubsectionAI, generateSubsectionTitleAI.
-// Part 38c FIX #5 — Added generateSubsectionBodyAI: generates both title AND
-//                   body content for a new AI subsection.
+// Part 38c FIX #5 — Added generateSubsectionBodyAI.
+// Part 41.8 — Added generateFullSectionAI: generates complete new section
+//              with title, content, and subsections for insertion into paper.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { chatCompletion } from '../openaiClient';
@@ -12,7 +13,7 @@ import type {
   AcademicCitationStyle,
   Citation,
 } from '../../types';
-import type { PaperAITool } from '../../types/paperEditor';
+import type { PaperAITool, GeneratedSectionOutput } from '../../types/paperEditor';
 
 // ─── System prompts ───────────────────────────────────────────────────────────
 
@@ -213,127 +214,64 @@ export async function runPaperSectionAI(
 
 // ─── Subsection-level tools ───────────────────────────────────────────────────
 
-async function expandSubsection(
-  sub:       AcademicSubsection,
-  parent:    AcademicSection,
-  citations: Citation[],
-): Promise<string> {
+async function expandSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[]): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
-
 AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
-
-TASK: Expand this subsection to be more comprehensive. Add more detailed analysis,
-additional supporting evidence, and stronger logical flow.
+TASK: Expand this subsection to be more comprehensive. Add more detailed analysis, additional supporting evidence, and stronger logical flow.
 Target: increase word count by 40-60%. Preserve all existing key points.
 Return ONLY the rewritten prose. No heading. No explanation.`;
-
-  return chatCompletion(
-    [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.45, maxTokens: 800 },
-  );
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.45, maxTokens: 800 });
 }
 
 async function shortenSubsection(sub: AcademicSubsection, parent: AcademicSection): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
-
-TASK: Condense this subsection to approximately 60-70% of its current length.
-Retain all key findings and arguments. Remove redundant phrasing.
+TASK: Condense this subsection to approximately 60-70% of its current length. Retain all key findings and arguments.
 Return ONLY the condensed prose. No heading. No explanation.`;
-
-  return chatCompletion(
-    [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.35, maxTokens: 600 },
-  );
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.35, maxTokens: 600 });
 }
 
 async function formalizeSubsection(sub: AcademicSubsection, parent: AcademicSection): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
-
-TASK: Rewrite this subsection in strict academic register. Replace informal language,
-use passive voice, hedging language ("suggests", "indicates"), remove conversational phrases.
+TASK: Rewrite this subsection in strict academic register. Replace informal language, use passive voice, hedging language, remove conversational phrases.
 Return ONLY the rewritten prose. No heading. No explanation.`;
-
-  return chatCompletion(
-    [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.3, maxTokens: 700 },
-  );
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.3, maxTokens: 700 });
 }
 
-async function fixCitationsSubsection(
-  sub:       AcademicSubsection,
-  parent:    AcademicSection,
-  citations: Citation[],
-  style:     AcademicCitationStyle,
-): Promise<string> {
+async function fixCitationsSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[], style: AcademicCitationStyle): Promise<string> {
   const styleGuide: Record<AcademicCitationStyle, string> = {
-    apa:     'APA 7th: (AuthorLastName, Year)',
-    mla:     'MLA 9th: (AuthorLastName Page#)',
-    chicago: 'Chicago: (AuthorLastName Year)',
-    ieee:    'IEEE: [N] numbered',
+    apa: 'APA 7th: (AuthorLastName, Year)', mla: 'MLA 9th: (AuthorLastName Page#)',
+    chicago: 'Chicago: (AuthorLastName Year)', ieee: 'IEEE: [N] numbered',
   };
-
   const prompt = `${subsectionContext(sub, parent)}
 AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
 CITATION STYLE: ${style.toUpperCase()} — ${styleGuide[style]}
-
 TASK: Rewrite this subsection ensuring all in-text citations follow ${style.toUpperCase()} format.
 Return ONLY the rewritten prose. No heading. No explanation.`;
-
-  return chatCompletion(
-    [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.25, maxTokens: 700 },
-  );
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.25, maxTokens: 700 });
 }
 
-async function addCounterargumentSubsection(
-  sub:       AcademicSubsection,
-  parent:    AcademicSection,
-  citations: Citation[],
-): Promise<string> {
+async function addCounterargumentSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[]): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
 AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
-
 TASK: Add a brief counterargument (1-2 sentences acknowledging an opposing view + brief rebuttal).
 Return the FULL subsection content with the counterargument integrated. No heading.`;
-
-  return chatCompletion(
-    [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.5, maxTokens: 700 },
-  );
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.5, maxTokens: 700 });
 }
 
-async function regenerateSubsection(
-  sub:        AcademicSubsection,
-  parent:     AcademicSection,
-  citations:  Citation[],
-  paperTitle: string,
-  keywords:   string[],
-): Promise<string> {
+async function regenerateSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[], paperTitle: string, keywords: string[]): Promise<string> {
   const prompt = `PAPER TITLE: "${paperTitle}"
 PAPER KEYWORDS: ${keywords.join(', ')}
 ${subsectionContext(sub, parent)}
 AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
-
 TASK: Write a completely new version of this subsection on the topic: "${sub.title}"
 150-300 words. Formal academic register. Support with available citations.
 Return ONLY the new prose. No heading. No markdown.`;
-
-  return chatCompletion(
-    [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.5, maxTokens: 800 },
-  );
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.5, maxTokens: 800 });
 }
 
-// ─── Public subsection dispatcher ────────────────────────────────────────────
-
 export async function runPaperSubsectionAI(
-  tool:          PaperAITool,
-  sub:           AcademicSubsection,
-  parentSection: AcademicSection,
-  citations:     Citation[],
-  citStyle:      AcademicCitationStyle,
-  paperTitle:    string,
-  keywords:      string[],
+  tool: PaperAITool, sub: AcademicSubsection, parentSection: AcademicSection,
+  citations: Citation[], citStyle: AcademicCitationStyle, paperTitle: string, keywords: string[],
 ): Promise<string> {
   switch (tool) {
     case 'expand':              return expandSubsection(sub, parentSection, citations);
@@ -342,15 +280,13 @@ export async function runPaperSubsectionAI(
     case 'fix_citations':       return fixCitationsSubsection(sub, parentSection, citations, citStyle);
     case 'add_counterargument': return addCounterargumentSubsection(sub, parentSection, citations);
     case 'regenerate':          return regenerateSubsection(sub, parentSection, citations, paperTitle, keywords);
-    default:
-      throw new Error(`Unknown paper AI tool: ${tool}`);
+    default:                    throw new Error(`Unknown paper AI tool: ${tool}`);
   }
 }
 
 // ─── Subsection title generator ───────────────────────────────────────────────
 
 const TITLE_SYSTEM = `You are a senior academic editor. Write concise, precise academic subsection titles.
-
 CRITICAL OUTPUT RULES:
 - Return ONLY the subsection title — nothing else.
 - No quotes, no punctuation at the end, no explanation.
@@ -358,32 +294,24 @@ CRITICAL OUTPUT RULES:
 - Must accurately describe the content and fit within the parent section's scope.`;
 
 export async function generateSubsectionTitleAI(
-  subsectionContent:  string,
-  parentSectionTitle: string,
-  parentSectionType:  string,
+  subsectionContent: string, parentSectionTitle: string, parentSectionType: string,
 ): Promise<string> {
   if (!subsectionContent?.trim()) return 'New Subsection';
-
   const prompt = `PARENT SECTION: "${parentSectionTitle}" (type: ${parentSectionType})
-
 SUBSECTION CONTENT (first 600 chars):
 ${subsectionContent.slice(0, 600)}
-
 Generate a precise academic title (3-8 words, title-case) for this subsection.
 Return ONLY the title. No quotes. No period at the end.`;
-
   const result = await chatCompletion(
     [{ role: 'system', content: TITLE_SYSTEM }, { role: 'user', content: prompt }],
     { temperature: 0.3, maxTokens: 30 },
   );
-
   return result.replace(/^["'`]+|["'`]+$/g, '').replace(/\*+/g, '').trim();
 }
 
-// ─── FIX #5: Generate full subsection (title + body) ─────────────────────────
+// ─── Generate full subsection (title + body) ──────────────────────────────────
 
 const SUBSECTION_SYSTEM = `You are a senior academic researcher writing a new subsection for a peer-reviewed paper.
-
 CRITICAL OUTPUT RULES:
 - Return ONLY a valid JSON object with exactly two keys: "title" and "content".
 - "title": 3-8 word title-case academic heading (no period at end).
@@ -391,54 +319,120 @@ CRITICAL OUTPUT RULES:
 - Do NOT include preamble, explanation, or text outside the JSON.`;
 
 export async function generateSubsectionBodyAI(
-  parentSection: AcademicSection,
-  citations:     Citation[],
-  citStyle:      AcademicCitationStyle,
-  paperTitle:    string,
-  keywords:      string[],
-  description?:  string,
+  parentSection: AcademicSection, citations: Citation[], citStyle: AcademicCitationStyle,
+  paperTitle: string, keywords: string[], description?: string,
 ): Promise<{ title: string; content: string } | null> {
-  const existingSubtitles = (parentSection.subsections ?? [])
-    .map(s => `"${s.title}"`)
-    .join(', ');
-
+  const existingSubtitles = (parentSection.subsections ?? []).map(s => `"${s.title}"`).join(', ');
   const prompt = `PAPER TITLE: "${paperTitle}"
 PAPER KEYWORDS: ${keywords.join(', ')}
 PARENT SECTION: "${parentSection.title}" (type: ${parentSection.type})
 ${existingSubtitles ? `EXISTING SUBSECTIONS: ${existingSubtitles} (do NOT duplicate these topics)` : ''}
 ${description ? `USER DIRECTION: ${description}` : ''}
-
 AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
-
 Generate a new academic subsection for this section.
 Requirements:
 - Title: 3-8 words, title-case, no period.
 - Content: 150-280 words, formal academic prose, third-person, cite from available citations.
 - Topic must complement the parent section and not duplicate existing subsections.
 - No markdown formatting in content.
-
 Return ONLY a JSON object: {"title": "...", "content": "..."}`;
-
   try {
     const raw = await chatCompletion(
       [{ role: 'system', content: SUBSECTION_SYSTEM }, { role: 'user', content: prompt }],
       { temperature: 0.5, maxTokens: 500 },
     );
-
-    const clean = raw
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```\s*$/, '')
-      .trim();
-
+    const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
     const parsed = JSON.parse(clean);
+    if (!parsed.title || !parsed.content) return null;
+    return { title: parsed.title.replace(/^["'`]+|["'`]+$/g, '').trim(), content: parsed.content.trim() };
+  } catch (err) {
+    console.warn('[paperSectionAgent] generateSubsectionBodyAI error:', err);
+    return null;
+  }
+}
+
+// ─── Part 41.8: Generate a full section (title + content + subsections) ───────
+
+const FULL_SECTION_SYSTEM = `You are a senior academic researcher writing a complete new section for a peer-reviewed paper.
+
+CRITICAL OUTPUT RULES:
+- Return ONLY a valid JSON object with exactly these keys: "title", "type", "content", "subsections"
+- "title": 3-8 word title-case section heading (no period at end)
+- "type": the section type string provided in the prompt (use it verbatim)
+- "content": 300-600 words of formal academic prose (main section body, plain text, no markdown)
+- "subsections": array of 2-3 objects, each with "title" (3-8 words) and "content" (150-250 words)
+- No preamble, explanation, or text outside the JSON.
+- All content must be formal third-person academic register.`;
+
+export async function generateFullSectionAI(
+  sectionType:       string,
+  sectionTitle:      string,
+  description:       string,
+  citations:         Citation[],
+  citStyle:          AcademicCitationStyle,
+  paperTitle:        string,
+  keywords:          string[],
+  existingSections:  AcademicSection[],
+): Promise<GeneratedSectionOutput | null> {
+  const existingTitles = existingSections.map(s => `"${s.title}"`).join(', ');
+
+  const prompt = `PAPER TITLE: "${paperTitle}"
+PAPER KEYWORDS: ${keywords.join(', ')}
+CITATION STYLE: ${citStyle.toUpperCase()}
+EXISTING SECTIONS: ${existingTitles} (do NOT duplicate content from these sections)
+
+NEW SECTION REQUEST:
+- Section type: ${sectionType}
+- Requested title/topic: "${sectionTitle || description}"
+${description && sectionTitle ? `- Additional direction: ${description}` : ''}
+
+AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
+
+Generate a complete academic section for this paper. The section should:
+- Fit logically alongside the existing sections listed above
+- Be 300-600 words for the main content body
+- Include 2-3 subsections of 150-250 words each
+- Use formal third-person academic prose throughout
+- Cite from the available citations where appropriate
+- Match the ${citStyle.toUpperCase()} citation style
+
+Return ONLY a JSON object:
+{
+  "title": "Section Title Here",
+  "type": "${sectionType}",
+  "content": "Main section body text...",
+  "subsections": [
+    { "title": "Subsection One Title", "content": "..." },
+    { "title": "Subsection Two Title", "content": "..." }
+  ]
+}`;
+
+  try {
+    const raw = await chatCompletion(
+      [{ role: 'system', content: FULL_SECTION_SYSTEM }, { role: 'user', content: prompt }],
+      { temperature: 0.5, maxTokens: 2000 },
+    );
+
+    const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    const parsed = JSON.parse(clean);
+
     if (!parsed.title || !parsed.content) return null;
 
     return {
-      title:   parsed.title.replace(/^["'`]+|["'`]+$/g, '').trim(),
-      content: parsed.content.trim(),
+      title:       (parsed.title as string).replace(/^["'`]+|["'`]+$/g, '').trim(),
+      type:        (parsed.type as string) || sectionType,
+      content:     (parsed.content as string).trim(),
+      subsections: Array.isArray(parsed.subsections)
+        ? parsed.subsections
+            .filter((s: any) => s && typeof s.title === 'string' && typeof s.content === 'string')
+            .map((s: any) => ({
+              title:   (s.title as string).trim(),
+              content: (s.content as string).trim(),
+            }))
+        : [],
     };
   } catch (err) {
-    console.warn('[paperSectionAgent] generateSubsectionBodyAI error:', err);
+    console.warn('[paperSectionAgent] generateFullSectionAI error:', err);
     return null;
   }
 }

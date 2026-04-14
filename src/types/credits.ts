@@ -5,6 +5,7 @@
 // Part 38e FIX — Added paper_ai_generate_citations (2 cr, single atomic deduction)
 // Part 39 FIX — Added podcast_quality_high and podcast_quality_lossless.
 // Part 40 — Added voice_debate (25 cr)
+// Part 41.8 — Added paper_ai_generate_section (4 cr)
 
 export type CreditFeature =
   // ── Core research ────────────────────────────────────────────────────────
@@ -17,28 +18,30 @@ export type CreditFeature =
   | 'podcast_15min'
   | 'podcast_20min'
   // ── Podcast — audio quality add-ons (Part 39 FIX) ────────────────────────
-  | 'podcast_quality_high'      // +5 cr  — tts-1-hd + mp3
-  | 'podcast_quality_lossless'  // +10 cr — tts-1-hd + wav
+  | 'podcast_quality_high'
+  | 'podcast_quality_lossless'
   // ── Content generation ────────────────────────────────────────────────────
   | 'academic_paper'
   | 'presentation'
   | 'debate'
   // ── Part 40: Voice Debate ─────────────────────────────────────────────────
-  | 'voice_debate'              // 25 cr — full audio debate with 7 TTS voices
+  | 'voice_debate'
   // ── Slide editor AI (per-operation) ───────────────────────────────────────
-  | 'slide_ai_rewrite'    // 1 cr
-  | 'slide_ai_generate'   // 2 cr
-  | 'slide_ai_notes'      // 1 cr
+  | 'slide_ai_rewrite'
+  | 'slide_ai_generate'
+  | 'slide_ai_notes'
   // ── Part 38b: Academic Paper Editor AI (per-operation) ────────────────────
-  | 'paper_ai_expand'           // 2 cr — expand section
-  | 'paper_ai_shorten'          // 1 cr — shorten section
-  | 'paper_ai_formalize'        // 1 cr — formalize tone
-  | 'paper_ai_fix_citations'    // 1 cr — fix citation formatting
-  | 'paper_ai_counterargument'  // 2 cr — add counterargument
-  | 'paper_ai_regenerate'       // 3 cr — full rewrite
-  | 'paper_ai_subtitle'         // 1 cr — generate subsection title
+  | 'paper_ai_expand'
+  | 'paper_ai_shorten'
+  | 'paper_ai_formalize'
+  | 'paper_ai_fix_citations'
+  | 'paper_ai_counterargument'
+  | 'paper_ai_regenerate'
+  | 'paper_ai_subtitle'
   // ── Part 38e FIX: Citation Manager AI generation ──────────────────────────
-  | 'paper_ai_generate_citations'; // 2 cr — AI citation generator (single atomic call)
+  | 'paper_ai_generate_citations'
+  // ── Part 41.8: Full section generation ───────────────────────────────────
+  | 'paper_ai_generate_section';
 
 // ─── Credit Pack ─────────────────────────────────────────────────────────────
 

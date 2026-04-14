@@ -1,30 +1,42 @@
 -- ============================================================
--- DeepDive AI — Part 41 COMPLETE SCHEMA
--- Combines Part 41.1 (Podcast Video Player + Mini Player Fixes),
---            Part 41.2 (Voice Debate Cloud Audio & Cross-Device Support),
---            Part 41.3 (Stats & Public Profile Fixes),
---            Part 41.5 (Workspace Members Can Open Shared Presentations & Papers)
+-- DeepDive AI — Part 41 COMPLETE SCHEMA (Combined)
+-- Combines:
+--   Part 41.1  — Podcast Video Player + Mini Player Fixes
+--   Part 41.2  — Voice Debate Cloud Audio & Cross-Device Support
+--   Part 41.3  — Stats & Public Profile Fixes
+--   Part 41.5  — Workspace Members Can Open Shared Presentations & Papers
+--   Part 41.8  — Academic Paper Section Management
 --
 -- SECTIONS:
 --   §1  Drop existing functions (allow type changes)
 --   §2  Storage — ensure podcast-audio bucket exists
 --   §3  Storage policies — podcast-audio (podcast segments)
 --   §4  Storage policies — voice debate audio (voice_debates/* path)
---   §5  RPC: get_shared_podcast_full_for_workspace   (Part 41.1)
---   §6  RPC: get_voice_debate_full                   (Part 41.2)
---   §7  RPC: update_voice_debate_cloud_urls          (Part 41.2)
---   §8  RPC: get_user_voice_debates                  (Part 41.2)
---   §9  RPC: get_user_research_stats                 (Part 41.3)
---   §10 RPC: get_public_profile                      (Part 41.3)
---   §11 RPC: get_public_reports_for_user             (Part 41.3)
---   §12 RPC: get_shared_presentation_for_workspace   (Part 41.5)
---   §13 RPC: get_shared_academic_paper_for_workspace (Part 41.5)
---   §14 Fix shared_workspace_content content_type check (Part 41.5)
---   §15 Realtime publication (voice_debates)
---   §16 Reload PostgREST schema cache
+--   §5  Add missing columns to academic_papers
+--   §6  Drop ALL overloads of save_paper_editor (PGRST203 fix)
+--   §7  RPC: save_paper_editor                         (Part 41.8)
+--   §8  RPC: increment_paper_ai_edits                  (Part 41.8)
+--   §9  Paper versioning — paper_versions table + RLS  (Part 41.8)
+--   §10 RPC: save_paper_version                        (Part 41.8)
+--   §11 RPC: get_paper_versions                        (Part 41.8)
+--   §12 RPC: restore_paper_version                     (Part 41.8)
+--   §13 RPC: rename_paper_version                      (Part 41.8)
+--   §14 RPC: delete_paper_version                      (Part 41.8)
+--   §15 RPC: save_paper_export_config                  (Part 41.8)
+--   §16 RPC: get_shared_podcast_full_for_workspace     (Part 41.1)
+--   §17 RPC: get_voice_debate_full                     (Part 41.2)
+--   §18 RPC: update_voice_debate_cloud_urls            (Part 41.2)
+--   §19 RPC: get_user_voice_debates                    (Part 41.2)
+--   §20 RPC: get_user_research_stats                   (Part 41.3)
+--   §21 RPC: get_public_profile                        (Part 41.3)
+--   §22 RPC: get_public_reports_for_user               (Part 41.3)
+--   §23 RPC: get_shared_presentation_for_workspace     (Part 41.5)
+--   §24 RPC: get_shared_academic_paper_for_workspace   (Part 41.5)
+--   §25 Fix shared_workspace_content content_type check (Part 41.5)
+--   §26 Realtime publication (voice_debates)
+--   §27 Reload PostgREST schema cache
 --
--- Safe to re-run — uses DROP/CREATE for functions with type changes,
--- ON CONFLICT DO NOTHING for bucket, and DROP POLICY IF EXISTS throughout.
+-- Safe to re-run — idempotent throughout.
 -- ============================================================
 
 
@@ -41,6 +53,10 @@ DROP FUNCTION IF EXISTS public.update_voice_debate_cloud_urls(UUID, TEXT[], BOOL
 DROP FUNCTION IF EXISTS public.get_user_voice_debates(INTEGER, INTEGER)               CASCADE;
 DROP FUNCTION IF EXISTS public.get_shared_presentation_for_workspace(UUID, UUID)      CASCADE;
 DROP FUNCTION IF EXISTS public.get_shared_academic_paper_for_workspace(UUID, UUID)    CASCADE;
+
+-- Also drop save_paper_editor overloads (PGRST203 fix — Part 41.8)
+DROP FUNCTION IF EXISTS public.save_paper_editor(uuid, uuid, jsonb, text, integer);
+DROP FUNCTION IF EXISTS public.save_paper_editor(uuid, uuid, jsonb, text, integer, jsonb);
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -193,7 +209,380 @@ CREATE POLICY "Voice debate audio owner delete"
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §5  RPC: get_shared_podcast_full_for_workspace                  (Part 41.1)
+-- §5  Add missing columns to academic_papers                      (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'academic_papers' AND column_name = 'updated_at'
+  ) THEN
+    ALTER TABLE public.academic_papers ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'academic_papers' AND column_name = 'editor_data'
+  ) THEN
+    ALTER TABLE public.academic_papers ADD COLUMN editor_data JSONB DEFAULT NULL;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'academic_papers' AND column_name = 'ai_edits_count'
+  ) THEN
+    ALTER TABLE public.academic_papers ADD COLUMN ai_edits_count INTEGER DEFAULT 0;
+  END IF;
+END $$;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §6  (save_paper_editor overloads already dropped in §1)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §7  RPC: save_paper_editor                                      (Part 41.8)
+--     Single canonical 6-arg function. p_editor_data is optional (DEFAULT NULL).
+--     Callers that don't need it pass NULL; sections/abstract/word_count are
+--     updated without touching the editor_data column.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.save_paper_editor(
+  p_paper_id    UUID,
+  p_user_id     UUID,
+  p_sections    JSONB,
+  p_abstract    TEXT,
+  p_word_count  INTEGER,
+  p_editor_data JSONB DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  IF p_editor_data IS NOT NULL THEN
+    UPDATE public.academic_papers
+    SET
+      sections    = p_sections,
+      abstract    = p_abstract,
+      word_count  = p_word_count,
+      editor_data = p_editor_data,
+      updated_at  = NOW()
+    WHERE id      = p_paper_id
+      AND user_id = p_user_id;
+  ELSE
+    UPDATE public.academic_papers
+    SET
+      sections   = p_sections,
+      abstract   = p_abstract,
+      word_count = p_word_count,
+      updated_at = NOW()
+    WHERE id      = p_paper_id
+      AND user_id = p_user_id;
+  END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.save_paper_editor(UUID, UUID, JSONB, TEXT, INTEGER, JSONB)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.save_paper_editor(UUID, UUID, JSONB, TEXT, INTEGER, JSONB) IS
+    'Part 41.8 — Saves paper editor state. p_editor_data is optional; pass NULL to skip updating that column.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §8  RPC: increment_paper_ai_edits                               (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.increment_paper_ai_edits(
+  p_paper_id UUID,
+  p_user_id  UUID
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.academic_papers
+  SET
+    ai_edits_count = COALESCE(ai_edits_count, 0) + 1,
+    updated_at     = NOW()
+  WHERE id      = p_paper_id
+    AND user_id = p_user_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_paper_ai_edits(UUID, UUID)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.increment_paper_ai_edits(UUID, UUID) IS
+    'Part 41.8 — Atomically increments the AI edits counter for a paper.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §9  Paper versioning — paper_versions table + RLS               (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.paper_versions (
+  id             UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  paper_id       UUID    NOT NULL REFERENCES public.academic_papers(id) ON DELETE CASCADE,
+  user_id        UUID    NOT NULL,
+  version_number INTEGER NOT NULL DEFAULT 1,
+  version_label  TEXT    NOT NULL DEFAULT 'Auto-save',
+  sections       JSONB   NOT NULL DEFAULT '[]',
+  abstract       TEXT    NOT NULL DEFAULT '',
+  word_count     INTEGER NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.paper_versions ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'paper_versions' AND policyname = 'Users manage own paper versions'
+  ) THEN
+    CREATE POLICY "Users manage own paper versions"
+      ON public.paper_versions
+      FOR ALL
+      USING (user_id = auth.uid())
+      WITH CHECK (user_id = auth.uid());
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_paper_versions_paper_id
+  ON public.paper_versions(paper_id, created_at DESC);
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §10 RPC: save_paper_version                                     (Part 41.8)
+--     Inserts a new version and prunes to 20 max per paper (oldest first).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.save_paper_version(
+  p_paper_id      UUID,
+  p_user_id       UUID,
+  p_version_label TEXT,
+  p_sections      JSONB,
+  p_abstract      TEXT,
+  p_word_count    INTEGER
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_next_number INTEGER;
+  v_version_id  UUID;
+BEGIN
+  -- Get next version number
+  SELECT COALESCE(MAX(version_number), 0) + 1
+  INTO   v_next_number
+  FROM   public.paper_versions
+  WHERE  paper_id = p_paper_id
+    AND  user_id  = p_user_id;
+
+  -- Prune to keep at most 20 versions per paper (oldest first)
+  DELETE FROM public.paper_versions
+  WHERE paper_id = p_paper_id
+    AND user_id  = p_user_id
+    AND id NOT IN (
+      SELECT id FROM public.paper_versions
+      WHERE paper_id = p_paper_id
+        AND user_id  = p_user_id
+      ORDER BY created_at DESC
+      LIMIT 19   -- keep 19 to make room for the new one (total = 20)
+    );
+
+  -- Insert new version
+  INSERT INTO public.paper_versions
+    (paper_id, user_id, version_number, version_label, sections, abstract, word_count)
+  VALUES
+    (p_paper_id, p_user_id, v_next_number, p_version_label, p_sections, p_abstract, p_word_count)
+  RETURNING id INTO v_version_id;
+
+  RETURN v_version_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.save_paper_version(UUID, UUID, TEXT, JSONB, TEXT, INTEGER)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.save_paper_version(UUID, UUID, TEXT, JSONB, TEXT, INTEGER) IS
+    'Part 41.8 — Saves a named paper version; auto-prunes to 20 max per paper.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §11 RPC: get_paper_versions                                     (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.get_paper_versions(p_paper_id UUID)
+RETURNS TABLE (
+  id             UUID,
+  version_number INTEGER,
+  version_label  TEXT,
+  word_count     INTEGER,
+  created_at     TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    pv.id,
+    pv.version_number,
+    pv.version_label,
+    pv.word_count,
+    pv.created_at
+  FROM public.paper_versions pv
+  WHERE pv.paper_id = p_paper_id
+    AND pv.user_id  = auth.uid()
+  ORDER BY pv.created_at DESC
+  LIMIT 20;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_paper_versions(UUID)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.get_paper_versions(UUID) IS
+    'Part 41.8 — Returns the 20 most recent versions for a paper (current user only).';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §12 RPC: restore_paper_version                                  (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.restore_paper_version(
+  p_version_id UUID,
+  p_user_id    UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_row public.paper_versions%ROWTYPE;
+BEGIN
+  SELECT * INTO v_row
+  FROM   public.paper_versions
+  WHERE  id      = p_version_id
+    AND  user_id = p_user_id;
+
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'sections',   v_row.sections,
+    'abstract',   v_row.abstract,
+    'word_count', v_row.word_count
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.restore_paper_version(UUID, UUID)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.restore_paper_version(UUID, UUID) IS
+    'Part 41.8 — Returns sections/abstract/word_count for a specific version.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §13 RPC: rename_paper_version                                   (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.rename_paper_version(
+  p_version_id UUID,
+  p_user_id    UUID,
+  p_new_label  TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.paper_versions
+  SET version_label = p_new_label
+  WHERE id      = p_version_id
+    AND user_id = p_user_id;
+
+  RETURN FOUND;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.rename_paper_version(UUID, UUID, TEXT)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.rename_paper_version(UUID, UUID, TEXT) IS
+    'Part 41.8 — Renames a paper version label; used by VersionHistoryPanel.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §14 RPC: delete_paper_version                                   (Part 41.8)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.delete_paper_version(
+  p_version_id UUID,
+  p_user_id    UUID
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  DELETE FROM public.paper_versions
+  WHERE id      = p_version_id
+    AND user_id = p_user_id;
+
+  RETURN FOUND;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.delete_paper_version(UUID, UUID)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.delete_paper_version(UUID, UUID) IS
+    'Part 41.8 — Deletes a paper version; used by VersionHistoryPanel delete button.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §15 RPC: save_paper_export_config                               (Part 41.8)
+--     Stores export config inside editor_data.export_config path.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.save_paper_export_config(
+  p_paper_id UUID,
+  p_user_id  UUID,
+  p_config   JSONB
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.academic_papers
+  SET
+    editor_data = COALESCE(editor_data, '{}'::jsonb) || jsonb_build_object('export_config', p_config),
+    updated_at  = NOW()
+  WHERE id      = p_paper_id
+    AND user_id = p_user_id;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.save_paper_export_config(UUID, UUID, JSONB)
+  TO authenticated;
+
+COMMENT ON FUNCTION public.save_paper_export_config(UUID, UUID, JSONB) IS
+    'Part 41.8 — Persists export config into editor_data; used by the export modal.';
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §16 RPC: get_shared_podcast_full_for_workspace                  (Part 41.1)
 --     Returns full podcast row for workspace members opening Video Mode.
 --     Bypasses owner RLS so non-owner workspace members can load the row.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -235,7 +624,7 @@ COMMENT ON FUNCTION public.get_shared_podcast_full_for_workspace(UUID, UUID) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §6  RPC: get_voice_debate_full                                  (Part 41.2)
+-- §17 RPC: get_voice_debate_full                                  (Part 41.2)
 --     Returns a complete voice debate row by ID for cross-device playback.
 -- ─────────────────────────────────────────────────────────────────────────────
 
@@ -262,7 +651,7 @@ COMMENT ON FUNCTION public.get_voice_debate_full(UUID) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §7  RPC: update_voice_debate_cloud_urls                         (Part 41.2)
+-- §18 RPC: update_voice_debate_cloud_urls                         (Part 41.2)
 --     Called by the background upload service after audio segments are stored.
 -- ─────────────────────────────────────────────────────────────────────────────
 
@@ -299,8 +688,8 @@ COMMENT ON FUNCTION public.update_voice_debate_cloud_urls(UUID, TEXT[], BOOLEAN)
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §8  RPC: get_user_voice_debates                                 (Part 41.2)
---     Returns all completed voice debates for the current user.
+-- §19 RPC: get_user_voice_debates                                 (Part 41.2)
+--     Returns paginated completed voice debates for the current user.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION public.get_user_voice_debates(
@@ -329,7 +718,7 @@ COMMENT ON FUNCTION public.get_user_voice_debates(INTEGER, INTEGER) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §9  RPC: get_user_research_stats                                (Part 41.3)
+-- §20 RPC: get_user_research_stats                                (Part 41.3)
 --     Complete rewrite covering Parts 1–41.
 --     Returns exactly ONE row with all stat columns useStats.ts expects.
 --     Uses EXCEPTION WHEN undefined_table so it works at any migration state.
@@ -472,7 +861,7 @@ COMMENT ON FUNCTION public.get_user_research_stats(UUID) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §10 RPC: get_public_profile                                     (Part 41.3)
+-- §21 RPC: get_public_profile                                     (Part 41.3)
 --     Handles service-role calls (auth.uid() = NULL) from Next.js.
 --     NULL uid is treated as a trusted internal call and may read any profile.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -553,7 +942,7 @@ COMMENT ON FUNCTION public.get_public_profile(TEXT) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §11 RPC: get_public_reports_for_user                            (Part 41.3)
+-- §22 RPC: get_public_reports_for_user                            (Part 41.3)
 --     Service-role calls (v_uid = NULL) can read public profiles' reports.
 -- ─────────────────────────────────────────────────────────────────────────────
 
@@ -637,7 +1026,7 @@ COMMENT ON FUNCTION public.get_public_reports_for_user(TEXT, INT, INT) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §12 RPC: get_shared_presentation_for_workspace                 (Part 41.5)
+-- §23 RPC: get_shared_presentation_for_workspace                  (Part 41.5)
 --     Returns full presentation row for workspace members.
 --     Bypasses owner RLS so non-owner workspace members can load the row.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -684,7 +1073,7 @@ COMMENT ON FUNCTION public.get_shared_presentation_for_workspace(UUID, UUID) IS
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §13 RPC: get_shared_academic_paper_for_workspace               (Part 41.5)
+-- §24 RPC: get_shared_academic_paper_for_workspace                (Part 41.5)
 --     Returns full academic paper row for workspace members.
 --     Bypasses owner RLS so non-owner workspace members can load the row.
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -731,29 +1120,27 @@ COMMENT ON FUNCTION public.get_shared_academic_paper_for_workspace(UUID, UUID) I
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §14 Fix shared_workspace_content content_type check            (Part 41.5)
---     Ensures content_type allows 'presentation' and 'academic_paper'
+-- §25 Fix shared_workspace_content content_type check             (Part 41.5)
+--     Ensures content_type allows 'presentation', 'academic_paper',
+--     'podcast', and 'debate'.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 DO $$
 BEGIN
-  -- Drop old constraint if it doesn't include academic_paper
   ALTER TABLE public.shared_workspace_content
     DROP CONSTRAINT IF EXISTS shared_workspace_content_content_type_check;
 
-  -- Re-add with all four supported types
   ALTER TABLE public.shared_workspace_content
     ADD CONSTRAINT shared_workspace_content_content_type_check
     CHECK (content_type IN ('presentation', 'academic_paper', 'podcast', 'debate'));
 
 EXCEPTION WHEN duplicate_object THEN
-  -- Constraint already exists with same name — ignore
-  NULL;
+  NULL;  -- Constraint already exists with same definition — safe to ignore
 END $$;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §15 REALTIME — add voice_debates to supabase_realtime publication
+-- §26 REALTIME — add voice_debates to supabase_realtime publication
 -- ─────────────────────────────────────────────────────────────────────────────
 
 DO $$ BEGIN
@@ -763,11 +1150,12 @@ END $$;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- §16 RELOAD POSTGREST SCHEMA CACHE
+-- §27 RELOAD POSTGREST SCHEMA CACHE
 -- ─────────────────────────────────────────────────────────────────────────────
 
 NOTIFY pgrst, 'reload schema';
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- END OF PART 41 COMPLETE SCHEMA (41.1 + 41.2 + 41.3 + 41.5)
+-- END OF PART 41 COMPLETE SCHEMA
+-- (41.1 + 41.2 + 41.3 + 41.5 + 41.8 — all sub-parts combined)
 -- ═══════════════════════════════════════════════════════════════════════════

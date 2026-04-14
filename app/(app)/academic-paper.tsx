@@ -1,16 +1,18 @@
 // app/(app)/academic-paper.tsx
-// Part 41.4 — Refactored to use shared <AcademicExportModal>.
-//
-// The AcademicExportModal that was previously defined inline in this file
-// has been extracted to src/components/research/AcademicExportModal.tsx
-// so that workspace-shared-viewer.tsx and OfflineAcademicPaperViewer.tsx
-// can share the same export UI.
-//
-// All other logic (Part 38 fixes, FIX #2/#5/#6/#7/#8, Part 14 workspace share,
-// Part 24 credit gate) is preserved byte-for-byte.
+// Part 41.4 — Shared AcademicExportModal.
+// Part 41.8 FIXES:
+//   FIX Problem 2 — Remove the hasFocusedOnce guard that was skipping the
+//                   first useFocusEffect reload. Now EVERY focus (including
+//                   returning from paper-editor) triggers a fresh DB load.
+//                   paper-editor already calls saveNow() before navigating
+//                   back, so the DB is always up-to-date when we reload here.
+//   FIX Problem 3 — AcademicPaperView receives ap.paper which is updated by
+//                   the loadPaper() call in useFocusEffect, so the section
+//                   filter nav and all section cards always reflect the latest
+//                   saved state including any added/removed custom sections.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, Pressable, Alert, ActivityIndicator,
 } from 'react-native';
@@ -35,8 +37,6 @@ import { FEATURE_COSTS }                from '../../src/constants/credits';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 import { ResearchReport, AcademicPaper } from '../../src/types';
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
-
 export default function AcademicPaperScreen() {
   const { reportId, paperId } = useLocalSearchParams<{
     reportId: string;
@@ -58,17 +58,16 @@ export default function AcademicPaperScreen() {
     isConsuming,
   } = useCreditGate();
 
-  // FIX #5: track whether we've done the first focus (to skip initial mount)
-  const hasFocusedOnce = useRef(false);
-
-  // FIX #5: Reload paper from DB every time screen comes into focus AFTER the
-  // first mount (i.e. returning from paper-editor screen).
+  // ─── FIX P2 + P3: Reload paper from DB on EVERY focus ────────────────────
+  // The hasFocusedOnce guard has been removed.
+  // paper-editor.tsx calls saveNow() before navigating back, so the DB is
+  // always current when this effect fires. The freshly loaded paper is set
+  // into ap.paper via ap.loadPaper(), causing AcademicPaperView to re-render
+  // with the correct sections (including any additions/removals/renames).
   useFocusEffect(
     useCallback(() => {
-      if (!hasFocusedOnce.current) {
-        hasFocusedOnce.current = true;
-        return;
-      }
+      // Reload from DB every time this screen gains focus.
+      // This covers: returning from paper-editor, returning from any other screen.
       if (ap.paper?.id) {
         ap.loadPaper(ap.paper.id);
       }
@@ -157,7 +156,7 @@ export default function AcademicPaperScreen() {
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Regenerate',
+          text:  'Regenerate',
           style: 'destructive',
           onPress: async () => {
             const ok = await guardedConsume('academic_paper');
@@ -183,36 +182,20 @@ export default function AcademicPaperScreen() {
     return <LoadingOverlay visible message="Loading academic paper…" />;
   }
 
-  // Generating state
   if (ap.isGenerating) {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl }}>
-          <LinearGradient
-            colors={COLORS.gradientPrimary}
-            style={{
-              width: 80, height: 80, borderRadius: 24,
-              alignItems: 'center', justifyContent: 'center',
-              marginBottom: SPACING.lg, ...SHADOWS.large,
-            }}
-          >
+          <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 80, height: 80, borderRadius: 24, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg, ...SHADOWS.large }}>
             <Ionicons name="school" size={38} color="#FFF" />
           </LinearGradient>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm, textAlign: 'center' }}>
-            Writing Academic Paper
-          </Text>
+          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm, textAlign: 'center' }}>Writing Academic Paper</Text>
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, marginBottom: SPACING.xl }}>
             {ap.progress || 'AI is crafting a journal-quality paper from your research…'}
           </Text>
           <ActivityIndicator size="large" color={COLORS.primary} />
-          <View style={{
-            marginTop: SPACING.xl, backgroundColor: COLORS.backgroundCard,
-            borderRadius: RADIUS.xl, padding: SPACING.lg,
-            borderWidth: 1, borderColor: `${COLORS.primary}25`, width: '100%',
-          }}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>
-              Sections Being Written
-            </Text>
+          <View style={{ marginTop: SPACING.xl, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25`, width: '100%' }}>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>Sections Being Written</Text>
             {['Abstract', 'Introduction', 'Literature Review', 'Methodology', 'Findings', 'Conclusion', 'References'].map((s, i) => (
               <View key={s} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}>
                 <ActivityIndicator size="small" color={COLORS.primary} style={{ opacity: 0.4 + i * 0.08 }} />
@@ -226,71 +209,35 @@ export default function AcademicPaperScreen() {
     );
   }
 
-  // Empty state
   if (!ap.paper) {
     return (
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }}>
-          {/* FIX #6: Header — buttons only */}
-          <View style={{
-            flexDirection: 'row', alignItems: 'center',
-            paddingHorizontal: SPACING.lg, paddingVertical: SPACING.md,
-            borderBottomWidth: 1, borderBottomColor: COLORS.border,
-          }}>
-            <Pressable
-              onPress={() => router.back()}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={{
-                width: 38, height: 38, borderRadius: 12,
-                backgroundColor: COLORS.backgroundElevated,
-                alignItems: 'center', justifyContent: 'center',
-              }}
-            >
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.md, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+            <Pressable onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
             </Pressable>
             <View style={{ flex: 1 }} />
             <CreditBalance balance={balance} size="sm" />
           </View>
-
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl }}>
-              <LinearGradient
-                colors={['#1A1A35', '#12122A']}
-                style={{
-                  width: 100, height: 100, borderRadius: 28,
-                  alignItems: 'center', justifyContent: 'center',
-                  marginBottom: SPACING.lg,
-                  borderWidth: 1, borderColor: `${COLORS.primary}30`, ...SHADOWS.medium,
-                }}
-              >
+              <LinearGradient colors={['#1A1A35', '#12122A']} style={{ width: 100, height: 100, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}30`, ...SHADOWS.medium }}>
                 <Ionicons name="school-outline" size={46} color={COLORS.primary} />
               </LinearGradient>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', textAlign: 'center', marginBottom: SPACING.sm }}>
-                No Academic Paper Yet
-              </Text>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', textAlign: 'center', marginBottom: SPACING.sm }}>No Academic Paper Yet</Text>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, marginBottom: SPACING.xl }}>
                 Generate a full peer-review–quality paper from{'\n'}your existing research report.
               </Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginBottom: SPACING.xl }}>
                 {['7 Academic Sections', '3500–5000 Words', 'APA Citations', 'PDF + DOCX Export', 'Inline Editor', 'Version History'].map(f => (
-                  <View key={f} style={{
-                    backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
-                    paddingHorizontal: 12, paddingVertical: 5,
-                    borderWidth: 1, borderColor: `${COLORS.primary}25`,
-                  }}>
+                  <View key={f} style={{ backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
                     <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{f}</Text>
                   </View>
                 ))}
               </View>
               {ap.error && (
-                <Animated.View
-                  entering={FadeInDown.duration(300)}
-                  style={{
-                    backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg,
-                    padding: SPACING.md, marginBottom: SPACING.lg,
-                    borderWidth: 1, borderColor: `${COLORS.error}25`, width: '100%',
-                  }}
-                >
+                <Animated.View entering={FadeInDown.duration(300)} style={{ backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.error}25`, width: '100%' }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <Ionicons name="alert-circle-outline" size={16} color={COLORS.error} />
                     <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>Generation Failed</Text>
@@ -298,12 +245,7 @@ export default function AcademicPaperScreen() {
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>{ap.error}</Text>
                 </Animated.View>
               )}
-              <View style={{
-                flexDirection: 'row', alignItems: 'center', gap: 8,
-                backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg,
-                padding: SPACING.md, marginBottom: SPACING.lg, width: '100%',
-                borderWidth: 1, borderColor: `${COLORS.primary}18`,
-              }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.lg, width: '100%', borderWidth: 1, borderColor: `${COLORS.primary}18` }}>
                 <Ionicons name="flash" size={15} color={COLORS.primary} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18 }}>
                   Generating this paper costs{' '}
@@ -333,93 +275,39 @@ export default function AcademicPaperScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
-        {/* FIX #6: Header — buttons only */}
-        <View style={{
-          flexDirection: 'row', alignItems: 'center',
-          paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
-          borderBottomWidth: 1, borderBottomColor: COLORS.border,
-        }}>
-          {/* Back */}
-          <Pressable
-            onPress={() => router.back()}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            style={{
-              width: 38, height: 38, borderRadius: 12,
-              backgroundColor: COLORS.backgroundElevated,
-              alignItems: 'center', justifyContent: 'center',
-            }}
-          >
+        <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+          <Pressable onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
           </Pressable>
 
           <View style={{ flex: 1 }} />
 
           {/* Edit */}
-          <Pressable
-            onPress={handleOpenEditor}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={{
-              height: 36, borderRadius: 11,
-              backgroundColor: `${COLORS.primary}18`,
-              alignItems: 'center', justifyContent: 'center',
-              marginLeft: 6, borderWidth: 1, borderColor: `${COLORS.primary}35`,
-              paddingHorizontal: 12, flexDirection: 'row', gap: 5,
-            }}
-          >
+          <Pressable onPress={handleOpenEditor} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ height: 36, borderRadius: 11, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', marginLeft: 6, borderWidth: 1, borderColor: `${COLORS.primary}35`, paddingHorizontal: 12, flexDirection: 'row', gap: 5 }}>
             <Ionicons name="pencil-outline" size={15} color={COLORS.primary} />
             <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Edit</Text>
           </Pressable>
 
           {/* Share to workspace */}
-          <Pressable
-            onPress={() => setShowShareModal(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={{
-              height: 36, borderRadius: 11,
-              backgroundColor: `${COLORS.success}15`,
-              alignItems: 'center', justifyContent: 'center',
-              marginLeft: 6, borderWidth: 1, borderColor: `${COLORS.success}35`,
-              paddingHorizontal: 10, flexDirection: 'row', gap: 5,
-            }}
-          >
+          <Pressable onPress={() => setShowShareModal(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ height: 36, borderRadius: 11, backgroundColor: `${COLORS.success}15`, alignItems: 'center', justifyContent: 'center', marginLeft: 6, borderWidth: 1, borderColor: `${COLORS.success}35`, paddingHorizontal: 10, flexDirection: 'row', gap: 5 }}>
             <Ionicons name="people-outline" size={15} color={COLORS.success} />
             <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Share</Text>
           </Pressable>
 
           {/* Regenerate */}
-          <Pressable
-            onPress={handleRegenerateWithCredits}
-            disabled={isConsuming}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={{
-              width: 36, height: 36, borderRadius: 11,
-              backgroundColor: COLORS.backgroundElevated,
-              alignItems: 'center', justifyContent: 'center',
-              marginLeft: 6, borderWidth: 1, borderColor: COLORS.border,
-              opacity: isConsuming ? 0.5 : 1,
-            }}
-          >
-            {isConsuming
-              ? <ActivityIndicator size="small" color={COLORS.primary} />
-              : <Ionicons name="refresh-outline" size={17} color={COLORS.textSecondary} />
-            }
+          <Pressable onPress={handleRegenerateWithCredits} disabled={isConsuming} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', marginLeft: 6, borderWidth: 1, borderColor: COLORS.border, opacity: isConsuming ? 0.5 : 1 }}>
+            {isConsuming ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="refresh-outline" size={17} color={COLORS.textSecondary} />}
           </Pressable>
 
-          {/* Export — opens shared AcademicExportModal */}
-          <Pressable
-            onPress={() => setShowExportModal(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={{
-              width: 36, height: 36, borderRadius: 11,
-              backgroundColor: `${COLORS.primary}18`,
-              alignItems: 'center', justifyContent: 'center',
-              marginLeft: 6, borderWidth: 1, borderColor: `${COLORS.primary}35`,
-            }}
-          >
+          {/* Export */}
+          <Pressable onPress={() => setShowExportModal(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', marginLeft: 6, borderWidth: 1, borderColor: `${COLORS.primary}35` }}>
             <Ionicons name="download-outline" size={17} color={COLORS.primary} />
           </Pressable>
         </View>
 
+        {/* FIX P3: AcademicPaperView receives ap.paper which is reloaded from
+            DB on every focus. This means newly added/removed/renamed sections
+            are always reflected here, and the filter nav updates dynamically. */}
         <AcademicPaperView
           paper={ap.paper}
           onExportPDF={() => setShowExportModal(true)}
@@ -428,7 +316,6 @@ export default function AcademicPaperScreen() {
         />
       </SafeAreaView>
 
-      {/* Shared export modal (PDF + DOCX) */}
       <AcademicExportModal
         visible={showExportModal}
         paper={ap.paper}

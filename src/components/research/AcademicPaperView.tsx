@@ -1,43 +1,52 @@
 // src/components/research/AcademicPaperView.tsx
 // Part 7 — AI Academic Paper Mode
-// FIX: Section filter nav now correctly scrolls to each section.
-//      Header + nav rendered inside the single ScrollView so scrollRef
-//      controls everything and onLayout y-offsets are accurate.
+// Part 41.8 — Dynamic section navigator: nav pills now generated from the actual
+//              sections array (not a fixed AcademicSectionType map), so custom
+//              sections added in the editor appear in the filter strip automatically.
 
 import React, { useRef, useState } from 'react';
-import {
-  View, Text, ScrollView, TouchableOpacity,
-  ActivityIndicator, Dimensions,
-} from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons }       from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
-import { AcademicPaper, AcademicSectionType } from '../../types';
+import { AcademicPaper, AcademicSection } from '../../types';
 import { AcademicSectionCard } from './AcademicSectionCard';
+import {
+  SECTION_TYPE_ICONS,
+  SECTION_TYPE_COLORS,
+} from '../../constants/paperEditor';
 
-const SCREEN_W = Dimensions.get('window').width;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const NAV_LABELS: Record<AcademicSectionType, string> = {
-  abstract:          'Abstract',
-  introduction:      'Intro',
-  literature_review: 'Lit. Review',
-  methodology:       'Method',
-  findings:          'Findings',
-  conclusion:        'Conclusion',
-  references:        'References',
-};
+/**
+ * Build a short nav label for any section type.
+ * For canonical types use short abbreviations; for custom sections use the title
+ * (truncated to 10 chars so the pill doesn't get too wide).
+ */
+function getNavLabel(section: AcademicSection): string {
+  const CANONICAL_NAV: Record<string, string> = {
+    abstract:          'Abstract',
+    introduction:      'Intro',
+    literature_review: 'Lit. Review',
+    methodology:       'Method',
+    findings:          'Findings',
+    conclusion:        'Conclusion',
+    references:        'References',
+  };
+  return CANONICAL_NAV[section.type] ?? (section.title.length > 12 ? section.title.slice(0, 10) + '…' : section.title);
+}
 
-const NAV_ICONS: Record<AcademicSectionType, string> = {
-  abstract:          'document-text-outline',
-  introduction:      'compass-outline',
-  literature_review: 'library-outline',
-  methodology:       'construct-outline',
-  findings:          'analytics-outline',
-  conclusion:        'checkmark-circle-outline',
-  references:        'link-outline',
-};
+function getNavIcon(section: AcademicSection): string {
+  return SECTION_TYPE_ICONS[section.type] ?? 'document-text-outline';
+}
+
+function getNavAccent(section: AcademicSection): string {
+  return SECTION_TYPE_COLORS[section.type] ?? '#6C63FF';
+}
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface AcademicPaperViewProps {
   paper:            AcademicPaper;
@@ -47,26 +56,18 @@ interface AcademicPaperViewProps {
 }
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', {
-    month: 'long', day: 'numeric', year: 'numeric',
-  });
+  return new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
-export function AcademicPaperView({
-  paper, onExportPDF, onExportMarkdown, isExporting,
-}: AcademicPaperViewProps) {
-  // Single scroll ref that owns ALL scrolling (header + nav + sections)
-  const scrollRef   = useRef<ScrollView>(null);
-  // y-offset of each section card relative to the single ScrollView
-  const sectionRefs = useRef<Record<string, number>>({});
-  // y-offset of the section cards container (below header + nav)
+export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExporting }: AcademicPaperViewProps) {
+  const scrollRef          = useRef<ScrollView>(null);
+  const sectionRefs        = useRef<Record<string, number>>({});
   const sectionsContainerY = useRef<number>(0);
   const [activeId, setActiveId] = useState<string>(paper.sections[0]?.id ?? '');
 
   const scrollToSection = (sectionId: string) => {
     const sectionLocalY = sectionRefs.current[sectionId];
     if (sectionLocalY !== undefined) {
-      // Absolute y = container top + section's local offset inside container
       const absoluteY = sectionsContainerY.current + sectionLocalY - 12;
       scrollRef.current?.scrollTo({ y: absoluteY, animated: true });
     }
@@ -74,14 +75,13 @@ export function AcademicPaperView({
   };
 
   return (
-    // Single ScrollView — header, sticky nav, and all sections scroll together
     <ScrollView
       ref={scrollRef}
       style={{ flex: 1 }}
       contentContainerStyle={{ paddingBottom: 60 }}
       showsVerticalScrollIndicator={false}
     >
-      {/* ── Title page header ─────────────────────────────────────────── */}
+      {/* ── Title page header ── */}
       <Animated.View entering={FadeInDown.duration(400)}>
         <LinearGradient
           colors={['#12122A', '#1A1A35']}
@@ -93,24 +93,42 @@ export function AcademicPaperView({
         >
           {/* Running head */}
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', flex: 1 }} numberOfLines={1}>
+            <Text style={{
+              color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
+              letterSpacing: 0.8, textTransform: 'uppercase', flex: 1,
+            }} numberOfLines={1}>
               {paper.runningHead}
             </Text>
-            <View style={{ backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}35`, flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0, marginLeft: SPACING.sm }}>
+            <View style={{
+              backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
+              paddingHorizontal: 10, paddingVertical: 3,
+              borderWidth: 1, borderColor: `${COLORS.primary}35`,
+              flexDirection: 'row', alignItems: 'center', gap: 4,
+              flexShrink: 0, marginLeft: SPACING.sm,
+            }}>
               <Ionicons name="school-outline" size={11} color={COLORS.primary} />
-              <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>{paper.citationStyle.toUpperCase()}</Text>
+              <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>
+                {paper.citationStyle.toUpperCase()}
+              </Text>
             </View>
           </View>
 
           {/* Paper title */}
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', lineHeight: 28, marginBottom: SPACING.sm }}>
+          <Text style={{
+            color: COLORS.textPrimary, fontSize: FONTS.sizes.lg,
+            fontWeight: '800', lineHeight: 28, marginBottom: SPACING.sm,
+          }}>
             {paper.title}
           </Text>
 
           {/* Keywords */}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: SPACING.md }}>
             {paper.keywords.map((kw, i) => (
-              <View key={i} style={{ backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
+              <View key={i} style={{
+                backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
+                paddingHorizontal: 10, paddingVertical: 3,
+                borderWidth: 1, borderColor: `${COLORS.primary}25`,
+              }}>
                 <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{kw}</Text>
               </View>
             ))}
@@ -124,9 +142,15 @@ export function AcademicPaperView({
               { label: 'Sections',  value: String(paper.sections.length),          icon: 'list-outline',     color: COLORS.success },
               { label: 'Citations', value: String(paper.citations.length),         icon: 'link-outline',     color: COLORS.warning },
             ].map(stat => (
-              <View key={stat.label} style={{ flex: 1, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: SPACING.sm, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+              <View key={stat.label} style={{
+                flex: 1, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
+                padding: SPACING.sm, alignItems: 'center',
+                borderWidth: 1, borderColor: COLORS.border,
+              }}>
                 <Ionicons name={stat.icon as any} size={14} color={stat.color} />
-                <Text style={{ color: stat.color, fontSize: FONTS.sizes.sm, fontWeight: '800', marginTop: 4 }}>{stat.value}</Text>
+                <Text style={{ color: stat.color, fontSize: FONTS.sizes.sm, fontWeight: '800', marginTop: 4 }}>
+                  {stat.value}
+                </Text>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>{stat.label}</Text>
               </View>
             ))}
@@ -138,7 +162,11 @@ export function AcademicPaperView({
               <LinearGradient
                 colors={COLORS.gradientPrimary}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={{ borderRadius: RADIUS.lg, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: isExporting ? 0.7 : 1 }}
+                style={{
+                  borderRadius: RADIUS.lg, paddingVertical: 11,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  gap: 6, opacity: isExporting ? 0.7 : 1,
+                }}
               >
                 {isExporting
                   ? <ActivityIndicator size="small" color="#FFF" />
@@ -153,21 +181,27 @@ export function AcademicPaperView({
             <TouchableOpacity
               onPress={onExportMarkdown}
               activeOpacity={0.8}
-              style={{ flex: 1, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: COLORS.border }}
+              style={{
+                flex: 1, backgroundColor: COLORS.backgroundElevated,
+                borderRadius: RADIUS.lg, paddingVertical: 11,
+                flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                gap: 6, borderWidth: 1, borderColor: COLORS.border,
+              }}
             >
               <Ionicons name="share-outline" size={16} color={COLORS.textSecondary} />
               <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Share</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Generated date */}
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: SPACING.sm, textAlign: 'center' }}>
             Generated {formatDate(paper.generatedAt)}
           </Text>
         </LinearGradient>
       </Animated.View>
 
-      {/* ── Section navigator (horizontal scroll) ─────────────────────── */}
+      {/* ── Part 41.8: Dynamic section navigator ──
+          Generates nav pills directly from paper.sections so that any custom
+          sections added in the editor appear here automatically.           */}
       <View style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.background }}>
         <ScrollView
           horizontal
@@ -175,26 +209,38 @@ export function AcademicPaperView({
           contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, gap: 8 }}
         >
           {paper.sections.map((section) => {
-            const isActive = section.id === activeId;
-            const label    = NAV_LABELS[section.type] ?? section.title;
-            const icon     = NAV_ICONS[section.type]  ?? 'document-outline';
+            const isActive    = section.id === activeId;
+            const label       = getNavLabel(section);
+            const icon        = getNavIcon(section);
+            const accentColor = getNavAccent(section);
+
             return (
               <TouchableOpacity
                 key={section.id}
                 onPress={() => scrollToSection(section.id)}
                 activeOpacity={0.75}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: isActive ? `${COLORS.primary}20` : COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: isActive ? COLORS.primary : COLORS.border }}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 5,
+                  backgroundColor: isActive ? `${accentColor}20` : COLORS.backgroundElevated,
+                  borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7,
+                  borderWidth: 1, borderColor: isActive ? accentColor : COLORS.border,
+                }}
               >
-                <Ionicons name={icon as any} size={12} color={isActive ? COLORS.primary : COLORS.textMuted} />
-                <Text style={{ color: isActive ? COLORS.primary : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: isActive ? '700' : '400' }}>{label}</Text>
+                <Ionicons name={icon as any} size={12} color={isActive ? accentColor : COLORS.textMuted} />
+                <Text style={{
+                  color: isActive ? accentColor : COLORS.textMuted,
+                  fontSize: FONTS.sizes.xs,
+                  fontWeight: isActive ? '700' : '400',
+                }}>
+                  {label}
+                </Text>
               </TouchableOpacity>
             );
           })}
         </ScrollView>
       </View>
 
-      {/* ── Section cards ─────────────────────────────────────────────── */}
-      {/* onLayout captures the y-offset of this container within the ScrollView */}
+      {/* ── Section cards ── */}
       <View
         onLayout={(e) => { sectionsContainerY.current = e.nativeEvent.layout.y; }}
         style={{ padding: SPACING.lg }}

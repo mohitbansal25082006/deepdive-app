@@ -1,29 +1,53 @@
 // src/lib/notifications.ts
-// Part 36 — FIXED: Guards expo-notifications calls so they never touch the
-// PushNotificationIOS native module when running in Expo Go (where it is
-// unavailable). All Part 3 / Part 18 / Part 36 logic preserved.
+// DeepDive AI — All Parts up to 41.7
+//
+// ROOT FIX (Expo Go / SDK 53):
+//   Any require('expo-notifications') triggers DevicePushTokenAutoRegistration.fx.js
+//   as a module-level side effect. That file calls addPushTokenListener, which
+//   calls warnOfExpoGoPushUsage and logs a red console.error in Expo Go — even
+//   inside a useEffect, even wrapped in try/catch, because the side effect runs
+//   at require() time before any user code executes.
+//
+//   The only complete fix: detect Expo Go via Constants.executionEnvironment and
+//   return null from getNotifications() before ever calling require().
+//   All call-sites already handle null gracefully, so the rest of the app is
+//   entirely unaffected. Push notifications simply become no-ops in Expo Go,
+//   which matches Expo's own recommendation to use a development build for push.
 
 import * as Device from 'expo-device';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 
+// ─── Expo Go detection ────────────────────────────────────────────────────────
+// executionEnvironment === 'storeClient'  →  running inside Expo Go
+// executionEnvironment === 'standalone'   →  production build
+// executionEnvironment === 'bare'         →  development build (EAS / local)
+
+const IS_EXPO_GO =
+  Constants.executionEnvironment === 'storeClient' ||
+  // fallback for older expo-constants versions
+  (Constants as any).appOwnership === 'expo';
+
 // ─── Lazy-load expo-notifications ────────────────────────────────────────────
-// expo-notifications imports PushNotificationIOS internally.  In Expo Go that
-// native module does not exist and the import itself throws an Invariant
-// Violation.  We therefore load it lazily only when we actually need it, and
-// wrap every call in try/catch so the rest of the app is never affected.
+// NEVER called at module scope. Only called inside async functions.
+// Returns null immediately in Expo Go so require() is never reached
+// and DevicePushTokenAutoRegistration.fx.js never runs.
 
 let _Notifications: typeof import('expo-notifications') | null = null;
 
 function getNotifications(): typeof import('expo-notifications') | null {
+  // ← THE KEY GUARD: bail out before require() in Expo Go
+  if (IS_EXPO_GO) return null;
+
   if (_Notifications) return _Notifications;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     _Notifications = require('expo-notifications') as typeof import('expo-notifications');
     return _Notifications;
   } catch {
-    console.warn('[Notifications] expo-notifications not available (Expo Go?).');
+    console.warn('[Notifications] expo-notifications not available.');
     return null;
   }
 }
@@ -32,12 +56,13 @@ function getNotifications(): typeof import('expo-notifications') | null {
 
 const NOTIF_ENABLED_KEY = 'deepdive:notifications_enabled';
 
-// ─── Foreground presentation ──────────────────────────────────────────────────
+// ─── Init — call once from app/_layout.tsx inside useEffect ──────────────────
+// Safe to call anywhere; silently does nothing in Expo Go.
 
-// Set up the handler once at module load, but guarded.
-try {
-  const N = getNotifications();
-  if (N) {
+export function initNotifications(): void {
+  try {
+    const N = getNotifications();
+    if (!N) return;
     N.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowAlert:  true,
@@ -47,9 +72,9 @@ try {
         shouldShowList:   true,
       }),
     });
+  } catch (e) {
+    console.warn('[Notifications] setNotificationHandler failed:', e);
   }
-} catch (e) {
-  console.warn('[Notifications] setNotificationHandler failed:', e);
 }
 
 // ─── Persisted enabled flag ───────────────────────────────────────────────────
@@ -153,7 +178,9 @@ export async function saveTokenToSupabase(userId: string, token: string): Promis
 
 // ─── Enable / Disable ─────────────────────────────────────────────────────────
 
-export async function enableNotifications(userId: string): Promise<'enabled' | 'needs_settings'> {
+export async function enableNotifications(
+  userId: string,
+): Promise<'enabled' | 'needs_settings'> {
   const currentStatus = await getPermissionStatus();
   if (currentStatus === 'granted') {
     const token = await registerForPushNotifications();
@@ -183,7 +210,10 @@ export async function disableNotifications(): Promise<void> {
 
 // ─── Research Complete Notification ──────────────────────────────────────────
 
-export async function notifyReportComplete(reportId: string, reportTitle: string): Promise<void> {
+export async function notifyReportComplete(
+  reportId: string,
+  reportTitle: string,
+): Promise<void> {
   const [enabled, status] = await Promise.all([
     getNotificationsEnabled(),
     getPermissionStatus(),
@@ -211,52 +241,56 @@ export async function notifyReportComplete(reportId: string, reportTitle: string
 
 // ─── Notification Tap Handler (deep-link routing) ─────────────────────────────
 //
-// Part 36 update: handles three notification types:
-//   • research_complete → research-report screen
+// Handles three notification types:
+//   • research_complete → research-report screen  (own report)
 //   • new_follower      → user-profile screen
-//   • new_report        → research-report screen (from social notification)
+//   • new_report        → feed-report-view screen (social — view-only)
 
 export function registerNotificationTapHandler(
   navigate: (href: string) => void,
 ): () => void {
   try {
     const N = getNotifications();
-    if (!N) return () => {};
+    if (!N) return () => {}; // ← no-op in Expo Go, require() never called
 
-    const subscription = N.addNotificationResponseReceivedListener(
-      (response) => {
-        try {
-          const data = response.notification.request.content.data as Record<string, unknown>;
+    const subscription = N.addNotificationResponseReceivedListener((response) => {
+      try {
+        const data = response.notification.request.content.data as Record<
+          string,
+          unknown
+        >;
 
-          if (
-            data?.type === 'research_complete' &&
-            typeof data.reportId === 'string'
-          ) {
-            navigate(`/(app)/research-report?reportId=${data.reportId}`);
-            return;
-          }
-
-          if (
-            data?.type === 'new_follower' &&
-            typeof data.username === 'string' &&
-            data.username.length > 0
-          ) {
-            navigate(`/(app)/user-profile?username=${encodeURIComponent(data.username)}`);
-            return;
-          }
-
-          if (
-            data?.type === 'new_report' &&
-            typeof data.reportId === 'string'
-          ) {
-            navigate(`/(app)/research-report?reportId=${data.reportId}`);
-            return;
-          }
-        } catch (e) {
-          console.warn('[Notifications] Tap handler error:', e);
+        if (
+          data?.type === 'research_complete' &&
+          typeof data.reportId === 'string'
+        ) {
+          navigate(`/(app)/research-report?reportId=${data.reportId}`);
+          return;
         }
-      },
-    );
+
+        if (
+          data?.type === 'new_follower' &&
+          typeof data.username === 'string' &&
+          data.username.length > 0
+        ) {
+          navigate(
+            `/(app)/user-profile?username=${encodeURIComponent(data.username)}`,
+          );
+          return;
+        }
+
+        if (
+          data?.type === 'new_report' &&
+          typeof data.reportId === 'string'
+        ) {
+          navigate(`/(app)/feed-report-view?reportId=${data.reportId}`);
+          return;
+        }
+      } catch (e) {
+        console.warn('[Notifications] Tap handler error:', e);
+      }
+    });
+
     return () => {
       try { subscription.remove(); } catch {}
     };
@@ -292,7 +326,9 @@ export async function scheduleWeeklyDigestNotification(): Promise<void> {
   }
 }
 
-export async function scheduleTopicUpdateNotification(topic: string): Promise<void> {
+export async function scheduleTopicUpdateNotification(
+  topic: string,
+): Promise<void> {
   const [enabled, status] = await Promise.all([
     getNotificationsEnabled(),
     getPermissionStatus(),
