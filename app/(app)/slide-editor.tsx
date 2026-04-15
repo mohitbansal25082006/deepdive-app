@@ -1,7 +1,7 @@
 // app/(app)/slide-editor.tsx
-// Part 41.9 — Added onUpdateStat, onDeleteStat, onAddStatToSlide props to SlideEditorCanvas.
-//             DesignPanel receives globalFontScale + globalTextColor props.
-// All other logic identical to Part 41.6.
+// Part 41.9 — Full patch applied:
+//   • onMoveBlockUp / onMoveBlockDown wired to SlideEditorCanvas
+//   • onRewriteStat={editor.aiRewriteStat} passed to AIEditPanel
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useCallback, useState, useRef } from 'react';
@@ -375,12 +375,13 @@ export default function SlideEditorScreen() {
                 onDeleteBlock={editor.deleteBlock}
                 onUpdateBlock={editor.updateBlock}
                 onAddBlock={editor.addBlock}
-                // Part 41.9 — stat CRUD handlers
                 onUpdateStat={editor.updateStat}
                 onDeleteStat={editor.deleteStat}
                 onAddStatToSlide={editor.addStatToSlide}
                 onOpenOnlineImageSearch={() => setShowOnlineImageSearch(true)}
                 onOpenIconifyPicker={() => setShowIconifyPicker(true)}
+                onMoveBlockUp={editor.moveBlockUp}
+                onMoveBlockDown={editor.moveBlockDown}
               />
             ) : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -459,6 +460,7 @@ export default function SlideEditorScreen() {
         onRewriteField={editor.aiRewriteField}
         onRewriteBullets={editor.aiRewriteBullets}
         onRewriteSingleBullet={editor.aiRewriteSingleBullet}
+        onRewriteStat={editor.aiRewriteStat}
         onGenerateSlide={editor.aiGenerateSlide}
         onGenerateSpeakerNotes={editor.aiGenerateSpeakerNotes}
         onSuggestLayout={editor.aiSuggestLayout}
@@ -467,7 +469,6 @@ export default function SlideEditorScreen() {
         onClose={() => { editor.closePanel(); setActiveToolTab('select'); }}
       />
 
-      {/* Part 41.9: DesignPanel with font scale + text color */}
       <DesignPanel
         visible={isDesignOpen}
         tokens={tokens}

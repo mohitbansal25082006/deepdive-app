@@ -1,7 +1,9 @@
 // src/components/research/SlideCard.tsx
-// Part 41.9 — Layouts now apply globalFontScale, globalTextColor, and per-field
-//             fontScale/color/bold/italic from editorData so Design panel controls
-//             visibly affect the slide preview and exports.
+// Part 41.9 — Two fixes:
+//   Fix 1: noTruncate now defaults to TRUE so the viewer never clips content.
+//           Only the thumbnail strip passes noTruncate={false} explicitly.
+//   Fix 2: Overlay blocks now support a zIndex field for stacking order.
+//           OverlayBlockCard in the editor exposes Move Up / Move Down controls.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { memo } from 'react';
@@ -11,6 +13,9 @@ import { SvgXml }   from 'react-native-svg';
 import type { PresentationSlide, PresentationThemeTokens } from '../../types';
 import type { AdditionalBlock, SlideEditorData, FieldFormatting, EditableFieldKey } from '../../types/editor';
 
+// ─── The managed chart placeholder block ID ───────────────────────────────────
+const CHART_REF_PLACEHOLDER_ID = '__chart_ref_placeholder__';
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface SlideCardProps {
@@ -19,6 +24,12 @@ interface SlideCardProps {
   scale?:      number;
   showNotes?:  boolean;
   fontFamily?: string;
+  /**
+   * FIX 1: Default changed to TRUE.
+   * Pass noTruncate={false} only for thumbnails where space is very limited.
+   * The editor canvas passes noTruncate (= true) — no change needed there.
+   * The preview panel and all viewers get the default = true = no clipping.
+   */
   noTruncate?: boolean;
 }
 
@@ -27,7 +38,7 @@ interface SlideCardProps {
 const SLIDE_W = 320;
 const SLIDE_H = 180;
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function resolveFontFamily(id: string | undefined): string | undefined {
   if (!id || id === 'system') return undefined;
@@ -62,6 +73,10 @@ function accent(slide: PresentationSlide, tokens: PresentationThemeTokens): stri
   return slide.accentColor ?? tokens.primary;
 }
 
+/**
+ * FIX 1: trunc() only truncates when noTruncate === false.
+ * Since noTruncate defaults to true, viewers see full text by default.
+ */
 function trunc(s: string | undefined, maxLen: number, noTruncate: boolean): string {
   if (!s) return '';
   if (noTruncate) return s;
@@ -72,51 +87,37 @@ function nl(n: number, noTruncate: boolean): number | undefined {
   return noTruncate ? undefined : n;
 }
 
-// ─── Part 41.9: Formatting accessors ─────────────────────────────────────────
+// ─── Formatting accessors ─────────────────────────────────────────────────────
 
 function getEditorData(slide: PresentationSlide): SlideEditorData | undefined {
   return (slide as any).editorData as SlideEditorData | undefined;
 }
 
-/** Global font scale for this slide (default 1.0) */
 function getGFS(slide: PresentationSlide): number {
   return getEditorData(slide)?.globalFontScale ?? 1.0;
 }
 
-/** Global text color override (undefined = use theme colors) */
 function getGTC(slide: PresentationSlide): string | undefined {
   return getEditorData(slide)?.globalTextColor;
 }
 
-/** Per-field FieldFormatting (empty object if not set) */
 function getFmt(slide: PresentationSlide, field: EditableFieldKey): FieldFormatting {
   return getEditorData(slide)?.fieldFormats?.[field] ?? {};
 }
 
-/**
- * Resolve final text color:
- *   per-field override > global text color > base theme color
- */
 function fcolor(base: string, fmt: FieldFormatting, gtc?: string): string {
   return fmt.color ?? gtc ?? base;
 }
 
-/**
- * Resolve final font size (already in slide units, will be multiplied by sc externally):
- *   base * (per-field fontScale ?? globalFontScale)
- * Returns a multiplier to apply to (base * sc).
- */
 function fscale(fmt: FieldFormatting, gfs: number): number {
   return fmt.fontScale ?? gfs;
 }
 
-/** Resolve fontWeight: per-field bold > default */
 function fweight(fmt: FieldFormatting, defaultWeight: string = '400'): string {
   if (fmt.bold !== undefined) return fmt.bold ? '700' : '400';
   return defaultWeight;
 }
 
-/** Resolve fontStyle: per-field italic > default */
 function fstyle(fmt: FieldFormatting): 'italic' | 'normal' {
   return fmt.italic ? 'italic' : 'normal';
 }
@@ -130,8 +131,8 @@ interface LayoutCtx {
   sm: number;
   ff: string | undefined;
   nt: boolean;
-  gfs: number;         // Part 41.9: global font scale
-  gtc: string | undefined; // Part 41.9: global text color
+  gfs: number;
+  gtc: string | undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -165,6 +166,9 @@ function InlineBlockOverlay({
 
   const col = (block as any).color ?? accentColor;
 
+  // FIX 2: Read zIndex from block for stacking order control
+  const zIndex = (block as any).zIndex ?? 1;
+
   switch (block.type) {
 
     case 'image': {
@@ -173,7 +177,7 @@ function InlineBlockOverlay({
       const ar   = block.aspectRatio ?? 16 / 9;
       const imgH = hFrac !== undefined ? SLIDE_H * hFrac * sc : (width / ar);
       return (
-        <View style={{ position: 'absolute', left, top, width, height: imgH, borderRadius: 3 * sc, overflow: 'hidden', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.15)' }}>
+        <View style={{ position: 'absolute', left, top, width, height: imgH, borderRadius: 3 * sc, overflow: 'hidden', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.15)', zIndex }}>
           <Image source={{ uri: imageUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
           {block.caption ? (
             <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 2 * sc, paddingHorizontal: 4 * sc }}>
@@ -188,8 +192,15 @@ function InlineBlockOverlay({
       const defaultCardH = 38 * sc;
       const cardH = hFrac !== undefined ? SLIDE_H * hFrac * sc : defaultCardH;
       return (
-        <View style={{ position: 'absolute', left, top, width, height: cardH, backgroundColor: tokens.surface, borderRadius: 4 * sc, borderTopWidth: 2.5 * sc, borderTopColor: col, borderWidth: 0.5, borderColor: `${col}40`, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 * sc }}>
-          <Text style={{ color: col, fontSize: 14 * sc, fontWeight: '900', lineHeight: 16 * sc, fontFamily: ff }} numberOfLines={1}>{block.value}</Text>
+        <View style={{ position: 'absolute', left, top, width, height: cardH, backgroundColor: tokens.surface, borderRadius: 4 * sc, borderTopWidth: 2.5 * sc, borderTopColor: col, borderWidth: 0.5, borderColor: `${col}40`, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 * sc, zIndex }}>
+          <Text
+            style={{ color: col, fontSize: 14 * sc, fontWeight: '900', lineHeight: 16 * sc, fontFamily: ff }}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.5}
+          >
+            {block.value}
+          </Text>
           <Text style={{ color: tokens.textMuted, fontSize: 4.5 * sc, marginTop: 1 * sc, textAlign: 'center', fontFamily: ff }} numberOfLines={2}>{block.label}</Text>
           {block.unit ? <Text style={{ color: `${col}AA`, fontSize: 3.5 * sc, fontFamily: ff }}>{block.unit}</Text> : null}
         </View>
@@ -197,15 +208,26 @@ function InlineBlockOverlay({
     }
 
     case 'chart': {
-      const cd     = block.chart;
-      const chartH = 50 * sc;
-      const CCOLS  = [accentColor, '#43E97B', '#FFA726', '#FF6584', '#29B6F6', '#AB47BC'];
+      const isPH  = block.id === CHART_REF_PLACEHOLDER_ID;
+      const cd    = block.chart;
+      const chartH = hFrac !== undefined ? SLIDE_H * hFrac * sc : 50 * sc;
+      const CCOLS = [accentColor, '#43E97B', '#FFA726', '#FF6584', '#29B6F6', '#AB47BC'];
+
+      if (isPH) {
+        return (
+          <View style={{ position: 'absolute', left, top, width, height: chartH, backgroundColor: tokens.surface, borderRadius: 4 * sc, borderWidth: 0.5, borderColor: tokens.border, alignItems: 'center', justifyContent: 'center', zIndex }}>
+            <Ionicons name="bar-chart-outline" size={18 * sc} color={tokens.textMuted} />
+            <Text style={{ color: tokens.textMuted, fontSize: 4 * sc, marginTop: 4 * sc, textAlign: 'center' }}>{'Chart\nin app'}</Text>
+          </View>
+        );
+      }
+
       const hasBars = cd.datasets?.[0]?.data && cd.labels;
       const data    = hasBars ? cd.datasets![0].data : [];
       const maxV    = data.length > 0 ? Math.max(...data, 1) : 1;
       const labels  = cd.labels ?? [];
       return (
-        <View style={{ position: 'absolute', left, top, width, height: chartH, backgroundColor: `${tokens.surface}EE`, borderRadius: 4 * sc, borderWidth: 0.5, borderColor: `${accentColor}30`, padding: 3 * sc }}>
+        <View style={{ position: 'absolute', left, top, width, height: chartH, backgroundColor: `${tokens.surface}EE`, borderRadius: 4 * sc, borderWidth: 0.5, borderColor: `${accentColor}30`, padding: 3 * sc, zIndex }}>
           <Text style={{ color: tokens.textSecondary, fontSize: 4 * sc, fontWeight: '700', marginBottom: 2 * sc, fontFamily: ff }} numberOfLines={1}>{cd.title}</Text>
           {hasBars && (
             <View style={{ flexDirection: 'row', gap: 1.5 * sc, alignItems: 'flex-end', flex: 1 }}>
@@ -228,7 +250,7 @@ function InlineBlockOverlay({
 
     case 'quote_block': {
       return (
-        <View style={{ position: 'absolute', left, top, width, backgroundColor: `${accentColor}12`, borderRadius: 3 * sc, borderLeftWidth: 2.5 * sc, borderLeftColor: accentColor, paddingHorizontal: 5 * sc, paddingVertical: 4 * sc, borderWidth: 0.5, borderColor: `${accentColor}25` }}>
+        <View style={{ position: 'absolute', left, top, width, backgroundColor: `${accentColor}12`, borderRadius: 3 * sc, borderLeftWidth: 2.5 * sc, borderLeftColor: accentColor, paddingHorizontal: 5 * sc, paddingVertical: 4 * sc, borderWidth: 0.5, borderColor: `${accentColor}25`, zIndex }}>
           <Text style={{ color: '#FFF', fontSize: 14 * sc, fontWeight: '900', opacity: 0.25, lineHeight: 10 * sc, marginBottom: -4 * sc }}>{'\u201C'}</Text>
           <Text style={{ color: tokens.textPrimary, fontSize: 5 * sc, lineHeight: 7.5 * sc, fontStyle: 'italic', fontFamily: ff }} numberOfLines={3}>{block.text}</Text>
           {block.attribution ? <Text style={{ color: accentColor, fontSize: 4 * sc, marginTop: 2 * sc, fontWeight: '600', fontFamily: ff }} numberOfLines={1}>{`— ${block.attribution}`}</Text> : null}
@@ -239,7 +261,7 @@ function InlineBlockOverlay({
     case 'divider': {
       const dc = block.color ?? accentColor;
       return (
-        <View style={{ position: 'absolute', left, top, width, height: 4 * sc, justifyContent: 'center' }}>
+        <View style={{ position: 'absolute', left, top, width, height: 4 * sc, justifyContent: 'center', zIndex }}>
           {block.style === 'solid'   && <View style={{ height: 1.5 * sc, backgroundColor: dc, borderRadius: 1 }} />}
           {block.style === 'dashed'  && <View style={{ height: 0, borderTopWidth: 1.5 * sc, borderTopColor: dc, borderStyle: 'dashed' }} />}
           {block.style === 'diamond' && <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 * sc }}>{[0,1,2,3,4,5,6,7].map(i => <View key={i} style={{ width: 3 * sc, height: 3 * sc, backgroundColor: i % 3 === 1 ? dc : `${dc}55`, transform: [{ rotate: '45deg' }] }} />)}</View>}
@@ -256,7 +278,7 @@ function InlineBlockOverlay({
       const bSz     = sz + 8 * sc;
       const svgData = (block as any).svgData as string | undefined;
       return (
-        <View style={{ position: 'absolute', left, top, width: bSz, height: bSz, borderRadius: bSz / 2, backgroundColor: `${ic}18`, borderWidth: 0.5, borderColor: `${ic}35`, alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ position: 'absolute', left, top, width: bSz, height: bSz, borderRadius: bSz / 2, backgroundColor: `${ic}18`, borderWidth: 0.5, borderColor: `${ic}35`, alignItems: 'center', justifyContent: 'center', zIndex }}>
           {svgData ? (
             <SvgXml xml={svgData} width={sz} height={sz} color={ic} />
           ) : (
@@ -275,7 +297,7 @@ function InlineBlockOverlay({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAYOUT COMPONENTS — Part 41.9: apply gfs/gtc/per-field formatting
+// LAYOUT COMPONENTS
 // ─────────────────────────────────────────────────────────────────────────────
 
 function TitleLayout({ ctx }: { ctx: LayoutCtx }) {
@@ -314,8 +336,8 @@ function SectionLayout({ ctx }: { ctx: LayoutCtx }) {
   const { slide, tokens, sc, sm, ff, nt, gfs, gtc } = ctx;
   const p = sm;
 
-  const titleFmt  = getFmt(slide, 'title');
-  const tagFmt    = getFmt(slide, 'sectionTag');
+  const titleFmt = getFmt(slide, 'title');
+  const tagFmt   = getFmt(slide, 'sectionTag');
 
   return (
     <View style={StyleSheet.absoluteFill}>
@@ -333,8 +355,8 @@ function SectionLayout({ ctx }: { ctx: LayoutCtx }) {
 
 function AgendaLayout({ ctx }: { ctx: LayoutCtx }) {
   const { slide, tokens, sc, sm, ff, nt, gfs, gtc } = ctx;
-  const ac    = accent(slide, tokens);
-  const p     = sm;
+  const ac = accent(slide, tokens);
+  const p  = sm;
 
   const titleFmt = getFmt(slide, 'title');
 
@@ -435,8 +457,37 @@ function StatsLayout({ ctx }: { ctx: LayoutCtx }) {
         const cardColor = stat.color ?? ac;
         return (
           <View key={i} style={{ position: 'absolute', left: startX + i * (cardW + 6 * sc), top: 38 * sc, width: cardW, height: cardH, backgroundColor: tokens.surface, borderRadius: 5 * sc, borderTopWidth: 2.5 * sc, borderTopColor: cardColor }}>
-            <Text numberOfLines={1} style={{ color: cardColor, fontSize: 14 * sc * gfs, fontWeight: '900', textAlign: 'center', marginTop: 12 * sc, fontFamily: ff }}>{trunc(stat.value, 8, nt)}</Text>
-            <Text numberOfLines={nl(2, nt)} style={{ color: fcolor(tokens.textMuted, {}, gtc), fontSize: 4.5 * sc * gfs, textAlign: 'center', marginTop: 4 * sc, paddingHorizontal: 4 * sc, lineHeight: 6.5 * sc * gfs, fontFamily: ff }}>{trunc(stat.label, 28, nt)}</Text>
+            <Text
+              numberOfLines={2}
+              adjustsFontSizeToFit
+              minimumFontScale={0.45}
+              style={{
+                color: cardColor,
+                fontSize: 14 * sc * gfs,
+                fontWeight: '900',
+                textAlign: 'center',
+                marginTop: 10 * sc,
+                paddingHorizontal: 3 * sc,
+                fontFamily: ff,
+                lineHeight: 15 * sc * gfs,
+              }}
+            >
+              {trunc(stat.value, 20, nt)}
+            </Text>
+            <Text
+              numberOfLines={nt ? undefined : 2}
+              style={{
+                color: fcolor(tokens.textMuted, {}, gtc),
+                fontSize: 4.5 * sc * gfs,
+                textAlign: 'center',
+                marginTop: 4 * sc,
+                paddingHorizontal: 4 * sc,
+                lineHeight: 6.5 * sc * gfs,
+                fontFamily: ff,
+              }}
+            >
+              {trunc(stat.label, 28, nt)}
+            </Text>
           </View>
         );
       })}
@@ -472,16 +523,41 @@ function ChartRefLayout({ ctx }: { ctx: LayoutCtx }) {
   const titleFmt = getFmt(slide, 'title');
   const bodyFmt  = getFmt(slide, 'body');
 
+  const allBlocks    = getAdditionalBlocks(slide);
+  const hasManagedPH = allBlocks.some(
+    b => b.id === CHART_REF_PLACEHOLDER_ID && b.position?.type === 'overlay'
+  );
+
   return (
     <View style={StyleSheet.absoluteFill}>
       <View style={{ position: 'absolute', top: 0, left: 0, bottom: 0, width: 2 * sc, backgroundColor: ac }} />
       <Text numberOfLines={nl(2, nt)} style={{ position: 'absolute', top: 10 * sc * p, left: 10 * sc * p, right: 10 * sc, color: fcolor(tokens.textPrimary, titleFmt, gtc), fontSize: 9 * sc * fscale(titleFmt, gfs), fontWeight: fweight(titleFmt, '800') as any, fontFamily: ff }}>{trunc(slide.title, 50, nt)}</Text>
-      <View style={{ position: 'absolute', top: 34 * sc, left: 10 * sc * p, width: 130 * sc, height: 110 * sc, backgroundColor: tokens.surface, borderRadius: 4 * sc, borderWidth: 0.5, borderColor: tokens.border, alignItems: 'center', justifyContent: 'center' }}>
-        <Ionicons name="bar-chart-outline" size={18 * sc} color={tokens.textMuted} />
-        <Text style={{ color: tokens.textMuted, fontSize: 4 * sc, marginTop: 4 * sc, textAlign: 'center' }}>{'Chart\nin app'}</Text>
-      </View>
+
+      {!hasManagedPH && (
+        <View style={{ position: 'absolute', top: 34 * sc, left: 10 * sc * p, width: 130 * sc, height: 110 * sc, backgroundColor: tokens.surface, borderRadius: 4 * sc, borderWidth: 0.5, borderColor: tokens.border, alignItems: 'center', justifyContent: 'center' }}>
+          <Ionicons name="bar-chart-outline" size={18 * sc} color={tokens.textMuted} />
+          <Text style={{ color: tokens.textMuted, fontSize: 4 * sc, marginTop: 4 * sc, textAlign: 'center' }}>{'Chart\nin app'}</Text>
+        </View>
+      )}
+
       {slide.body && (
-        <Text numberOfLines={nl(7, nt)} style={{ position: 'absolute', top: 34 * sc, left: 148 * sc, right: 8 * sc, color: fcolor(tokens.textSecondary, bodyFmt, gtc), fontSize: 5 * sc * fscale(bodyFmt, gfs), fontWeight: fweight(bodyFmt) as any, fontStyle: fstyle(bodyFmt), lineHeight: 7.5 * sc * fscale(bodyFmt, gfs), fontFamily: ff }}>{trunc(slide.body, 200, nt)}</Text>
+        <Text
+          numberOfLines={nl(7, nt)}
+          style={{
+            position: 'absolute',
+            top: 34 * sc,
+            left:  hasManagedPH ? 10 * sc * p : 148 * sc,
+            right: 8 * sc,
+            color: fcolor(tokens.textSecondary, bodyFmt, gtc),
+            fontSize: 5 * sc * fscale(bodyFmt, gfs),
+            fontWeight: fweight(bodyFmt) as any,
+            fontStyle: fstyle(bodyFmt),
+            lineHeight: 7.5 * sc * fscale(bodyFmt, gfs),
+            fontFamily: ff,
+          }}
+        >
+          {trunc(slide.body, 200, nt)}
+        </Text>
       )}
     </View>
   );
@@ -573,7 +649,7 @@ export const SlideCard = memo(function SlideCard({
   scale      = 1,
   showNotes  = false,
   fontFamily,
-  noTruncate = false,
+  noTruncate = true,   // FIX 1: DEFAULT IS NOW TRUE — viewers show full text
 }: SlideCardProps) {
   const sc  = scale;
   const sm  = getSpacingMultiplier(slide);
@@ -591,7 +667,11 @@ export const SlideCard = memo(function SlideCard({
   const bgColor    = bgOverride ?? (isSection || isQuote ? ac : tokens.background);
 
   const allBlocks     = getAdditionalBlocks(slide);
-  const overlayBlocks = allBlocks.filter(b => b.position?.type === 'overlay');
+  // FIX 2: Sort overlay blocks by zIndex (ascending) before rendering
+  // so higher zIndex blocks appear on top as expected
+  const overlayBlocks = allBlocks
+    .filter(b => b.position?.type === 'overlay')
+    .sort((a, b) => ((a as any).zIndex ?? 1) - ((b as any).zIndex ?? 1));
 
   function renderLayout() {
     switch (slide.layout) {

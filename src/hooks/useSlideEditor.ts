@@ -1,8 +1,11 @@
 // src/hooks/useSlideEditor.ts
-// Part 41.9 — Added setGlobalFontScale, setGlobalTextColor methods.
-//             applyPickedColor now handles 'global_text_color' scope.
-//             Added updateStat, deleteStat, addStatToSlide for editable pre-generated stats.
-//             switchLayout completely rewritten with full content migration across all layouts.
+// Part 41.9 — Full patch applied:
+//   • moveBlockUp / moveBlockDown (zIndex-based layer ordering)
+//   • aiRewriteStat for per-stat AI rewrite in the stats layout
+//   • setGlobalFontScale, setGlobalTextColor methods
+//   • applyPickedColor handles 'global_text_color' scope
+//   • updateStat, deleteStat, addStatToSlide for editable stats
+//   • switchLayout fully rewritten with content migration
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -214,29 +217,28 @@ export interface UseSlideEditorReturn {
   setTheme:             (theme: PresentationTheme) => void;
   setFontFamily:        (font: FontFamily) => void;
   setSpacing:           (spacing: SpacingLevel, applyAll?: boolean) => void;
-  /** Part 41.9 */
   setGlobalFontScale:   (scale: number, applyAll?: boolean) => void;
-  /** Part 41.9 — undefined = reset to default */
   setGlobalTextColor:   (color: string | undefined, applyAll?: boolean) => void;
 
   openColorPicker:  (target: ColorPickerTarget) => void;
   applyPickedColor: (color: string) => void;
 
-  addSlide:      (afterIndex: number, layout?: SlideLayout) => void;
-  deleteSlide:   (index: number) => void;
-  reorderSlides: (fromIndex: number, toIndex: number) => void;
-  duplicateSlide:(index: number) => void;
+  addSlide:       (afterIndex: number, layout?: SlideLayout) => void;
+  deleteSlide:    (index: number) => void;
+  reorderSlides:  (fromIndex: number, toIndex: number) => void;
+  duplicateSlide: (index: number) => void;
 
-  addBlock:     (block: AdditionalBlock) => void;
-  updateBlock:  (blockId: string, patch: Partial<AdditionalBlock>) => void;
-  deleteBlock:  (blockId: string) => void;
-  reorderBlocks:(from: number, to: number) => void;
+  addBlock:      (block: AdditionalBlock) => void;
+  updateBlock:   (blockId: string, patch: Partial<AdditionalBlock>) => void;
+  deleteBlock:   (blockId: string) => void;
+  reorderBlocks: (from: number, to: number) => void;
+  /** Part 41.9 — Move a block one layer up (increases zIndex by 1) */
+  moveBlockUp:   (blockId: string) => void;
+  /** Part 41.9 — Move a block one layer down (decreases zIndex, min 1) */
+  moveBlockDown: (blockId: string) => void;
 
-  /** Part 41.9 — edit a pre-generated stat in the stats layout */
   updateStat:     (index: number, patch: Partial<StatItem>) => void;
-  /** Part 41.9 — remove a pre-generated stat */
   deleteStat:     (index: number) => void;
-  /** Part 41.9 — add a new stat to the stats layout */
   addStatToSlide: (stat: StatItem) => void;
 
   undo:    () => void;
@@ -247,12 +249,14 @@ export interface UseSlideEditorReturn {
   saveNow:               () => Promise<void>;
   getExportPresentation: () => GeneratedPresentation | null;
 
-  aiRewriteField:          (field: EditableFieldKey, style: AIRewriteStyle) => Promise<void>;
-  aiRewriteBullets:        (style: AIRewriteStyle) => Promise<void>;
-  aiRewriteSingleBullet:   (bulletIndex: number, style: AIRewriteStyle) => Promise<void>;
-  aiGenerateSlide:         (req: AIGenerateSlideRequest) => Promise<void>;
-  aiGenerateSpeakerNotes:  (slideIndex?: number) => Promise<void>;
-  aiSuggestLayout:         () => Promise<void>;
+  aiRewriteField:         (field: EditableFieldKey, style: AIRewriteStyle) => Promise<void>;
+  aiRewriteBullets:       (style: AIRewriteStyle) => Promise<void>;
+  aiRewriteSingleBullet:  (bulletIndex: number, style: AIRewriteStyle) => Promise<void>;
+  /** Part 41.9 — AI rewrite a single stat's value or label */
+  aiRewriteStat:          (statIndex: number, field: 'value' | 'label', style: AIRewriteStyle) => Promise<void>;
+  aiGenerateSlide:        (req: AIGenerateSlideRequest) => Promise<void>;
+  aiGenerateSpeakerNotes: (slideIndex?: number) => Promise<void>;
+  aiSuggestLayout:        () => Promise<void>;
   dismissLayoutSuggestion: () => void;
   applyLayoutSuggestion:   () => void;
 
@@ -284,6 +288,9 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiEditsRef   = useRef(0);
 
+  // Ref used by moveBlockUp/moveBlockDown so they can access fresh slide index
+  const activeSlideIndexRef = useRef(editorState.activeSlideIndex);
+
   const {
     historyState:           templateHistoryState,
     snapshotBeforeTemplate,
@@ -292,8 +299,12 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     clearHistory,
   } = useTemplateHistory();
 
-  useEffect(() => { stateRef.current = editorState; }, [editorState]);
-  useEffect(() => { presRef.current  = presentation;  }, [presentation]);
+  useEffect(() => {
+    stateRef.current            = editorState;
+    activeSlideIndexRef.current = editorState.activeSlideIndex;
+  }, [editorState]);
+
+  useEffect(() => { presRef.current = presentation; }, [presentation]);
 
   const activeSlide = editorState.slides[editorState.activeSlideIndex] ?? null;
 
@@ -321,6 +332,12 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
 
   const pushUndo = useCallback(() => {
     dispatch({ type: 'PUSH_UNDO', snapshot: [...stateRef.current.slides] });
+  }, []);
+
+  // ─── markDirty helper ─────────────────────────────────────────────────────
+
+  const markDirty = useCallback(() => {
+    dispatch({ type: 'SET_DIRTY', dirty: true });
   }, []);
 
   // ─── getExportPresentation ────────────────────────────────────────────────
@@ -502,17 +519,6 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
 
   // ─── DESIGN ───────────────────────────────────────────────────────────────
 
-  /**
-   * Part 41.9 — Comprehensive layout switching with full content migration.
-   *
-   * Migration matrix (only fills fields that don't already have content):
-   *   → bullet layouts  : body→bullets, stats→bullets, quote→bullet[0]
-   *   → body layouts    : bullets→body, stats→body, quote→body
-   *   → stats layout    : bullets→stat stubs, body→stat stub
-   *   → quote layout    : body→quote, bullets[0]→quote, stats→quote
-   *   → title/closing   : body/bullets/stats→subtitle
-   *   → section         : body→sectionTag (if missing)
-   */
   const switchLayout = useCallback((layout: SlideLayout) => {
     pushUndo();
     const idx   = stateRef.current.activeSlideIndex;
@@ -524,39 +530,30 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     const hasStats   = (slide.stats?.filter(s => s.value || s.label).length ?? 0) > 0;
     const hasQuote   = !!slide.quote?.trim();
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-
-    /** Join bullets into a single body paragraph */
     const bulletsToBody = (): string =>
       (slide.bullets ?? [])
         .filter(b => b.trim())
         .map(b => b.trim().replace(/[^.!?]$/, s => s + '.'))
         .join(' ');
 
-    /** Split body into bullet sentences (max 6) */
     const bodyToBullets = (): string[] => {
       const raw = slide.body ?? '';
       const parts = raw.split(/(?<=[.!?])\s+|;\s*/).map(s => s.trim()).filter(s => s.length > 2);
       return parts.length > 0 ? parts.slice(0, 6) : [raw.trim()];
     };
 
-    /** Convert stats to bullet strings: "87% — Market Growth" */
     const statsToBullets = (): string[] =>
       (slide.stats ?? []).map(s => `${s.value} — ${s.label}`);
 
-    /** Convert stats to a prose sentence */
     const statsToBody = (): string =>
       (slide.stats ?? []).map(s => `${s.value}: ${s.label}`).join('. ') + '.';
 
-    /** Try to parse a bullet as a stat (e.g. "87% — Market Growth") */
     const bulletToStat = (b: string): StatItem => {
       const m = b.match(/^([\d,.]+[%$BMKkbmx+×]*)\s*[-—:]\s*(.+)/);
       return m
         ? { value: m[1].trim(), label: m[2].trim().slice(0, 30) }
         : { value: '—', label: b.trim().slice(0, 30) };
     };
-
-    // ── target-layout migrations ─────────────────────────────────────────────
 
     const isBulletTarget = ['bullets', 'agenda', 'predictions', 'references'].includes(layout);
     const isBodyTarget   = ['content', 'chart_ref'].includes(layout);
@@ -676,7 +673,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
-  // ─── Part 41.9: Global Font Scale ─────────────────────────────────────────
+  // ─── Global Font Scale ─────────────────────────────────────────────────────
 
   const setGlobalFontScale = useCallback((scale: number, applyAll = false) => {
     pushUndo();
@@ -701,7 +698,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
-  // ─── Part 41.9: Global Text Color ─────────────────────────────────────────
+  // ─── Global Text Color ─────────────────────────────────────────────────────
 
   const setGlobalTextColor = useCallback((color: string | undefined, applyAll = false) => {
     pushUndo();
@@ -725,7 +722,7 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'SET_DIRTY', dirty: true });
   }, [pushUndo]);
 
-  // ─── Part 41.9: Stat CRUD ─────────────────────────────────────────────────
+  // ─── Stat CRUD ─────────────────────────────────────────────────────────────
 
   const updateStat = useCallback((statIndex: number, patch: Partial<StatItem>) => {
     const idx   = stateRef.current.activeSlideIndex;
@@ -878,6 +875,48 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } } });
   }, [pushUndo]);
 
+  // ─── Part 41.9: Block Z-Index (layer ordering) ────────────────────────────
+
+  /**
+   * moveBlockUp — increment the zIndex of the target block by 1.
+   * SlideCard renders overlay blocks sorted by zIndex, so higher = on top.
+   */
+  const moveBlockUp = useCallback((blockId: string) => {
+    pushUndo();
+    const idx   = activeSlideIndexRef.current;
+    const slide = stateRef.current.slides[idx];
+    const blocks = (slide.editorData?.additionalBlocks ?? []).map(b => {
+      if (b.id !== blockId) return b;
+      return { ...b, zIndex: ((b as any).zIndex ?? 1) + 1 };
+    });
+    dispatch({
+      type:  'PATCH_SLIDE',
+      index: idx,
+      patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } },
+    });
+    markDirty();
+  }, [pushUndo, markDirty]);
+
+  /**
+   * moveBlockDown — decrement the zIndex of the target block by 1 (min 1).
+   */
+  const moveBlockDown = useCallback((blockId: string) => {
+    pushUndo();
+    const idx   = activeSlideIndexRef.current;
+    const slide = stateRef.current.slides[idx];
+    const blocks = (slide.editorData?.additionalBlocks ?? []).map(b => {
+      if (b.id !== blockId) return b;
+      const current = (b as any).zIndex ?? 1;
+      return { ...b, zIndex: Math.max(1, current - 1) };
+    });
+    dispatch({
+      type:  'PATCH_SLIDE',
+      index: idx,
+      patch: { editorData: { ...(slide.editorData ?? {}), additionalBlocks: blocks } },
+    });
+    markDirty();
+  }, [pushUndo, markDirty]);
+
   // ─── UNDO / REDO ──────────────────────────────────────────────────────────
 
   const undo = useCallback(() => { dispatch({ type: 'UNDO' }); scheduleSave(); }, [scheduleSave]);
@@ -957,6 +996,59 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
       dispatch({ type: 'SET_AI_PROCESSING', processing: false });
     }
   }, [balance, consume, report, pushUndo]);
+
+  // ─── Part 41.9 Fix #2: AI Rewrite Stat ────────────────────────────────────
+
+  const aiRewriteStat = useCallback(async (
+    statIndex: number,
+    field: 'value' | 'label',
+    style: AIRewriteStyle,
+  ) => {
+    const slide    = stateRef.current.slides[stateRef.current.activeSlideIndex];
+    const stat     = slide?.stats?.[statIndex];
+    const original = stat?.[field];
+
+    if (!original?.trim()) {
+      Alert.alert('Nothing to rewrite', `This stat ${field} is empty.`);
+      return;
+    }
+    if (balance < EDITOR_CREDIT_COSTS.ai_rewrite) {
+      Alert.alert(
+        'Not enough credits',
+        `Rewrite costs ${EDITOR_CREDIT_COSTS.ai_rewrite} credit. You have ${balance}.`,
+      );
+      return;
+    }
+
+    dispatch({
+      type:       'SET_AI_PROCESSING',
+      processing: true,
+      label:      `Rewriting stat ${field} as "${style}"…`,
+    });
+
+    try {
+      // Reuse rewriteText — treat stat value/label as a short body field.
+      const result = await rewriteText(original, style, report, 'body');
+      await consume('slide_ai_rewrite');
+      aiEditsRef.current += 1;
+
+      const idx   = stateRef.current.activeSlideIndex;
+      const s     = stateRef.current.slides[idx];
+      const stats = [...(s.stats ?? [])];
+      if (statIndex < 0 || statIndex >= stats.length) return;
+      stats[statIndex] = { ...stats[statIndex], [field]: result.trim() };
+
+      pushUndo();
+      dispatch({ type: 'PATCH_SLIDE', index: idx, patch: { stats } });
+      dispatch({ type: 'SET_DIRTY', dirty: true });
+    } catch (err) {
+      Alert.alert('Rewrite failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      dispatch({ type: 'SET_AI_PROCESSING', processing: false });
+    }
+  }, [balance, consume, report, pushUndo]);
+
+  // ──────────────────────────────────────────────────────────────────────────
 
   const aiGenerateSlide = useCallback(async (req: AIGenerateSlideRequest) => {
     if (balance < EDITOR_CREDIT_COSTS.ai_generate) {
@@ -1049,12 +1141,9 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
             const state = stateRef.current;
             if (pres && user) {
               snapshotBeforeTemplate(
-                pres.id,
-                state.slides,
+                pres.id, state.slides,
                 state.slides.map(s => s.editorData ?? {}),
-                state.fontFamily,
-                template.id,
-                template.name,
+                state.fontFamily, template.id, template.name,
               );
             }
             pushUndo();
@@ -1077,12 +1166,9 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     const afterIdx = state.activeSlideIndex;
     if (pres && user) {
       snapshotBeforeTemplate(
-        pres.id,
-        state.slides,
+        pres.id, state.slides,
         state.slides.map(s => s.editorData ?? {}),
-        state.fontFamily,
-        template.id,
-        template.name,
+        state.fontFamily, template.id, template.name,
       );
     }
     pushUndo();
@@ -1136,14 +1222,17 @@ export function useSlideEditor(report?: ResearchReport | null): UseSlideEditorRe
     openColorPicker, applyPickedColor,
     addSlide, deleteSlide, reorderSlides, duplicateSlide,
     addBlock, updateBlock, deleteBlock, reorderBlocks,
-    updateStat,     // Part 41.9
-    deleteStat,     // Part 41.9
-    addStatToSlide, // Part 41.9
+    moveBlockUp,    // Part 41.9
+    moveBlockDown,  // Part 41.9
+    updateStat,
+    deleteStat,
+    addStatToSlide,
     undo, redo,
     canUndo: editorState.undoStack.length > 0,
     canRedo: editorState.redoStack.length > 0,
     saveNow, getExportPresentation,
     aiRewriteField, aiRewriteBullets, aiRewriteSingleBullet,
+    aiRewriteStat,          // Part 41.9 Fix #2
     aiGenerateSlide, aiGenerateSpeakerNotes, aiSuggestLayout,
     dismissLayoutSuggestion, applyLayoutSuggestion,
     applyTemplate, insertTemplate,

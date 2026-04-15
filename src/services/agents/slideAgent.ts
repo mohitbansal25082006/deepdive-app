@@ -1,13 +1,8 @@
 // src/services/agents/slideAgent.ts
-// Part 5 — AI Slide Generator Agent
-//
-// Responsibilities:
-//   1. Receive a ResearchReport + target theme
-//   2. Call GPT-4o with a detailed slide-generation prompt
-//   3. Return a typed SlideAgentOutput with 12-16 structured slides
-//
-// The agent is deliberately stateless — it takes the full report and returns
-// a complete, ordered slide array in one OpenAI call.
+// Part 41.9 — chart_ref slides now include an editorData overlay block for the
+//             chart placeholder so it's editable (move/resize/remove) from day 1,
+//             rather than rendering a static hardcoded grey box.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { chatCompletionJSON } from '../openaiClient';
 import {
@@ -19,13 +14,16 @@ import {
   SlideStatItem,
 } from '../../types';
 
+// ─── The shared placeholder block ID (must match SlideEditorCanvas constant) ──
+const CHART_REF_PLACEHOLDER_ID = '__chart_ref_placeholder__';
+
 // ─── Helper — sanitise bullets coming from the model ─────────────────────────
 
 function cleanBullets(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((b): b is string => typeof b === 'string' && b.trim().length > 0)
-    .map(b => b.replace(/^[-•·]\s*/, '').trim());   // strip any leading bullets the model adds
+    .map(b => b.replace(/^[-•·]\s*/, '').trim());
 }
 
 function cleanStats(raw: unknown): SlideStatItem[] {
@@ -54,7 +52,7 @@ const LAYOUT_ICON: Record<SlideLayout, string> = {
   closing:     'sparkles-outline',
 };
 
-// ─── Theme → accent colour mapping (app hex) ──────────────────────────────────
+// ─── Theme → accent colour mapping ───────────────────────────────────────────
 
 const THEME_PRIMARY: Record<PresentationTheme, string> = {
   dark:      '#6C63FF',
@@ -62,6 +60,42 @@ const THEME_PRIMARY: Record<PresentationTheme, string> = {
   corporate: '#0052CC',
   vibrant:   '#FF6584',
 };
+
+// ─── Build the default editorData for a chart_ref slide ──────────────────────
+// We inject an overlay block matching the original static layout position so
+// the slide looks identical on first render, but the block is now interactive.
+//
+// Original static position in ChartRefLayout (320×180 canvas):
+//   left: 10, top: 34, width: 130, height: 110
+//   xFrac = 10/320 = 0.031
+//   yFrac = 34/180 = 0.189
+//   wFrac = 130/320 = 0.406
+//   hFrac = 110/180 = 0.611
+
+function buildChartRefEditorData() {
+  return {
+    additionalBlocks: [
+      {
+        type:     'chart',
+        id:       CHART_REF_PLACEHOLDER_ID,
+        chart:    {
+          id:       '__placeholder__',
+          type:     'bar',
+          title:    'Chart Placeholder',
+          datasets: [],
+          labels:   [],
+        },
+        position: {
+          type:  'overlay',
+          xFrac: 0.031,
+          yFrac: 0.189,
+          wFrac: 0.406,
+          hFrac: 0.611,
+        },
+      },
+    ],
+  };
+}
 
 // ─── Agent entry point ────────────────────────────────────────────────────────
 
@@ -78,8 +112,6 @@ export async function runSlideAgent(
   const date = new Date(report.createdAt).toLocaleDateString('en-US', {
     month: 'long', day: 'numeric', year: 'numeric',
   });
-
-  // ── Build a condensed summary of the report for the AI ───────────────────
 
   const sectionsContext = report.sections
     .slice(0, 6)
@@ -125,7 +157,7 @@ SLIDE LAYOUT RULES:
 - "bullets"    → title + bullets array (3–6 items, no "body")
 - "stats"      → title + stats array with {value, label, color}
 - "quote"      → title + quote (pull-quote text) + quoteAttribution
-- "chart_ref"  → title + body (describe the trend) — used when referencing a chart
+- "chart_ref"  → title + body (describe the trend) — the chart area is auto-generated as an editable overlay block
 - "predictions"→ title + bullets array of future outlook items
 - "references" → title + bullets array (formatted citations)
 - "closing"    → title + subtitle — branding / thank you slide
@@ -204,8 +236,6 @@ STRICT JSON FORMAT:
   ]
 }`;
 
-  // ── Call GPT-4o ──────────────────────────────────────────────────────────
-
   const raw = await chatCompletionJSON<{
     presentationTitle: string;
     presentationSubtitle: string;
@@ -234,6 +264,12 @@ STRICT JSON FORMAT:
         : 'content'
     ) as SlideLayout;
 
+    // Part 41.9: for chart_ref slides, inject the editable overlay block
+    // so the chart placeholder is interactive from generation time.
+    const editorData = layout === 'chart_ref'
+      ? buildChartRefEditorData()
+      : undefined;
+
     return {
       id:               s.id ?? `slide_${String(i + 1).padStart(3, '0')}`,
       layout,
@@ -253,6 +289,8 @@ STRICT JSON FORMAT:
                           ? s.icon
                           : LAYOUT_ICON[layout],
       speakerNotes:     typeof s.speakerNotes === 'string' ? s.speakerNotes : undefined,
+      // Part 41.9: attach editorData with the overlay block for chart_ref
+      ...(editorData ? { editorData } : {}),
     };
   });
 

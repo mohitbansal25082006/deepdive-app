@@ -1,5 +1,8 @@
 // src/components/editor/SlideThumbnailStrip.tsx
-// Part 28 — FIX: Visible delete button on every slide. Removed index>0 guard.
+// Part 41.9 — noTruncate={false} explicitly passed to thumbnail SlideCards
+//             so thumbnails continue to truncate correctly.
+// Part 28   — FIX: Visible delete button on every slide. Removed index>0 guard.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
@@ -15,25 +18,25 @@ import type { PresentationThemeTokens, SlideLayout } from '../../types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const THUMB_W    = 96;
-const THUMB_H    = Math.round(THUMB_W * (9 / 16));
+const THUMB_W     = 96;
+const THUMB_H     = Math.round(THUMB_W * (9 / 16));
 const THUMB_SCALE = THUMB_W / 320;
-const ITEM_W     = THUMB_W + SPACING.sm;
-const STRIP_H    = THUMB_H + 44; // thumb + slide number + delete button
+const ITEM_W      = THUMB_W + SPACING.sm;
+const STRIP_H     = THUMB_H + 44; // thumb + slide number + delete button
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface SlideThumbnailStripProps {
-  slides:          EditableSlide[];
-  activeIndex:     number;
-  tokens:          PresentationThemeTokens;
-  fontFamily?:     string;
-  accentColor?:    string;
-  onSelectSlide:   (index: number) => void;
-  onAddSlide:      (afterIndex: number, layout?: SlideLayout) => void;
-  onDeleteSlide:   (index: number) => void;
-  onReorderSlide:  (from: number, to: number) => void;
-  onDuplicateSlide:(index: number) => void;
+  slides:           EditableSlide[];
+  activeIndex:      number;
+  tokens:           PresentationThemeTokens;
+  fontFamily?:      string;
+  accentColor?:     string;
+  onSelectSlide:    (index: number) => void;
+  onAddSlide:       (afterIndex: number, layout?: SlideLayout) => void;
+  onDeleteSlide:    (index: number) => void;
+  onReorderSlide:   (from: number, to: number) => void;
+  onDuplicateSlide: (index: number) => void;
 }
 
 // ─── Add-slide button ─────────────────────────────────────────────────────────
@@ -135,7 +138,18 @@ const ThumbItem = React.memo(function ThumbItem({
           transform:     [{ scale: isActive ? 1.03 : 1 }],
         }}
       >
-        <SlideCard slide={slide} tokens={tokens} scale={THUMB_SCALE} fontFamily={fontFamily} />
+        {/*
+         * Part 41.9 fix: pass noTruncate={false} explicitly so thumbnail
+         * SlideCards still truncate long text — prevents layout overflow
+         * inside the narrow thumbnail frame.
+         */}
+        <SlideCard
+          slide={slide}
+          tokens={tokens}
+          scale={THUMB_SCALE}
+          fontFamily={fontFamily}
+          noTruncate={false}
+        />
       </Pressable>
 
       {/* Slide number + action row */}
