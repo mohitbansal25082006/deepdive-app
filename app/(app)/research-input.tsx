@@ -1,18 +1,33 @@
 // app/(app)/research-input.tsx
-// Part 24 — Academic mode removed. Standard report only.
-// Academic paper can be generated from the research-report screen after completion.
+// Part 43 — REDESIGNED UI to match "Deep Space Command Center" aesthetic.
+//           Reads `depth` param from route and pre-selects the correct depth card.
+//
+// Fixes:
+//   • useLocalSearchParams now reads both `query` AND `depth` params
+//   • Initial state for `depth` initialised from the param (defaults to 'deep' if absent)
+//   • All previous features (voice, credit gate, focus areas) preserved exactly
+//
+// UI changes:
+//   • Dark gradient background matching home screen (#0A0A1A → #12122A)
+//   • Header with subtle glow strip + breadcrumb
+//   • Selected depth card uses full-width colored gradient highlight
+//   • Focus area chips redesigned with per-chip animated press
+//   • Academic hint card redesigned with icon orb
+//   • Launch button with dynamic gradient matching selected depth color
+//   • Animated entrance for every section using spring physics
 
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  TextInput, Alert, Vibration,
+  TextInput, Alert, Vibration, Platform,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
 import Animated, {
-  FadeIn, FadeInDown,
+  FadeIn, FadeInDown, FadeInLeft,
   useSharedValue, useAnimatedStyle,
-  withRepeat, withSequence, withTiming,
+  withRepeat, withSequence, withTiming, withSpring,
+  interpolate,
 }                            from 'react-native-reanimated';
 import { SafeAreaView }      from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -32,7 +47,7 @@ import {
   transcribeAudio, formatDuration,
 }                            from '../../src/services/voiceResearch';
 
-// ─── Depth options ────────────────────────────────────────────────────────────
+// ─── Depth options ─────────────────────────────────────────────────────────────
 
 const DEPTH_OPTIONS: {
   key:        ResearchDepth;
@@ -42,27 +57,40 @@ const DEPTH_OPTIONS: {
   time:       string;
   searches:   string;
   color:      string;
+  gradColors: [string, string];
   creditCost: number;
 }[] = [
   {
-    key: 'quick', label: 'Quick Scan',
-    desc: 'Surface-level overview with key facts',
-    icon: 'flash-outline', time: '2–3 min',
-    searches: '4 searches', color: COLORS.info,
+    key:        'quick',
+    label:      'Quick Scan',
+    desc:       'Surface-level overview with key facts',
+    icon:       'flash-outline',
+    time:       '2–3 min',
+    searches:   '4 searches',
+    color:      '#29B6F6',
+    gradColors: ['#29B6F620', '#29B6F608'],
     creditCost: FEATURE_COSTS.research_quick,
   },
   {
-    key: 'deep', label: 'Deep Dive',
-    desc: 'Comprehensive analysis with statistics',
-    icon: 'analytics-outline', time: '5–7 min',
-    searches: '8 searches', color: COLORS.primary,
+    key:        'deep',
+    label:      'Deep Dive',
+    desc:       'Comprehensive analysis with statistics',
+    icon:       'analytics-outline',
+    time:       '5–7 min',
+    searches:   '8 searches',
+    color:      '#6C63FF',
+    gradColors: ['#6C63FF20', '#6C63FF08'],
     creditCost: FEATURE_COSTS.research_deep,
   },
   {
-    key: 'expert', label: 'Expert Mode',
-    desc: 'Exhaustive research with full citations',
-    icon: 'trophy-outline', time: '10–12 min',
-    searches: '12 searches', color: COLORS.warning,
+    key:        'expert',
+    label:      'Expert Mode',
+    desc:       'Exhaustive research with full citations',
+    icon:       'trophy-outline',
+    time:       '10–12 min',
+    searches:   '12 searches',
+    color:      '#FFA726',
+    gradColors: ['#FFA72620', '#FFA72608'],
     creditCost: FEATURE_COSTS.research_expert,
   },
 ];
@@ -73,13 +101,100 @@ const FOCUS_OPTIONS = [
   'Geographic Analysis', 'Recent News',
 ];
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
+// ─── Animated chip ─────────────────────────────────────────────────────────────
+function FocusChip({
+  area, selected, onPress,
+}: { area: string; selected: boolean; onPress: () => void }) {
+  const scale = useSharedValue(1);
+
+  const chipStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <Animated.View style={chipStyle}>
+      <TouchableOpacity
+        onPress={() => {
+          scale.value = withSequence(
+            withTiming(0.93, { duration: 80 }),
+            withSpring(1, { damping: 10, stiffness: 200 }),
+          );
+          onPress();
+        }}
+        activeOpacity={1}
+      >
+        <LinearGradient
+          colors={selected
+            ? ['#6C63FF30', '#6C63FF18']
+            : ['#1A1A3500', '#1A1A3500']
+          }
+          style={{
+            borderRadius:      RADIUS.full,
+            paddingHorizontal: 14,
+            paddingVertical:   8,
+            borderWidth:       1,
+            borderColor:       selected ? COLORS.primary : COLORS.border,
+            flexDirection:     'row',
+            alignItems:        'center',
+            gap:               5,
+          }}
+        >
+          {selected && (
+            <View style={{
+              width: 14, height: 14, borderRadius: 7,
+              backgroundColor: COLORS.primary,
+              alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Ionicons name="checkmark" size={9} color="#FFF" />
+            </View>
+          )}
+          <Text style={{
+            color:      selected ? COLORS.primary : COLORS.textSecondary,
+            fontSize:   FONTS.sizes.sm,
+            fontWeight: selected ? '700' : '400',
+          }}>
+            {area}
+          </Text>
+        </LinearGradient>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// ─── Breathing mic dot ─────────────────────────────────────────────────────────
+function RecordingDot() {
+  const scale = useSharedValue(1);
+  useEffect(() => {
+    scale.value = withRepeat(
+      withSequence(
+        withTiming(1.5, { duration: 600 }),
+        withTiming(1.0, { duration: 600 }),
+      ),
+      -1, false,
+    );
+  }, []);
+  const style = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  return (
+    <Animated.View
+      style={[{ width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.error }, style]}
+    />
+  );
+}
+
+// ─── Screen ────────────────────────────────────────────────────────────────────
 
 export default function ResearchInputScreen() {
-  const params = useLocalSearchParams<{ query: string }>();
+  // ── Part 43 FIX: read BOTH query AND depth from route params ──────────────
+  const params = useLocalSearchParams<{ query?: string; depth?: string }>();
+
+  // Validate the depth param — must be one of the three valid values
+  const initialDepth: ResearchDepth =
+    (params.depth === 'quick' || params.depth === 'expert')
+      ? params.depth
+      : 'deep';
 
   const [query,      setQuery]      = useState(params.query ?? '');
-  const [depth,      setDepth]      = useState<ResearchDepth>('deep');
+  const [depth,      setDepth]      = useState<ResearchDepth>(initialDepth);
   const [focusAreas, setFocusAreas] = useState<string[]>([]);
   const [starting,   setStarting]   = useState(false);
 
@@ -91,8 +206,9 @@ export default function ResearchInputScreen() {
   const { balance } = useCredits();
   const { guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  const micScale = useSharedValue(1);
-  const micGlow  = useSharedValue(0);
+  // ── Shared values ──────────────────────────────────────────────────────────
+  const micScale      = useSharedValue(1);
+  const inputFocused  = useSharedValue(0);
 
   useEffect(() => {
     if (isRecording) {
@@ -100,18 +216,20 @@ export default function ResearchInputScreen() {
         withSequence(withTiming(1.2, { duration: 500 }), withTiming(1.0, { duration: 500 })),
         -1, false,
       );
-      micGlow.value = withRepeat(
-        withSequence(withTiming(1, { duration: 650 }), withTiming(0.2, { duration: 650 })),
-        -1, false,
-      );
     } else {
       micScale.value = withTiming(1, { duration: 200 });
-      micGlow.value  = withTiming(0, { duration: 200 });
     }
   }, [isRecording]);
 
-  const micAnimStyle  = useAnimatedStyle(() => ({ transform: [{ scale: micScale.value }] }));
-  const glowAnimStyle = useAnimatedStyle(() => ({ opacity: micGlow.value }));
+  const micAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: micScale.value }] }));
+
+  const inputWrapStyle = useAnimatedStyle(() => ({
+    borderColor:   `rgba(108,99,255,${interpolate(inputFocused.value, [0, 1], [0.25, 0.85])})`,
+    shadowColor:   '#6C63FF',
+    shadowOpacity: interpolate(inputFocused.value, [0, 1], [0, 0.35]),
+    shadowRadius:  interpolate(inputFocused.value, [0, 1], [0, 16]),
+    elevation:     interpolate(inputFocused.value, [0, 1], [0, 8]),
+  }));
 
   const toggleFocus = (area: string) =>
     setFocusAreas(prev =>
@@ -121,8 +239,7 @@ export default function ResearchInputScreen() {
   const selectedDepthOpt = DEPTH_OPTIONS.find(o => o.key === depth)!;
   const totalCreditCost  = selectedDepthOpt.creditCost;
 
-  // ── Voice handlers ────────────────────────────────────────────────────────
-
+  // ── Voice handlers ─────────────────────────────────────────────────────────
   const handleVoicePress = async () => {
     if (transcribing) return;
     if (isRecording) {
@@ -153,8 +270,7 @@ export default function ResearchInputScreen() {
     setRecordingMs(0);
   };
 
-  // ── Launch ────────────────────────────────────────────────────────────────
-
+  // ── Launch ─────────────────────────────────────────────────────────────────
   const handleStart = async () => {
     if (!query.trim()) { Alert.alert('Query Required', 'Please enter a research topic.'); return; }
     if (isRecording) { handleVoiceCancel(); return; }
@@ -166,120 +282,163 @@ export default function ResearchInputScreen() {
     router.replace({
       pathname: '/(app)/research-progress' as any,
       params: {
-        query:        query.trim(),
+        query:         query.trim(),
         depth,
-        focusAreas:   focusAreas.join('||'),
-        researchMode: 'standard',
+        focusAreas:    focusAreas.join('||'),
+        researchMode:  'standard',
         citationStyle: 'apa',
       },
     });
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Tab bar height ─────────────────────────────────────────────────────────
+  const TAB_H = Platform.OS === 'ios' ? 90 : 80;
 
+  // ──────────────────────────────────────────────────────────────────────────
   return (
-    <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       <SafeAreaView style={{ flex: 1 }}>
 
-        {/* Header */}
-        <Animated.View entering={FadeIn.duration(400)} style={{
-          flexDirection: 'row', alignItems: 'center',
-          padding: SPACING.xl, paddingBottom: SPACING.md,
-        }}>
+        {/* ── Header ─────────────────────────────────────────────────────── */}
+        <Animated.View
+          entering={FadeIn.duration(350)}
+          style={{
+            flexDirection:  'row',
+            alignItems:     'center',
+            paddingHorizontal: SPACING.xl,
+            paddingVertical:   SPACING.md,
+            borderBottomWidth: 1,
+            borderBottomColor: `${COLORS.primary}18`,
+          }}
+        >
+          {/* Back */}
           <TouchableOpacity
             onPress={() => router.back()}
             style={{
               width: 40, height: 40, borderRadius: 12,
               backgroundColor: COLORS.backgroundElevated,
-              alignItems: 'center', justifyContent: 'center', marginRight: SPACING.md,
+              alignItems: 'center', justifyContent: 'center',
+              marginRight: SPACING.md,
+              borderWidth: 1, borderColor: COLORS.border,
             }}
           >
-            <Ionicons name="close" size={20} color={COLORS.textSecondary} />
+            <Ionicons name="arrow-back" size={19} color={COLORS.textSecondary} />
           </TouchableOpacity>
+
           <View style={{ flex: 1 }}>
-            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>
+            {/* Breadcrumb */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Research</Text>
+              <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
+              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                Configure
+              </Text>
+            </View>
+            <Text style={{
+              color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', letterSpacing: -0.3,
+            }}>
               Configure Research
             </Text>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
-              Type or speak your research topic
-            </Text>
           </View>
+
           <CreditBalance balance={balance} size="sm" />
         </Animated.View>
 
         <ScrollView
-          contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 150 }}
+          contentContainerStyle={{
+            paddingHorizontal: SPACING.xl,
+            paddingTop:        SPACING.lg,
+            paddingBottom:     TAB_H + 80,
+          }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Research Topic */}
-          <Animated.View entering={FadeInDown.duration(400).delay(50)}>
-            <View style={{
-              flexDirection: 'row', justifyContent: 'space-between',
-              alignItems: 'center', marginBottom: SPACING.sm,
-            }}>
-              <Text style={{
-                color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600',
-                letterSpacing: 0.8, textTransform: 'uppercase',
-              }}>
-                Research Topic
-              </Text>
+
+          {/* ── Research Topic ──────────────────────────────────────────── */}
+          <Animated.View
+            entering={FadeInDown.springify().delay(40).damping(15).stiffness(100)}
+            style={{ marginBottom: SPACING.lg }}
+          >
+            {/* Section label */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 20, height: 2, borderRadius: 1, backgroundColor: COLORS.primary }} />
+                <Text style={{
+                  color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
+                  letterSpacing: 1.2, textTransform: 'uppercase',
+                }}>
+                  Research Topic
+                </Text>
+              </View>
               <View style={{
                 flexDirection: 'row', alignItems: 'center', gap: 4,
-                backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
-                paddingHorizontal: 10, paddingVertical: 4,
+                backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
+                paddingHorizontal: 8, paddingVertical: 3,
                 borderWidth: 1, borderColor: `${COLORS.primary}25`,
               }}>
-                <Ionicons name="mic-outline" size={12} color={COLORS.primary} />
-                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                  Voice Input
-                </Text>
+                <Ionicons name="mic-outline" size={11} color={COLORS.primary} />
+                <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '600' }}>Voice Input</Text>
               </View>
             </View>
 
+            {/* Recording banner */}
             {isRecording && (
-              <Animated.View entering={FadeIn.duration(250)} style={{
-                backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg,
-                padding: SPACING.md, marginBottom: SPACING.sm,
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                borderWidth: 1, borderColor: `${COLORS.error}35`,
-              }}>
+              <Animated.View
+                entering={FadeIn.duration(200)}
+                style={{
+                  backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg,
+                  padding: SPACING.md, marginBottom: SPACING.sm,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  borderWidth: 1, borderColor: `${COLORS.error}35`,
+                }}
+              >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <Animated.View style={[{ width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.error }, glowAnimStyle]} />
+                  <RecordingDot />
                   <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
                     Recording  {formatDuration(recordingMs)}
                   </Text>
                 </View>
-                <TouchableOpacity onPress={handleVoiceCancel} style={{
-                  backgroundColor: `${COLORS.error}20`, borderRadius: RADIUS.sm,
-                  paddingHorizontal: 10, paddingVertical: 5,
-                }}>
+                <TouchableOpacity
+                  onPress={handleVoiceCancel}
+                  style={{
+                    backgroundColor: `${COLORS.error}20`, borderRadius: RADIUS.sm,
+                    paddingHorizontal: 10, paddingVertical: 5,
+                  }}
+                >
                   <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cancel</Text>
                 </TouchableOpacity>
               </Animated.View>
             )}
 
+            {/* Transcribing banner */}
             {transcribing && (
-              <Animated.View entering={FadeIn.duration(250)} style={{
-                backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.lg,
-                padding: SPACING.md, marginBottom: SPACING.sm,
-                flexDirection: 'row', alignItems: 'center', gap: 10,
-                borderWidth: 1, borderColor: `${COLORS.primary}25`,
-              }}>
+              <Animated.View
+                entering={FadeIn.duration(200)}
+                style={{
+                  backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg,
+                  padding: SPACING.md, marginBottom: SPACING.sm,
+                  flexDirection: 'row', alignItems: 'center', gap: 10,
+                  borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                }}
+              >
                 <Ionicons name="mic" size={16} color={COLORS.primary} />
                 <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
-                  Transcribing your voice...
+                  Transcribing your voice…
                 </Text>
               </Animated.View>
             )}
 
+            {/* Transcribed success */}
             {voiceTranscribed && !isRecording && !transcribing && query.trim() && (
-              <Animated.View entering={FadeIn.duration(300)} style={{
-                backgroundColor: `${COLORS.success}10`, borderRadius: RADIUS.lg,
-                padding: SPACING.sm, marginBottom: SPACING.sm,
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                borderWidth: 1, borderColor: `${COLORS.success}25`,
-              }}>
+              <Animated.View
+                entering={FadeIn.duration(300)}
+                style={{
+                  backgroundColor: `${COLORS.success}08`, borderRadius: RADIUS.lg,
+                  padding: SPACING.sm, marginBottom: SPACING.sm,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  borderWidth: 1, borderColor: `${COLORS.success}22`,
+                }}
+              >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Ionicons name="checkmark-circle" size={16} color={COLORS.success} />
                   <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
@@ -292,225 +451,368 @@ export default function ResearchInputScreen() {
               </Animated.View>
             )}
 
-            {/* Input */}
-            <View style={{
-              backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
-              borderWidth: 1.5,
-              borderColor: isRecording ? COLORS.error : voiceTranscribed ? COLORS.success : COLORS.borderFocus,
-              marginBottom: SPACING.sm, overflow: 'hidden',
-            }}>
-              <TextInput
-                value={query}
-                onChangeText={t => { setQuery(t); if (voiceTranscribed) setVoiceTranscribed(false); }}
-                placeholder={
-                  isRecording  ? 'Listening...'    :
-                  transcribing ? 'Transcribing...' :
-                  'Enter your research question or tap the mic...'
-                }
-                placeholderTextColor={COLORS.textMuted}
-                style={{
-                  color: COLORS.textPrimary, fontSize: FONTS.sizes.base,
-                  lineHeight: 24, minHeight: 60,
-                  padding: SPACING.md, paddingBottom: 52,
-                }}
-                multiline
-                autoFocus={!isRecording}
-                editable={!isRecording && !transcribing}
-              />
-              <View style={{
-                position: 'absolute', bottom: 0, left: 0, right: 0,
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                paddingHorizontal: SPACING.md, paddingVertical: 8,
-                borderTopWidth: 1,
-                borderTopColor: isRecording ? `${COLORS.error}30` : COLORS.border,
-                backgroundColor: isRecording ? `${COLORS.error}08` : `${COLORS.backgroundCard}DD`,
+            {/* Text input */}
+            <Animated.View style={[{ borderRadius: RADIUS.lg, borderWidth: 1.5, overflow: 'hidden' }, inputWrapStyle]}>
+              <View style={{ backgroundColor: COLORS.backgroundElevated }}>
+                <TextInput
+                  value={query}
+                  onChangeText={t => { setQuery(t); if (voiceTranscribed) setVoiceTranscribed(false); }}
+                  onFocus={() => { inputFocused.value = withSpring(1, { damping: 14, stiffness: 120 }); }}
+                  onBlur={() => { inputFocused.value = withSpring(0, { damping: 14, stiffness: 120 }); }}
+                  placeholder={
+                    isRecording  ? 'Listening…'     :
+                    transcribing ? 'Transcribing…'  :
+                    'Enter your research question or tap the mic…'
+                  }
+                  placeholderTextColor={COLORS.textMuted}
+                  style={{
+                    color: COLORS.textPrimary, fontSize: FONTS.sizes.base,
+                    lineHeight: 24, minHeight: 64,
+                    padding: SPACING.md, paddingBottom: 56,
+                  }}
+                  multiline
+                  autoFocus={!isRecording && !params.depth}
+                  editable={!isRecording && !transcribing}
+                />
+
+                {/* Bottom toolbar */}
+                <View style={{
+                  position: 'absolute', bottom: 0, left: 0, right: 0,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  paddingHorizontal: SPACING.md, paddingVertical: 8,
+                  borderTopWidth: 1,
+                  borderTopColor: isRecording ? `${COLORS.error}25` : `${COLORS.primary}15`,
+                  backgroundColor: `${COLORS.backgroundCard}CC`,
+                }}>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                    {isRecording  ? 'Tap ⏹ to finish speaking'  :
+                     transcribing ? 'Processing audio…'          :
+                     '🎙 Tap mic to speak your query'}
+                  </Text>
+                  <Animated.View style={micAnimStyle}>
+                    <TouchableOpacity onPress={handleVoicePress} disabled={transcribing} activeOpacity={0.82}>
+                      <LinearGradient
+                        colors={
+                          isRecording  ? [COLORS.error, '#CC0000']        :
+                          transcribing ? ['#555', '#444']                  :
+                          ['#6C63FF', '#8B5CF6']
+                        }
+                        style={{
+                          width: 38, height: 38, borderRadius: 19,
+                          alignItems: 'center', justifyContent: 'center',
+                        }}
+                      >
+                        <Ionicons
+                          name={isRecording ? 'stop' : transcribing ? 'hourglass-outline' : 'mic'}
+                          size={17} color="#FFF"
+                        />
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </Animated.View>
+                </View>
+              </View>
+            </Animated.View>
+          </Animated.View>
+
+          {/* ── Research Depth ──────────────────────────────────────────── */}
+          <Animated.View
+            entering={FadeInDown.springify().delay(120).damping(15).stiffness(100)}
+            style={{ marginBottom: SPACING.lg }}
+          >
+            {/* Section label */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
+              <View style={{ width: 20, height: 2, borderRadius: 1, backgroundColor: selectedDepthOpt.color }} />
+              <Text style={{
+                color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
+                letterSpacing: 1.2, textTransform: 'uppercase',
               }}>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                  {isRecording  ? 'Tap ⏹ to finish speaking' :
-                   transcribing ? 'Processing audio...'       :
-                   'Tap 🎙 to speak your query'}
-                </Text>
-                <Animated.View style={micAnimStyle}>
-                  <TouchableOpacity onPress={handleVoicePress} disabled={transcribing} activeOpacity={0.8}>
+                Research Depth
+              </Text>
+            </View>
+
+            {DEPTH_OPTIONS.map((opt, idx) => {
+              const isSelected = depth === opt.key;
+              return (
+                <Animated.View
+                  key={opt.key}
+                  entering={FadeInLeft.springify().delay(140 + idx * 60).damping(14).stiffness(110)}
+                >
+                  <TouchableOpacity
+                    onPress={() => setDepth(opt.key)}
+                    activeOpacity={0.82}
+                    style={{ marginBottom: SPACING.sm }}
+                  >
                     <LinearGradient
-                      colors={
-                        isRecording  ? [COLORS.error, '#CC0000']                   :
-                        transcribing ? [COLORS.textMuted, COLORS.textMuted]        :
-                        COLORS.gradientPrimary
-                      }
-                      style={{ width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' }}
+                      colors={isSelected ? opt.gradColors : ['#12122A', '#0F0F22']}
+                      style={{
+                        borderRadius:  RADIUS.lg,
+                        padding:       SPACING.md,
+                        borderWidth:   isSelected ? 1.5 : 1,
+                        borderColor:   isSelected ? opt.color : COLORS.border,
+                        flexDirection: 'row',
+                        alignItems:    'center',
+                        gap:           SPACING.md,
+                      }}
                     >
-                      <Ionicons
-                        name={isRecording ? 'stop' : transcribing ? 'hourglass-outline' : 'mic'}
-                        size={17} color="#FFF"
-                      />
+                      {/* Icon orb */}
+                      <LinearGradient
+                        colors={isSelected
+                          ? [opt.color + '40', opt.color + '20']
+                          : [COLORS.backgroundElevated, COLORS.backgroundElevated]
+                        }
+                        style={{
+                          width: 48, height: 48, borderRadius: 14,
+                          alignItems: 'center', justifyContent: 'center',
+                          borderWidth: 1,
+                          borderColor: isSelected ? opt.color + '60' : COLORS.border,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Ionicons
+                          name={opt.icon as any}
+                          size={22}
+                          color={isSelected ? opt.color : COLORS.textMuted}
+                        />
+                      </LinearGradient>
+
+                      {/* Labels */}
+                      <View style={{ flex: 1 }}>
+                        <Text style={{
+                          color:      isSelected ? COLORS.textPrimary : COLORS.textSecondary,
+                          fontSize:   FONTS.sizes.base,
+                          fontWeight: '700',
+                          marginBottom: 3,
+                        }}>
+                          {opt.label}
+                        </Text>
+                        <Text style={{
+                          color:    COLORS.textMuted,
+                          fontSize: FONTS.sizes.xs,
+                          lineHeight: 16,
+                        }}>
+                          {opt.desc}
+                        </Text>
+                      </View>
+
+                      {/* Meta + credit cost */}
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        <Text style={{
+                          color:      isSelected ? opt.color : COLORS.textMuted,
+                          fontSize:   FONTS.sizes.xs,
+                          fontWeight: '600',
+                        }}>
+                          {opt.time}
+                        </Text>
+                        <View style={{
+                          flexDirection: 'row', alignItems: 'center', gap: 3,
+                          backgroundColor: isSelected ? `${opt.color}22` : `${COLORS.primary}10`,
+                          borderRadius:    RADIUS.full,
+                          paddingHorizontal: 8, paddingVertical: 3,
+                          borderWidth: 1,
+                          borderColor: isSelected ? `${opt.color}40` : `${COLORS.primary}20`,
+                        }}>
+                          <Ionicons name="flash" size={9} color={isSelected ? opt.color : COLORS.primary} />
+                          <Text style={{
+                            color:      isSelected ? opt.color : COLORS.primary,
+                            fontSize:   9,
+                            fontWeight: '800',
+                          }}>
+                            {opt.creditCost} cr
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Selected checkmark */}
+                      {isSelected && (
+                        <View style={{
+                          width: 24, height: 24, borderRadius: 12,
+                          backgroundColor: opt.color,
+                          alignItems: 'center', justifyContent: 'center',
+                          flexShrink: 0,
+                        }}>
+                          <Ionicons name="checkmark" size={14} color="#FFF" />
+                        </View>
+                      )}
                     </LinearGradient>
                   </TouchableOpacity>
                 </Animated.View>
-              </View>
-            </View>
-          </Animated.View>
-
-          {/* Research Depth */}
-          <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-            <Text style={{
-              color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600',
-              letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm,
-            }}>
-              Research Depth
-            </Text>
-
-            {DEPTH_OPTIONS.map(opt => {
-              const isSelected = depth === opt.key;
-              return (
-                <TouchableOpacity
-                  key={opt.key}
-                  onPress={() => setDepth(opt.key)}
-                  style={{
-                    backgroundColor: isSelected ? `${opt.color}15` : COLORS.backgroundCard,
-                    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
-                    borderWidth: 1.5, borderColor: isSelected ? opt.color : COLORS.border,
-                    flexDirection: 'row', alignItems: 'center',
-                  }}
-                  activeOpacity={0.75}
-                >
-                  <View style={{
-                    width: 44, height: 44, borderRadius: 12,
-                    backgroundColor: isSelected ? `${opt.color}25` : COLORS.backgroundElevated,
-                    alignItems: 'center', justifyContent: 'center', marginRight: SPACING.md,
-                  }}>
-                    <Ionicons name={opt.icon as any} size={22} color={isSelected ? opt.color : COLORS.textMuted} />
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={{
-                      color: isSelected ? COLORS.textPrimary : COLORS.textSecondary,
-                      fontSize: FONTS.sizes.base, fontWeight: '700',
-                    }}>{opt.label}</Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-                      {opt.desc}
-                    </Text>
-                  </View>
-
-                  <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                    <Text style={{ color: isSelected ? opt.color : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                      {opt.time}
-                    </Text>
-                    <View style={{
-                      flexDirection: 'row', alignItems: 'center', gap: 3,
-                      backgroundColor: isSelected ? `${opt.color}20` : `${COLORS.primary}10`,
-                      borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2,
-                    }}>
-                      <Ionicons name="flash" size={9} color={isSelected ? opt.color : COLORS.primary} />
-                      <Text style={{ color: isSelected ? opt.color : COLORS.primary, fontSize: 9, fontWeight: '800' }}>
-                        {opt.creditCost} cr
-                      </Text>
-                    </View>
-                  </View>
-
-                  {isSelected && (
-                    <View style={{
-                      marginLeft: SPACING.sm, width: 22, height: 22, borderRadius: 11,
-                      backgroundColor: opt.color, alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      <Ionicons name="checkmark" size={14} color="#FFF" />
-                    </View>
-                  )}
-                </TouchableOpacity>
               );
             })}
           </Animated.View>
 
-          {/* Focus Areas */}
-          <Animated.View entering={FadeInDown.duration(400).delay(150)}>
-            <Text style={{
-              color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600',
-              letterSpacing: 0.8, textTransform: 'uppercase',
-              marginBottom: 4, marginTop: SPACING.md,
-            }}>
-              Focus Areas
-            </Text>
+          {/* ── Focus Areas ──────────────────────────────────────────────── */}
+          <Animated.View
+            entering={FadeInDown.springify().delay(200).damping(15).stiffness(100)}
+            style={{ marginBottom: SPACING.lg }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <View style={{ width: 20, height: 2, borderRadius: 1, backgroundColor: COLORS.accent }} />
+              <Text style={{
+                color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
+                letterSpacing: 1.2, textTransform: 'uppercase',
+              }}>
+                Focus Areas
+              </Text>
+              {focusAreas.length > 0 && (
+                <View style={{
+                  backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full,
+                  paddingHorizontal: 7, paddingVertical: 1,
+                  borderWidth: 1, borderColor: `${COLORS.primary}35`,
+                }}>
+                  <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '800' }}>
+                    {focusAreas.length} selected
+                  </Text>
+                </View>
+              )}
+            </View>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginBottom: SPACING.sm }}>
-              Optional: select specific areas to emphasize
+              Optional — select specific areas to emphasize in your report
             </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: SPACING.md }}>
-              {FOCUS_OPTIONS.map(area => {
-                const sel = focusAreas.includes(area);
-                return (
-                  <TouchableOpacity
-                    key={area}
-                    onPress={() => toggleFocus(area)}
-                    style={{
-                      backgroundColor: sel ? `${COLORS.primary}20` : COLORS.backgroundCard,
-                      borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 8,
-                      borderWidth: 1, borderColor: sel ? COLORS.primary : COLORS.border,
-                    }}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={{
-                      color: sel ? COLORS.primary : COLORS.textSecondary,
-                      fontSize: FONTS.sizes.sm, fontWeight: sel ? '600' : '400',
-                    }}>
-                      {sel ? '✓ ' : ''}{area}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {FOCUS_OPTIONS.map(area => (
+                <FocusChip
+                  key={area}
+                  area={area}
+                  selected={focusAreas.includes(area)}
+                  onPress={() => toggleFocus(area)}
+                />
+              ))}
             </View>
           </Animated.View>
 
-          {/* Academic paper hint */}
-          <Animated.View entering={FadeInDown.duration(400).delay(200)}>
-            <View style={{
-              flexDirection: 'row', alignItems: 'flex-start', gap: 10,
-              backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg,
-              padding: SPACING.md,
-              borderWidth: 1, borderColor: `${COLORS.primary}18`,
-            }}>
-              <Ionicons name="school-outline" size={18} color={COLORS.primary} style={{ marginTop: 1, flexShrink: 0 }} />
+          {/* ── Academic paper hint ──────────────────────────────────────── */}
+          <Animated.View
+            entering={FadeInDown.springify().delay(260).damping(15).stiffness(100)}
+          >
+            <LinearGradient
+              colors={['#1A1235', '#0F0F22']}
+              style={{
+                borderRadius: RADIUS.lg, padding: SPACING.md,
+                borderWidth: 1, borderColor: `${COLORS.primary}20`,
+                flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md,
+                overflow: 'hidden',
+              }}
+            >
+              {/* Top glow */}
+              <LinearGradient
+                colors={[`${COLORS.primary}30`, 'transparent']}
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 1 }}
+              />
+
+              {/* Icon orb */}
+              <View style={{
+                width: 38, height: 38, borderRadius: 11,
+                backgroundColor: `${COLORS.primary}18`,
+                alignItems: 'center', justifyContent: 'center',
+                borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                flexShrink: 0, marginTop: 1,
+              }}>
+                <Ionicons name="school-outline" size={18} color={COLORS.primary} />
+              </View>
+
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 18, flex: 1 }}>
-                <Text style={{ color: COLORS.primary, fontWeight: '700' }}>Academic Paper available after report. </Text>
-                Once your report is ready, tap the 🎓 button inside to generate a full
-                academic paper for {FEATURE_COSTS.academic_paper} credits.
+                <Text style={{ color: COLORS.primary, fontWeight: '700' }}>Academic Paper — available after report. </Text>
+                Once your report is complete, tap the 🎓 button inside to generate
+                a full academic paper for {FEATURE_COSTS.academic_paper} credits.
               </Text>
-            </View>
+            </LinearGradient>
           </Animated.View>
 
         </ScrollView>
 
-        {/* Launch button */}
+        {/* ── Launch Button ───────────────────────────────────────────────── */}
         <View style={{
-          position: 'absolute', bottom: 0, left: 0, right: 0,
-          padding: SPACING.xl,
-          backgroundColor: 'rgba(10,10,26,0.96)',
-          borderTopWidth: 1, borderTopColor: COLORS.border,
+          position:        'absolute',
+          bottom:          0, left: 0, right: 0,
+          paddingHorizontal: SPACING.xl,
+          paddingTop:      SPACING.md,
+          paddingBottom:   Platform.OS === 'ios' ? 28 : SPACING.md,
+          backgroundColor: 'rgba(10,10,26,0.97)',
+          borderTopWidth:  1,
+          borderTopColor:  `${selectedDepthOpt.color}20`,
         }}>
+          {/* Credit summary row */}
           <View style={{
             flexDirection: 'row', alignItems: 'center',
             justifyContent: 'space-between', marginBottom: SPACING.sm,
           }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-              <Ionicons name="flash" size={13} color={COLORS.primary} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{
+                width: 22, height: 22, borderRadius: 6,
+                backgroundColor: `${selectedDepthOpt.color}20`,
+                alignItems: 'center', justifyContent: 'center',
+                borderWidth: 1, borderColor: `${selectedDepthOpt.color}35`,
+              }}>
+                <Ionicons name="flash" size={11} color={selectedDepthOpt.color} />
+              </View>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                {'This will use '}
-                <Text style={{ color: COLORS.primary, fontWeight: '700' }}>
+                {'Will use '}
+                <Text style={{ color: selectedDepthOpt.color, fontWeight: '800' }}>
                   {totalCreditCost} credits
+                </Text>
+                {' for '}
+                <Text style={{ color: COLORS.textSecondary, fontWeight: '600' }}>
+                  {selectedDepthOpt.label}
                 </Text>
               </Text>
             </View>
             <CreditBalance balance={balance} size="sm" />
           </View>
 
-          <GradientButton
-            title={
-              isRecording ? '⏹  Stop Recording First'          :
-              isConsuming ? 'Checking credits...'               :
-              `Launch Research Agent 🚀 (${totalCreditCost} cr)`
-            }
+          {/* Launch button — gradient matches depth color */}
+          <TouchableOpacity
             onPress={handleStart}
-            loading={starting || transcribing || isConsuming}
-            disabled={(!query.trim() && !isRecording) || transcribing}
-          />
+            disabled={(!query.trim() && !isRecording) || transcribing || starting || isConsuming}
+            activeOpacity={0.84}
+          >
+            <LinearGradient
+              colors={
+                (!query.trim() && !isRecording) || transcribing
+                  ? ['#2A2A4A', '#1A1A35']
+                  : [selectedDepthOpt.color, selectedDepthOpt.color + 'CC']
+              }
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+              style={{
+                borderRadius:   RADIUS.lg, paddingVertical: 15,
+                alignItems:     'center', flexDirection: 'row',
+                justifyContent: 'center', gap: 10,
+              }}
+            >
+              {(starting || transcribing || isConsuming) ? (
+                <>
+                  <Ionicons name="hourglass-outline" size={18} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+                    {isConsuming ? 'Checking credits…' : 'Launching…'}
+                  </Text>
+                </>
+              ) : isRecording ? (
+                <>
+                  <Ionicons name="stop" size={18} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+                    Stop Recording First
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="rocket-outline" size={18} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800', letterSpacing: 0.2 }}>
+                    Launch {selectedDepthOpt.label}
+                  </Text>
+                  <View style={{
+                    backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full,
+                    paddingHorizontal: 8, paddingVertical: 3,
+                    flexDirection: 'row', alignItems: 'center', gap: 3,
+                  }}>
+                    <Ionicons name="flash" size={10} color="#FFF" />
+                    <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>
+                      {totalCreditCost} cr
+                    </Text>
+                  </View>
+                </>
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
         </View>
 
         <InsufficientCreditsModal
@@ -520,6 +822,6 @@ export default function ResearchInputScreen() {
         />
 
       </SafeAreaView>
-    </LinearGradient>
+    </View>
   );
 }

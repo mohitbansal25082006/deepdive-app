@@ -1,16 +1,17 @@
 // src/components/home/PersonalizedSuggestionCard.tsx
-// Part 21 — Personalized suggestion card for the home screen.
+// Part 43 — Redesigned with gradient border glow, spring press animation,
+//            holographic source badge, and improved typography hierarchy.
 //
-// Renders a single AI-curated topic suggestion with:
-//   - Source badge (Your Interest / Recently Researched / Trending / Follow-up)
-//   - Follow-up angle explanation (when source = 'followup')
-//   - Time-ago label for recently-researched items
-//   - Gradient icon matching the topic
+// All props/exports are unchanged — drop-in replacement.
 
-import React from 'react';
+import React, { useCallback } from 'react';
 import { TouchableOpacity, View, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons }       from '@expo/vector-icons';
+import Animated, {
+  useSharedValue, useAnimatedStyle,
+  withSpring, withTiming,
+} from 'react-native-reanimated';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 import { PersonalizedSuggestion } from '../../services/homePersonalizationService';
 
@@ -19,19 +20,58 @@ interface Props {
   onPress:    (query: string) => void;
 }
 
-const SOURCE_BADGE_STYLES: Record<
-  string,
-  { bg: string; text: string; border: string }
-> = {
-  affinity:  { bg: `${COLORS.primary}18`,  text: COLORS.primary,  border: `${COLORS.primary}30`  },
-  recent:    { bg: `${COLORS.info}18`,      text: COLORS.info,     border: `${COLORS.info}30`     },
-  trending:  { bg: `${COLORS.accent}15`,    text: COLORS.accent,   border: `${COLORS.accent}25`   },
-  followup:  { bg: `${COLORS.warning}15`,   text: COLORS.warning,  border: `${COLORS.warning}25`  },
+// ── Source config ──────────────────────────────────────────────────────────────
+
+const SOURCE_CONFIG: Record<string, {
+  badgeBg:    string;
+  badgeText:  string;
+  badgeBorder:string;
+  borderGlow: string;
+  iconBg:     string;
+  dotColor:   string;
+  label:      string;
+}> = {
+  affinity: {
+    badgeBg:     `${COLORS.primary}18`,
+    badgeText:   COLORS.primary,
+    badgeBorder: `${COLORS.primary}35`,
+    borderGlow:  `${COLORS.primary}20`,
+    iconBg:      `${COLORS.primary}15`,
+    dotColor:    COLORS.primary,
+    label:       '★ Your Interest',
+  },
+  recent: {
+    badgeBg:     `${COLORS.info}18`,
+    badgeText:   COLORS.info,
+    badgeBorder: `${COLORS.info}35`,
+    borderGlow:  `${COLORS.info}18`,
+    iconBg:      `${COLORS.info}15`,
+    dotColor:    COLORS.info,
+    label:       '🕐 Recent',
+  },
+  trending: {
+    badgeBg:     `${COLORS.accent}15`,
+    badgeText:   COLORS.accent,
+    badgeBorder: `${COLORS.accent}30`,
+    borderGlow:  `${COLORS.accent}12`,
+    iconBg:      `${COLORS.accent}15`,
+    dotColor:    COLORS.accent,
+    label:       '🔥 Trending',
+  },
+  followup: {
+    badgeBg:     `${COLORS.warning}15`,
+    badgeText:   COLORS.warning,
+    badgeBorder: `${COLORS.warning}30`,
+    borderGlow:  `${COLORS.warning}12`,
+    iconBg:      `${COLORS.warning}15`,
+    dotColor:    COLORS.warning,
+    label:       '💡 Follow-up',
+  },
 };
 
 function timeAgo(isoString?: string): string {
   if (!isoString) return '';
-  const diff = Date.now() - new Date(isoString).getTime();
+  const diff  = Date.now() - new Date(isoString).getTime();
   const days  = Math.floor(diff / 86400000);
   const hours = Math.floor(diff / 3600000);
   if (days >= 7)  return `${Math.floor(days / 7)}w ago`;
@@ -40,105 +80,148 @@ function timeAgo(isoString?: string): string {
   return 'Recently';
 }
 
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
 export function PersonalizedSuggestionCard({ suggestion, onPress }: Props) {
-  const badge = SOURCE_BADGE_STYLES[suggestion.source] ??
-    SOURCE_BADGE_STYLES.trending;
+  const cfg = SOURCE_CONFIG[suggestion.source] ?? SOURCE_CONFIG.trending;
+
+  // Press spring
+  const scale = useSharedValue(1);
+
+  const handlePressIn = useCallback(() => {
+    scale.value = withSpring(0.975, { damping: 15, stiffness: 300 });
+  }, []);
+  const handlePressOut = useCallback(() => {
+    scale.value = withSpring(1, { damping: 12, stiffness: 200 });
+  }, []);
+
+  const cardStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
 
   return (
-    <TouchableOpacity
+    <AnimatedTouchable
       onPress={() => onPress(suggestion.rawQuery)}
-      style={{
-        backgroundColor: COLORS.backgroundCard,
-        borderRadius:    RADIUS.lg,
-        padding:         SPACING.md,
-        marginBottom:    SPACING.sm,
-        flexDirection:   'row',
-        alignItems:      'flex-start',
-        borderWidth:     1,
-        borderColor:     COLORS.border,
-      }}
-      activeOpacity={0.75}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      activeOpacity={1}
+      style={[cardStyle, { marginBottom: SPACING.sm }]}
     >
-      {/* Icon */}
-      <LinearGradient
-        colors={suggestion.gradient}
-        style={{
-          width:          44,
-          height:         44,
-          borderRadius:   12,
-          alignItems:     'center',
-          justifyContent: 'center',
-          marginRight:    14,
-          flexShrink:     0,
-        }}
-      >
-        <Ionicons name={suggestion.icon as any} size={20} color="#FFF" />
-      </LinearGradient>
+      {/* Outer container with gradient border effect */}
+      <View style={{
+        borderRadius:    RADIUS.lg + 1,
+        padding:         1,
+        backgroundColor: cfg.borderGlow,
+        borderWidth:     1,
+        borderColor:     cfg.badgeBorder,
+      }}>
+        <LinearGradient
+          colors={['#14142A', '#0F0F22']}
+          style={{
+            borderRadius:  RADIUS.lg,
+            padding:       SPACING.md,
+            flexDirection: 'row',
+            alignItems:    'flex-start',
+            gap:           12,
+          }}
+        >
+          {/* Icon orb */}
+          <LinearGradient
+            colors={suggestion.gradient}
+            style={{
+              width:          44, height: 44, borderRadius: 13,
+              alignItems:     'center', justifyContent: 'center',
+              flexShrink:     0,
+              shadowColor:    suggestion.gradient[0],
+              shadowOpacity:  0.4,
+              shadowRadius:   8,
+              shadowOffset:   { width: 0, height: 4 },
+              elevation:      6,
+            }}
+          >
+            <Ionicons name={suggestion.icon as any} size={20} color="#FFF" />
+          </LinearGradient>
 
-      {/* Content */}
-      <View style={{ flex: 1 }}>
-        {/* Title row */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-          <Text style={{
-            color:      COLORS.textPrimary,
-            fontSize:   FONTS.sizes.base,
-            fontWeight: '600',
-            flex:       1,
-            flexShrink: 1,
-          }}>
-            {suggestion.keyword}
-          </Text>
-        </View>
-
-        {/* Follow-up angle explanation */}
-        {suggestion.followUpAngle && (
-          <Text style={{
-            color:      COLORS.textMuted,
-            fontSize:   FONTS.sizes.xs,
-            lineHeight: 16,
-            marginBottom: 6,
-            fontStyle:  'italic',
-          }}>
-            💡 {suggestion.followUpAngle}
-          </Text>
-        )}
-
-        {/* Badge row */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <View style={{
-            backgroundColor:   badge.bg,
-            borderRadius:      RADIUS.full,
-            paddingHorizontal: 8,
-            paddingVertical:   2,
-            borderWidth:       1,
-            borderColor:       badge.border,
-            flexDirection:     'row',
-            alignItems:        'center',
-            gap:                4,
-          }}>
-            <Ionicons name={suggestion.icon as any} size={10} color={badge.text} />
-            <Text style={{ color: badge.text, fontSize: 10, fontWeight: '700' }}>
-              {suggestion.tag}
+          {/* Content */}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            {/* Keyword */}
+            <Text
+              numberOfLines={2}
+              style={{
+                color:       COLORS.textPrimary,
+                fontSize:    FONTS.sizes.base,
+                fontWeight:  '600',
+                lineHeight:  21,
+                marginBottom: suggestion.followUpAngle ? 5 : 8,
+              }}
+            >
+              {suggestion.keyword}
             </Text>
+
+            {/* Follow-up angle */}
+            {suggestion.followUpAngle && (
+              <View style={{
+                backgroundColor: `${COLORS.warning}08`,
+                borderRadius:    RADIUS.sm,
+                paddingHorizontal: 8, paddingVertical: 4,
+                marginBottom:    8,
+                borderWidth:     1, borderColor: `${COLORS.warning}18`,
+              }}>
+                <Text style={{
+                  color:    COLORS.warning,
+                  fontSize: FONTS.sizes.xs,
+                  lineHeight: 15,
+                  fontStyle: 'italic',
+                }}>
+                  💡 {suggestion.followUpAngle}
+                </Text>
+              </View>
+            )}
+
+            {/* Badge + time row */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {/* Source badge */}
+              <View style={{
+                backgroundColor:   cfg.badgeBg,
+                borderRadius:      RADIUS.full,
+                paddingHorizontal: 8, paddingVertical: 3,
+                borderWidth:       1, borderColor: cfg.badgeBorder,
+                flexDirection:     'row', alignItems: 'center', gap: 4,
+              }}>
+                {/* Dot */}
+                <View style={{
+                  width: 5, height: 5, borderRadius: 2.5,
+                  backgroundColor: cfg.dotColor,
+                }} />
+                <Text style={{ color: cfg.badgeText, fontSize: 9, fontWeight: '700', letterSpacing: 0.3 }}>
+                  {cfg.label}
+                </Text>
+              </View>
+
+              {/* Time-ago */}
+              {(suggestion.source === 'recent' || suggestion.source === 'affinity') &&
+                suggestion.lastSeenAt && (
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                    {timeAgo(suggestion.lastSeenAt)}
+                  </Text>
+                )
+              }
+            </View>
           </View>
 
-          {/* Time-ago for recent/affinity items */}
-          {(suggestion.source === 'recent' || suggestion.source === 'affinity') &&
-            suggestion.lastSeenAt && (
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                {timeAgo(suggestion.lastSeenAt)}
-              </Text>
-            )
-          }
-        </View>
+          {/* Arrow */}
+          <View style={{
+            width:           28, height: 28, borderRadius: 8,
+            backgroundColor: `${COLORS.primary}10`,
+            alignItems:      'center', justifyContent: 'center',
+            alignSelf:       'center',
+            borderWidth:     1, borderColor: `${COLORS.primary}20`,
+            flexShrink:      0,
+          }}>
+            <Ionicons name="arrow-forward" size={13} color={COLORS.primary} />
+          </View>
+        </LinearGradient>
       </View>
-
-      <Ionicons
-        name="chevron-forward"
-        size={18}
-        color={COLORS.textMuted}
-        style={{ alignSelf: 'center', marginLeft: 4 }}
-      />
-    </TouchableOpacity>
+    </AnimatedTouchable>
   );
 }

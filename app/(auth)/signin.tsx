@@ -1,18 +1,16 @@
 // app/(auth)/signin.tsx
-// Part 32 UPDATE — Shows a "Account Suspended" banner when a suspended
-// user attempts to sign in.
+// Part 42.1 UPDATE — Adds 60-second cooldown handling for OTP rate limiting.
 //
-// NEW in Part 32:
-//   After a successful Supabase signInWithPassword, we check the user's
-//   profile.account_status before navigating. If suspended:
-//   - Sign them back out immediately
-//   - Show a red "Account Suspended" banner with support contact info
-//   This prevents a suspended user from briefly accessing the app while
-//   the Realtime overlay loads.
+// NEW in Part 42.1:
+//   - handleSendVerificationOtp: catches Supabase 429 / "60 seconds" error,
+//     starts a live countdown timer, disables the button until cooldown ends.
+//   - handleResendOtp (OTP screen): same cooldown logic on the Resend Code button.
+//   - CooldownBanner: shown when rate-limited, displays "Wait Xs" countdown.
+//   - All buttons show "Wait Xs" text and are disabled during cooldown.
 //
-// All Part 1–31 logic (OTP flow, unverified banner, etc.) preserved unchanged.
+// All Part 1–32 logic preserved unchanged.
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -37,6 +35,19 @@ import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
 const OTP_LENGTH     = 8;
 const SUPPORT_EMAIL  = 'support@deepdiveai.com';
+const COOLDOWN_SECS  = 60;
+
+// ── Helper: detect rate-limit errors from Supabase ───────────────────────────
+function isRateLimitError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('60 seconds') ||
+    m.includes('security purposes') ||
+    m.includes('rate limit') ||
+    m.includes('too many requests') ||
+    m.includes('429')
+  );
+}
 
 export default function SignInScreen() {
   const [step, setStep] = useState<'signin' | 'otp'>('signin');
@@ -52,12 +63,46 @@ export default function SignInScreen() {
   const [showSuspendedBanner,  setShowSuspendedBanner]  = useState(false);
   const [sendingOtp,           setSendingOtp]           = useState(false);
 
+  // ── Cooldown state (signin screen — "Send Verification Code" button) ────────
+  const [sendCooldown,   setSendCooldown]   = useState(0);
+  const sendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Cooldown state (OTP screen — "Resend Code" button) ──────────────────────
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // OTP fields
   const [otp,       setOtp]       = useState<string[]>(Array(OTP_LENGTH).fill(''));
   const [otpError,  setOtpError]  = useState('');
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
   const otpRefs = useRef<Array<TextInput | null>>(Array(OTP_LENGTH).fill(null));
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (sendTimerRef.current)   clearInterval(sendTimerRef.current);
+      if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    };
+  }, []);
+
+  // ── Start a countdown timer ───────────────────────────────────────────────
+  const startCooldown = (
+    setter: React.Dispatch<React.SetStateAction<number>>,
+    timerRef: React.MutableRefObject<ReturnType<typeof setInterval> | null>
+  ) => {
+    setter(COOLDOWN_SECS);
+    timerRef.current = setInterval(() => {
+      setter(prev => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current!);
+          timerRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
 
   const handleBack = () => {
     if (router.canGoBack()) {
@@ -108,7 +153,6 @@ export default function SignInScreen() {
     }
 
     if (data.user) {
-      // ── Part 32: Check account_status before navigating ──────────────────
       try {
         const { data: profileData } = await supabase
           .from('profiles')
@@ -116,7 +160,6 @@ export default function SignInScreen() {
           .eq('id', data.user.id)
           .single();
 
-        // If suspended — sign out immediately and show suspended banner
         if (profileData?.account_status === 'suspended') {
           await supabase.auth.signOut();
           setLoading(false);
@@ -124,7 +167,6 @@ export default function SignInScreen() {
           return;
         }
 
-        // Normal routing (flagged accounts still have full access)
         if (profileData?.profile_completed) {
           router.replace('/(app)/(tabs)/home');
         } else {
@@ -140,6 +182,8 @@ export default function SignInScreen() {
 
   // ── Send OTP to unverified account ────────────────────────────────────────
   const handleSendVerificationOtp = async () => {
+    if (sendCooldown > 0) return;
+
     setSendingOtp(true);
     setShowUnverifiedBanner(false);
 
@@ -151,6 +195,12 @@ export default function SignInScreen() {
     setSendingOtp(false);
 
     if (error) {
+      if (isRateLimitError(error.message) || error.status === 429) {
+        // Start cooldown — show timer instead of alert
+        startCooldown(setSendCooldown, sendTimerRef);
+        setShowUnverifiedBanner(true);
+        return;
+      }
       Alert.alert('Error', error.message);
       setShowUnverifiedBanner(true);
       return;
@@ -232,8 +282,10 @@ export default function SignInScreen() {
     }
   };
 
-  // ── Resend OTP ────────────────────────────────────────────────────────────
+  // ── Resend OTP (OTP screen) ───────────────────────────────────────────────
   const handleResendOtp = async () => {
+    if (resendCooldown > 0) return;
+
     setResending(true);
     setOtp(Array(OTP_LENGTH).fill(''));
     setOtpError('');
@@ -246,6 +298,10 @@ export default function SignInScreen() {
     setResending(false);
 
     if (error) {
+      if (isRateLimitError(error.message) || error.status === 429) {
+        startCooldown(setResendCooldown, resendTimerRef);
+        return;
+      }
       Alert.alert('Error', error.message);
     } else {
       Alert.alert('Code Sent!', `A new code has been sent to ${email.trim().toLowerCase()}.`);
@@ -353,17 +409,41 @@ export default function SignInScreen() {
 
                 <GradientButton title="Verify & Sign In" onPress={handleVerifyOtp} loading={verifying} />
 
-                <TouchableOpacity
-                  onPress={handleResendOtp}
-                  disabled={resending}
-                  style={{ alignItems: 'center', marginTop: SPACING.xl, flexDirection: 'row', justifyContent: 'center' }}
-                >
-                  <Ionicons name="refresh-outline" size={16} color={COLORS.textSecondary} style={{ marginRight: 6 }} />
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm }}>
-                    {resending ? 'Sending...' : "Didn't receive it? "}
-                    {!resending && <Text style={{ color: COLORS.primary, fontWeight: '600' }}>Resend Code</Text>}
-                  </Text>
-                </TouchableOpacity>
+                {/* ── Part 42.1: Cooldown-aware Resend button ────────────────── */}
+                {resendCooldown > 0 ? (
+                  <Animated.View
+                    entering={FadeInDown.duration(300)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginTop: SPACING.xl,
+                      backgroundColor: `${COLORS.warning}15`,
+                      borderRadius: RADIUS.md,
+                      padding: SPACING.md,
+                      borderWidth: 1,
+                      borderColor: `${COLORS.warning}40`,
+                      gap: 8,
+                    }}
+                  >
+                    <Ionicons name="time-outline" size={16} color={COLORS.warning} />
+                    <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
+                      Please wait {resendCooldown}s before resending
+                    </Text>
+                  </Animated.View>
+                ) : (
+                  <TouchableOpacity
+                    onPress={handleResendOtp}
+                    disabled={resending}
+                    style={{ alignItems: 'center', marginTop: SPACING.xl, flexDirection: 'row', justifyContent: 'center' }}
+                  >
+                    <Ionicons name="refresh-outline" size={16} color={COLORS.textSecondary} style={{ marginRight: 6 }} />
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm }}>
+                      {resending ? 'Sending...' : "Didn't receive it? "}
+                      {!resending && <Text style={{ color: COLORS.primary, fontWeight: '600' }}>Resend Code</Text>}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </Animated.View>
             </ScrollView>
           </KeyboardAvoidingView>
@@ -486,16 +566,35 @@ export default function SignInScreen() {
                   </TouchableOpacity>
                 </View>
 
-                <TouchableOpacity
-                  onPress={handleSendVerificationOtp}
-                  disabled={sendingOtp}
-                  style={{ backgroundColor: COLORS.primary, borderRadius: RADIUS.md, paddingVertical: 10, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-                >
-                  <Ionicons name="shield-checkmark-outline" size={16} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
-                    {sendingOtp ? 'Sending Code...' : 'Send Verification Code'}
-                  </Text>
-                </TouchableOpacity>
+                {/* ── Part 42.1: Cooldown-aware Send Verification Code button ── */}
+                {sendCooldown > 0 ? (
+                  <View style={{
+                    backgroundColor: `${COLORS.warning}20`,
+                    borderRadius: RADIUS.md,
+                    paddingVertical: 10,
+                    paddingHorizontal: 16,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                  }}>
+                    <Ionicons name="time-outline" size={16} color={COLORS.warning} />
+                    <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+                      Please wait {sendCooldown}s before resending
+                    </Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    onPress={handleSendVerificationOtp}
+                    disabled={sendingOtp}
+                    style={{ backgroundColor: COLORS.primary, borderRadius: RADIUS.md, paddingVertical: 10, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <Ionicons name="shield-checkmark-outline" size={16} color="#FFF" />
+                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+                      {sendingOtp ? 'Sending Code...' : 'Send Verification Code'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </Animated.View>
             )}
 
