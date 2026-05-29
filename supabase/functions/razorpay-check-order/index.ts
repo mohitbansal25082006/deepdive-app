@@ -1,12 +1,20 @@
 // supabase/functions/razorpay-check-order/index.ts
 // Part 24 (Fix v6) — Checks the INDIVIDUAL PAYMENT status, not just order status.
+// Part 42 — DB fast-path: if razorpay_orders.status = 'failed' (set by webhook),
+//            return payment_failed: true immediately without hitting Razorpay API.
+//            This means the FIRST poll after a failed payment returns instantly.
 //
-// KEY FIX: order_status=attempted + payments=1 means a payment was tried.
+// KEY FIX (Part 24): order_status=attempted + payments=1 means a payment was tried.
 // The payment's OWN status field tells us what happened:
 //   "failed"     → stop polling immediately, return payment_failed: true
 //   "captured"   → add credits now
 //   "authorized" → add credits now (auto-capture will follow)
 //   "created"    → payment still processing, keep polling
+//
+// Part 42 additional fast-path (BEFORE hitting Razorpay API):
+//   If our DB already has status='failed' (set by razorpay-webhook on payment.failed event),
+//   return payment_failed: true immediately — no Razorpay API call needed.
+//   This cuts failure detection to a single DB query (~50ms) instead of a full API round-trip.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.7';
 
@@ -111,10 +119,27 @@ Deno.serve(async (req: Request) => {
     dbCreditsToAdd = dbOrder.credits_to_add ?? 0;
     dbPackId       = dbOrder.pack_id        ?? '';
 
+    // ── Part 42 DB FAST-PATH: already confirmed paid ───────────────────────
     if (dbOrder.status === 'paid') {
       const { data: cr } = await supabase
         .from('user_credits').select('balance').eq('user_id', user.id).single();
       return ok({ paid: true, already_processed: true, balance: cr?.balance ?? 0, credits_added: 0 });
+    }
+
+    // ── Part 42 DB FAST-PATH: webhook already confirmed failure ────────────
+    // The razorpay-webhook function sets status='failed' on payment.failed events.
+    // If it's already here, we don't need to call the Razorpay API at all.
+    // This makes the first poll after a failed payment return instantly (~50ms).
+    if (dbOrder.status === 'failed') {
+      console.log(`[CheckOrder] DB fast-path: order ${razorpay_order_id} already marked failed`);
+      return ok({
+        paid:           false,
+        payment_failed: true,
+        order_status:   'failed',
+        payment_count:  0,
+        fail_reason:    'Payment was declined. No charges were made.',
+        source:         'db_fast_path',
+      });
     }
   }
 
@@ -168,7 +193,7 @@ Deno.serve(async (req: Request) => {
     return ok({ paid: false, order_status: rzpOrder.status, payment_count: 0 });
   }
 
-  // ── KEY FIX: Inspect each payment's own status field ─────────────────────
+  // ── KEY FIX (Part 24): Inspect each payment's own status field ───────────
 
   // Check for a successful payment first
   const successPayment = payments.find(
@@ -191,12 +216,27 @@ Deno.serve(async (req: Request) => {
 
       console.log(`[CheckOrder] All ${payments.length} payment(s) failed. Reason: ${failReason}`);
 
+      // Part 42: also update DB status to 'failed' so the next poll hits the DB fast-path
+      // This is a fire-and-forget — don't await, don't block the response
+      supabase
+        .from('razorpay_orders')
+        .update({ status: 'failed' })
+        .eq('razorpay_order_id', razorpay_order_id)
+        .neq('status', 'paid')
+        .then(() => {
+          console.log(`[CheckOrder] Marked order ${razorpay_order_id} as failed in DB`);
+        })
+        .catch((e: any) => {
+          console.warn('[CheckOrder] Could not update order status to failed:', e);
+        });
+
       return ok({
         paid:           false,
         payment_failed: true,          // ← tells the app to stop polling NOW
         order_status:   rzpOrder.status,
         payment_count:  payments.length,
         fail_reason:    failReason,
+        source:         'razorpay_api',
       });
     }
 

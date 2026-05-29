@@ -68,7 +68,7 @@
       margin: 0 auto 18px; font-size: 40px;
     }
     .icon.ok  { background: rgba(16,185,129,.12); border: 2px solid rgba(16,185,129,.25); }
-    .icon.err { background: rgba(239, 68, 68, .12); border: 2px solid rgba(239,68,68,.25); }
+    .icon.err { background: rgba(239,68,68,.12);  border: 2px solid rgba(239,68,68,.25); }
 
     .chip {
       display: inline-flex; align-items: center; gap: 6px;
@@ -86,32 +86,44 @@
     .iv { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-all; max-width: 200px; text-align: right; }
     .iv.g { color: #10B981; font-size: 15px; }
 
-    /* Return notice — no button, just a styled info box */
     .return-notice {
       background: rgba(16,185,129,.06);
       border: 1px solid rgba(16,185,129,.2);
-      border-radius: 12px;
-      padding: 16px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      text-align: left;
+      border-radius: 12px; padding: 16px;
+      display: flex; align-items: center; gap: 12px; text-align: left;
     }
-    .return-notice .notice-icon {
-      font-size: 24px;
-      flex-shrink: 0;
+    .return-notice .notice-icon  { font-size: 24px; flex-shrink: 0; }
+    .return-notice .notice-text  { color: var(--text); font-size: 14px; font-weight: 700; line-height: 1.5; }
+    .return-notice .notice-sub   { color: var(--muted); font-size: 12px; margin-top: 3px; }
+
+    /* Part 42: failure reason card */
+    .fail-reason-card {
+      background: rgba(239,68,68,.07);
+      border: 1px solid rgba(239,68,68,.2);
+      border-radius: 12px; padding: 14px;
+      margin-bottom: 16px; text-align: left;
     }
-    .return-notice .notice-text {
-      color: var(--text);
-      font-size: 14px;
-      font-weight: 700;
-      line-height: 1.5;
+    .fail-reason-card .fr-label {
+      font-size: 10px; font-weight: 800; letter-spacing: .8px;
+      text-transform: uppercase; color: rgba(239,68,68,.7); margin-bottom: 5px;
     }
-    .return-notice .notice-sub {
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 3px;
+    .fail-reason-card .fr-text {
+      font-size: 13px; color: #E8E8F0; line-height: 1.55;
     }
+
+    /* Part 42: prominent "close this window" instruction box */
+    .close-instruction {
+      background: rgba(108,99,255,.08);
+      border: 1px solid rgba(108,99,255,.25);
+      border-radius: 12px; padding: 16px;
+      display: flex; align-items: flex-start; gap: 12px;
+      text-align: left; margin-bottom: 16px;
+    }
+    .close-instruction .ci-arrow {
+      font-size: 26px; line-height: 1; flex-shrink: 0; margin-top: 2px;
+    }
+    .close-instruction .ci-text  { font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.5; }
+    .close-instruction .ci-sub   { font-size: 12px; color: var(--muted); margin-top: 3px; }
 
     .hint { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 20px; }
     .trust {
@@ -153,37 +165,65 @@
     <p class="hint">Complete your payment in the Razorpay window.</p>
   </div>
 
-  <!-- SUCCESS — no button, just a message telling user to go back to app -->
+  <!-- SUCCESS -->
   <div id="s-ok" class="state">
     <div class="icon ok">✓</div>
     <h1 style="color:#10B981; margin-bottom:8px;">Payment Successful!</h1>
     <p class="sub">Your payment has been confirmed by Razorpay.</p>
-
     <div class="chip">⚡ <span id="ok-credits">—</span></div>
-
     <div class="info-card">
       <div class="ir"><span class="il">Pack</span>          <span class="iv"   id="ok-pack">—</span></div>
       <div class="ir"><span class="il">Credits Added</span> <span class="iv g" id="ok-cr">—</span></div>
       <div class="ir"><span class="il">Payment ID</span>    <span class="iv"   id="ok-pid" style="font-size:11px;">—</span></div>
     </div>
-
-    <!-- NO BUTTON — just a notice telling the user to close/return to the app -->
     <div class="return-notice">
       <div class="notice-icon">↩</div>
       <div>
-        <div class="notice-text">You can now return to the app</div>
-        <div class="notice-sub">Close this window or press the back button to go back to DeepDive AI. Your credits will appear automatically.</div>
+        <div class="notice-text">Return to the app</div>
+        <div class="notice-sub">Press the back button or swipe down to go back to DeepDive AI. Credits will appear automatically.</div>
       </div>
     </div>
   </div>
 
-  <!-- FAILED -->
+  <!-- FAILED
+       Part 42 fix: window.close() / about:blank do NOT work in SFSafariViewController
+       (iOS) or ChromeCustomTabs (Android) — they are native containers, not popup windows.
+       Navigating to about:blank just shows a blank screen instead of closing the sheet.
+
+       Correct approach:
+       1. Show the failure reason immediately when payment.failed fires (rzp.close() hides
+          the Razorpay overlay; our failure screen appears behind it right away).
+       2. Show a very clear "close this window" instruction so the user knows to swipe/press back.
+       3. "Try Again" re-opens Razorpay inline — no blank screen involved.
+
+       The app polls after the user closes the native browser sheet manually.
+       With the faster poll schedule (500ms first check) this is still fast.
+  -->
   <div id="s-fail" class="state">
     <div class="icon err">✗</div>
-    <h1 style="margin-bottom:10px;">Payment Cancelled</h1>
-    <p class="hint">No charges were made. You can try again.</p>
-    <button class="btn btn-primary" onclick="openRazorpay()">Try Again</button>
-    <button class="btn btn-outline" onclick="window.close()">Return to App</button>
+
+    <h1 id="fail-title" style="margin-bottom:8px;">Payment Failed</h1>
+    <p class="sub" id="fail-sub">No charges were made.</p>
+
+    <!-- Failure reason (shown when Razorpay provides one) -->
+    <div class="fail-reason-card" id="fail-reason-card" style="display:none;">
+      <div class="fr-label">Reason</div>
+      <div class="fr-text" id="fail-reason-text"></div>
+    </div>
+
+    <!-- Part 42 KEY FIX: explicit "close this window" instruction
+         instead of trying window.close() which shows a blank page.
+         Arrow points up on iOS (swipe down to close sheet) or
+         user can press the native × / back button. -->
+    <div class="close-instruction">
+      <div class="ci-arrow">↙</div>
+      <div>
+        <div class="ci-text">Close this window to return to the app</div>
+        <div class="ci-sub">Press the ✕ button or swipe this sheet down — then try again in DeepDive AI.</div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="retry-btn" onclick="retryPayment()">Try Again</button>
   </div>
 </div>
 
@@ -202,11 +242,15 @@
     name:     p.get('contact_name') || 'Researcher',
   };
 
+  // Part 42: track whether payment.failed fired before ondismiss
+  var paymentActuallyFailed = false;
+  var rzpInstance           = null;
+
   function fmt(paise) {
-    return '₹' + (paise/100).toLocaleString('en-IN');
+    return '₹' + (paise / 100).toLocaleString('en-IN');
   }
   function show(id) {
-    ['s-ready','s-proc','s-ok','s-fail'].forEach(function(s){
+    ['s-ready','s-proc','s-ok','s-fail'].forEach(function(s) {
       document.getElementById(s).classList.remove('active');
     });
     document.getElementById(id).classList.add('active');
@@ -216,8 +260,45 @@
     if (el) el.textContent = v;
   }
 
+  // Part 42: show failure screen with reason + correct instruction
+  function showFailureScreen(reason, isGenuine) {
+    var titleEl = document.getElementById('fail-title');
+    var subEl   = document.getElementById('fail-sub');
+
+    if (isGenuine) {
+      if (titleEl) titleEl.textContent = 'Payment Failed';
+      if (subEl)   subEl.textContent   = 'No charges were made. Please try a different payment method.';
+    } else {
+      // User dismissed without paying
+      if (titleEl) titleEl.textContent = 'Payment Cancelled';
+      if (subEl)   subEl.textContent   = 'No charges were made. You can try again.';
+    }
+
+    if (reason && reason.trim().length > 0) {
+      var card = document.getElementById('fail-reason-card');
+      var text = document.getElementById('fail-reason-text');
+      if (card) card.style.display = 'block';
+      if (text) text.textContent   = reason;
+    }
+
+    show('s-fail');
+  }
+
+  function retryPayment() {
+    // Reset state for fresh attempt
+    paymentActuallyFailed = false;
+    // Hide reason card for clean retry
+    var card = document.getElementById('fail-reason-card');
+    if (card) { card.style.display = 'none'; }
+    var text = document.getElementById('fail-reason-text');
+    if (text) { text.textContent = ''; }
+    openRazorpay();
+  }
+
   function openRazorpay() {
     show('s-proc');
+    paymentActuallyFailed = false;
+
     var options = {
       key:         cfg.keyId,
       amount:      cfg.amount,
@@ -228,28 +309,76 @@
       prefill:     { email: cfg.email, name: cfg.name },
       theme:       { color: '#6C63FF' },
       modal: {
-        ondismiss: function() { show('s-fail'); },
+        ondismiss: function() {
+          // Part 42: if payment.failed already fired, we already called showFailureScreen()
+          // from inside the payment.failed handler (after rzp.close() ran).
+          // ondismiss fires AFTER rzp.close() — nothing more to do here.
+          // If paymentActuallyFailed=false, user just cancelled/closed manually.
+          if (!paymentActuallyFailed) {
+            showFailureScreen('', false);
+          }
+          // Either way: the failure/cancel screen is now visible.
+          // The user will close the native browser sheet → app polling starts.
+        },
         escape: false,
       },
       handler: function(resp) {
-        // Payment captured — show success screen with no button
+        // Payment captured — show success, user closes sheet manually
         set('ok-credits', cfg.credits + ' credits added to your account');
         set('ok-pack',    cfg.pack);
         set('ok-cr',      '+' + cfg.credits + ' credits');
         set('ok-pid',     resp.razorpay_payment_id || '');
         show('s-ok');
-        // No auto-close, no deep link — user just closes the browser manually
-        // The app polls razorpay-check-order after openBrowserAsync resolves
       },
     };
 
     try {
-      var rzp = new window.Razorpay(options);
-      rzp.on('payment.failed', function() { show('s-fail'); });
-      setTimeout(function() { rzp.open(); }, 500);
+      rzpInstance = new window.Razorpay(options);
+
+      // Part 42 KEY FIX: payment.failed fires from Razorpay IMMEDIATELY when the
+      // bank declines. We:
+      //   1. Set paymentActuallyFailed = true (so ondismiss doesn't show "cancelled")
+      //   2. Extract the real reason from the error object
+      //   3. Show our failure screen NOW (it renders behind the Razorpay overlay)
+      //   4. Call rzp.close() to dismiss the Razorpay overlay → ondismiss fires →
+      //      our failure screen is already visible, nothing more to do in ondismiss.
+      //
+      // IMPORTANT: We do NOT call window.close() or navigate to about:blank.
+      // SFSafariViewController (iOS) and ChromeCustomTabs (Android) are native
+      // container views — JavaScript cannot close them. Those calls just show a
+      // blank page or do nothing. The user must close the sheet with the native
+      // back/swipe gesture, which is clearly instructed on the failure screen.
+      //
+      // BEFORE this fix:
+      //   payment.failed fires → Razorpay keeps modal open with "Try Again" UI
+      //   → user reads Razorpay's error → manually closes Razorpay overlay
+      //   → ondismiss fires → we show s-fail → user reads it → closes native sheet
+      //   → app polling starts → first poll at 2000ms → "Payment Failed" shown ~8–25s later
+      //
+      // AFTER this fix:
+      //   payment.failed fires → we call rzp.close() (100ms delay for render)
+      //   → our failure screen appears immediately (reason already shown)
+      //   → user reads our clean failure screen (1–2s) → closes native sheet
+      //   → app polling starts → first poll at 500ms → "Payment Failed" shown ~2–4s later
+      rzpInstance.on('payment.failed', function(response) {
+        paymentActuallyFailed = true;
+
+        var err      = (response && response.error) ? response.error : {};
+        var reason   = err.description || err.reason || err.source || '';
+
+        // Show our screen right away (renders behind still-open Razorpay overlay)
+        showFailureScreen(reason, true);
+
+        // Dismiss the Razorpay overlay so the user can see our failure screen
+        setTimeout(function() {
+          try { if (rzpInstance) rzpInstance.close(); } catch(e) {}
+        }, 80);
+      });
+
+      setTimeout(function() { rzpInstance.open(); }, 500);
     } catch(e) {
-      console.error(e);
-      show('s-fail');
+      console.error('Razorpay init error:', e);
+      showFailureScreen('Could not open the payment window. Please check your internet connection.', false);
     }
   }
 
