@@ -1,18 +1,10 @@
 // app/index.tsx
-// Part 32 UPDATE — Added suspended account check before routing.
+// Part 43 CORRECT FIX — restored to original Part 32 version.
+// No OAuth-specific changes needed here. The Linking.useLinkingURL()
+// hook in signin.tsx/signup.tsx handles the deep link directly.
 //
-// NEW in Part 32:
-//   Before routing to home, we check if profile.account_status === 'suspended'.
-//   A suspended user who opens the app fresh (e.g. after force-quitting) is
-//   routed into the app stack as normal, and app/(app)/_layout.tsx immediately
-//   shows <AccountSuspendedScreen /> on top.
-//
-//   We do NOT block here at the index level (redirect to a separate screen)
-//   because the suspension is managed as an overlay inside the app stack.
-//   This ensures when the admin lifts the suspension, the Realtime event
-//   clears the overlay and the user is already on the right screen.
-//
-// All Part 1–27 logic preserved unchanged.
+// All Part 32 suspended account logic preserved unchanged.
+// All Part 27 onboarding gate logic preserved unchanged.
 
 import { useEffect, useRef }        from 'react';
 import { View, ActivityIndicator }  from 'react-native';

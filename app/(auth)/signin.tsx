@@ -25,8 +25,10 @@ import Animated, {
   FadeIn, FadeInDown, FadeInUp, SlideInRight,
 } from 'react-native-reanimated';
 import { SafeAreaView }     from 'react-native-safe-area-context';
+import { useLinkingURL }    from 'expo-linking';
 import { supabase }         from '../../src/lib/supabase';
-import { signInWithOAuth }  from '../../src/services/oauthService';
+import { useAuth }          from '../../src/context/AuthContext';
+import { signInWithOAuth, createSessionFromUrl, isOAuthInProgress } from '../../src/services/oauthService';
 import { AnimatedInput }    from '../../src/components/common/AnimatedInput';
 import { GradientButton }   from '../../src/components/common/GradientButton';
 import { LoadingOverlay }   from '../../src/components/common/LoadingOverlay';
@@ -85,6 +87,110 @@ export default function SignInScreen() {
   // OAuth error banner
   const [oauthError, setOauthError] = useState('');
 
+  // ── ANDROID FIX: session-state-driven navigation ──────────────────────────
+  // Problem: Calling router.replace() inside handleSignIn() while AuthContext
+  // is simultaneously processing the SIGNED_IN event (state updates + setTimeout
+  // fetchProfile) causes a double-navigation race on Android/Hermes that crashes
+  // the app. iOS is more lenient and handles it fine.
+  //
+  // Fix (official Expo Router + Supabase pattern):
+  //   - Remove router.replace() from handleSignIn entirely
+  //   - Set didSignIn=true on successful signInWithPassword
+  //   - Watch session + profile from AuthContext
+  //   - Navigate ONLY when both are ready (no race, no double nav)
+  //
+  // didSignIn guard prevents navigation when screen first mounts if there's
+  // already a session from a previous login.
+  const { session, profile, profileLoading } = useAuth();
+  const [didSignIn, setDidSignIn] = useState(false);
+
+  useEffect(() => {
+    if (!didSignIn) return;            // Only after user actively signed in
+    if (!session) return;              // Session must be set
+    if (profileLoading) return;        // Wait for profile to finish loading
+
+    // Profile is ready — navigate based on its state
+    if (profile?.account_status === 'suspended') {
+      // Sign out and show banner (don't navigate into app)
+      supabase.auth.signOut().then(() => {
+        setDidSignIn(false);
+        setLoading(false);
+        setShowSuspendedBanner(true);
+      });
+      return;
+    }
+
+    setLoading(false);
+    setDidSignIn(false); // Reset so future renders don't re-trigger
+
+    if (profile?.profile_completed) {
+      router.replace('/(app)/(tabs)/home');
+    } else {
+      router.replace('/(app)/profile-setup');
+    }
+  }, [didSignIn, session, profile, profileLoading]);
+
+  // ── Part 43 STALE URL FIX: only process URL when OAuth is in progress ────
+  // useLinkingURL() persists the last URL that opened the app for the entire
+  // JS session. Without the isOAuthInProgress() guard, after logout the old
+  // OAuth URL fires again, setSession fails with revoked tokens, Supabase
+  // fires SIGNED_OUT, and AuthContext redirects to onboarding — showing
+  // "sign in failed" on the sign-in screen.
+  const url = useLinkingURL();
+  useEffect(() => {
+    if (!url) return;
+
+    // Only handle OAuth redirect URLs
+    const isOAuthUrl =
+      url.includes('access_token') ||
+      url.includes('refresh_token') ||
+      url.includes('code=');
+    if (!isOAuthUrl) return;
+
+    // KEY FIX: Only process if we actually started an OAuth flow.
+    // isOAuthInProgress() is true only between signInWithOAuth() being called
+    // and createSessionFromUrl() completing. It's false at all other times —
+    // including after logout, so stale URLs are ignored.
+    if (!isOAuthInProgress()) return;
+
+    const handleUrl = async () => {
+      setOauthError('');
+      const { user, error } = await createSessionFromUrl(url);
+
+      if (error) {
+        setOauthError('Sign in failed. Please try again.');
+        return;
+      }
+
+      if (!user) return;
+
+      // Explicit navigation — do NOT wait for onAuthStateChange (race condition fix)
+      try {
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('profile_completed, account_status')
+          .eq('id', user.id)
+          .single();
+
+        if (profileData?.account_status === 'suspended') {
+          await supabase.auth.signOut();
+          setShowSuspendedBanner(true);
+          return;
+        }
+
+        if (profileData?.profile_completed) {
+          router.replace('/(app)/(tabs)/home');
+        } else {
+          router.replace('/(app)/profile-setup');
+        }
+      } catch {
+        router.replace('/(app)/(tabs)/home');
+      }
+    };
+
+    handleUrl();
+  }, [url]);
+
   // Cooldown states (Part 42.1)
   const [sendCooldown,   setSendCooldown]   = useState(0);
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -142,10 +248,38 @@ export default function SignInScreen() {
     const result = await signInWithOAuth(provider);
 
     if (!result.success) {
-      if (result.errorType === 'cancelled') return; // User dismissed — no error shown
+      // 'cancelled' = user closed browser — silent
+      // 'pending'   = Android intercepted deep link, useLinkingURL handles it — silent
+      if (result.errorType === 'cancelled' || result.errorType === 'pending') return;
       setOauthError(result.error ?? 'Sign in failed. Please try again.');
+      return;
     }
-    // On success: AuthContext onAuthStateChange fires → app navigates automatically
+
+    // iOS success: session is set. Navigate explicitly — do NOT rely on
+    // onAuthStateChange which races against existing auth state.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('profile_completed, account_status')
+        .eq('id', user.id)
+        .single();
+
+      if (profileData?.account_status === 'suspended') {
+        await supabase.auth.signOut();
+        setShowSuspendedBanner(true);
+        return;
+      }
+      if (profileData?.profile_completed) {
+        router.replace('/(app)/(tabs)/home');
+      } else {
+        router.replace('/(app)/profile-setup');
+      }
+    } catch {
+      router.replace('/(app)/(tabs)/home');
+    }
   };
 
   // ── Email sign in ──────────────────────────────────────────────────────────
@@ -156,7 +290,7 @@ export default function SignInScreen() {
     setOauthError('');
     setLoading(true);
 
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signInWithPassword({
       email:    email.trim().toLowerCase(),
       password,
     });
@@ -179,30 +313,15 @@ export default function SignInScreen() {
       return;
     }
 
-    if (data.user) {
-      try {
-        const { data: profileData } = await supabase
-          .from('profiles')
-          .select('profile_completed, account_status')
-          .eq('id', data.user.id)
-          .single();
-
-        if (profileData?.account_status === 'suspended') {
-          await supabase.auth.signOut();
-          setLoading(false);
-          setShowSuspendedBanner(true);
-          return;
-        }
-        if (profileData?.profile_completed) {
-          router.replace('/(app)/(tabs)/home');
-        } else {
-          router.replace('/(app)/profile-setup');
-        }
-      } catch {
-        router.replace('/(app)/(tabs)/home');
-      }
-    }
-    setLoading(false);
+    // ── ANDROID FIX: signal the session-watching useEffect to navigate ─────
+    // Do NOT call router.replace() here. On Android, calling router.replace()
+    // while AuthContext is simultaneously processing the SIGNED_IN event
+    // (state updates + deferred fetchProfile) causes a double-navigation
+    // race on the Hermes JS thread that crashes the app.
+    // The didSignIn flag tells the useEffect above to navigate once
+    // AuthContext has fully settled (session set + profile loaded).
+    setDidSignIn(true);
+    // Loading stays true — the useEffect calls setLoading(false) before navigating.
   };
 
   const handleSendVerificationOtp = async () => {

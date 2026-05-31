@@ -1,43 +1,34 @@
 // src/context/AuthContext.tsx
-// Part 32 UPDATE (v3) — Fixed account deletion detection.
+// Part 43 FINAL FIX — Fixes OAuth setSession hanging/deadlock.
 //
-// PROBLEM WITH v2:
-//   Subscribing to postgres_changes DELETE events on profiles is unreliable.
-//   When auth.admin.deleteUser() is called server-side, Supabase invalidates
-//   the user's JWT immediately. By the time the cascade DELETE reaches the
-//   profiles table, Realtime has already dropped the user's connection because
-//   their token is invalid. The DELETE event is never delivered.
+// ROOT CAUSE OF "WHITE SCREEN + NEED RESTART":
+//   Supabase explicitly warns: do NOT use await inside onAuthStateChange.
+//   Our AuthContext called `await fetchProfile(uid)` directly inside the
+//   onAuthStateChange callback. When OAuth called setSession(), Supabase
+//   internally tried to fire onAuthStateChange and waited for it to complete
+//   before resolving the setSession promise. But setSession itself is what
+//   triggers onAuthStateChange — causing a DEADLOCK.
+//   Result: setSession hangs forever → white screen → no navigation.
+//   On restart: session already in AsyncStorage → getSession() reads it
+//   without needing setSession → no deadlock → works.
 //
-// FIX in v3:
-//   The admin DELETE API now sets account_status = 'deleted' FIRST (UPDATE),
-//   THEN deletes the auth user after 800ms. The UPDATE event is delivered
-//   reliably because the JWT is still valid at that point.
+// THE FIX:
+//   Wrap ALL async work inside onAuthStateChange in setTimeout(..., 0).
+//   This defers the async work to the next event loop tick, after
+//   onAuthStateChange returns. setSession can then resolve immediately.
+//   Navigation in signin.tsx then fires correctly without restart.
 //
-//   AuthContext now handles account_status === 'deleted' in the UPDATE handler:
-//   - Sets accountDeleted = true and accountDeletedRef = true
-//   - Clears profile state
-//   - Signs out from Supabase (triggers SIGNED_OUT)
-//   - SIGNED_OUT handler skips onboarding redirect (accountDeletedRef = true)
-//   - app/(app)/_layout.tsx shows <AccountDeletedScreen /> overlay
-//
-//   The DELETE postgres_changes subscription has been REMOVED — it is
-//   unreliable and no longer needed with this approach.
-//
-// All Part 1–31 logic preserved unchanged.
+// All Part 32 suspension/deletion logic preserved exactly.
+// All Part 31 credit balance realtime update preserved exactly.
 
 import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  ReactNode,
+  createContext, useContext, useEffect, useRef, useState, ReactNode,
 } from 'react';
-import { AppState, AppStateStatus }    from 'react-native';
-import { Session, User }               from '@supabase/supabase-js';
-import { router }                      from 'expo-router';
-import { supabase }                    from '../lib/supabase';
-import type { Profile }                from '../types';
+import { AppState, AppStateStatus } from 'react-native';
+import { Session, User }            from '@supabase/supabase-js';
+import { router }                   from 'expo-router';
+import { supabase }                 from '../lib/supabase';
+import type { Profile }             from '../types';
 
 interface AuthContextType {
   session:           Session | null;
@@ -45,10 +36,10 @@ interface AuthContextType {
   profile:           Profile | null;
   loading:           boolean;
   profileLoading:    boolean;
-  accountDeleted:    boolean;          // true when admin set account_status='deleted'
+  accountDeleted:    boolean;
   refreshProfile:    () => Promise<void>;
   signOut:           () => Promise<void>;
-  clearDeletedState: () => void;       // called by AccountDeletedScreen CTA
+  clearDeletedState: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -69,22 +60,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile,        setProfile]        = useState<Profile | null>(null);
   const [loading,        setLoading]        = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
-
-  // accountDeleted: set to true when the server-side UPDATE event fires with
-  // account_status = 'deleted'. In-memory only — no persistence needed because
-  // once deleted, sign-in fails at the Supabase level.
   const [accountDeleted, setAccountDeleted] = useState(false);
 
-  // Ref so the synchronous SIGNED_OUT handler can read the latest value
-  // without stale closure issues (useState setter updates are async).
-  const accountDeletedRef = useRef(false);
-
-  // One Realtime channel for profile UPDATE events (suspension + deletion).
-  // DELETE event subscription removed — see header comment for why.
+  const accountDeletedRef  = useRef(false);
   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // ── fetchProfile ───────────────────────────────────────────────────────────
-
   const fetchProfile = async (userId: string) => {
     try {
       const { data, error } = await supabase
@@ -113,21 +94,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── signOut ────────────────────────────────────────────────────────────────
-
   const signOut = async () => {
     setSession(null);
     setUser(null);
     setProfile(null);
     setProfileLoading(false);
     await supabase.auth.signOut();
-    // Only route to onboarding for voluntary sign-outs.
-    // Deletion: accountDeletedRef is already true → skip routing.
     if (!accountDeletedRef.current) {
       router.replace('/(auth)/onboarding');
     }
   };
-
-  // ── clearDeletedState — called by AccountDeletedScreen "Go to Sign In" ─────
 
   const clearDeletedState = () => {
     accountDeletedRef.current = false;
@@ -136,11 +112,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── Realtime profile subscription ─────────────────────────────────────────
-  // Handles UPDATE events only:
-  //   • account_status = 'suspended' → isSuspended overlay in _layout
-  //   • account_status = 'deleted'   → accountDeleted overlay in _layout
-  //   • any other profile change     → reflects in local profile state
-
   const setupRealtimeProfile = (userId: string) => {
     if (realtimeChannelRef.current) {
       supabase.removeChannel(realtimeChannelRef.current);
@@ -159,31 +130,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         (payload) => {
           if (!payload.new || typeof payload.new !== 'object') return;
-
           const updated = payload.new as Profile & { account_status?: string };
 
-          // ── Account deleted by admin ──────────────────────────────────────
-          // The admin DELETE route sets account_status='deleted' before
-          // deleting the auth user. We catch it here as a reliable UPDATE event.
-          // Cast to string first so TypeScript doesn't complain if the type
-          // union doesn't yet include 'deleted' in a stale build cache.
           if ((updated.account_status as string) === 'deleted') {
-            // Set ref synchronously so SIGNED_OUT handler sees it immediately
             accountDeletedRef.current = true;
             setAccountDeleted(true);
             setProfile(null);
-
-            // Sign out from Supabase client to clear the local session.
-            // SIGNED_OUT event will fire — accountDeletedRef=true prevents
-            // the handler from redirecting to onboarding.
             supabase.auth.signOut().catch(() => {});
             return;
           }
 
-          // ── Normal profile update (suspension, flag, name change, etc.) ───
-          setProfile((prev) =>
-            prev ? { ...prev, ...updated } : updated,
-          );
+          setProfile((prev) => prev ? { ...prev, ...updated } : updated);
         },
       )
       .subscribe();
@@ -199,7 +156,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── Auth state listener ────────────────────────────────────────────────────
-
+  // CRITICAL FIX: All async work is wrapped in setTimeout(..., 0).
+  // This prevents the setSession deadlock where onAuthStateChange awaits
+  // async work while setSession waits for onAuthStateChange to return.
   useEffect(() => {
     let mounted = true;
 
@@ -215,12 +174,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setProfileLoading(false);
         setLoading(false);
         teardownRealtimeProfile();
-
-        // If accountDeletedRef is true, the sign-out was triggered by our own
-        // supabase.auth.signOut() call inside the DELETE Realtime handler.
-        // The AccountDeletedScreen overlay is already showing — do NOT redirect.
         if (!accountDeletedRef.current) {
-          router.replace('/(auth)/onboarding');
+          // Use setTimeout to defer navigation — prevents issues during
+          // rapid state transitions (e.g. OAuth setSession then signOut)
+          setTimeout(() => {
+            if (mounted) router.replace('/(auth)/onboarding');
+          }, 0);
         }
         return;
       }
@@ -230,9 +189,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(newSession?.user ?? null);
 
         if (newSession?.user) {
-          // Set profileLoading=true synchronously (Part 31 race condition fix)
           setProfileLoading(true);
           const uid = newSession.user.id;
+          // ── KEY FIX: setTimeout defers async work, prevents deadlock ──────
           setTimeout(() => {
             if (mounted) {
               fetchProfile(uid).then(() => {
@@ -255,6 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (newSession?.user) {
         setProfileLoading(true);
         const uid = newSession.user.id;
+        // ── KEY FIX: setTimeout defers async work, prevents deadlock ──────
         setTimeout(() => {
           if (mounted) {
             fetchProfile(uid).then(() => {

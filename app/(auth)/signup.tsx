@@ -22,8 +22,9 @@ import Animated, {
   FadeIn, FadeInDown, SlideInRight,
 } from 'react-native-reanimated';
 import { SafeAreaView }     from 'react-native-safe-area-context';
+import { useLinkingURL }    from 'expo-linking';
 import { supabase }         from '../../src/lib/supabase';
-import { signInWithOAuth }  from '../../src/services/oauthService';
+import { signInWithOAuth, createSessionFromUrl, isOAuthInProgress } from '../../src/services/oauthService';
 import { AnimatedInput }    from '../../src/components/common/AnimatedInput';
 import { GradientButton }   from '../../src/components/common/GradientButton';
 import { LoadingOverlay }   from '../../src/components/common/LoadingOverlay';
@@ -79,6 +80,47 @@ export default function SignUpScreen() {
   const [showUnverifiedBanner, setShowUnverifiedBanner] = useState(false);
   const [sendingOtp,           setSendingOtp]           = useState(false);
   const [oauthError,           setOauthError]           = useState('');
+
+  // ── Part 43 STALE URL FIX: only process URL when OAuth is in progress ────
+  // Guards against stale OAuth URL firing after logout (same fix as signin.tsx).
+  const url = useLinkingURL();
+  useEffect(() => {
+    if (!url) return;
+
+    const isOAuthUrl =
+      url.includes('access_token') ||
+      url.includes('refresh_token') ||
+      url.includes('code=');
+    if (!isOAuthUrl) return;
+
+    // Only process if we actually started an OAuth flow
+    if (!isOAuthInProgress()) return;
+
+    const handleUrl = async () => {
+      setOauthError('');
+      const { user, error } = await createSessionFromUrl(url);
+      if (error) { setOauthError('Sign in failed. Please try again.'); return; }
+      if (!user) return;
+
+      try {
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('profile_completed')
+          .eq('id', user.id)
+          .single();
+
+        if (profileData?.profile_completed) {
+          router.replace('/(app)/(tabs)/home');
+        } else {
+          router.replace('/(app)/profile-setup');
+        }
+      } catch {
+        router.replace('/(app)/profile-setup');
+      }
+    };
+
+    handleUrl();
+  }, [url]);
 
   // Cooldown state (Part 42.1)
   const [sendCooldown,   setSendCooldown]   = useState(0);
@@ -149,8 +191,20 @@ export default function SignUpScreen() {
     setShowUnverifiedBanner(false);
     const result = await signInWithOAuth(provider);
     if (!result.success) {
-      if (result.errorType === 'cancelled') return;
+      if (result.errorType === 'cancelled' || result.errorType === 'pending') return;
       setOauthError(result.error ?? 'Sign in failed. Please try again.');
+      return;
+    }
+    // iOS: explicit navigation — do NOT rely on onAuthStateChange
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data: profileData } = await supabase
+        .from('profiles').select('profile_completed').eq('id', user.id).single();
+      if (profileData?.profile_completed) router.replace('/(app)/(tabs)/home');
+      else router.replace('/(app)/profile-setup');
+    } catch {
+      router.replace('/(app)/profile-setup');
     }
   };
 

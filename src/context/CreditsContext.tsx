@@ -1,19 +1,31 @@
 // src/context/CreditsContext.tsx
-// Part 32 UPDATE — Added Supabase Realtime subscription for user_credits balance.
-// Part 39 FIX — Added consumeTotal() for atomic combined credit deduction.
-// Part 42 — Faster payment failure detection:
-//   • Reduced first poll delay from 2000ms → 500ms (fires almost immediately after browser closes)
-//   • Reduced polling interval from 2000ms → 1500ms for the first 5 attempts
-//   • Max attempts kept at 15 (total max wait ~25s, same budget but front-loaded)
-//   • payment_failed: true from edge fn still exits poll loop immediately (unchanged)
-//   • Timeout message updated to be clearer about the 1-minute credit delivery guarantee
+// Part 43 CRASH FIX — handles missing user_credits row for new OAuth users.
 //
-// All Part 24–41.8 logic preserved unchanged.
+// ROOT CAUSE OF CRASH:
+//   New OAuth users (Google/GitHub) don't go through the normal sign-up flow
+//   that creates their user_credits row. When CreditsContext calls
+//   fetchUserCredits() for a brand-new OAuth user, the DB returns no row.
+//   If creditsService.ts throws on a missing row (or returns null/undefined),
+//   the unhandled exception crashes the entire React provider tree.
+//   The crash happens so early (inside a Provider) that the app can't render
+//   anything on subsequent opens either — appears as "won't open".
+//
+// THE FIX:
+//   1. loadBalance() wraps fetchUserCredits in try/catch and defaults to 0
+//      instead of crashing. Sets error state but does NOT throw.
+//   2. If the credits row is missing, we call the 'initialize_user_credits'
+//      RPC to create it (with the signup bonus) and then re-fetch.
+//   3. All other error paths also default to 0 balance instead of crashing.
+//   4. consume() and consumeTotal() also handle missing balance gracefully.
+//
+// All Part 42 faster payment detection logic preserved unchanged.
+// All Part 39 consumeTotal logic preserved unchanged.
+// All Part 32 Realtime subscription preserved unchanged.
 
 import React, {
   createContext, useContext, useEffect, useState,
   useCallback, useRef, ReactNode,
-}                         from 'react';
+} from 'react';
 import * as WebBrowser    from 'expo-web-browser';
 import { useAuth }        from './AuthContext';
 import {
@@ -24,12 +36,12 @@ import {
   buildCheckoutUrl,
   checkOrderAndAddCredits,
   InsufficientCreditsError,
-}                         from '../services/creditsService';
+} from '../services/creditsService';
 import {
   getCachedBalance,
   cacheBalance,
   clearBalanceCache,
-}                         from '../lib/creditStorage';
+} from '../lib/creditStorage';
 import { FEATURE_COSTS }  from '../constants/credits';
 import { supabase }       from '../lib/supabase';
 import type {
@@ -37,7 +49,7 @@ import type {
   CreditFeature,
   CreditPack,
   PurchaseState,
-}                         from '../types/credits';
+} from '../types/credits';
 
 interface CreditsContextValue {
   balance:          number;
@@ -47,17 +59,7 @@ interface CreditsContextValue {
   txLoading:        boolean;
   purchaseState:    PurchaseState;
   error:            string | null;
-  /** Deduct a single feature's cost. Returns false if insufficient. */
   consume:          (feature: CreditFeature) => Promise<boolean>;
-  /**
-   * Part 39 FIX — Deduct a combined cost as ONE DB transaction.
-   * Used when two features (e.g. duration + quality) should appear as a
-   * single line in the transaction history and the insufficient modal should
-   * show the combined required amount.
-   *
-   * Returns { ok, currentBalance } so the caller knows the fresh balance
-   * without waiting for a re-render.
-   */
   consumeTotal:     (feature: CreditFeature, totalCost: number, description?: string) => Promise<{ ok: boolean; currentBalance: number }>;
   purchasePack:     (pack: CreditPack) => Promise<void>;
   refresh:          () => Promise<void>;
@@ -78,6 +80,39 @@ const CreditsContext = createContext<CreditsContextValue>({
   resetPurchase:    () => {},
 });
 
+// ── Helper: initialize credits row for new OAuth users ────────────────────────
+// Called when fetchUserCredits returns null/0 for a brand-new user.
+// The RPC creates the user_credits row with the signup bonus if it doesn't exist.
+async function ensureCreditsRow(userId: string): Promise<number> {
+  try {
+    // Try to upsert the credits row via RPC (idempotent — safe to call multiple times)
+    const { data, error } = await supabase.rpc('initialize_user_credits', {
+      p_user_id: userId,
+    });
+    if (!error && data) {
+      const balance = typeof data === 'number' ? data : (data as any)?.balance ?? 20;
+      return balance;
+    }
+  } catch {
+    // RPC might not exist yet — fall back to direct upsert
+  }
+
+  try {
+    // Direct upsert fallback — creates row with 20 credits if missing
+    const { data: upsertData } = await supabase
+      .from('user_credits')
+      .upsert({ user_id: userId, balance: 20 }, { onConflict: 'user_id', ignoreDuplicates: true })
+      .select('balance')
+      .single();
+
+    if (upsertData) return upsertData.balance ?? 20;
+  } catch {
+    // Even direct upsert failed — just return 0, don't crash
+  }
+
+  return 0;
+}
+
 export function CreditsProvider({ children }: { children: ReactNode }) {
   const { user, profile } = useAuth();
 
@@ -94,10 +129,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   const loadedRef  = useRef(false);
   const loadingRef = useRef(false);
 
-  // ── Part 32: Realtime subscription ref for user_credits ───────────────────
   const creditChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // ── Realtime: subscribe to user_credits balance changes ───────────────────
+  // ── Realtime subscription ─────────────────────────────────────────────────
   const setupCreditRealtime = useCallback((userId: string) => {
     if (creditChannelRef.current) {
       supabase.removeChannel(creditChannelRef.current);
@@ -136,8 +170,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // ── Load balance ──────────────────────────────────────────────────────────
-
+  // ── Load balance — CRASH FIX: never throws, always defaults to 0 ─────────
   const loadBalance = useCallback(async (showRefreshing = false) => {
     if (!user || loadingRef.current) return;
     loadingRef.current = true;
@@ -146,17 +179,36 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     else if (!loadedRef.current) setIsLoading(true);
 
     try {
-      const cached = await getCachedBalance(user.id);
+      // Show cached balance immediately while fetching fresh
+      const cached = await getCachedBalance(user.id).catch(() => null);
       if (cached !== null) setBalance(cached);
 
-      const credits = await fetchUserCredits(user.id);
-      setBalance(credits.balance);
-      cacheBalance(user.id, credits.balance);
+      let freshBalance = 0;
+      try {
+        const credits = await fetchUserCredits(user.id);
+        freshBalance = credits?.balance ?? 0;
+      } catch (fetchErr: any) {
+        // ── CRASH FIX: Handle missing credits row for new OAuth users ────────
+        // fetchUserCredits throws when no row exists. Instead of crashing,
+        // initialize the row and use the returned balance.
+        console.warn('[Credits] fetchUserCredits failed, initializing row:', fetchErr?.message);
+        try {
+          freshBalance = await ensureCreditsRow(user.id);
+        } catch (initErr) {
+          console.warn('[Credits] ensureCreditsRow also failed:', initErr);
+          freshBalance = cached ?? 0;
+        }
+      }
+
+      setBalance(freshBalance);
+      cacheBalance(user.id, freshBalance);
       setError(null);
       loadedRef.current = true;
-    } catch (err) {
-      console.warn('[Credits] loadBalance error:', err);
-      setError(err instanceof Error ? err.message : 'Could not load credits');
+    } catch (outerErr) {
+      // ── CRASH FIX: Absolute last resort — never crash the Provider ────────
+      console.warn('[Credits] loadBalance outer error:', outerErr);
+      setError('Could not load credits');
+      // Keep whatever balance we have (cached or 0) — do NOT throw
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -164,8 +216,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user]);
 
-  // ── On user change: load balance + start realtime ─────────────────────────
-
+  // ── On user change ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (user) {
       loadedRef.current  = false;
@@ -183,43 +234,40 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       teardownCreditRealtime();
     }
 
-    return () => {
-      teardownCreditRealtime();
-    };
+    return () => { teardownCreditRealtime(); };
   }, [user?.id]);
 
   const refresh = useCallback(() => loadBalance(true), [loadBalance]);
 
-  // ── Load transactions ─────────────────────────────────────────────────────
-
+  // ── Load transactions ──────────────────────────────────────────────────────
   const loadTransactions = useCallback(async () => {
     if (!user) return;
-
     setTxLoading(true);
     try {
       const txs = await fetchTransactions(user.id, 20, 0);
-      setTransactions(txs);
+      setTransactions(txs ?? []);
     } catch (err) {
       console.warn('[Credits] loadTransactions error:', err);
+      setTransactions([]);
     } finally {
       setTxLoading(false);
     }
 
-    // Belt-and-suspenders: also refresh balance from DB.
+    // Belt-and-suspenders balance refresh
     if (user) {
       try {
         const credits = await fetchUserCredits(user.id);
-        setBalance(credits.balance);
-        cacheBalance(user.id, credits.balance);
+        if (credits?.balance !== undefined) {
+          setBalance(credits.balance);
+          cacheBalance(user.id, credits.balance);
+        }
       } catch (err) {
         console.warn('[Credits] Balance refresh after loadTransactions failed:', err);
       }
     }
   }, [user]);
 
-  // ── Consume a single feature's cost ──────────────────────────────────────
-  // Keeps original behaviour — used by all features except podcast (which uses consumeTotal).
-
+  // ── Consume ───────────────────────────────────────────────────────────────
   const consume = useCallback(async (feature: CreditFeature): Promise<boolean> => {
     if (!user) return false;
     const cost = FEATURE_COSTS[feature];
@@ -227,16 +275,14 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     let currentBalance = balance;
     try {
       const fresh = await fetchUserCredits(user.id);
-      currentBalance = fresh.balance;
+      currentBalance = fresh?.balance ?? balance;
       setBalance(currentBalance);
       cacheBalance(user.id, currentBalance);
     } catch (fetchErr) {
       console.warn('[Credits] consume: could not fetch fresh balance, using cached:', fetchErr);
     }
 
-    if (currentBalance < cost) {
-      return false;
-    }
+    if (currentBalance < cost) return false;
 
     setBalance(prev => Math.max(0, prev - cost));
 
@@ -248,7 +294,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setBalance(currentBalance);
       cacheBalance(user.id, currentBalance);
-
       if (err instanceof InsufficientCreditsError) {
         setBalance(err.balance);
         cacheBalance(user.id, err.balance);
@@ -257,8 +302,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user, balance]);
 
-  // ── Part 39 FIX: Consume a combined total as ONE DB transaction ───────────
-
+  // ── ConsumeTotal ───────────────────────────────────────────────────────────
   const consumeTotal = useCallback(async (
     feature:     CreditFeature,
     totalCost:   number,
@@ -269,16 +313,14 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     let currentBalance = balance;
     try {
       const fresh = await fetchUserCredits(user.id);
-      currentBalance = fresh.balance;
+      currentBalance = fresh?.balance ?? balance;
       setBalance(currentBalance);
       cacheBalance(user.id, currentBalance);
     } catch (fetchErr) {
       console.warn('[Credits] consumeTotal: could not fetch fresh balance, using cached:', fetchErr);
     }
 
-    if (currentBalance < totalCost) {
-      return { ok: false, currentBalance };
-    }
+    if (currentBalance < totalCost) return { ok: false, currentBalance };
 
     setBalance(prev => Math.max(0, prev - totalCost));
 
@@ -290,7 +332,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setBalance(currentBalance);
       cacheBalance(user.id, currentBalance);
-
       if (err instanceof InsufficientCreditsError) {
         setBalance(err.balance);
         cacheBalance(user.id, err.balance);
@@ -300,33 +341,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user, balance]);
 
-  // ── Part 42: Poll for payment confirmation — FASTER FAILURE DETECTION ─────
-  //
-  // Changes from Part 24:
-  //
-  // 1. INITIAL_DELAY_MS: 2000 → 500
-  //    The checkout page now auto-closes 1.5s after payment.failed fires.
-  //    The moment the browser window closes, openBrowserAsync() resolves and
-  //    we enter this polling loop. With 500ms initial delay, the FIRST poll
-  //    fires ~500ms after the window closes, i.e. ~2s after the actual failure.
-  //
-  //    For success, the browser stays open until the user closes it manually,
-  //    so 500ms vs 2000ms makes no real difference to the user experience there.
-  //
-  // 2. INTERVAL_MS: 2000 → 1500 for the first 5 attempts, then 2000 thereafter
-  //    This front-loads the polling to catch failures and successes faster
-  //    without hammering the edge function for the entire 30-second window.
-  //
-  // 3. MAX_ATTEMPTS: 15 (unchanged) — total max wall time ≈ 500 + 5×1500 + 10×2000 = 28s
-  //    This is slightly shorter than the old 15×2000+2000=32s but within the same budget.
-  //
-  // 4. payment_failed: true handling is unchanged — still exits immediately.
-  //    The speed improvement comes from the browser auto-closing sooner + 500ms first delay.
-  //
-  // Expected timing after Part 42:
-  //   Failure: 1.5s (auto-close) + 500ms (first poll) + ~50ms (DB fast-path) = ~2.1s total
-  //   Success: unchanged — browser closes when user presses back, then 500ms first poll
-
+  // ── Poll for payment ───────────────────────────────────────────────────────
   const pollCheckOrder = useCallback(async (
     razorpayOrderId: string,
     pack:            CreditPack,
@@ -334,48 +349,29 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   ): Promise<'paid' | 'failed' | 'timeout'> => {
     if (!user) return 'timeout';
 
-    // Part 42: reduced delays for faster failure detection
     const MAX_ATTEMPTS       = 15;
-    const INITIAL_DELAY_MS   = 500;   // ← was 2000ms. First check 500ms after browser closes.
-    const FAST_INTERVAL_MS   = 1500;  // ← first 5 polls after the initial: every 1.5s
-    const NORMAL_INTERVAL_MS = 2000;  // ← remaining polls: every 2s (matches original)
-    const FAST_POLL_COUNT    = 5;     // ← how many fast polls before switching to normal rate
+    const INITIAL_DELAY_MS   = 500;
+    const FAST_INTERVAL_MS   = 1500;
+    const NORMAL_INTERVAL_MS = 2000;
+    const FAST_POLL_COUNT    = 5;
 
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
-      // Determine delay before this poll
       let delayMs: number;
-      if (i === 0) {
-        delayMs = INITIAL_DELAY_MS;
-      } else if (i <= FAST_POLL_COUNT) {
-        delayMs = FAST_INTERVAL_MS;
-      } else {
-        delayMs = NORMAL_INTERVAL_MS;
-      }
+      if (i === 0)                  delayMs = INITIAL_DELAY_MS;
+      else if (i <= FAST_POLL_COUNT) delayMs = FAST_INTERVAL_MS;
+      else                           delayMs = NORMAL_INTERVAL_MS;
 
       await new Promise<void>(r => setTimeout(r, delayMs));
 
       try {
         const result = await checkOrderAndAddCredits(user.id, razorpayOrderId);
 
-        // ── Failure: exit immediately ────────────────────────────────────────
-        // Part 42: this now triggers much faster because:
-        //   a) The checkout page auto-closes after 1.5s (vs user manually closing after 5–20s)
-        //   b) The first poll fires after only 500ms (vs 2000ms before)
-        //   c) The edge fn hits the DB fast-path if webhook already set status='failed'
-        if (result.payment_failed) {
-          console.log('[Credits] Poll: payment_failed detected, stopping immediately');
-          return 'failed';
-        }
+        if (result.payment_failed) return 'failed';
 
-        // ── Success: update balance and exit ────────────────────────────────
         if (result.paid) {
-          const creditsAdded =
-            result.credits_added ??
-            Math.max(0, result.balance - prevBalance);
-
+          const creditsAdded = result.credits_added ?? Math.max(0, result.balance - prevBalance);
           setBalance(result.balance);
           cacheBalance(user.id, result.balance);
-
           setPurchaseState(prev => ({
             ...prev,
             phase:        'success',
@@ -383,7 +379,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
               ? creditsAdded
               : (pack.credits + (pack.bonusCredits ?? 0)),
           }));
-
           return 'paid';
         }
 
@@ -396,14 +391,13 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     return 'timeout';
   }, [user]);
 
-  // ── Purchase flow ─────────────────────────────────────────────────────────
-
+  // ── Purchase ───────────────────────────────────────────────────────────────
   const purchasePack = useCallback(async (pack: CreditPack): Promise<void> => {
     if (!user) return;
 
     const prevBalance = balance;
-
     setPurchaseState({ phase: 'creating_order', selectedPack: pack });
+
     let orderData;
     try {
       orderData = await createRazorpayOrder(pack.id, user.id);
@@ -433,14 +427,10 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       console.warn('[Credits] Browser error:', err);
     }
 
-    // Browser has closed (user closed it, or auto-close fired from checkout.html)
-    // Start polling immediately with the Part 42 faster schedule
     setPurchaseState(prev => ({ ...prev, phase: 'polling' }));
-
     const pollResult = await pollCheckOrder(orderData.order_id, pack, prevBalance);
 
     if (pollResult === 'failed') {
-      // Part 42: failure message distinguishes "declined" from the old generic message
       setPurchaseState(prev => ({
         ...prev,
         phase: 'failed',
@@ -455,7 +445,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
           'If your payment went through, credits will be added to your account automatically within 1–2 minutes. ' +
           'Pull down to refresh your balance here, or check back shortly.',
       }));
-      // Belt-and-suspenders balance refresh for late authorisations
       setTimeout(() => { if (user) loadBalance(false); }, 20_000);
       setTimeout(() => { if (user) loadBalance(false); }, 60_000);
     }
@@ -463,8 +452,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     await loadBalance(false);
   }, [user, profile, balance, pollCheckOrder, loadBalance]);
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
-
+  // ── Reset ──────────────────────────────────────────────────────────────────
   const resetPurchase = useCallback(() => {
     setPurchaseState({ phase: 'idle', selectedPack: null });
     if (user) loadBalance(false);

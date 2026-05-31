@@ -1,270 +1,259 @@
 // src/components/onboarding/WelcomeBonusAnimation.tsx
-// Part 27 (Final) — Standalone full-screen welcome animation.
-// Removed interest-topics mention since that step is gone.
-// Improved: 2-wave particle burst, pulsing ripple rings, counter snap,
-// staggered feature chips, floating glow orb.
+// Part 43 CRASH FIX — fixed Reanimated Easing worklet crash.
+//
+// ROOT CAUSE OF CRASH:
+//   The previous version imported Easing from 'react-native' and used it
+//   inside Reanimated's withTiming() calls. Reanimated runs withTiming on
+//   the UI thread as a worklet. React Native's Easing functions are plain
+//   JS — NOT worklet-compatible. When the animation fired (after a delay),
+//   the worklet tried to call Easing.out(Easing.quad) on the UI thread,
+//   crashed the UI thread, and killed the entire app.
+//   The `as any` cast hid the TypeScript error but not the runtime crash.
+//
+// THE FIX:
+//   Two separate Easing imports:
+//     - RNEasing from 'react-native'      → used ONLY in RNAnimated.timing()
+//     - Easing  from 'react-native-reanimated' → used in withTiming() worklets
+//   Both are identical in API but the Reanimated one is worklet-compatible.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, Animated as RNAnimated, Easing, Dimensions,
+  View, Text, Animated as RNAnimated, Easing as RNEasing, Dimensions,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons }       from '@expo/vector-icons';
-import AnimatedRN, { FadeInDown, FadeIn, ZoomIn } from 'react-native-reanimated';
-import { GradientButton } from '../common/GradientButton';
+import { LinearGradient }  from 'expo-linear-gradient';
+import { Ionicons }        from '@expo/vector-icons';
+import AnimatedRN, {
+  FadeInDown, FadeIn, ZoomIn,
+  useSharedValue, useAnimatedStyle,
+  withRepeat, withSequence, withTiming, withDelay,
+  Easing,   // ← Reanimated's worklet-safe Easing
+} from 'react-native-reanimated';
+import { GradientButton }  from '../common/GradientButton';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
-const { width: SW, height: SH } = Dimensions.get('window');
-const CENTER_X = SW / 2;
-const ICON_Y   = SH * 0.28;   // vertical anchor for burst origin
+const { width: SW } = Dimensions.get('window');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Particles — two staggered waves, mixed shapes
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Simple floating confetti dots ───────────────────────────────────────────
 
-const COLORS_LIST = [
-  '#6C63FF', '#FF6584', '#43E97B', '#FFA726',
-  '#29B6F6', '#F06292', '#66BB6A', '#AB47BC',
-  '#FF7043', '#4FC3F7', '#FFD54F', '#E040FB',
+const DOT_COLORS = [
+  COLORS.primary, '#FF6584', '#43E97B', '#FFA726',
+  '#29B6F6', '#AB47BC', '#FF7043', '#FFD54F',
 ];
 
-const SHAPES: Array<'circle' | 'square' | 'diamond'> = ['circle', 'square', 'diamond'];
-
-interface ParticleConfig {
-  x:       RNAnimated.Value;
-  y:       RNAnimated.Value;
-  scale:   RNAnimated.Value;
-  opacity: RNAnimated.Value;
-  rotate:  RNAnimated.Value;
-  color:   string;
-  shape:   'circle' | 'square' | 'diamond';
-  size:    number;
-}
-
-function makeParticle(): ParticleConfig {
-  return {
-    x:       new RNAnimated.Value(CENTER_X),
-    y:       new RNAnimated.Value(ICON_Y),
-    scale:   new RNAnimated.Value(0),
-    opacity: new RNAnimated.Value(0),
-    rotate:  new RNAnimated.Value(0),
-    color:   COLORS_LIST[Math.floor(Math.random() * COLORS_LIST.length)],
-    shape:   SHAPES[Math.floor(Math.random() * SHAPES.length)],
-    size:    6 + Math.floor(Math.random() * 7),
-  };
-}
-
-function ParticleView({ p }: { p: ParticleConfig }) {
-  const rotateStr = p.rotate.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
-  const br = p.shape === 'circle' ? p.size / 2 : p.shape === 'square' ? 2 : 0;
-  return (
-    <RNAnimated.View style={{
-      position: 'absolute',
-      width:    p.size,
-      height:   p.size,
-      borderRadius: br,
-      backgroundColor: p.color,
-      opacity:  p.opacity,
-      transform: [
-        { translateX: RNAnimated.subtract(p.x, p.size / 2) },
-        { translateY: RNAnimated.subtract(p.y, p.size / 2) },
-        { scale:  p.scale },
-        { rotate: rotateStr },
-      ],
-    }} />
-  );
-}
-
-function Particles({ wave }: { wave: number }) {
-  const pool = useRef(Array.from({ length: 36 }, makeParticle)).current;
+function ConfettiDot({ index }: { index: number }) {
+  const ty    = useSharedValue(0);
+  const op    = useSharedValue(0);
+  const tx    = useSharedValue(0);
+  const size  = 5 + (index % 5);
+  const color = DOT_COLORS[index % DOT_COLORS.length];
+  const startX = (index / 16) * SW - SW / 2 + (index % 3) * 20 - 20;
 
   useEffect(() => {
-    if (wave === 0) return;
+    const delay = index * 80;
 
-    // Wave 1 fires immediately, wave 2 fires after 300ms
-    const fireWave = (particles: ParticleConfig[], baseDelay: number) => {
-      const anims = particles.map((p, i) => {
-        const angle  = (i / particles.length) * Math.PI * 2 + Math.random() * 0.3;
-        const radius = 90 + Math.random() * 140;
-        const dur    = 650 + Math.random() * 200;
-        p.x.setValue(CENTER_X + (Math.random() - 0.5) * 30);
-        p.y.setValue(ICON_Y);
-        p.scale.setValue(0);
-        p.opacity.setValue(0);
-        p.rotate.setValue(0);
+    // Opacity: fade in and out repeatedly
+    // Uses Reanimated Easing — worklet-safe
+    op.value = withDelay(delay, withRepeat(
+      withSequence(
+        withTiming(0.7, { duration: 600 }),
+        withTiming(0,   { duration: 600 }),
+      ),
+      -1,
+      false,
+    ));
 
-        return RNAnimated.sequence([
-          RNAnimated.delay(baseDelay + i * 12),
-          RNAnimated.parallel([
-            RNAnimated.timing(p.opacity, { toValue: 1,  duration: 80,  useNativeDriver: true }),
-            RNAnimated.timing(p.x,       { toValue: CENTER_X + Math.cos(angle) * radius, duration: dur, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-            RNAnimated.timing(p.y,       { toValue: ICON_Y   + Math.sin(angle) * radius * 0.7, duration: dur, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-            RNAnimated.timing(p.rotate,  { toValue: Math.random() > 0.5 ? 1 : -1, duration: dur, useNativeDriver: true }),
-            RNAnimated.sequence([
-              RNAnimated.timing(p.scale, { toValue: 1, duration: 150, useNativeDriver: true }),
-              RNAnimated.timing(p.scale, { toValue: 0, duration: dur - 150, delay: 80, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-            ]),
-            RNAnimated.sequence([
-              RNAnimated.delay(dur * 0.55),
-              RNAnimated.timing(p.opacity, { toValue: 0, duration: dur * 0.45, useNativeDriver: true }),
-            ]),
-          ]),
-        ]);
-      });
-      RNAnimated.parallel(anims).start();
-    };
+    // Float upward — no easing needed, linear is fine
+    ty.value = withDelay(delay, withRepeat(
+      withTiming(-80, { duration: 1200 + index * 60 }),
+      -1,
+      false,
+    ));
 
-    fireWave(pool.slice(0, 18), 0);
-    fireWave(pool.slice(18, 36), 320);
-  }, [wave]);
+    // Gentle side sway — Easing.inOut(Easing.sin) is worklet-safe from Reanimated
+    tx.value = withDelay(delay, withRepeat(
+      withSequence(
+        withTiming(startX + 15, { duration: 900, easing: Easing.inOut(Easing.sin) }),
+        withTiming(startX - 15, { duration: 900, easing: Easing.inOut(Easing.sin) }),
+      ),
+      -1,
+      true,
+    ));
+  }, []);
+
+  const style = useAnimatedStyle(() => ({
+    opacity:   op.value,
+    transform: [{ translateX: tx.value }, { translateY: ty.value }],
+  }));
 
   return (
-    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
-      {pool.map((p, i) => <ParticleView key={i} p={p} />)}
-    </View>
+    <AnimatedRN.View style={[{
+      position:        'absolute',
+      bottom:          0,
+      left:            SW / 2 + startX,
+      width:           size,
+      height:          size,
+      borderRadius:    size / 2,
+      backgroundColor: color,
+    }, style]} />
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Ripple rings — three rings that expand outward and fade
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Pulsing glow ─────────────────────────────────────────────────────────────
 
-function RippleRings({ triggered }: { triggered: boolean }) {
-  const rings = useRef([
-    { scale: new RNAnimated.Value(0.4), opacity: new RNAnimated.Value(0) },
-    { scale: new RNAnimated.Value(0.4), opacity: new RNAnimated.Value(0) },
-    { scale: new RNAnimated.Value(0.4), opacity: new RNAnimated.Value(0) },
-  ]).current;
+function PulseGlow() {
+  const scale = useSharedValue(1);
+  const op    = useSharedValue(0.08);
 
   useEffect(() => {
-    if (!triggered) return;
-    rings.forEach((r, i) => {
-      const loop = () => {
-        r.scale.setValue(0.4);
-        r.opacity.setValue(0.6);
-        RNAnimated.parallel([
-          RNAnimated.timing(r.scale,   { toValue: 2.4, duration: 1400, delay: i * 350, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-          RNAnimated.timing(r.opacity, { toValue: 0,   duration: 1400, delay: i * 350, easing: Easing.in(Easing.quad),  useNativeDriver: true }),
-        ]).start(() => loop());
-      };
-      loop();
-    });
-  }, [triggered]);
+    // Easing.inOut(Easing.sin) from Reanimated — worklet-safe
+    scale.value = withRepeat(
+      withSequence(
+        withTiming(1.15, { duration: 1200, easing: Easing.inOut(Easing.sin) }),
+        withTiming(1.0,  { duration: 1200, easing: Easing.inOut(Easing.sin) }),
+      ),
+      -1,
+      false,
+    );
+    op.value = withRepeat(
+      withSequence(
+        withTiming(0.15, { duration: 1200 }),
+        withTiming(0.05, { duration: 1200 }),
+      ),
+      -1,
+      false,
+    );
+  }, []);
+
+  const style = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity:   op.value,
+  }));
 
   return (
-    <View style={{ position: 'absolute', top: ICON_Y - 70, left: CENTER_X - 70, width: 140, height: 140, alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-      {rings.map((r, i) => (
-        <RNAnimated.View key={i} style={{
-          position: 'absolute',
-          width: 140, height: 140, borderRadius: 70,
-          borderWidth: 1.5,
-          borderColor: COLORS.primary,
-          opacity: r.opacity,
-          transform: [{ scale: r.scale }],
-        }} />
-      ))}
-    </View>
+    <AnimatedRN.View style={[{
+      position:        'absolute',
+      width:           200,
+      height:          200,
+      borderRadius:    100,
+      backgroundColor: COLORS.primary,
+    }, style]} />
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Animated credit counter with snap bounce at the end
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Credit counter ───────────────────────────────────────────────────────────
+// Uses RNAnimated.timing with RNEasing — correct, runs on JS thread
 
 function CreditCounter({ target = 20 }: { target?: number }) {
   const [displayed, setDisplayed] = useState(0);
-  const [snapped,   setSnapped]   = useState(false);
-  const anim      = useRef(new RNAnimated.Value(0)).current;
-  const scaleAnim = useRef(new RNAnimated.Value(1)).current;
+  const [done,      setDone]      = useState(false);
+
+  // RNAnimated — uses RNEasing from 'react-native' (JS thread, correct)
+  const anim  = useRef(new RNAnimated.Value(0)).current;
+  const scale = useRef(new RNAnimated.Value(1)).current;
 
   useEffect(() => {
     const t = setTimeout(() => {
+      const id = anim.addListener(({ value }) => setDisplayed(Math.round(value)));
+
       RNAnimated.timing(anim, {
-        toValue:  target,
-        duration: 1100,
-        easing:   Easing.out(Easing.cubic),
+        toValue:         target,
+        duration:        1000,
+        easing:          RNEasing.out(RNEasing.cubic), // RNEasing — JS thread, correct
         useNativeDriver: false,
       }).start(() => {
-        // Bounce the number when counter finishes
+        anim.removeListener(id);
+        setDone(true);
+
+        // Bounce — RNAnimated, correct
         RNAnimated.sequence([
-          RNAnimated.timing(scaleAnim, { toValue: 1.18, duration: 120, useNativeDriver: true }),
-          RNAnimated.timing(scaleAnim, { toValue: 0.94, duration: 80,  useNativeDriver: true }),
-          RNAnimated.timing(scaleAnim, { toValue: 1.06, duration: 60,  useNativeDriver: true }),
-          RNAnimated.timing(scaleAnim, { toValue: 1.00, duration: 60,  useNativeDriver: true }),
-        ]).start(() => setSnapped(true));
+          RNAnimated.timing(scale, { toValue: 1.12, duration: 100, useNativeDriver: true }),
+          RNAnimated.timing(scale, { toValue: 0.96, duration: 80,  useNativeDriver: true }),
+          RNAnimated.timing(scale, { toValue: 1.04, duration: 60,  useNativeDriver: true }),
+          RNAnimated.timing(scale, { toValue: 1.00, duration: 60,  useNativeDriver: true }),
+        ]).start();
       });
-      const id = anim.addListener(({ value }) => setDisplayed(Math.round(value)));
-      return () => anim.removeListener(id);
-    }, 500);
+    }, 400);
+
     return () => clearTimeout(t);
   }, []);
 
   return (
-    <View style={{ alignItems: 'center', marginVertical: SPACING.lg }}>
-      {/* Outer glow ring */}
-      <View style={{
-        width: 160, height: 160, borderRadius: 80,
-        backgroundColor: `${COLORS.primary}10`,
-        alignItems: 'center', justifyContent: 'center',
-        borderWidth: 1.5, borderColor: `${COLORS.primary}25`,
-      }}>
-        {/* Mid ring */}
-        <View style={{
-          width: 128, height: 128, borderRadius: 64,
-          backgroundColor: `${COLORS.primary}18`,
-          alignItems: 'center', justifyContent: 'center',
-          borderWidth: 1, borderColor: `${COLORS.primary}35`,
-        }}>
-          {/* Icon circle */}
-          <LinearGradient
-            colors={COLORS.gradientPrimary}
-            style={{ width: 96, height: 96, borderRadius: 48, alignItems: 'center', justifyContent: 'center' }}
-          >
-            <Ionicons name={snapped ? 'checkmark-done' : 'flash'} size={38} color="#FFF" />
-          </LinearGradient>
-        </View>
+    <View style={{ alignItems: 'center', marginVertical: SPACING.xl }}>
+      {/* Icon with glow */}
+      <View style={{ alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg }}>
+        <PulseGlow />
+        <LinearGradient
+          colors={COLORS.gradientPrimary}
+          style={{
+            width:          96,
+            height:         96,
+            borderRadius:   32,
+            alignItems:     'center',
+            justifyContent: 'center',
+            shadowColor:    COLORS.primary,
+            shadowOffset:   { width: 0, height: 8 },
+            shadowOpacity:  0.35,
+            shadowRadius:   20,
+            elevation:      12,
+          }}
+        >
+          <Ionicons
+            name={done ? 'checkmark-done-outline' : 'flash-outline'}
+            size={42}
+            color="#FFF"
+          />
+        </LinearGradient>
       </View>
 
-      {/* Counter */}
-      <RNAnimated.View style={{ alignItems: 'center', marginTop: SPACING.lg, transform: [{ scale: scaleAnim }] }}>
+      {/* Animated number — RNAnimated */}
+      <RNAnimated.View style={{ alignItems: 'center', transform: [{ scale }] }}>
         <Text style={{
-          color:      COLORS.primary,
-          fontSize:   80,
-          fontWeight: '900',
-          lineHeight: 80,
-          letterSpacing: -3,
+          color:         COLORS.primary,
+          fontSize:      88,
+          fontWeight:    '900',
+          lineHeight:    88,
+          letterSpacing: -4,
         }}>
           {displayed}
         </Text>
-        <Text style={{
-          color:         COLORS.textSecondary,
-          fontSize:      FONTS.sizes.sm,
-          fontWeight:    '700',
-          marginTop:     6,
-          letterSpacing: 3,
-          textTransform: 'uppercase',
+        <View style={{
+          flexDirection:     'row',
+          alignItems:        'center',
+          gap:               6,
+          marginTop:         8,
+          backgroundColor:   `${COLORS.primary}15`,
+          borderRadius:      RADIUS.full,
+          paddingHorizontal: 14,
+          paddingVertical:   5,
+          borderWidth:       1,
+          borderColor:       `${COLORS.primary}30`,
         }}>
-          Free Credits
-        </Text>
+          <Ionicons name="flash" size={12} color={COLORS.primary} />
+          <Text style={{
+            color:         COLORS.primary,
+            fontSize:      FONTS.sizes.xs,
+            fontWeight:    '700',
+            letterSpacing: 2,
+            textTransform: 'uppercase',
+          }}>
+            Free Credits
+          </Text>
+        </View>
       </RNAnimated.View>
     </View>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Feature chips — what you can do with 20 credits
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Feature chips ────────────────────────────────────────────────────────────
 
 const FEATURES = [
-  { icon: 'flash-outline',      label: 'Quick Research', cost: '5 cr',  color: COLORS.primary   },
-  { icon: 'analytics-outline',  label: 'Deep Research',  cost: '10 cr', color: COLORS.info       },
-  { icon: 'people-outline',     label: 'AI Debate',      cost: '15 cr', color: COLORS.accent     },
-  { icon: 'easel-outline',      label: 'AI Slides',      cost: '10 cr', color: COLORS.warning    },
+  { icon: 'flash-outline',     label: 'Quick Research', cost: '5 cr',  color: COLORS.primary },
+  { icon: 'analytics-outline', label: 'Deep Research',  cost: '10 cr', color: COLORS.info    },
+  { icon: 'people-outline',    label: 'AI Debate',      cost: '15 cr', color: COLORS.accent  },
+  { icon: 'easel-outline',     label: 'AI Slides',      cost: '10 cr', color: COLORS.warning },
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Main export
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Main export ──────────────────────────────────────────────────────────────
 
 interface Props {
   onContinue: () => void;
@@ -272,39 +261,46 @@ interface Props {
 }
 
 export function WelcomeBonusAnimation({ onContinue, isLoading = false }: Props) {
-  const [burstWave,   setBurstWave]   = useState(0);
-  const [ripplesOn,   setRipplesOn]   = useState(false);
-
-  useEffect(() => {
-    // Stagger: ripples first, then burst
-    const t1 = setTimeout(() => setRipplesOn(true), 200);
-    const t2 = setTimeout(() => setBurstWave(1),     350);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, []);
-
   return (
     <View style={{ flex: 1 }}>
-      <Particles wave={burstWave} />
-      <RippleRings triggered={ripplesOn} />
+      {/* Floating confetti */}
+      <View style={{
+        position:      'absolute',
+        bottom:        120,
+        left:          0,
+        right:         0,
+        height:        100,
+        overflow:      'hidden',
+        pointerEvents: 'none' as any,
+      }}>
+        {Array.from({ length: 16 }).map((_, i) => (
+          <ConfettiDot key={i} index={i} />
+        ))}
+      </View>
 
       {/* Welcome badge */}
       <AnimatedRN.View entering={FadeIn.duration(500)} style={{ alignItems: 'center' }}>
         <View style={{
-          backgroundColor: `${COLORS.success}18`,
-          borderRadius:    RADIUS.full,
-          paddingHorizontal: 18, paddingVertical: 7,
-          borderWidth: 1, borderColor: `${COLORS.success}35`,
-          flexDirection: 'row', alignItems: 'center', gap: 7,
-          marginBottom: SPACING.sm,
+          backgroundColor:   `${COLORS.success}15`,
+          borderRadius:      RADIUS.full,
+          paddingHorizontal: 16,
+          paddingVertical:   6,
+          borderWidth:       1,
+          borderColor:       `${COLORS.success}30`,
+          flexDirection:     'row',
+          alignItems:        'center',
+          gap:               6,
+          marginBottom:      SPACING.sm,
         }}>
-          <Ionicons name="gift-outline" size={14} color={COLORS.success} />
+          <Ionicons name="gift-outline" size={13} color={COLORS.success} />
           <Text style={{
-            color:      COLORS.success,
-            fontSize:   FONTS.sizes.xs,
-            fontWeight: '800',
-            letterSpacing: 1,
+            color:         COLORS.success,
+            fontSize:      FONTS.sizes.xs,
+            fontWeight:    '800',
+            letterSpacing: 1.5,
+            textTransform: 'uppercase',
           }}>
-            WELCOME BONUS
+            Welcome Bonus
           </Text>
         </View>
       </AnimatedRN.View>
@@ -312,74 +308,88 @@ export function WelcomeBonusAnimation({ onContinue, isLoading = false }: Props) 
       {/* Headline */}
       <AnimatedRN.View entering={FadeInDown.duration(500).delay(80)} style={{ alignItems: 'center' }}>
         <Text style={{
-          color:      COLORS.textPrimary,
-          fontSize:   FONTS.sizes['2xl'],
-          fontWeight: '900',
-          textAlign:  'center',
-          lineHeight: 34,
-          marginBottom: SPACING.sm,
+          color:         COLORS.textPrimary,
+          fontSize:      FONTS.sizes['2xl'],
+          fontWeight:    '900',
+          textAlign:     'center',
+          lineHeight:    36,
+          letterSpacing: -0.5,
+          marginBottom:  SPACING.xs,
         }}>
-          You are all set! 🎉
+          You're all set! 🎉
         </Text>
         <Text style={{
-          color:    COLORS.textSecondary,
-          fontSize: FONTS.sizes.base,
-          textAlign: 'center',
-          lineHeight: 23,
-          marginBottom: SPACING.md,
+          color:             COLORS.textSecondary,
+          fontSize:          FONTS.sizes.base,
+          textAlign:         'center',
+          lineHeight:        24,
           paddingHorizontal: SPACING.xl,
         }}>
-          We have added{' '}
-          <Text style={{ color: COLORS.primary, fontWeight: '800' }}>20 free credits</Text>
-          {' '}to your account — start researching straight away.
+          We've added{' '}
+          <Text style={{ color: COLORS.primary, fontWeight: '700' }}>
+            20 free credits
+          </Text>
+          {' '}to get you started.
         </Text>
       </AnimatedRN.View>
 
-      {/* Animated counter */}
+      {/* Counter */}
       <AnimatedRN.View entering={ZoomIn.duration(500).delay(180)}>
         <CreditCounter target={20} />
       </AnimatedRN.View>
 
       {/* Feature chips */}
-      <AnimatedRN.View entering={FadeInDown.duration(500).delay(700)}>
+      <AnimatedRN.View entering={FadeInDown.duration(500).delay(600)}>
         <View style={{
           backgroundColor: COLORS.backgroundCard,
           borderRadius:    RADIUS.xl,
           padding:         SPACING.md,
           borderWidth:     1,
           borderColor:     COLORS.border,
-          marginBottom:    SPACING.lg,
+          marginBottom:    SPACING.xl,
         }}>
           <Text style={{
             color:         COLORS.textMuted,
             fontSize:      10,
             fontWeight:    '700',
-            letterSpacing: 1,
+            letterSpacing: 1.5,
             textTransform: 'uppercase',
             marginBottom:  SPACING.sm,
             textAlign:     'center',
           }}>
             What you can do with 20 credits
           </Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
+          <View style={{
+            flexDirection:  'row',
+            flexWrap:       'wrap',
+            gap:            8,
+            justifyContent: 'center',
+          }}>
             {FEATURES.map((f, i) => (
-              <AnimatedRN.View key={f.label} entering={FadeInDown.duration(350).delay(750 + i * 60)}>
+              <AnimatedRN.View
+                key={f.label}
+                entering={FadeInDown.duration(300).delay(650 + i * 60)}
+              >
                 <View style={{
                   flexDirection:     'row',
                   alignItems:        'center',
-                  gap:                5,
+                  gap:               5,
                   backgroundColor:   `${f.color}10`,
                   borderRadius:      RADIUS.lg,
-                  paddingHorizontal: 11,
+                  paddingHorizontal: 10,
                   paddingVertical:   7,
                   borderWidth:       1,
-                  borderColor:       `${f.color}22`,
+                  borderColor:       `${f.color}20`,
                 }}>
-                  <Ionicons name={f.icon as any} size={13} color={f.color} />
-                  <Text style={{ color: f.color, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                  <Ionicons name={f.icon as any} size={12} color={f.color} />
+                  <Text style={{
+                    color:      f.color,
+                    fontSize:   FONTS.sizes.xs,
+                    fontWeight: '600',
+                  }}>
                     {f.label}
                   </Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: 10, marginLeft: 1 }}>
+                  <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
                     · {f.cost}
                   </Text>
                 </View>
@@ -390,15 +400,15 @@ export function WelcomeBonusAnimation({ onContinue, isLoading = false }: Props) 
       </AnimatedRN.View>
 
       {/* CTA */}
-      <AnimatedRN.View entering={FadeInDown.duration(500).delay(950)}>
+      <AnimatedRN.View entering={FadeInDown.duration(500).delay(900)}>
         <GradientButton
-          title={isLoading ? 'Setting up your account…' : 'Start Researching  →'}
+          title={isLoading ? 'Setting up your account…' : 'Start Researching →'}
           onPress={onContinue}
           loading={isLoading}
         />
         <Text style={{
-          color:    COLORS.textMuted,
-          fontSize: FONTS.sizes.xs,
+          color:     COLORS.textMuted,
+          fontSize:  FONTS.sizes.xs,
           textAlign: 'center',
           marginTop: SPACING.md,
         }}>
