@@ -218,6 +218,18 @@ export function useVoiceDebate(session: DebateSession | null) {
   }, []);
 
   // ── Load existing voice debate on mount ───────────────────────────────────
+  //
+  // KEY BEHAVIOURS:
+  //   • isLoadingExisting = true while the DB fetch is in flight.
+  //     VoiceDebateCard disables the Generate button during this window
+  //     (typically <500ms) to prevent a race condition.
+  //   • If no existing voice debate found → isLoadingExisting = false,
+  //     state stays INITIAL (idle, no voiceDebate), Generate button enabled.
+  //   • If existing voice debate found → state updated to 'done', card
+  //     shows CompletedDebateView immediately.
+  //   • On-visit upload ONLY triggers when the existing debate has local
+  //     audioSegmentPaths (i.e. was generated on THIS device) but hasn't
+  //     been uploaded yet. It does NOT trigger on brand-new debates.
 
   useEffect(() => {
     if (!session?.id || !user) return;
@@ -229,7 +241,9 @@ export function useVoiceDebate(session: DebateSession | null) {
       .then(async existing => {
         if (cancelled) return;
         if (generatingRef.current) return;
+
         if (existing) {
+          // Existing voice debate found — populate state so card shows player
           setState(prev => ({
             ...prev,
             voiceDebate:     existing,
@@ -242,10 +256,18 @@ export function useVoiceDebate(session: DebateSession | null) {
             cacheAudioBackground(existing);
           }
 
-          // Part 44: On-visit upload check (runs once per mount, non-blocking)
+          // Part 44: On-visit upload check.
+          // GUARD: only run if there are actual local file paths on this device.
+          // This prevents the upload from triggering on a debate that was
+          // generated on another device (where only cloud URLs exist).
+          const hasLocalPaths = (existing.audioSegmentPaths ?? []).some(
+            p => p && (p.startsWith('file://') || p.startsWith('/'))
+          );
+
           if (
             existing.status === 'completed' &&
             !existing.audioAllUploaded &&
+            hasLocalPaths &&
             !onVisitUploadRan.current
           ) {
             onVisitUploadRan.current = true;
@@ -259,7 +281,6 @@ export function useVoiceDebate(session: DebateSession | null) {
               },
               (audioUrls, allUploaded) => {
                 if (!cancelled) {
-                  // Update state.voiceDebate with the new cloud URLs
                   setState(prev => {
                     if (!prev.voiceDebate) return prev;
                     return {
@@ -280,11 +301,14 @@ export function useVoiceDebate(session: DebateSession | null) {
             if (!cancelled) setIsUploading(false);
           }
         }
+        // else: no existing debate found → state stays INITIAL_STATE (idle).
+        // isLoadingExisting will be set to false in .finally() below.
       })
       .catch(err => {
         console.warn('[useVoiceDebate] Failed to load existing voice debate:', err);
       })
       .finally(() => {
+        // Always reset isLoadingExisting so the Generate button enables.
         if (!cancelled) setIsLoadingExisting(false);
       });
 

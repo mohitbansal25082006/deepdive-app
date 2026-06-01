@@ -2,20 +2,25 @@
 // Part 44 UPDATE — Added Share to Workspace button + cloud upload status.
 //
 // CHANGES from Part 40 Fix version:
-//   1. New "Share to Workspace" button appears when voice debate is completed
-//      and audio is fully uploaded (audioAllUploaded = true).
-//   2. Cloud upload status badge shows:
-//        - ☁ Uploading  (audio_all_uploaded = false, audio paths exist)
-//        - ✓ Cloud ready (audio_all_uploaded = true)
-//   3. onShare prop + onShareToWorkspace callback wired in.
-//   4. ShareVoiceDebateToWorkspaceModal opened from this card.
-//   5. Share count badge on the share button when already shared to ≥1 workspace.
-//   6. All previous features (generate, cancel, play, delete, progress) unchanged.
+//   1. New "Share to Workspace" button appears when voice debate is completed.
+//   2. Cloud upload status badge: ☁ Uploading… → ✓ Cloud ready.
+//   3. onShareToWorkspace, sharedToCount, audioAllUploaded props added.
+//   4. All previous features (generate, cancel, play, delete, progress) unchanged.
 //
-// Props added:
-//   onShareToWorkspace?  → () => void   (opens the share modal, caller controls modal state)
-//   sharedToCount?       → number        (how many workspaces it's shared to — for badge)
-//   audioAllUploaded?    → boolean        (drives the cloud badge)
+// BUG FIX (Part 44 patch):
+//   isLoadingExisting is now passed as a prop from useVoiceDebate (the hook's
+//   real state), not re-derived inside the card. The previous in-card derivation:
+//     const isLoadingExisting = !hasCompleted && !isGenerating && phase==='idle' && !voiceDebate;
+//   was always TRUE on a fresh visit to a new debate (because phase IS idle
+//   and voiceDebate IS null), making the Generate button show a spinner and
+//   appear disabled — looking like the card was auto-generating.
+//
+//   With the prop approach:
+//     • isLoadingExisting=true → Generate button shows a subtle spinner (checking DB)
+//     • isLoadingExisting=false + no existing debate → Generate button is fully enabled
+//     • isLoadingExisting=false + existing debate → CompletedDebateView shown
+//   The loading window is typically <500ms (one DB round-trip), so the user
+//   sees the Generate button appear promptly once the check completes.
 
 import React, { useState, useCallback } from 'react';
 import {
@@ -23,7 +28,6 @@ import {
   Text,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   StyleSheet,
 } from 'react-native';
 import { LinearGradient }      from 'expo-linear-gradient';
@@ -57,6 +61,10 @@ interface VoiceDebateCardProps {
   onCancel:             () => void;
   isGenerating:         boolean;
   isCancelling:         boolean;
+  // Passed directly from useVoiceDebate hook.
+  // true  = hook is fetching from DB (show subtle spinner, keep button disabled)
+  // false = fetch complete; if no existing debate, show enabled Generate button
+  isLoadingExisting?:   boolean;
   // Part 44 additions:
   onShareToWorkspace?:  () => void;
   sharedToCount?:       number;
@@ -109,7 +117,11 @@ function CloudBadge({ audioAllUploaded }: { audioAllUploaded: boolean }) {
         </>
       ) : (
         <>
-          <ActivityIndicator size="small" color={COLORS.warning} style={{ transform: [{ scale: 0.6 }] }} />
+          <ActivityIndicator
+            size="small"
+            color={COLORS.warning}
+            style={{ transform: [{ scale: 0.6 }] }}
+          />
           <Text style={{ color: COLORS.warning, fontSize: 10, fontWeight: '700' }}>
             Uploading…
           </Text>
@@ -119,19 +131,14 @@ function CloudBadge({ audioAllUploaded }: { audioAllUploaded: boolean }) {
   );
 }
 
-// ─── Progress bar ─────────────────────────────────────────────────────────────
+// ─── Progress bar (during generation) ────────────────────────────────────────
 
 function ProgressBar({ percent }: { percent: number }) {
   const width = useSharedValue(0);
-
   React.useEffect(() => {
     width.value = withTiming(Math.min(100, Math.max(0, percent)), { duration: 400 });
   }, [percent]);
-
-  const style = useAnimatedStyle(() => ({
-    width: `${width.value}%` as any,
-  }));
-
+  const style = useAnimatedStyle(() => ({ width: `${width.value}%` as any }));
   return (
     <View style={{
       height:          6,
@@ -141,9 +148,7 @@ function ProgressBar({ percent }: { percent: number }) {
       marginTop:       SPACING.sm,
     }}>
       <Animated.View style={[style, {
-        height:          '100%',
-        backgroundColor: ACCENT,
-        borderRadius:    3,
+        height: '100%', backgroundColor: ACCENT, borderRadius: 3,
       }]} />
     </View>
   );
@@ -159,7 +164,6 @@ function GenerationProgress({
   isCancelling: boolean;
 }) {
   const phaseLabel = PHASE_LABELS[genState.phase] || genState.phaseLabel || 'Processing…';
-
   return (
     <View style={{
       backgroundColor: COLORS.backgroundElevated,
@@ -171,10 +175,8 @@ function GenerationProgress({
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <ActivityIndicator size="small" color={ACCENT} />
         <Text style={{
-          color:      COLORS.textPrimary,
-          fontSize:   FONTS.sizes.sm,
-          fontWeight: '600',
-          flex:       1,
+          color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
+          fontWeight: '600', flex: 1,
         }}>
           {phaseLabel}
         </Text>
@@ -182,43 +184,38 @@ function GenerationProgress({
           {genState.progressPercent}%
         </Text>
       </View>
-
       {genState.activeAgentName !== '' && (
         <Text style={{ color: ACCENT, fontSize: FONTS.sizes.xs, marginBottom: 6 }}>
           {genState.activeAgentName}
         </Text>
       )}
-
       {genState.phase === 'audio' && genState.audioProgress.total > 0 && (
         <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>
           Turn {genState.audioProgress.completed} / {genState.audioProgress.total}
         </Text>
       )}
-
       <ProgressBar percent={genState.progressPercent} />
-
       <TouchableOpacity
         onPress={onCancel}
         disabled={isCancelling}
         style={{
-          marginTop:       SPACING.sm,
-          alignSelf:       'flex-end',
-          flexDirection:   'row',
-          alignItems:      'center',
-          gap:             4,
-          backgroundColor: `${COLORS.error}12`,
-          borderRadius:    RADIUS.md,
+          marginTop:         SPACING.sm,
+          alignSelf:         'flex-end',
+          flexDirection:     'row',
+          alignItems:        'center',
+          gap:               4,
+          backgroundColor:   `${COLORS.error}12`,
+          borderRadius:      RADIUS.md,
           paddingHorizontal: 10,
-          paddingVertical: 5,
-          borderWidth:     1,
-          borderColor:     `${COLORS.error}25`,
+          paddingVertical:   5,
+          borderWidth:       1,
+          borderColor:       `${COLORS.error}25`,
         }}
       >
-        {isCancelling ? (
-          <ActivityIndicator size="small" color={COLORS.error} />
-        ) : (
-          <Ionicons name="close-circle-outline" size={14} color={COLORS.error} />
-        )}
+        {isCancelling
+          ? <ActivityIndicator size="small" color={COLORS.error} />
+          : <Ionicons name="close-circle-outline" size={14} color={COLORS.error} />
+        }
         <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
           {isCancelling ? 'Cancelling…' : 'Cancel'}
         </Text>
@@ -230,10 +227,7 @@ function GenerationProgress({
 // ─── Completed debate view ────────────────────────────────────────────────────
 
 function CompletedDebateView({
-  debate,
-  audioAllUploaded,
-  onShareToWorkspace,
-  sharedToCount,
+  debate, audioAllUploaded, onShareToWorkspace, sharedToCount,
 }: {
   debate:             VoiceDebate;
   audioAllUploaded:   boolean;
@@ -243,10 +237,7 @@ function CompletedDebateView({
   const handlePlay = useCallback(() => {
     router.push({
       pathname: '/(app)/voice-debate-player' as any,
-      params:   {
-        voiceDebateId: debate.id,
-        sessionId:     debate.debateSessionId,
-      },
+      params:   { voiceDebateId: debate.id, sessionId: debate.debateSessionId },
     });
   }, [debate.id, debate.debateSessionId]);
 
@@ -261,19 +252,14 @@ function CompletedDebateView({
       {/* Purple accent top bar */}
       <LinearGradient
         colors={[ACCENT, '#A78BFA']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
+        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
         style={{ height: 2 }}
       />
-
       <View style={{ padding: SPACING.md }}>
         {/* Metadata row */}
         <View style={{
-          flexDirection: 'row',
-          alignItems:    'center',
-          gap:           8,
-          marginBottom:  SPACING.sm,
-          flexWrap:      'wrap',
+          flexDirection: 'row', alignItems: 'center',
+          gap: 8, marginBottom: SPACING.sm, flexWrap: 'wrap',
         }}>
           {debate.durationSeconds > 0 && (
             <View style={styles.metaChip}>
@@ -291,13 +277,12 @@ function CompletedDebateView({
               </Text>
             </View>
           )}
-          {/* Cloud upload badge (Part 44) */}
           <CloudBadge audioAllUploaded={audioAllUploaded} />
         </View>
 
         {/* Action buttons row */}
         <View style={{ flexDirection: 'row', gap: SPACING.sm, alignItems: 'center' }}>
-          {/* Play button */}
+          {/* Play */}
           <TouchableOpacity
             onPress={handlePlay}
             style={{
@@ -318,7 +303,7 @@ function CompletedDebateView({
             </Text>
           </TouchableOpacity>
 
-          {/* Share to Workspace button (Part 44) */}
+          {/* Share to Workspace (Part 44) */}
           {onShareToWorkspace && (
             <TouchableOpacity
               onPress={onShareToWorkspace}
@@ -327,14 +312,12 @@ function CompletedDebateView({
                 height:          44,
                 borderRadius:    RADIUS.lg,
                 backgroundColor: sharedToCount > 0
-                  ? `${COLORS.success}18`
-                  : `${ACCENT}15`,
+                  ? `${COLORS.success}18` : `${ACCENT}15`,
                 alignItems:      'center',
                 justifyContent:  'center',
                 borderWidth:     1,
                 borderColor:     sharedToCount > 0
-                  ? `${COLORS.success}40`
-                  : `${ACCENT}30`,
+                  ? `${COLORS.success}40` : `${ACCENT}30`,
                 position:        'relative',
               }}
             >
@@ -346,16 +329,12 @@ function CompletedDebateView({
               {sharedToCount > 0 && (
                 <View style={{
                   position:        'absolute',
-                  top:             -4,
-                  right:           -4,
-                  width:           16,
-                  height:          16,
+                  top:             -4, right: -4,
+                  width:           16, height: 16,
                   borderRadius:    8,
                   backgroundColor: COLORS.success,
-                  alignItems:      'center',
-                  justifyContent:  'center',
-                  borderWidth:     1.5,
-                  borderColor:     COLORS.backgroundCard,
+                  alignItems:      'center', justifyContent: 'center',
+                  borderWidth:     1.5, borderColor: COLORS.backgroundCard,
                 }}>
                   <Text style={{ color: '#FFF', fontSize: 8, fontWeight: '800' }}>
                     {sharedToCount > 9 ? '9+' : sharedToCount}
@@ -390,7 +369,9 @@ function CompletedDebateView({
   );
 }
 
-// ─── Idle / generate state view ───────────────────────────────────────────────
+// ─── Generate prompt — shown when no voice debate exists yet ──────────────────
+// isLoadingExisting: true  → checking DB, show spinner on button (disabled)
+// isLoadingExisting: false → check done, no debate found, button fully enabled
 
 function GeneratePrompt({
   onGenerate, isLoadingExisting, sessionCompleted,
@@ -426,10 +407,8 @@ function GeneratePrompt({
 
       <View style={{ flex: 1 }}>
         <Text style={{
-          color:      COLORS.textPrimary,
-          fontSize:   FONTS.sizes.sm,
-          fontWeight: '700',
-          marginBottom: 3,
+          color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
+          fontWeight: '700', marginBottom: 3,
         }}>
           Generate Voice Debate
         </Text>
@@ -438,19 +417,25 @@ function GeneratePrompt({
         </Text>
       </View>
 
+      {/* Generate button — disabled only while checking for existing debate */}
       <TouchableOpacity
         onPress={onGenerate}
         disabled={isLoadingExisting}
         style={{
-          backgroundColor: ACCENT,
-          borderRadius:    RADIUS.lg,
+          backgroundColor:   isLoadingExisting ? `${ACCENT}60` : ACCENT,
+          borderRadius:      RADIUS.lg,
           paddingHorizontal: SPACING.md,
-          paddingVertical: 9,
-          flexShrink:      0,
+          paddingVertical:   9,
+          flexShrink:        0,
+          minWidth:          76,
+          alignItems:        'center',
           ...SHADOWS.small,
         }}
       >
         {isLoadingExisting ? (
+          // Small spinner while the hook checks DB for an existing debate.
+          // This lasts <500ms on a typical connection — just prevents a
+          // race condition where user taps Generate before the DB check finishes.
           <ActivityIndicator size="small" color="#FFF" />
         ) : (
           <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
@@ -490,12 +475,12 @@ function ErrorView({
       <TouchableOpacity
         onPress={onRetry}
         style={{
-          backgroundColor: `${COLORS.error}15`,
-          borderRadius:    RADIUS.md,
+          backgroundColor:   `${COLORS.error}15`,
+          borderRadius:      RADIUS.md,
           paddingHorizontal: 10,
-          paddingVertical: 6,
-          borderWidth:     1,
-          borderColor:     `${COLORS.error}30`,
+          paddingVertical:   6,
+          borderWidth:       1,
+          borderColor:       `${COLORS.error}30`,
         }}
       >
         <Text style={{ color: COLORS.error, fontSize: 10, fontWeight: '700' }}>
@@ -516,16 +501,14 @@ export function VoiceDebateCard({
   onCancel,
   isGenerating,
   isCancelling,
+  isLoadingExisting = false,
   // Part 44:
   onShareToWorkspace,
   sharedToCount = 0,
   audioAllUploaded = false,
 }: VoiceDebateCardProps) {
   const hasCompleted = existingDebate?.status === 'completed';
-  const isIdle       = genState.phase === 'idle' || genState.phase === 'done';
   const isError      = genState.phase === 'error';
-  const isLoadingExisting =
-    !hasCompleted && !isGenerating && genState.phase === 'idle' && !genState.voiceDebate;
 
   // Derive audioAllUploaded from existingDebate if not passed explicitly
   const cloudReady = audioAllUploaded || existingDebate?.audioAllUploaded === true;
@@ -534,55 +517,37 @@ export function VoiceDebateCard({
     <Animated.View entering={FadeInDown.duration(400)}>
       {/* Section header */}
       <View style={{
-        flexDirection:   'row',
-        alignItems:      'center',
-        gap:             8,
-        marginBottom:    SPACING.sm,
-        marginTop:       SPACING.lg,
+        flexDirection: 'row', alignItems: 'center',
+        gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.lg,
       }}>
         <LinearGradient
           colors={[ACCENT, '#A78BFA']}
           style={{
-            width:          28,
-            height:          28,
-            borderRadius:   8,
-            alignItems:     'center',
-            justifyContent: 'center',
-            flexShrink:     0,
+            width: 28, height: 28, borderRadius: 8,
+            alignItems: 'center', justifyContent: 'center', flexShrink: 0,
           }}
         >
           <Ionicons name="mic-circle" size={14} color="#FFF" />
         </LinearGradient>
         <Text style={{
-          color:      COLORS.textPrimary,
-          fontSize:   FONTS.sizes.base,
-          fontWeight: '800',
-          flex:       1,
+          color: COLORS.textPrimary, fontSize: FONTS.sizes.base,
+          fontWeight: '800', flex: 1,
         }}>
           Voice Debate
         </Text>
         {hasCompleted && (
           <View style={{
-            backgroundColor: `${ACCENT}15`,
-            borderRadius:    RADIUS.full,
-            paddingHorizontal: 8,
-            paddingVertical:  3,
-            flexDirection:    'row',
-            alignItems:       'center',
-            gap:              4,
+            backgroundColor: `${ACCENT}15`, borderRadius: RADIUS.full,
+            paddingHorizontal: 8, paddingVertical: 3,
+            flexDirection: 'row', alignItems: 'center', gap: 4,
           }}>
-            <View style={{
-              width: 6, height: 6, borderRadius: 3,
-              backgroundColor: ACCENT,
-            }} />
-            <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
-              Ready
-            </Text>
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: ACCENT }} />
+            <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>Ready</Text>
           </View>
         )}
       </View>
 
-      {/* Content */}
+      {/* ── Generation in progress ── */}
       {isGenerating && (
         <GenerationProgress
           genState={genState}
@@ -591,6 +556,7 @@ export function VoiceDebateCard({
         />
       )}
 
+      {/* ── Completed — show player + share button ── */}
       {!isGenerating && hasCompleted && existingDebate && (
         <CompletedDebateView
           debate={existingDebate}
@@ -600,6 +566,12 @@ export function VoiceDebateCard({
         />
       )}
 
+      {/* ── No voice debate yet — show Generate CTA ──
+          KEY FIX: isLoadingExisting comes from the hook as a prop.
+          When true (DB check in progress), button is disabled with a spinner.
+          When false (check done, nothing found), button is fully enabled.
+          This replaces the previous in-card derivation which was always
+          true on a fresh visit, making the card look like it was auto-generating. */}
       {!isGenerating && !hasCompleted && !isError && (
         <GeneratePrompt
           onGenerate={onGenerate}
@@ -608,6 +580,7 @@ export function VoiceDebateCard({
         />
       )}
 
+      {/* ── Error state ── */}
       {!isGenerating && isError && genState.error && (
         <ErrorView error={genState.error} onRetry={onGenerate} />
       )}

@@ -436,6 +436,13 @@ export default function DebateDetailScreen() {
       onCancel={cancelVoiceDebate}
       isGenerating={isVoiceGenerating}
       isCancelling={isVoiceCancelling}
+      // KEY FIX: pass the hook's real isLoadingExisting state so the card
+      // shows a brief spinner on the Generate button while the DB check runs,
+      // then immediately enables the button once the check resolves to nothing.
+      // Without this, the card re-derived isLoadingExisting internally and was
+      // ALWAYS true on a fresh visit (phase='idle', voiceDebate=null), making
+      // the card look like it was auto-generating.
+      isLoadingExisting={isLoadingExisting}
       // Part 44: share to workspace
       onShareToWorkspace={
         voiceDebateGenState.voiceDebate?.status === 'completed'
