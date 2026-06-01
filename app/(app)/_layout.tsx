@@ -1,18 +1,9 @@
 // app/(app)/_layout.tsx
-// Part 41.2 UPDATE — Pause audio on offline, clear flag on reconnect.
+// Part 44 UPDATE — Registers workspace-shared-voice-debate-player screen route.
 //
-// WHAT CHANGED:
-//   Added a useEffect that watches `isOffline` (from NetworkContext).
-//   • When isOffline becomes true  → calls AudioEngine.pauseForOffline()
-//     and VoiceDebateEngine.pauseForOffline() on both engines.
-//   • When isOffline becomes false → calls AudioEngine.clearOfflinePause()
-//     and VoiceDebateEngine.clearOfflinePause() to clear the flag.
-//     Audio stays paused — user must tap Play.
-//
-// The isConnecting guard prevents the brief "connecting" window from
-// triggering spurious pauses during network handoffs.
-//
-// Everything else is 100% identical to Part 41.
+// CHANGE from Part 41.2 version:
+//   • Added <Stack.Screen name="workspace-shared-voice-debate-player" /> entry.
+//   • All Part 41.2 logic unchanged (offline audio pause, onboarding, mini player, etc.)
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
@@ -32,7 +23,7 @@ import {
 } from '../../src/context/MiniPlayerContext';
 import { stopGlobalAudio }               from '../../src/hooks/usePodcastPlayer';
 
-// ── Part 41.2: import offline-pause methods ────────────────────────────────
+// Audio engines (Part 41.2)
 import { AudioEngine }        from '../../src/services/GlobalAudioEngine';
 import { VoiceDebateEngine }  from '../../src/services/VoiceDebateAudioEngine';
 
@@ -63,16 +54,9 @@ function AppLayoutInner() {
   }, [isOffline, isConnecting]);
 
   // ── Part 41.2: Pause audio when going offline, clear flag when online ────
-  //
-  // We only act on SETTLED transitions (isConnecting=false) to avoid
-  // spurious pauses during brief network handoffs (e.g. wifi ↔ cellular).
-  //
-  // Going offline  → pause both engines (sets pausedByOffline=true)
-  // Coming online  → clear the flag (does NOT auto-resume — user taps Play)
   const audioPrevOffline = useRef(false);
 
   useEffect(() => {
-    // Wait until the connecting phase is over before acting
     if (isConnecting) return;
 
     const goingOffline = isOffline && !audioPrevOffline.current;
@@ -80,12 +64,10 @@ function AppLayoutInner() {
 
     if (goingOffline) {
       audioPrevOffline.current = true;
-      // Fire-and-forget — these are fast async operations
       AudioEngine.pauseForOffline().catch(() => {});
       VoiceDebateEngine.pauseForOffline().catch(() => {});
     } else if (comingOnline) {
       audioPrevOffline.current = false;
-      // Just clear the flag — do NOT resume automatically
       AudioEngine.clearOfflinePause();
       VoiceDebateEngine.clearOfflinePause();
     }
@@ -137,7 +119,9 @@ function AppLayoutInner() {
 
   // Hide mini player while full player screens are open
   const isOnPlayerScreen =
-    (pathname?.includes('podcast-player') || pathname?.includes('voice-debate-player')) ?? false;
+    (pathname?.includes('podcast-player') ||
+     pathname?.includes('voice-debate-player') ||
+     pathname?.includes('workspace-shared-voice-debate-player')) ?? false;
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
@@ -210,6 +194,9 @@ function AppLayoutInner() {
           <Stack.Screen name="workspace-shared-debate"         options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-chat"                  options={{ animation: 'slide_from_right' }} />
 
+          {/* Part 44: Workspace Shared Voice Debate Player */}
+          <Stack.Screen name="workspace-shared-voice-debate-player" options={{ animation: 'slide_from_right' }} />
+
           {/* Credits */}
           <Stack.Screen name="credits-store"       options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
           <Stack.Screen name="transaction-history" options={{ animation: 'slide_from_right' }} />
@@ -254,8 +241,7 @@ function AppLayoutInner() {
         {(isOffline || prevOffline.current) && <OfflineScreen />}
       </Animated.View>
 
-      {/* Mini Player — hidden while full player screens are open.
-          Remains visible when offline so user can see paused state and tap Play. */}
+      {/* Mini Player */}
       {!isOnPlayerScreen && <MiniPlayer />}
     </View>
   );

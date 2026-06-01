@@ -1,10 +1,19 @@
 // app/(app)/debate-detail.tsx
-// Part 40 Fix — Passes cancelGeneration + isCancelling to VoiceDebateCard
+// Part 44 UPDATE — Wires ShareVoiceDebateToWorkspaceModal + passes new props to VoiceDebateCard.
 //
-// Only changes from Part 40:
-//   • Destructures cancelGeneration + isCancelling from useVoiceDebate
-//   • Passes onCancel={cancelGeneration} and isCancelling={isCancelling} to VoiceDebateCard
-//   • All other functionality unchanged
+// CHANGES from Part 40 Fix version:
+//   1. Imports ShareVoiceDebateToWorkspaceModal (new in Part 44B).
+//   2. Imports useVoiceDebateSharedWorkspaces (new in Part 44A).
+//   3. VoiceDebateCard receives:
+//        onShareToWorkspace  → opens the share modal
+//        sharedToCount       → badge on the share button
+//        audioAllUploaded    → drives the cloud upload badge in the card
+//   4. ShareVoiceDebateToWorkspaceModal rendered at the bottom.
+//   5. All Part 40 + earlier functionality unchanged.
+//
+// The share modal only appears when:
+//   - The voice debate is completed
+//   - audio_all_uploaded = true (enforced by the modal itself too)
 
 import React, {
   useState,
@@ -33,9 +42,11 @@ import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/the
 import { DebatePerspectiveView }                   from '../../src/components/debate/DebatePerspectiveView';
 import { ModeratorSummary }                        from '../../src/components/debate/ModeratorSummary';
 import { ShareDebateToWorkspaceModal }             from '../../src/components/workspace/ShareDebateToWorkspaceModal';
+import { ShareVoiceDebateToWorkspaceModal }        from '../../src/components/workspace/ShareVoiceDebateToWorkspaceModal';
 import { VoiceDebateCard }                         from '../../src/components/debate/VoiceDebateCard';
 import { useDebateSharedWorkspaces }               from '../../src/hooks/useDebateSharing';
 import { useVoiceDebate }                          from '../../src/hooks/useVoiceDebate';
+import { useVoiceDebateSharedWorkspaces }          from '../../src/hooks/useVoiceDebateSharing';
 import {
   exportDebateAsPDF,
   copyDebateSummary,
@@ -57,18 +68,18 @@ const TABS: { id: DebateTab; label: string; icon: string }[] = [
 
 function mapDbRow(row: Record<string, unknown>): DebateSession {
   return {
-    id:                 row.id                   as string,
-    userId:             row.user_id              as string,
-    topic:              row.topic                as string,
-    question:           row.question             as string,
-    perspectives:       (row.perspectives        as DebateSession['perspectives']) ?? [],
-    moderator:          (row.moderator           as DebateSession['moderator'])    ?? null,
-    status:             row.status               as DebateSession['status'],
-    agentRoles:         (row.agent_roles         as DebateSession['agentRoles'])   ?? [],
-    searchResultsCount: (row.search_results_count as number)                       ?? 0,
-    errorMessage:       row.error_message        as string | undefined,
-    createdAt:          row.created_at           as string,
-    completedAt:        row.completed_at         as string | undefined,
+    id:                 row.id                    as string,
+    userId:             row.user_id               as string,
+    topic:              row.topic                 as string,
+    question:           row.question              as string,
+    perspectives:       (row.perspectives         as DebateSession['perspectives']) ?? [],
+    moderator:          (row.moderator            as DebateSession['moderator'])    ?? null,
+    status:             row.status                as DebateSession['status'],
+    agentRoles:         (row.agent_roles          as DebateSession['agentRoles'])   ?? [],
+    searchResultsCount: (row.search_results_count as number)                        ?? 0,
+    errorMessage:       row.error_message         as string | undefined,
+    createdAt:          row.created_at            as string,
+    completedAt:        row.completed_at          as string | undefined,
   };
 }
 
@@ -133,14 +144,12 @@ function ExportBar({ session }: { session: DebateSession }) {
     finally { setBusy(null); }
   };
 
-  type ExportOption = {
-    id: ExportBusy; icon: string; label: string; color: string; onPress: () => void;
-  };
+  type ExportOption = { id: ExportBusy; icon: string; label: string; color: string; onPress: () => void };
 
   const options: ExportOption[] = [
-    { id: 'pdf',   icon: 'document-text-outline',                              label: 'PDF',             color: COLORS.primary,   onPress: handlePDF   },
-    { id: 'copy',  icon: copied ? 'checkmark-circle-outline' : 'copy-outline', label: copied ? 'Copied!' : 'Copy', color: copied ? COLORS.accent : COLORS.info, onPress: handleCopy },
-    { id: 'share', icon: 'share-outline',                                       label: 'Share',           color: COLORS.secondary, onPress: handleShare },
+    { id: 'pdf',   icon: 'document-text-outline',                               label: 'PDF',              color: COLORS.primary,   onPress: handlePDF   },
+    { id: 'copy',  icon: copied ? 'checkmark-circle-outline' : 'copy-outline',  label: copied ? 'Copied!' : 'Copy', color: copied ? COLORS.accent : COLORS.info, onPress: handleCopy },
+    { id: 'share', icon: 'share-outline',                                        label: 'Share',            color: COLORS.secondary, onPress: handleShare },
   ];
 
   return (
@@ -303,7 +312,7 @@ function OverviewTab({
         ))}
       </View>
 
-      {/* Voice Debate Card */}
+      {/* Voice Debate Card (Part 40 + Part 44) */}
       {voiceDebateSlot}
 
       {completedDate && (
@@ -328,21 +337,28 @@ export default function DebateDetailScreen() {
   const [error,     setError]     = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DebateTab>('overview');
 
-  const [showShareModal, setShowShareModal] = useState(false);
+  // ── Share debate to workspace modal (Part 16) ─────────────────────────────
+  const [showShareDebateModal,      setShowShareDebateModal]      = useState(false);
   const { workspaceIds: sharedToIds, reload: reloadShared } =
     useDebateSharedWorkspaces(sessionId);
 
-  // ── Part 40: Voice debate generation hook (with cancel support) ───────────
+  // ── Part 40 + 44: Voice debate hook ───────────────────────────────────────
   const {
     state:              voiceDebateGenState,
     isGenerating:       isVoiceGenerating,
     isCancelling:       isVoiceCancelling,
     isLoadingExisting,
+    audioAllUploaded,
     generate:           generateVoiceDebate,
     cancelGeneration:   cancelVoiceDebate,
   } = useVoiceDebate(session);
 
-  // ── Load session ──────────────────────────────────────────────────────────
+  // ── Part 44: Voice debate workspace sharing ───────────────────────────────
+  const [showShareVoiceModal, setShowShareVoiceModal] = useState(false);
+  const { workspaceIds: voiceSharedToIds, reload: reloadVoiceShared } =
+    useVoiceDebateSharedWorkspaces(voiceDebateGenState.voiceDebate?.id ?? null);
+
+  // ── Load debate session ───────────────────────────────────────────────────
 
   useEffect(() => {
     if (!sessionId) {
@@ -420,6 +436,14 @@ export default function DebateDetailScreen() {
       onCancel={cancelVoiceDebate}
       isGenerating={isVoiceGenerating}
       isCancelling={isVoiceCancelling}
+      // Part 44: share to workspace
+      onShareToWorkspace={
+        voiceDebateGenState.voiceDebate?.status === 'completed'
+          ? () => setShowShareVoiceModal(true)
+          : undefined
+      }
+      sharedToCount={voiceSharedToIds.length}
+      audioAllUploaded={audioAllUploaded}
     />
   ) : null;
 
@@ -459,14 +483,14 @@ export default function DebateDetailScreen() {
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
               {session.perspectives.length} perspectives · {session.searchResultsCount} sources
               {voiceDebateGenState.voiceDebate?.status === 'completed'
-                ? ' · 🎙 Voice ready'
+                ? audioAllUploaded ? ' · 🎙 Voice ready ☁' : ' · 🎙 Voice ready'
                 : ''}
             </Text>
           </View>
 
-          {/* Share to workspace button */}
+          {/* Share debate to workspace button (Part 16) */}
           <TouchableOpacity
-            onPress={() => setShowShareModal(true)}
+            onPress={() => setShowShareDebateModal(true)}
             style={{
               width:           38,
               height:          38,
@@ -583,20 +607,38 @@ export default function DebateDetailScreen() {
           )}
         </ScrollView>
 
-        {/* Share to workspace modal */}
+        {/* ── Part 16: Share debate to workspace modal ── */}
         <ShareDebateToWorkspaceModal
-          visible={showShareModal}
+          visible={showShareDebateModal}
           debateId={sessionId}
           topic={session.topic}
           question={session.question}
           perspectiveCount={session.perspectives.length}
           searchResultsCount={session.searchResultsCount}
-          onClose={() => setShowShareModal(false)}
+          onClose={() => setShowShareDebateModal(false)}
           onShared={(_workspaceId, workspaceName) => {
             reloadShared();
-            console.log(`[DebateDetail] Shared to workspace: ${workspaceName}`);
+            console.log(`[DebateDetail] Debate shared to workspace: ${workspaceName}`);
           }}
         />
+
+        {/* ── Part 44: Share voice debate to workspace modal ── */}
+        {voiceDebateGenState.voiceDebate && (
+          <ShareVoiceDebateToWorkspaceModal
+            visible={showShareVoiceModal}
+            voiceDebateId={voiceDebateGenState.voiceDebate.id}
+            topic={session.topic}
+            question={session.question}
+            totalTurns={voiceDebateGenState.voiceDebate.totalTurns}
+            durationSeconds={voiceDebateGenState.voiceDebate.durationSeconds}
+            audioAllUploaded={audioAllUploaded}
+            onClose={() => setShowShareVoiceModal(false)}
+            onShared={(_workspaceId, workspaceName) => {
+              reloadVoiceShared();
+              console.log(`[DebateDetail] Voice debate shared to workspace: ${workspaceName}`);
+            }}
+          />
+        )}
 
       </SafeAreaView>
     </LinearGradient>

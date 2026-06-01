@@ -1,32 +1,24 @@
 // app/(app)/workspace-detail.tsx
-// Part 17 UPDATE — Added Team Chat button in the top bar (chatbubbles icon).
-// Part 14 FIX — handleOpenSharedContent now correctly passes sharerName and sharedAt
-//               so the AcademicPaperViewer attribution banner renders properly.
-// Part 41.5 PATCH — handleOpenSharedContent now also passes workspaceId
-//               (via item.workspaceId) so non-owners can open presentations
-//               and academic papers in workspace-shared-viewer.
+// Part 44 UPDATE — Added Voice Debates section in the Shared tab.
 //
-// ROOT CAUSE of broken academic paper UI (pre-Part 14):
-//   handleOpenSharedContent was passing contentType and contentId but NOT
-//   sharerName or sharedAt. The workspace-shared-viewer received undefined for
-//   both, so the AttributionBanner showed "Shared in workspace" with no date,
-//   and more critically the AcademicPaperViewer had no sharer attribution at all.
-//   Additionally, the params key was "contentTitle" (unused) instead of the
-//   correct "sharerName" and "sharedAt" keys expected by useLocalSearchParams
-//   in workspace-shared-viewer.tsx.
+// CHANGES from Part 17/41.5 version:
+//   1. Imports useVoiceDebateSharing hook (Part 44A).
+//   2. Imports SharedVoiceDebateCard component (Part 44A).
+//   3. Shared tab shows a "Voice Debates" section after the Debates section.
+//   4. Filter chips updated to include Voice Debates count.
+//   5. Total shared count badge on tab includes voice debates.
+//   6. handleOpenSharedVoiceDebate navigates to workspace-shared-voice-debate-player.
+//   7. handleRemoveSharedVoiceDebate wired to useVoiceDebateSharing.remove().
+//   8. All previous functionality from Parts 10-17/41.5 preserved unchanged.
 //
-// Part 41.5 ROOT CAUSE (non-owner breakage):
-//   workspace-shared-viewer now expects workspaceId when the user is not the
-//   original sharer/owner. Without it, navigation failed silently for viewers.
-//
-// FIX (Part 41.5): Always pass workspaceId: item.workspaceId (guaranteed to exist
-// on SharedWorkspaceContent via mapSharedContentRow() in workspaceSharingService.ts).
-// Everything else (chat, pinning, debate, podcast) is unchanged from Part 17.
+// Voice debate sharing handlers (copy/export):
+//   - Copy: copies plain-text transcript of the shared voice debate
+//   - Export PDF: not implemented yet (transcript PDF — optional extension)
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  RefreshControl, StyleSheet, Alert,
+  RefreshControl, StyleSheet, Alert, Share,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }           from '@expo/vector-icons';
@@ -40,6 +32,7 @@ import { usePendingAccessRequests }  from '../../src/hooks/useEditAccessRequest'
 import { useWorkspaceSharing }       from '../../src/hooks/useWorkspaceSharing';
 import { usePodcastSharing }         from '../../src/hooks/usePodcastSharing';
 import { useDebateSharing }          from '../../src/hooks/useDebateSharing';
+import { useVoiceDebateSharing }     from '../../src/hooks/useVoiceDebateSharing';
 import { WorkspaceReportCard }       from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem }              from '../../src/components/workspace/ActivityItem';
 import { MemberAvatar }              from '../../src/components/workspace/MemberAvatar';
@@ -51,6 +44,7 @@ import { EditAccessRequestModal }    from '../../src/components/workspace/EditAc
 import { SharedContentCard }         from '../../src/components/workspace/SharedContentCard';
 import { SharedPodcastCard }         from '../../src/components/workspace/SharedPodcastCard';
 import { SharedDebateCard }          from '../../src/components/workspace/SharedDebateCard';
+import { SharedVoiceDebateCard }     from '../../src/components/workspace/SharedVoiceDebateCard';
 import {
   exportPodcastAsMP3,
   exportPodcastAsPDF,
@@ -63,11 +57,13 @@ import {
   shareDebateText,
 }                                    from '../../src/services/debateExport';
 import { sharedDebateToSession }     from '../../src/services/debateSharingService';
+import { VOICE_PERSONAS }            from '../../src/constants/voiceDebate';
 import { getChatUnreadCount }        from '../../src/services/chatService';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
   SharedPodcast, SharedDebate,
 } from '../../src/types';
+import type { SharedVoiceDebate }    from '../../src/types/voiceDebateSharing';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
@@ -86,6 +82,22 @@ function formatJoined(raw: string | undefined | null): string {
   if (isNaN(d.getTime())) return 'Unknown date';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+
+// ─── Helper: copy voice debate transcript ────────────────────────────────────
+
+async function copyVoiceDebateTranscript(item: SharedVoiceDebate): Promise<void> {
+  const turns = item.script?.turns ?? [];
+  const text = turns.map((t: any) => {
+    const key = (t.speaker ?? 'moderator') as keyof typeof VOICE_PERSONAS;
+    const persona = VOICE_PERSONAS[key] ?? VOICE_PERSONAS['moderator'];
+    return `[${persona.displayName}]\n${t.text}`;
+  }).join('\n\n');
+
+  const { setString } = await import('expo-clipboard');
+  await setString(`Voice Debate: ${item.topic}\n\n${text}`);
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function WorkspaceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -106,9 +118,11 @@ export default function WorkspaceDetailScreen() {
     deny:    denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
-  const sharing        = useWorkspaceSharing(id ?? null);
-  const podcastSharing = usePodcastSharing(id ?? null);
-  const debateSharing  = useDebateSharing(id ?? null);
+  const sharing              = useWorkspaceSharing(id ?? null);
+  const podcastSharing       = usePodcastSharing(id ?? null);
+  const debateSharing        = useDebateSharing(id ?? null);
+  // Part 44: voice debate sharing
+  const voiceDebateSharing   = useVoiceDebateSharing(id ?? null);
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
   const [showInvite,    setShowInvite]    = useState(false);
@@ -121,7 +135,6 @@ export default function WorkspaceDetailScreen() {
   const [showProfile,   setShowProfile]   = useState(false);
   const [showRequests,  setShowRequests]  = useState(false);
 
-  // Part 17: unread chat badge
   const [chatUnread, setChatUnread] = useState(0);
 
   const isOwner  = userRole === 'owner';
@@ -141,7 +154,7 @@ export default function WorkspaceDetailScreen() {
 
   useEffect(() => { loadPinnedIds(); }, [loadPinnedIds]);
 
-  // ── Part 17: Load chat unread count ───────────────────────────────────────
+  // ── Chat unread count ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!id || !isEditor) return;
     getChatUnreadCount(id).then(count => setChatUnread(count));
@@ -188,31 +201,23 @@ export default function WorkspaceDetailScreen() {
     setShowProfile(true);
   }, []);
 
-  // ── Part 17: Open chat ─────────────────────────────────────────────────────
   const openChat = useCallback(() => {
     if (!id) return;
     setChatUnread(0);
     router.push({
       pathname: '/(app)/workspace-chat' as any,
-      params: {
-        id:   id,
-        name: workspace?.name ?? 'Team Chat',
-        role: userRole ?? 'viewer',
-      },
+      params: { id, name: workspace?.name ?? 'Team Chat', role: userRole ?? 'viewer' },
     });
   }, [id, workspace?.name, userRole]);
 
-  // ── Part 41.5 PATCH: Open shared content — now passes workspaceId + sharerName/sharedAt ──
-  // This is the single shared handler used by both presentations and academic papers
-  // (via SharedContentCard's onOpen prop). item.workspaceId is always present on
-  // SharedWorkspaceContent thanks to mapSharedContentRow() in workspaceSharingService.ts.
+  // ── Open shared content (presentations/papers) ────────────────────────────
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({
       pathname: '/(app)/workspace-shared-viewer' as any,
       params:   {
         contentType: item.contentType,
         contentId:   item.contentId,
-        workspaceId: item.workspaceId,          // ← Part 41.5: critical for non-owners
+        workspaceId: item.workspaceId,
         sharerName:  item.sharerName  ?? '',
         sharedAt:    item.sharedAt    ?? '',
       },
@@ -233,7 +238,19 @@ export default function WorkspaceDetailScreen() {
     });
   }, [id]);
 
-  // ── Remove shared content ──────────────────────────────────────────────────
+  // ── Part 44: Open shared voice debate ────────────────────────────────────
+  const handleOpenSharedVoiceDebate = useCallback((svd: SharedVoiceDebate) => {
+    router.push({
+      pathname: '/(app)/workspace-shared-voice-debate-player' as any,
+      params:   {
+        workspaceId:  id,
+        sharedId:     svd.id,
+        contentTitle: svd.topic,
+      },
+    });
+  }, [id]);
+
+  // ── Remove shared content ─────────────────────────────────────────────────
   const handleRemoveSharedContent = useCallback(async (item: SharedWorkspaceContent) => {
     const { error } = await sharing.remove(item.contentType, item.contentId);
     if (error) Alert.alert('Error', error);
@@ -249,7 +266,13 @@ export default function WorkspaceDetailScreen() {
     if (error) Alert.alert('Error', error);
   }, [debateSharing]);
 
-  // ── Podcast export handlers ────────────────────────────────────────────────
+  // ── Part 44: Remove shared voice debate ──────────────────────────────────
+  const handleRemoveSharedVoiceDebate = useCallback(async (svd: SharedVoiceDebate) => {
+    const { error } = await voiceDebateSharing.remove(svd.voiceDebateId);
+    if (error) Alert.alert('Error', error);
+  }, [voiceDebateSharing]);
+
+  // ── Podcast export handlers ───────────────────────────────────────────────
   const handleDownloadPodcastMP3 = useCallback(async (podcast: SharedPodcast) => {
     try { await exportPodcastAsMP3(sharedPodcastToPodcast(podcast)); }
     catch (err) { Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed'); }
@@ -265,10 +288,10 @@ export default function WorkspaceDetailScreen() {
     catch { Alert.alert('Error', 'Failed to copy script'); }
   }, []);
 
-  // ── Debate export handlers ─────────────────────────────────────────────────
+  // ── Debate export handlers ────────────────────────────────────────────────
   const handleExportDebatePDF = useCallback(async (debate: SharedDebate) => {
     try { await exportDebateAsPDF(sharedDebateToSession(debate)); }
-    catch (err) { Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed to export PDF'); }
+    catch (err) { Alert.alert('Export Error', err instanceof Error ? err.message : 'Failed'); }
   }, []);
 
   const handleCopyDebateText = useCallback(async (debate: SharedDebate) => {
@@ -281,7 +304,13 @@ export default function WorkspaceDetailScreen() {
     catch {}
   }, []);
 
-  // ── Leave workspace ────────────────────────────────────────────────────────
+  // ── Part 44: Voice debate transcript copy ────────────────────────────────
+  const handleCopyVoiceDebateTranscript = useCallback(async (svd: SharedVoiceDebate) => {
+    try { await copyVoiceDebateTranscript(svd); }
+    catch { Alert.alert('Error', 'Failed to copy transcript'); }
+  }, []);
+
+  // ── Leave workspace ───────────────────────────────────────────────────────
   const handleLeave = () => {
     Alert.alert(
       'Leave Workspace',
@@ -312,7 +341,7 @@ export default function WorkspaceDetailScreen() {
     if (error) Alert.alert('Error', error);
   };
 
-  // ── Sort feed: pinned first ────────────────────────────────────────────────
+  // ── Sort feed: pinned first ───────────────────────────────────────────────
   const sortedReports: WorkspaceReport[] = [
     ...reports.filter((r) => pinnedIds.has(r.reportId)).map((r) => ({ ...r, isPinned: true  })),
     ...reports.filter((r) => !pinnedIds.has(r.reportId)).map((r) => ({ ...r, isPinned: false })),
@@ -332,11 +361,13 @@ export default function WorkspaceDetailScreen() {
     );
   }
 
-  const presentationCount = sharing.presentations.length;
-  const paperCount        = sharing.papers.length;
-  const podcastCount      = podcastSharing.podcasts.length;
-  const debateCount       = debateSharing.debates.length;
-  const totalSharedCount  = presentationCount + paperCount + podcastCount + debateCount;
+  // ── Shared counts ──────────────────────────────────────────────────────────
+  const presentationCount  = sharing.presentations.length;
+  const paperCount         = sharing.papers.length;
+  const podcastCount       = podcastSharing.podcasts.length;
+  const debateCount        = debateSharing.debates.length;
+  const voiceDebateCount   = voiceDebateSharing.voiceDebates.length;
+  const totalSharedCount   = presentationCount + paperCount + podcastCount + debateCount + voiceDebateCount;
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -357,17 +388,11 @@ export default function WorkspaceDetailScreen() {
           </View>
           <View style={styles.topBarRight}>
             {isEditor && (
-              <TouchableOpacity
-                onPress={openChat}
-                style={[styles.iconBtn, styles.chatBtn]}
-                activeOpacity={0.8}
-              >
+              <TouchableOpacity onPress={openChat} style={[styles.iconBtn, styles.chatBtn]} activeOpacity={0.8}>
                 <Ionicons name="chatbubbles-outline" size={20} color={COLORS.primary} />
                 {chatUnread > 0 && (
                   <View style={styles.chatBadge}>
-                    <Text style={styles.chatBadgeText}>
-                      {chatUnread > 9 ? '9+' : chatUnread}
-                    </Text>
+                    <Text style={styles.chatBadgeText}>{chatUnread > 9 ? '9+' : chatUnread}</Text>
                   </View>
                 )}
               </TouchableOpacity>
@@ -406,7 +431,7 @@ export default function WorkspaceDetailScreen() {
           </Animated.View>
         )}
 
-        {/* ── Part 17: Chat CTA banner ── */}
+        {/* ── Chat CTA banner ── */}
         {isEditor && chatUnread > 0 && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.chatCTABanner}>
             <Ionicons name="chatbubbles" size={15} color={COLORS.primary} />
@@ -476,6 +501,7 @@ export default function WorkspaceDetailScreen() {
                 sharing.load();
                 podcastSharing.load();
                 debateSharing.load();
+                voiceDebateSharing.load();   // Part 44
               }}
               tintColor={COLORS.primary}
             />
@@ -584,21 +610,24 @@ export default function WorkspaceDetailScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.sharedHeaderTitle}>Shared Content</Text>
                   <Text style={styles.sharedHeaderSub}>
-                    Presentations, papers, podcasts and debate sessions shared by team members
+                    Presentations, papers, podcasts, debates, and voice debates shared by team members
                   </Text>
                 </View>
               </Animated.View>
 
+              {/* Filter chips */}
               {totalSharedCount > 0 && (
                 <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
-                  <FilterChip label={`All (${totalSharedCount})`}        icon="apps-outline"   active />
-                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`}  icon="easel-outline"  />}
-                  {paperCount        > 0 && <FilterChip label={`Papers (${paperCount})`}         icon="school-outline" />}
-                  {podcastCount      > 0 && <FilterChip label={`Podcasts (${podcastCount})`}     icon="mic-outline"    />}
-                  {debateCount       > 0 && <FilterChip label={`Debates (${debateCount})`}       icon="people-outline" />}
+                  <FilterChip label={`All (${totalSharedCount})`}            icon="apps-outline"      active />
+                  {presentationCount > 0 && <FilterChip label={`Slides (${presentationCount})`}       icon="easel-outline"     />}
+                  {paperCount        > 0 && <FilterChip label={`Papers (${paperCount})`}              icon="school-outline"    />}
+                  {podcastCount      > 0 && <FilterChip label={`Podcasts (${podcastCount})`}          icon="mic-outline"       />}
+                  {debateCount       > 0 && <FilterChip label={`Debates (${debateCount})`}            icon="people-outline"    />}
+                  {voiceDebateCount  > 0 && <FilterChip label={`Voice (${voiceDebateCount})`}         icon="mic-circle-outline" />}
                 </Animated.View>
               )}
 
+              {/* Presentations */}
               {sharing.presentations.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                   <ContentSectionHeader label="Presentations"   count={sharing.presentations.length} colors={['#6C63FF', '#8B5CF6']} />
@@ -608,6 +637,7 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
+              {/* Academic Papers */}
               {sharing.papers.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(140)}>
                   <ContentSectionHeader label="Academic Papers" count={sharing.papers.length} colors={['#10B981', '#059669']} badgeColor={COLORS.success} />
@@ -617,6 +647,7 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
+              {/* Podcasts */}
               {podcastSharing.podcasts.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(180)}>
                   <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length} colors={['#FF6584', '#FF8FA3']} badgeColor="#FF6584" />
@@ -626,6 +657,7 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
+              {/* Debates */}
               {debateSharing.debates.length > 0 && (
                 <Animated.View entering={FadeInDown.duration(400).delay(220)}>
                   <ContentSectionHeader label="AI Debates" count={debateSharing.debates.length} colors={['#6C63FF', '#9B59FF']} badgeColor={COLORS.primary} />
@@ -635,20 +667,45 @@ export default function WorkspaceDetailScreen() {
                 </Animated.View>
               )}
 
-              {totalSharedCount === 0 && !sharing.isLoading && !podcastSharing.isLoading && !debateSharing.isLoading && (
+              {/* Part 44: Voice Debates */}
+              {voiceDebateSharing.voiceDebates.length > 0 && (
+                <Animated.View entering={FadeInDown.duration(400).delay(260)}>
+                  <ContentSectionHeader label="Voice Debates" count={voiceDebateSharing.voiceDebates.length} colors={['#8B5CF6', '#A78BFA']} badgeColor="#8B5CF6" />
+                  {voiceDebateSharing.voiceDebates.map((svd, i) => (
+                    <SharedVoiceDebateCard
+                      key={svd.id}
+                      item={svd}
+                      index={i}
+                      userRole={userRole}
+                      onPlay={handleOpenSharedVoiceDebate}
+                      onRemove={handleRemoveSharedVoiceDebate}
+                      onCopyText={handleCopyVoiceDebateTranscript}
+                    />
+                  ))}
+                </Animated.View>
+              )}
+
+              {/* Empty state */}
+              {totalSharedCount === 0 &&
+                !sharing.isLoading &&
+                !podcastSharing.isLoading &&
+                !debateSharing.isLoading &&
+                !voiceDebateSharing.isLoading && (
                 <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
                   <View style={styles.sharedEmptyIcon}>
                     <Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} />
                   </View>
                   <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
                   <Text style={styles.emptyDesc}>
-                    {isEditor ? 'Share presentations, academic papers, podcast episodes, and debate sessions from your reports into this workspace.' : 'No content has been shared to this workspace yet.'}
+                    {isEditor
+                      ? 'Share presentations, papers, podcasts, debates, and voice debates from your content.'
+                      : 'No content has been shared to this workspace yet.'}
                   </Text>
                   {isEditor && (
                     <View style={styles.sharedEmptyHint}>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
                       <Text style={styles.sharedEmptyHintText}>
-                        Open a report or debate → tap the share icon to share here
+                        Open a report, debate, or podcast → tap the share icon to share here
                       </Text>
                     </View>
                   )}
@@ -770,7 +827,9 @@ function FilterChip({ label, icon, active }: { label: string; icon: string; acti
   );
 }
 
-function ContentSectionHeader({ label, count, colors, badgeColor = COLORS.primary }: { label: string; count: number; colors: [string, string]; badgeColor?: string }) {
+function ContentSectionHeader({ label, count, colors, badgeColor = COLORS.primary }: {
+  label: string; count: number; colors: [string, string]; badgeColor?: string;
+}) {
   return (
     <View style={styles.contentSectionHeader}>
       <LinearGradient colors={colors} style={styles.contentSectionDot} />
@@ -791,6 +850,8 @@ function StatChip({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap
     </View>
   );
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const statChipStyles = StyleSheet.create({
   chip:  { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5 },
@@ -813,9 +874,9 @@ const styles = StyleSheet.create({
   topBarRight:  { flexDirection: 'row', gap: 6 },
   iconBtn:      { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
 
-  chatBtn:      { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
-  chatBadge:    { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.error, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3, borderWidth: 2, borderColor: COLORS.background },
-  chatBadgeText:{ color: '#FFF', fontSize: 8, fontWeight: '800' },
+  chatBtn:       { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
+  chatBadge:     { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.error, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3, borderWidth: 2, borderColor: COLORS.background },
+  chatBadgeText: { color: '#FFF', fontSize: 8, fontWeight: '800' },
 
   chatCTABanner:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: SPACING.xl, marginBottom: SPACING.xs, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.primary}25` },
   chatCTAText:      { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1, marginLeft: 8 },
@@ -860,8 +921,8 @@ const styles = StyleSheet.create({
   pinnedHeader:     { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm },
   pinnedHeaderText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
   sectionDivider:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: SPACING.sm },
-  sectionDividerLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
-  sectionDividerText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  sectionDividerLine:  { flex: 1, height: 1, backgroundColor: COLORS.border },
+  sectionDividerText:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
   reportCardWrap:   { position: 'relative' },
   pinBtn:           { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, zIndex: 10 },
   pinBtnActive:     { backgroundColor: `${COLORS.warning}15`, borderColor: `${COLORS.warning}40` },

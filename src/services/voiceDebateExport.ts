@@ -1,13 +1,18 @@
 // src/services/voiceDebateExport.ts
-// Part 40 — Voice Debate Engine
+// Part 40 + Part 44 UPDATE
 //
-// Export utilities for voice debates:
-//   exportVoiceDebateAsPDF(voiceDebate) — styled HTML → PDF via expo-print + share
-//   exportVoiceDebateAsMP3(voiceDebate) — concatenates segments → single MP3 via share
-//   copyVoiceDebateTranscript(voiceDebate) — plain text to clipboard
+// Part 44 addition:
+//   exportVoiceDebateAsMP3FromCloud(vd, cloudUrls, onProgress)
+//     Downloads cloud segments via voiceDebateAudioCache.downloadVoiceDebateAudio(),
+//     then concatenates base64 and shares exactly like exportVoiceDebateAsMP3.
+//     Used by workspace-shared-voice-debate-player.tsx where audioSegmentPaths
+//     are https:// URLs that the original exportVoiceDebateAsMP3 cannot handle.
 //
-// PDF design mirrors debateExport.ts styling but with the audio transcript
-// as the primary content and an argument-threading section.
+// All original Part 40 functions unchanged:
+//   exportVoiceDebateAsPDF(voiceDebate)
+//   exportVoiceDebateAsMP3(voiceDebate)
+//   copyVoiceDebateTranscript(voiceDebate)
+//   shareVoiceDebateText(voiceDebate)
 
 import * as Print     from 'expo-print';
 import * as Sharing   from 'expo-sharing';
@@ -17,6 +22,7 @@ import {
   readAsStringAsync,
   writeAsStringAsync,
   cacheDirectory,
+  getInfoAsync,
   EncodingType,
 } from 'expo-file-system/legacy';
 
@@ -24,6 +30,7 @@ import { SEGMENT_LABELS, SEGMENT_COLORS, VOICE_PERSONAS } from '../constants/voi
 import type { VoiceDebate, VoiceDebateTurn, DebateSegmentType } from '../types/voiceDebate';
 import type { DebateAgentRole } from '../types';
 import { supabase } from '../lib/supabase';
+import { downloadVoiceDebateAudio } from '../lib/voiceDebateAudioCache';
 
 // ─── HTML escaping ────────────────────────────────────────────────────────────
 
@@ -49,7 +56,6 @@ function buildVoiceDebateHTML(vd: VoiceDebate): string {
 
   const durationMin = Math.round(vd.durationSeconds / 60);
 
-  // Build turn HTML grouped by segment
   const segmentGroups = segments.map(seg => {
     const segTurns  = turns.filter(
       t => t.turnIndex >= seg.startTurnIdx && t.turnIndex <= seg.endTurnIdx
@@ -63,7 +69,6 @@ function buildVoiceDebateHTML(vd: VoiceDebate): string {
         ? `<span style="background:${persona.color}15;color:${persona.color};border:1px solid ${persona.color}30;border-radius:99px;font-size:9px;font-weight:700;padding:2px 8px;margin-left:6px;">${t.confidence}/10</span>`
         : '';
 
-      // Argument reference threading
       const argRefHtml = t.argRef
         ? (() => {
             const targetPersona = VOICE_PERSONAS[t.argRef.targetAgentRole as DebateAgentRole] ?? VOICE_PERSONAS['moderator'];
@@ -185,7 +190,6 @@ export async function exportVoiceDebateAsPDF(vd: VoiceDebate): Promise<void> {
     await Print.printAsync({ uri });
   }
 
-  // Increment export count — fire-and-forget, errors silently swallowed
   (async () => {
     try {
       await supabase.rpc('increment_voice_debate_export_count', { p_voice_debate_id: vd.id });
@@ -193,9 +197,7 @@ export async function exportVoiceDebateAsPDF(vd: VoiceDebate): Promise<void> {
   })();
 }
 
-// ─── MP3 Export ───────────────────────────────────────────────────────────────
-// Concatenates all local audio segments into a single MP3 file and shares it.
-// Falls back to sharing the first available segment if concatenation fails.
+// ─── MP3 Export (local files — used by normal voice-debate-player.tsx) ────────
 
 export async function exportVoiceDebateAsMP3(vd: VoiceDebate): Promise<void> {
   const paths = (vd.audioSegmentPaths ?? []).filter(Boolean);
@@ -203,15 +205,12 @@ export async function exportVoiceDebateAsMP3(vd: VoiceDebate): Promise<void> {
     throw new Error('No audio segments available to export.');
   }
 
-  // Check if segments are local files
   const localPaths = paths.filter(p => p.startsWith('file://') || p.startsWith('/'));
 
   if (localPaths.length === 0) {
-    // All cloud URLs — share as text link (can't concatenate remote files)
     throw new Error('Audio is stored in the cloud. Stream it from the player instead.');
   }
 
-  // Concatenate base64 segments
   let combinedBase64 = '';
   for (const path of localPaths) {
     try {
@@ -238,7 +237,6 @@ export async function exportVoiceDebateAsMP3(vd: VoiceDebate): Promise<void> {
     });
   }
 
-  // Increment export count — fire-and-forget, errors silently swallowed
   (async () => {
     try {
       await supabase.rpc('increment_voice_debate_export_count', { p_voice_debate_id: vd.id });
@@ -246,7 +244,129 @@ export async function exportVoiceDebateAsMP3(vd: VoiceDebate): Promise<void> {
   })();
 }
 
-// ─── Plain-text Copy ──────────────────────────────────────────────────────────
+// ─── MP3 Export from Cloud (Part 44 — used by workspace shared voice debate player) ──
+//
+// HOW IT WORKS:
+//   1. Uses downloadVoiceDebateAudio() from voiceDebateAudioCache to download all
+//      cloud segments into documentDirectory/deepdive_voice_debate_cache/{id}/.
+//      This re-uses the same cache that the normal player uses for offline playback,
+//      so if the user has already streamed the debate, segments are already cached.
+//   2. Reads each cached local file as base64 with readAsStringAsync.
+//   3. Concatenates all base64 chunks into a single string.
+//   4. Writes the combined base64 to cacheDirectory as a single .mp3 file.
+//   5. Shares via expo-sharing — identical to exportVoiceDebateAsMP3.
+//
+// PROGRESS:
+//   onProgress(downloaded, total) is called after each segment downloads so the
+//   UI can show "Downloading 3/12…" in the share sheet.
+//
+// CACHE HIT:
+//   If segments were already downloaded by voiceDebateAudioCache (e.g. the user
+//   previously opened the player on this device), downloadVoiceDebateAudio skips
+//   re-downloading existing files, so export is instant.
+
+export async function exportVoiceDebateAsMP3FromCloud(
+  vd:          VoiceDebate,
+  cloudUrls:   string[],
+  onProgress?: (downloaded: number, total: number) => void,
+): Promise<void> {
+  const validUrls = cloudUrls.filter(
+    u => typeof u === 'string' && u.startsWith('https://')
+  );
+
+  if (validUrls.length === 0) {
+    throw new Error('No cloud audio URLs available to download.');
+  }
+
+  // ── Step 1: Download all segments via the audio cache ──────────────────────
+  // downloadVoiceDebateAudio stores files at:
+  //   documentDirectory/deepdive_voice_debate_cache/{voiceDebateId}/turn_{N}.mp3
+  // It checks for existing files first so cache hits are free.
+
+  let downloadedCount = 0;
+  const total = validUrls.length;
+
+  await downloadVoiceDebateAudio(
+    vd.id,
+    vd.topic,
+    validUrls,
+    (progress) => {
+      // segmentsComplete is cumulative from the cache downloader
+      const newCount = progress.segmentsComplete;
+      if (newCount > downloadedCount) {
+        downloadedCount = newCount;
+        onProgress?.(downloadedCount, total);
+      }
+    },
+    30, // 30-day cache expiry
+  );
+
+  // ── Step 2: Build local file paths for each downloaded segment ─────────────
+  // Matches the path structure in voiceDebateAudioCache.ts: segmentPath()
+  const safeId    = vd.id.replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 60);
+  const cacheBase = `${(await import('expo-file-system/legacy')).documentDirectory}deepdive_voice_debate_cache/${safeId}/`;
+
+  const localPaths: string[] = [];
+  for (let i = 0; i < validUrls.length; i++) {
+    const localPath = `${cacheBase}turn_${i}.mp3`;
+    try {
+      const info = await getInfoAsync(localPath);
+      if (info.exists && (info as any).size > 100) {
+        localPaths.push(localPath);
+      } else {
+        console.warn(`[VoiceDebateExport] Cloud: segment ${i} not found after download`);
+      }
+    } catch {
+      console.warn(`[VoiceDebateExport] Cloud: could not stat segment ${i}`);
+    }
+  }
+
+  if (localPaths.length === 0) {
+    throw new Error('Could not download any audio segments. Check your connection and try again.');
+  }
+
+  // ── Step 3: Concatenate base64 (identical to exportVoiceDebateAsMP3) ───────
+  let combinedBase64 = '';
+  for (const path of localPaths) {
+    try {
+      const b64 = await readAsStringAsync(path, { encoding: EncodingType.Base64 as any });
+      combinedBase64 += b64;
+    } catch (err) {
+      console.warn(`[VoiceDebateExport] Cloud: skipping segment read error: ${path}`, err);
+    }
+  }
+
+  if (!combinedBase64) {
+    throw new Error('Could not read downloaded audio segments.');
+  }
+
+  // ── Step 4: Write concatenated file ────────────────────────────────────────
+  const outputPath = `${cacheDirectory}voice_debate_ws_${vd.id.slice(0, 8)}.mp3`;
+  await writeAsStringAsync(outputPath, combinedBase64, {
+    encoding: EncodingType.Base64 as any,
+  });
+
+  // ── Step 5: Share via expo-sharing (identical to normal export) ────────────
+  const isAvailable = await Sharing.isAvailableAsync();
+  if (!isAvailable) {
+    throw new Error('Sharing is not available on this device.');
+  }
+
+  await Sharing.shareAsync(outputPath, {
+    mimeType:    'audio/mpeg',
+    dialogTitle: `Voice Debate: ${vd.topic}`,
+    UTI:         'public.mp3',
+  });
+
+  // Fire-and-forget export count increment (non-critical)
+  (async () => {
+    try {
+      await supabase.rpc('increment_voice_debate_export_count', { p_voice_debate_id: vd.id });
+    } catch (_) {}
+  })();
+}
+
+// ─── Plain-text Transcript ────────────────────────────────────────────────────
 
 function buildPlainTextTranscript(vd: VoiceDebate): string {
   const turns    = vd.script?.turns   ?? [];
