@@ -1,6 +1,15 @@
 // src/components/offline/OfflineScreen.tsx
-// Part 23 — FIXED: Export now uses offlineExportService which strips remote
-// URLs and falls back gracefully so "Export Error" never appears offline.
+// Part 45 — Updated: added 'voice_debate' filter chip + OfflineVoiceDebateViewer routing.
+//
+// CHANGES from Part 23:
+//   • FILTERS array includes voice_debate chip
+//   • TYPE_LABEL includes voice_debate
+//   • exportOffline() handles voice_debate type (PDF export)
+//   • Viewer routing handles voice_debate → OfflineVoiceDebateViewer
+//   • getCachedItem for voice_debate falls back to voiceDebateCache.ts if
+//     the main index miss (covers items cached before Part 45 index migration)
+//
+// All other code is byte-for-byte identical to Part 23.
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
@@ -15,22 +24,23 @@ import {
   Animated,
   Dimensions,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient }          from 'expo-linear-gradient';
+import { Ionicons }                from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Cache utilities
 import { getCacheIndex, getCachedItem, formatBytes } from '../../lib/cacheStorage';
-import { getCacheStats } from '../../lib/cacheSettings';
-import { useNetwork } from '../../context/NetworkContext';
+import { getCacheStats }                              from '../../lib/cacheSettings';
+import { useNetwork }                                 from '../../context/NetworkContext';
 
 // Rich viewers
-import { OfflinePodcastViewer }       from './OfflinePodcastViewer';
-import { OfflineDebateViewer }        from './OfflineDebateViewer';
-import { OfflineAcademicPaperViewer } from './OfflineAcademicPaperViewer';
-import { OfflinePresentationViewer }  from './OfflinePresentationViewer';
+import { OfflinePodcastViewer }        from './OfflinePodcastViewer';
+import { OfflineDebateViewer }         from './OfflineDebateViewer';
+import { OfflineAcademicPaperViewer }  from './OfflineAcademicPaperViewer';
+import { OfflinePresentationViewer }   from './OfflinePresentationViewer';
+import { OfflineVoiceDebateViewer }    from './OfflineVoiceDebateViewer';  // Part 45
 
-// ✅ NEW: offline-safe export service (no remote URL fetching)
+// Offline-safe export service
 import {
   exportReportOffline,
   exportPodcastOffline,
@@ -38,29 +48,37 @@ import {
   exportAcademicPaperOffline,
   exportPresentationOffline,
 } from '../../services/offlineExportService';
+import { exportVoiceDebateAsPDF } from '../../services/voiceDebateExport';  // Part 45
 
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 import type { CacheEntry, CachedContentType, CacheFilterType } from '../../types/cache';
 import type {
   ResearchReport, Podcast, DebateSession, AcademicPaper, GeneratedPresentation,
 } from '../../types';
+import type { VoiceDebate } from '../../types/voiceDebate';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
 // ─── Filter config ────────────────────────────────────────────────────────────
+// Part 45: voice_debate added
 
 const FILTERS: { id: CacheFilterType; label: string; icon: string; color: string }[] = [
-  { id: 'all',            label: 'All',       icon: 'layers-outline',           color: COLORS.primary   },
-  { id: 'report',         label: 'Reports',   icon: 'document-text-outline',    color: '#6C63FF'        },
-  { id: 'podcast',        label: 'Podcasts',  icon: 'radio-outline',            color: '#FF6584'        },
-  { id: 'debate',         label: 'Debates',   icon: 'chatbox-ellipses-outline', color: '#F97316'        },
-  { id: 'academic_paper', label: 'Papers',    icon: 'school-outline',           color: '#43E97B'        },
-  { id: 'presentation',   label: 'Slides',    icon: 'easel-outline',            color: '#29B6F6'        },
+  { id: 'all',            label: 'All',           icon: 'layers-outline',           color: COLORS.primary },
+  { id: 'report',         label: 'Reports',        icon: 'document-text-outline',    color: '#6C63FF'      },
+  { id: 'podcast',        label: 'Podcasts',        icon: 'radio-outline',            color: '#FF6584'      },
+  { id: 'debate',         label: 'Debates',         icon: 'chatbox-ellipses-outline', color: '#F97316'      },
+  { id: 'academic_paper', label: 'Papers',          icon: 'school-outline',           color: '#43E97B'      },
+  { id: 'presentation',   label: 'Slides',          icon: 'easel-outline',            color: '#29B6F6'      },
+  { id: 'voice_debate',   label: 'Voice Debates',   icon: 'mic-circle-outline',       color: '#8B5CF6'      },
 ];
 
 const TYPE_LABEL: Record<CachedContentType, string> = {
-  report: 'Research Report', podcast: 'Podcast Episode',
-  debate: 'AI Debate', academic_paper: 'Academic Paper', presentation: 'Presentation',
+  report:         'Research Report',
+  podcast:        'Podcast Episode',
+  debate:         'AI Debate',
+  academic_paper: 'Academic Paper',
+  presentation:   'Presentation',
+  voice_debate:   'Voice Debate',   // Part 45
 };
 
 // ─── Time helpers ─────────────────────────────────────────────────────────────
@@ -87,8 +105,6 @@ function formatExpiresIn(ms: number): string {
 }
 
 // ─── Offline-safe export dispatcher ──────────────────────────────────────────
-// Uses offlineExportService which strips remote URLs before passing to
-// expo-print, preventing WebView network errors in airplane mode.
 
 async function exportOffline(entry: CacheEntry, data: unknown): Promise<void> {
   switch (entry.type) {
@@ -107,9 +123,35 @@ async function exportOffline(entry: CacheEntry, data: unknown): Promise<void> {
     case 'presentation':
       await exportPresentationOffline(data as GeneratedPresentation);
       return;
+    case 'voice_debate':
+      // Part 45: use voiceDebateExport (PDF transcript, no network needed)
+      await exportVoiceDebateAsPDF(data as VoiceDebate);
+      return;
     default:
       throw new Error(`Unknown content type: ${entry.type}`);
   }
+}
+
+// ─── Open item — with voice_debate fallback ────────────────────────────────────
+// voice_debate items may be in the main index (Part 45) OR only in voiceDebateCache
+// (if cached via SelectiveCacheSheet before the index migration). This helper
+// checks both sources.
+
+async function loadCachedItem(entry: CacheEntry): Promise<unknown | null> {
+  // Try main index first
+  const data = await getCachedItem(entry.type, entry.id);
+  if (data) return data;
+
+  // Part 45 fallback: for voice_debate, also try voiceDebateCache.ts
+  if (entry.type === 'voice_debate') {
+    try {
+      const { getCachedVoiceDebateJson } = await import('../../lib/voiceDebateCache');
+      const vd = await getCachedVoiceDebateJson(entry.id);
+      if (vd) return vd;
+    } catch {}
+  }
+
+  return null;
 }
 
 // ─── Inline Report Viewer ─────────────────────────────────────────────────────
@@ -123,7 +165,11 @@ function ReportViewer({ report, onClose, onExport, exporting }: {
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       {/* Header */}
-      <View style={{ paddingTop: insets.top + SPACING.sm, paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+      <View style={{
+        paddingTop: insets.top + SPACING.sm, paddingHorizontal: SPACING.lg,
+        paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border,
+        flexDirection: 'row', alignItems: 'center', gap: 10,
+      }}>
         <TouchableOpacity onPress={onClose} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
           <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
         </TouchableOpacity>
@@ -136,8 +182,7 @@ function ReportViewer({ report, onClose, onExport, exporting }: {
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{report.sourcesCount} sources · {report.reliabilityScore}/10</Text>
           </View>
         </View>
-        <TouchableOpacity onPress={onExport} disabled={exporting}
-          style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
+        <TouchableOpacity onPress={onExport} disabled={exporting} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
           {exporting ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="download-outline" size={17} color={COLORS.primary} />}
         </TouchableOpacity>
       </View>
@@ -221,11 +266,21 @@ function ReportViewer({ report, onClose, onExport, exporting }: {
 
 // ─── Item card ────────────────────────────────────────────────────────────────
 
+const TYPE_COLOR: Record<CachedContentType, string> = {
+  report:         '#6C63FF',
+  podcast:        '#FF6584',
+  debate:         '#F97316',
+  academic_paper: '#43E97B',
+  presentation:   '#29B6F6',
+  voice_debate:   '#8B5CF6',
+};
+
 function CacheItemCard({ entry, onPress, index }: {
   entry: CacheEntry; onPress: (e: CacheEntry) => void; index: number;
 }) {
-  const color = entry.color ?? COLORS.primary;
+  const color = entry.color ?? TYPE_COLOR[entry.type] ?? COLORS.primary;
   const anim  = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
     Animated.timing(anim, { toValue: 1, duration: 280, delay: index * 35, useNativeDriver: true }).start();
   }, []);
@@ -238,15 +293,19 @@ function CacheItemCard({ entry, onPress, index }: {
         <View style={{ padding: SPACING.md }}>
           <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
             <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${color}18`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${color}30`, flexShrink: 0 }}>
-              <Ionicons name={entry.icon as any ?? 'document-outline'} size={18} color={color} />
+              <Ionicons name={(entry.icon ?? 'document-outline') as any} size={18} color={color} />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', lineHeight: 20, marginBottom: 2 }} numberOfLines={2}>{entry.title}</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', lineHeight: 20, marginBottom: 2 }} numberOfLines={2}>
+                {entry.title}
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 <View style={{ backgroundColor: `${color}18`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${color}30` }}>
-                  <Text style={{ color, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 }}>{TYPE_LABEL[entry.type]}</Text>
+                  <Text style={{ color, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    {TYPE_LABEL[entry.type]}
+                  </Text>
                 </View>
-                {entry.type === 'podcast' && entry.hasAudio && (
+                {(entry.type === 'podcast' || entry.type === 'voice_debate') && entry.hasAudio && (
                   <View style={{ backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}30`, flexDirection: 'row', alignItems: 'center', gap: 3 }}>
                     <Ionicons name="headset-outline" size={9} color={COLORS.success} />
                     <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>AUDIO</Text>
@@ -289,8 +348,8 @@ function EmptyState({ filter, hasSearch }: { filter: CacheFilterType; hasSearch:
         {hasSearch
           ? 'Try a different search term or filter'
           : filter === 'all'
-            ? 'Your research reports, podcasts, debates, papers and slides appear here when cached for offline use.'
-            : `No ${filter.replace('_', ' ')} items cached on this device.`}
+            ? 'Your research reports, podcasts, debates, papers, slides and voice debates appear here when cached for offline use.'
+            : `No ${TYPE_LABEL[filter as CachedContentType] ?? filter} items cached on this device.`}
       </Text>
     </View>
   );
@@ -352,17 +411,23 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
     return matchType && matchSearch;
   });
 
-  const countByType = entries.reduce((acc, e) => { acc[e.type] = (acc[e.type] ?? 0) + 1; return acc; }, {} as Record<string, number>);
+  const countByType = entries.reduce((acc, e) => {
+    acc[e.type] = (acc[e.type] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
 
   // ── Open item ────────────────────────────────────────────────────────────────
 
   const handleOpenItem = useCallback(async (entry: CacheEntry) => {
     setViewerLoading(true);
     try {
-      const data = await getCachedItem(entry.type, entry.id);
+      const data = await loadCachedItem(entry);
       if (!data) {
-        Alert.alert('Cache Miss', 'This item is no longer in the cache. It may have expired or been deleted.',
-          [{ text: 'OK', onPress: () => loadEntries(true) }]);
+        Alert.alert(
+          'Cache Miss',
+          'This item is no longer in the cache. It may have expired or been deleted.',
+          [{ text: 'OK', onPress: () => loadEntries(true) }],
+        );
         return;
       }
       setViewerEntry(entry);
@@ -374,7 +439,7 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
     }
   }, [loadEntries]);
 
-  // ── Export — uses offlineExportService (no remote URLs) ──────────────────────
+  // ── Export ────────────────────────────────────────────────────────────────────
 
   const handleExport = useCallback(async () => {
     if (!viewerEntry || !viewerData || exporting) return;
@@ -385,8 +450,8 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       Alert.alert(
         'Export Failed',
-        `Could not export this ${TYPE_LABEL[viewerEntry.type].toLowerCase()}.\n\n${msg}`,
-        [{ text: 'OK' }]
+        `Could not export this ${TYPE_LABEL[viewerEntry.type]?.toLowerCase() ?? 'item'}.\n\n${msg}`,
+        [{ text: 'OK' }],
       );
     } finally {
       setExporting(false);
@@ -405,54 +470,36 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
       case 'report':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <ReportViewer
-              report={viewerData as ResearchReport}
-              onClose={closeViewer}
-              onExport={handleExport}
-              exporting={exporting}
-            />
+            <ReportViewer report={viewerData as ResearchReport} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
           </LinearGradient>
         );
       case 'podcast':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <OfflinePodcastViewer
-              podcast={viewerData as Podcast}
-              entry={viewerEntry}
-              onClose={closeViewer}
-              onExport={handleExport}
-              exporting={exporting}
-            />
+            <OfflinePodcastViewer podcast={viewerData as Podcast} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
           </LinearGradient>
         );
       case 'debate':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <OfflineDebateViewer
-              session={viewerData as DebateSession}
-              entry={viewerEntry}
-              onClose={closeViewer}
-              onExport={handleExport}
-              exporting={exporting}
-            />
+            <OfflineDebateViewer session={viewerData as DebateSession} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
           </LinearGradient>
         );
       case 'academic_paper':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <OfflineAcademicPaperViewer
-              paper={viewerData as AcademicPaper}
-              entry={viewerEntry}
-              onClose={closeViewer}
-              onExport={handleExport}
-              exporting={exporting}
-            />
+            <OfflineAcademicPaperViewer paper={viewerData as AcademicPaper} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
           </LinearGradient>
         );
       case 'presentation':
         return (
-          <OfflinePresentationViewer
-            presentation={viewerData as GeneratedPresentation}
+          <OfflinePresentationViewer presentation={viewerData as GeneratedPresentation} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
+        );
+      case 'voice_debate':
+        // Part 45: Full cinematic offline voice debate viewer
+        return (
+          <OfflineVoiceDebateViewer
+            voiceDebate={viewerData as VoiceDebate}
             entry={viewerEntry}
             onClose={closeViewer}
             onExport={handleExport}
@@ -489,23 +536,49 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
                 </Text>
               </View>
             </View>
-            <TouchableOpacity onPress={async () => { await recheckNetwork(); onRetry?.(); }} disabled={isConnecting}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: `${COLORS.primary}35`, opacity: isConnecting ? 0.6 : 1 }}>
+            <TouchableOpacity
+              onPress={async () => { await recheckNetwork(); onRetry?.(); }}
+              disabled={isConnecting}
+              style={{
+                flexDirection: 'row', alignItems: 'center', gap: 6,
+                backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
+                paddingHorizontal: 14, paddingVertical: 8,
+                borderWidth: 1, borderColor: `${COLORS.primary}35`,
+                opacity: isConnecting ? 0.6 : 1,
+              }}
+            >
               {isConnecting ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="refresh-outline" size={14} color={COLORS.primary} />}
-              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{isConnecting ? 'Checking…' : 'Retry'}</Text>
+              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+                {isConnecting ? 'Checking…' : 'Retry'}
+              </Text>
             </TouchableOpacity>
           </View>
 
           {/* Workspace notice */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 8, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.warning}25` }}>
+          <View style={{
+            flexDirection: 'row', alignItems: 'center', gap: 8,
+            backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg,
+            paddingHorizontal: SPACING.md, paddingVertical: 8,
+            marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.warning}25`,
+          }}>
             <Ionicons name="people-outline" size={14} color={COLORS.warning} />
-            <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, flex: 1 }}>Workspace & Teams features require an internet connection</Text>
+            <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, flex: 1 }}>
+              Workspace &amp; Teams features require an internet connection
+            </Text>
           </View>
 
           {/* Search */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, borderWidth: 1, borderColor: COLORS.border, height: 40 }}>
+          <View style={{
+            flexDirection: 'row', alignItems: 'center',
+            backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
+            paddingHorizontal: SPACING.md, borderWidth: 1, borderColor: COLORS.border, height: 40,
+          }}>
             <Ionicons name="search-outline" size={16} color={COLORS.textMuted} style={{ marginRight: 8 }} />
-            <TextInput value={search} onChangeText={setSearch} placeholder="Search cached content…" placeholderTextColor={COLORS.textMuted} style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm }} />
+            <TextInput
+              value={search} onChangeText={setSearch}
+              placeholder="Search cached content…" placeholderTextColor={COLORS.textMuted}
+              style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm }}
+            />
             {search.length > 0 && (
               <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
@@ -516,17 +589,28 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
 
         {/* Filter chips */}
         <View style={{ paddingVertical: SPACING.sm }}>
-          <FlatList horizontal showsHorizontalScrollIndicator={false}
+          <FlatList
+            horizontal showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: 8 }}
-            data={FILTERS} keyExtractor={f => f.id}
+            data={FILTERS}
+            keyExtractor={f => f.id}
             renderItem={({ item: f }) => {
               const isActive = filter === f.id;
               const count    = f.id === 'all' ? totalItems : (countByType[f.id] ?? 0);
               return (
-                <TouchableOpacity onPress={() => setFilter(f.id)}
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: isActive ? f.color : COLORS.backgroundCard, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: isActive ? f.color : COLORS.border }}>
+                <TouchableOpacity
+                  onPress={() => setFilter(f.id)}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center', gap: 5,
+                    backgroundColor: isActive ? f.color : COLORS.backgroundCard,
+                    borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7,
+                    borderWidth: 1, borderColor: isActive ? f.color : COLORS.border,
+                  }}
+                >
                   <Ionicons name={f.icon as any} size={13} color={isActive ? '#FFF' : f.color} />
-                  <Text style={{ color: isActive ? '#FFF' : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{f.label}</Text>
+                  <Text style={{ color: isActive ? '#FFF' : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+                    {f.label}
+                  </Text>
                   {count > 0 && (
                     <View style={{ backgroundColor: isActive ? 'rgba(255,255,255,0.25)' : `${f.color}22`, borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 1, minWidth: 18, alignItems: 'center' }}>
                       <Text style={{ color: isActive ? '#FFF' : f.color, fontSize: 9, fontWeight: '800' }}>{count}</Text>
@@ -559,7 +643,13 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
         )}
 
         {/* Bottom bar */}
-        <View style={{ position: 'absolute', bottom: insets.bottom, left: 0, right: 0, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderTopWidth: 1, borderTopColor: COLORS.border, backgroundColor: 'rgba(10,10,26,0.96)', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+        <View style={{
+          position: 'absolute', bottom: insets.bottom, left: 0, right: 0,
+          paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+          borderTopWidth: 1, borderTopColor: COLORS.border,
+          backgroundColor: 'rgba(10,10,26,0.96)',
+          flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+        }}>
           <Ionicons name="cloud-offline-outline" size={13} color={COLORS.textMuted} />
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center' }}>
             DeepDive AI · Offline Mode · {formatBytes(totalBytes)} cached

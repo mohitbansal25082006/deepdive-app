@@ -1,11 +1,14 @@
 // src/types/cache.ts
-// Part 23 — Updated: added audio cache types for offline podcast playback.
+// Part 45 — Updated: added 'voice_debate' to CachedContentType.
 //
-// NEW in Part 23:
-//   • AudioCacheEntry — tracks locally cached audio segment files per podcast
-//   • AudioCacheIndex — index of all cached podcast audio (stored in AsyncStorage)
-//   • CachedPodcastData — full podcast data including local audio paths for offline play
-//   • OfflineViewerType — discriminator for which full-screen viewer to show
+// CHANGES from Part 23:
+//   • CachedContentType now includes 'voice_debate'
+//   • CacheSettings now includes `cacheVoiceDebate: boolean`
+//   • CacheStats now includes voiceDebatesWithAudio / voiceDebateAudioBytes
+//   • CacheFilterType updated to include 'voice_debate'
+//   • VoiceDebateAudioCacheEntry re-exported alias for OfflineVoiceDebateViewer
+//
+// All other types are identical to Part 23.
 
 // ─── Content type discriminator ───────────────────────────────────────────────
 
@@ -14,7 +17,8 @@ export type CachedContentType =
   | 'podcast'
   | 'debate'
   | 'academic_paper'
-  | 'presentation';
+  | 'presentation'
+  | 'voice_debate';  // Part 45: added
 
 // ─── Cache entry (stored in the index) ───────────────────────────────────────
 
@@ -77,6 +81,11 @@ export interface CacheSettings {
    * Audio files can be large (~1-5 MB per minute). Default: false (transcript only).
    */
   cacheAudio: boolean;
+  /**
+   * Part 45: Whether to auto-cache voice debate audio when generated.
+   * Each voice debate audio can be 10–80 MB. Default: false.
+   */
+  cacheVoiceDebate: boolean;
 }
 
 // ─── Cache stats ──────────────────────────────────────────────────────────────
@@ -89,8 +98,12 @@ export interface CacheStats {
   byType:        Record<CachedContentType, { count: number; bytes: number }>;
   /** Part 23: How many podcasts have audio cached */
   podcastsWithAudio?: number;
-  /** Part 23: Total bytes used just by audio files */
+  /** Part 23: Total bytes used just by podcast audio files */
   audioBytesTotal?: number;
+  /** Part 45: How many voice debates have audio cached */
+  voiceDebatesWithAudio?: number;
+  /** Part 45: Total bytes used by voice debate audio */
+  voiceDebateAudioBytes?: number;
 }
 
 // ─── Filter type for offline screen ──────────────────────────────────────────
@@ -174,13 +187,15 @@ export interface AudioDownloadProgress {
 /**
  * Which full-screen viewer component to render for a cached item.
  * Each type gets its own rich viewer matching the online experience.
+ * Part 45: 'voice_debate' added.
  */
 export type OfflineViewerType =
   | 'report'         // ResearchReport — 3-tab viewer
   | 'podcast'        // Podcast — transcript + audio player (if audio cached)
   | 'debate'         // DebateSession — 3-tab viewer (overview/perspectives/moderator)
   | 'academic_paper' // AcademicPaper — section navigator
-  | 'presentation';  // GeneratedPresentation — slide previewer
+  | 'presentation'   // GeneratedPresentation — slide previewer
+  | 'voice_debate';  // VoiceDebate — cinematic player (Part 45)
 
 /**
  * State for the offline viewer modal/overlay.
@@ -191,4 +206,33 @@ export interface OfflineViewerState {
   data:     unknown;
   isLoading: boolean;
   error:    string | null;
+}
+
+// ─── Part 45: Selective cache item (for SelectiveCacheSheet) ──────────────────
+
+/**
+ * A content item returned by get_user_content_for_selective_cache RPC.
+ * Used in the SelectiveCacheSheet to let users pick what to cache.
+ */
+export interface SelectiveCacheItem {
+  contentType: CachedContentType;
+  id:          string;
+  title:       string;
+  subtitle:    string;
+  createdAt:   string | null;
+  /** Estimated size in KB (server-side hint) */
+  sizeHintKb:  number;
+  /** Whether this item is already cached on device */
+  isCached:    boolean;
+}
+
+export interface SelectiveCacheState {
+  items:         SelectiveCacheItem[];
+  isLoading:     boolean;
+  isCachingBatch: boolean;
+  selectedIds:   Set<string>;
+  filter:        CacheFilterType;
+  searchQuery:   string;
+  error:         string | null;
+  progress:      { done: number; total: number } | null;
 }

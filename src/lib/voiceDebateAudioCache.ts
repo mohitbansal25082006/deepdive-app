@@ -1,5 +1,5 @@
 // src/lib/voiceDebateAudioCache.ts
-// Part 41.2 — Voice Debate Audio Cache
+// Part 45 — Voice Debate Audio Cache
 //
 // Downloads and caches voice debate TTS segments locally so the debate
 // can be played offline or on a different device after initial generation.
@@ -17,6 +17,11 @@
 // INDEX:
 //   AsyncStorage key: deepdive:vd:audio:index:v41
 //   Per-entry key:    deepdive:vd:audio:{voiceDebateId}
+//
+// CHANGES vs Part 41.2:
+//   + getVoiceDebateAudioEntry() exported — lets autoCacheMiddleware read the
+//     real totalBytes (sum of actual .mp3 file sizes on disk) after
+//     downloadVoiceDebateAudio completes, fixing the KB-instead-of-MB display bug.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -279,6 +284,19 @@ export async function isVoiceDebateAudioCached(voiceDebateId: string): Promise<b
   } catch {
     return false;
   }
+}
+
+/**
+ * Get the full VoiceDebateAudioCacheEntry for a voice debate.
+ * Returns null if not cached.
+ * Used by autoCacheMiddleware to read the real totalBytes (sum of actual
+ * .mp3 file sizes on disk) after downloadVoiceDebateAudio completes,
+ * fixing the KB-instead-of-MB size display bug.
+ */
+export async function getVoiceDebateAudioEntry(
+  voiceDebateId: string,
+): Promise<VoiceDebateAudioCacheEntry | null> {
+  return loadEntry(voiceDebateId);
 }
 
 /**

@@ -1,17 +1,18 @@
 // app/(app)/(tabs)/profile.tsx
-// Part 36C — UPDATED: Added Social & Discovery section.
+// Part 45 FIX — Added SelectiveCacheSheet as sibling modal (not nested inside CacheManagerModal).
 //
-// New additions vs Part 35:
-//   1. SocialNotificationBell in profile header (top-right of name/email block)
-//   2. "Social & Discovery" section with:
-//      - Public Profile toggle (sets profiles.is_public via updateProfilePublic)
-//      - Follower / Following count pills (tappable → followers screen)
-//      - "View My Public Profile" link (if is_public + username set)
-//   3. Social stats seeded from profile.follower_count / following_count
-//      which are maintained by the DB trigger in schema_part36.sql
+// CHANGES from Part 36C:
+//   1. Added `selectiveVisible` state
+//   2. Added SelectiveCacheSheet import
+//   3. CacheManagerModal gets `onOpenSelectiveCache` prop that:
+//        a) closes the cache manager
+//        b) waits 350ms for it to fully dismiss
+//        c) opens SelectiveCacheSheet
+//   4. SelectiveCacheSheet rendered as a direct sibling of CacheManagerModal
+//      in the JSX tree (both at the root level of the return), never nested.
+//   5. CacheManagerModal no longer imports or renders SelectiveCacheSheet itself.
 //
-// All Part 28/35 sections (Collections, Refer & Earn, Credits, Preferences,
-// Offline & Cache, Sign Out) preserved exactly unchanged.
+// All other code is identical to Part 36C.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -46,6 +47,8 @@ import { StatsCard }          from '../../../src/components/profile/StatsCard';
 import { CacheManagerModal }  from '../../../src/components/profile/CacheManagerModal';
 import { ReferralCard }       from '../../../src/components/profile/ReferralCard';
 import { ManageCollectionsSheet } from '../../../src/components/collections/ManageCollectionsSheet';
+// Part 45 FIX: SelectiveCacheSheet now owned by profile, not CacheManagerModal
+import { SelectiveCacheSheet } from '../../../src/components/offline/SelectiveCacheSheet';
 // Part 36: Social components
 import { SocialNotificationBell } from '../../../src/components/social/SocialNotificationBell';
 import { updateProfilePublic }    from '../../../src/services/followService';
@@ -76,8 +79,6 @@ import type { UserStats } from '../../../src/types';
 const PUBLIC_REPORTS_URL =
   process.env.EXPO_PUBLIC_PUBLIC_REPORTS_URL ?? 'https://deepdive-reports.vercel.app';
 
-// ─── Default stats ────────────────────────────────────────────────────────────
-
 const DEFAULT_STATS: UserStats = {
   totalReports: 0, completedReports: 0, totalSources: 0, avgReliability: 0,
   favoriteTopic: null, reportsThisMonth: 0, hoursResearched: 0,
@@ -97,8 +98,6 @@ async function openAppSettings(): Promise<void> {
   }
 }
 
-// ─── SectionHeader ────────────────────────────────────────────────────────────
-
 function SectionHeader({ label }: { label: string }) {
   return (
     <Text style={{
@@ -110,8 +109,6 @@ function SectionHeader({ label }: { label: string }) {
     </Text>
   );
 }
-
-// ─── SettingsRow ──────────────────────────────────────────────────────────────
 
 function SettingsRow({
   icon, label, sublabel, onPress, right, iconColor, iconBg, accentBorder,
@@ -138,14 +135,8 @@ function SettingsRow({
         <Ionicons name={icon as any} size={19} color={iconColor ?? COLORS.primary} />
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>
-          {label}
-        </Text>
-        {sublabel ? (
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-            {sublabel}
-          </Text>
-        ) : null}
+        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>{label}</Text>
+        {sublabel ? <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{sublabel}</Text> : null}
       </View>
       {right !== undefined
         ? right
@@ -156,200 +147,71 @@ function SettingsRow({
   );
 }
 
-// ─── Part 36: SocialDiscoveryCard ─────────────────────────────────────────────
-
 function SocialDiscoveryCard({
-  userId,
-  username,
-  isPublic,
-  followerCount,
-  followingCount,
-  onTogglePublic,
-  isTogglingPublic,
+  userId, username, isPublic, followerCount, followingCount,
+  onTogglePublic, isTogglingPublic,
 }: {
-  userId:           string;
-  username:         string | null;
-  isPublic:         boolean;
-  followerCount:    number;
-  followingCount:   number;
-  onTogglePublic:   (val: boolean) => void;
-  isTogglingPublic: boolean;
+  userId: string; username: string | null; isPublic: boolean;
+  followerCount: number; followingCount: number;
+  onTogglePublic: (val: boolean) => void; isTogglingPublic: boolean;
 }) {
-  const profileUrl = username
-    ? `${PUBLIC_REPORTS_URL}/u/${username}`
-    : null;
+  const profileUrl = username ? `${PUBLIC_REPORTS_URL}/u/${username}` : null;
 
   return (
-    <View style={{
-      backgroundColor: COLORS.backgroundCard,
-      borderRadius:    RADIUS.xl,
-      borderWidth:     1,
-      borderColor:     isPublic ? `${COLORS.primary}35` : COLORS.border,
-      overflow:        'hidden',
-      marginBottom:    SPACING.sm,
-    }}>
-      {/* Header */}
-      <LinearGradient
-        colors={['#1A1A35', '#12122A']}
-        style={{
-          flexDirection: 'row', alignItems: 'center',
-          padding: SPACING.md, paddingBottom: SPACING.sm,
-        }}
-      >
+    <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: isPublic ? `${COLORS.primary}35` : COLORS.border, overflow: 'hidden', marginBottom: SPACING.sm }}>
+      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ flexDirection: 'row', alignItems: 'center', padding: SPACING.md, paddingBottom: SPACING.sm }}>
         <LinearGradient
           colors={isPublic ? [COLORS.success, `${COLORS.success}CC`] : COLORS.gradientPrimary as [string, string]}
-          style={{
-            width: 36, height: 36, borderRadius: 10,
-            alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm,
-          }}
+          style={{ width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}
         >
           <Ionicons name={isPublic ? 'globe' : 'globe-outline'} size={17} color="#FFF" />
         </LinearGradient>
-
         <View style={{ flex: 1 }}>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-            Public Profile
-          </Text>
+          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Public Profile</Text>
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
-            {isPublic
-              ? 'Visible at /u/' + (username ?? 'you') + ' · others can follow you'
-              : 'Private · only you can see your profile'}
+            {isPublic ? 'Visible at /u/' + (username ?? 'you') + ' · others can follow you' : 'Private · only you can see your profile'}
           </Text>
         </View>
-
-        <Switch
-          value={isPublic}
-          onValueChange={onTogglePublic}
-          disabled={isTogglingPublic}
+        <Switch value={isPublic} onValueChange={onTogglePublic} disabled={isTogglingPublic}
           trackColor={{ false: COLORS.border, true: `${COLORS.primary}70` }}
-          thumbColor={isPublic ? COLORS.primary : COLORS.textMuted}
-          ios_backgroundColor={COLORS.border}
-        />
+          thumbColor={isPublic ? COLORS.primary : COLORS.textMuted} ios_backgroundColor={COLORS.border} />
       </LinearGradient>
-
-      {/* Stats row */}
-      <View style={{
-        flexDirection: 'row',
-        paddingHorizontal: SPACING.md,
-        paddingTop: SPACING.sm,
-        paddingBottom: SPACING.md,
-        gap: SPACING.sm,
-      }}>
-        {/* Followers */}
-        <TouchableOpacity
-          onPress={() => {
-            if (!userId) return;
-            router.push({
-              pathname: '/(app)/followers' as any,
-              params: { userId, mode: 'followers', username: username ?? '' },
-            });
-          }}
-          activeOpacity={0.75}
-          style={{
-            flex: 1, alignItems: 'center', justifyContent: 'center',
-            backgroundColor: `${COLORS.primary}08`,
-            borderRadius: RADIUS.lg, paddingVertical: SPACING.sm,
-            borderWidth: 1, borderColor: `${COLORS.primary}20`,
-          }}
-        >
-          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>
-            {followerCount >= 1000
-              ? `${(followerCount / 1000).toFixed(1)}k`
-              : followerCount}
-          </Text>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-            Followers
-          </Text>
+      <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: SPACING.md, gap: SPACING.sm }}>
+        <TouchableOpacity onPress={() => router.push({ pathname: '/(app)/followers' as any, params: { userId, mode: 'followers', username: username ?? '' } })}
+          activeOpacity={0.75} style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, paddingVertical: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.primary}20` }}>
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>{followerCount >= 1000 ? `${(followerCount / 1000).toFixed(1)}k` : followerCount}</Text>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>Followers</Text>
           <Ionicons name="chevron-forward" size={10} color={`${COLORS.primary}50`} style={{ marginTop: 2 }} />
         </TouchableOpacity>
-
-        {/* Following */}
-        <TouchableOpacity
-          onPress={() => {
-            if (!userId) return;
-            router.push({
-              pathname: '/(app)/followers' as any,
-              params: { userId, mode: 'following', username: username ?? '' },
-            });
-          }}
-          activeOpacity={0.75}
-          style={{
-            flex: 1, alignItems: 'center', justifyContent: 'center',
-            backgroundColor: `${COLORS.info}08`,
-            borderRadius: RADIUS.lg, paddingVertical: SPACING.sm,
-            borderWidth: 1, borderColor: `${COLORS.info}20`,
-          }}
-        >
-          <Text style={{ color: COLORS.info, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>
-            {followingCount >= 1000
-              ? `${(followingCount / 1000).toFixed(1)}k`
-              : followingCount}
-          </Text>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-            Following
-          </Text>
+        <TouchableOpacity onPress={() => router.push({ pathname: '/(app)/followers' as any, params: { userId, mode: 'following', username: username ?? '' } })}
+          activeOpacity={0.75} style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg, paddingVertical: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.info}20` }}>
+          <Text style={{ color: COLORS.info, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>{followingCount >= 1000 ? `${(followingCount / 1000).toFixed(1)}k` : followingCount}</Text>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>Following</Text>
           <Ionicons name="chevron-forward" size={10} color={`${COLORS.info}50`} style={{ marginTop: 2 }} />
         </TouchableOpacity>
-
-        {/* View Feed */}
-        <TouchableOpacity
-          onPress={() => router.push('/(app)/(tabs)/feed' as any)}
-          activeOpacity={0.75}
-          style={{
-            flex: 1, alignItems: 'center', justifyContent: 'center',
-            backgroundColor: `${COLORS.success}08`,
-            borderRadius: RADIUS.lg, paddingVertical: SPACING.sm,
-            borderWidth: 1, borderColor: `${COLORS.success}20`,
-          }}
-        >
+        <TouchableOpacity onPress={() => router.push('/(app)/(tabs)/feed' as any)}
+          activeOpacity={0.75} style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.success}08`, borderRadius: RADIUS.lg, paddingVertical: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.success}20` }}>
           <Ionicons name="newspaper-outline" size={20} color={COLORS.success} />
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>
-            Feed
-          </Text>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Feed</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Web profile link — only when public + has username */}
       {isPublic && profileUrl && (
-        <TouchableOpacity
-          onPress={() => Linking.openURL(profileUrl)}
-          activeOpacity={0.8}
-          style={{
-            flexDirection: 'row', alignItems: 'center', gap: 8,
-            marginHorizontal: SPACING.md, marginBottom: SPACING.md,
-            paddingVertical: 10, paddingHorizontal: SPACING.md,
-            backgroundColor: `${COLORS.primary}08`,
-            borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.primary}20`,
-          }}
-        >
+        <TouchableOpacity onPress={() => Linking.openURL(profileUrl)} activeOpacity={0.8}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: SPACING.md, marginBottom: SPACING.md, paddingVertical: 10, paddingHorizontal: SPACING.md, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.primary}20` }}>
           <Ionicons name="open-outline" size={14} color={COLORS.primary} />
-          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>
-            {profileUrl}
-          </Text>
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>{profileUrl}</Text>
           <Ionicons name="chevron-forward" size={13} color={`${COLORS.primary}60`} />
         </TouchableOpacity>
       )}
-
-      {/* Prompt to make profile public if private */}
       {!isPublic && (
-        <View style={{
-          flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-          marginHorizontal: SPACING.md, marginBottom: SPACING.md,
-          padding: SPACING.sm,
-          backgroundColor: `${COLORS.info}08`,
-          borderRadius: RADIUS.md, borderWidth: 1, borderColor: `${COLORS.info}15`,
-        }}>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginHorizontal: SPACING.md, marginBottom: SPACING.md, padding: SPACING.sm, backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.md, borderWidth: 1, borderColor: `${COLORS.info}15` }}>
           <Ionicons name="information-circle-outline" size={14} color={COLORS.info} style={{ marginTop: 1 }} />
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 17, flex: 1 }}>
-            Enable to get a public profile page, let others follow you, and appear in the DeepDive community.
-          </Text>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 17, flex: 1 }}>Enable to get a public profile page, let others follow you, and appear in the DeepDive community.</Text>
         </View>
       )}
     </View>
   );
 }
-
-// ─── CollectionsPreviewCard ────────────────────────────────────────────────────
 
 function CollectionsPreviewCard({ onManage }: { onManage: () => void }) {
   const { collections, isLoading, refresh } = useCollections();
@@ -358,90 +220,43 @@ function CollectionsPreviewCard({ onManage }: { onManage: () => void }) {
   const overflowCount = Math.max(0, collections.length - 3);
 
   return (
-    <TouchableOpacity
-      onPress={onManage}
-      activeOpacity={0.85}
-      style={{
-        backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl,
-        borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', marginBottom: SPACING.sm,
-      }}
-    >
-      <LinearGradient
-        colors={['#1A1A35', '#12122A']}
-        style={{ flexDirection: 'row', alignItems: 'center', padding: SPACING.md, paddingBottom: SPACING.sm }}
-      >
-        <LinearGradient
-          colors={COLORS.gradientPrimary as [string, string]}
-          style={{ width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}
-        >
+    <TouchableOpacity onPress={onManage} activeOpacity={0.85}
+      style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', marginBottom: SPACING.sm }}>
+      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ flexDirection: 'row', alignItems: 'center', padding: SPACING.md, paddingBottom: SPACING.sm }}>
+        <LinearGradient colors={COLORS.gradientPrimary as [string, string]} style={{ width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
           <Ionicons name="folder" size={17} color="#FFF" />
         </LinearGradient>
         <View style={{ flex: 1 }}>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-            My Collections
-          </Text>
+          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>My Collections</Text>
           <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
-            {isLoading ? 'Loading…' : collections.length === 0 ? 'No collections yet'
-              : `${collections.length} collection${collections.length !== 1 ? 's' : ''}`}
+            {isLoading ? 'Loading…' : collections.length === 0 ? 'No collections yet' : `${collections.length} collection${collections.length !== 1 ? 's' : ''}`}
           </Text>
         </View>
-        <TouchableOpacity
-          onPress={onManage}
-          activeOpacity={0.8}
-          hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-          style={{
-            flexDirection: 'row', alignItems: 'center', gap: 4,
-            backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
-            paddingHorizontal: 11, paddingVertical: 6,
-            borderWidth: 1, borderColor: `${COLORS.primary}35`,
-          }}
-        >
+        <TouchableOpacity onPress={onManage} activeOpacity={0.8} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 6, borderWidth: 1, borderColor: `${COLORS.primary}35` }}>
           <Ionicons name="settings-outline" size={12} color={COLORS.primary} />
           <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Manage</Text>
         </TouchableOpacity>
       </LinearGradient>
-
       <View style={{ paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: SPACING.md }}>
         {collections.length === 0 && !isLoading ? (
-          <TouchableOpacity
-            onPress={onManage}
-            activeOpacity={0.8}
-            style={{
-              flexDirection: 'row', alignItems: 'center', gap: 8,
-              backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg,
-              padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}20`, borderStyle: 'dashed',
-            }}
-          >
+          <TouchableOpacity onPress={onManage} activeOpacity={0.8}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}20`, borderStyle: 'dashed' }}>
             <View style={{ width: 32, height: 32, borderRadius: 9, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="add" size={18} color={COLORS.primary} />
             </View>
             <View>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
-                Create your first collection
-              </Text>
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
-                Organise reports, podcasts, papers and more
-              </Text>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>Create your first collection</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>Organise reports, podcasts, papers and more</Text>
             </View>
           </TouchableOpacity>
         ) : (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
             {preview.map(col => (
-              <TouchableOpacity
-                key={col.id}
-                onPress={() => router.push({ pathname: '/(app)/collection-detail' as any, params: { collectionId: col.id } })}
-                activeOpacity={0.8}
-                style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 6,
-                  backgroundColor: `${col.color}18`, borderRadius: RADIUS.full,
-                  paddingHorizontal: 12, paddingVertical: 7,
-                  borderWidth: 1, borderColor: `${col.color}35`,
-                }}
-              >
+              <TouchableOpacity key={col.id} onPress={() => router.push({ pathname: '/(app)/collection-detail' as any, params: { collectionId: col.id } })} activeOpacity={0.8}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${col.color}18`, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: `${col.color}35` }}>
                 <Ionicons name={col.icon as any} size={13} color={col.color} />
-                <Text style={{ color: col.color, fontSize: FONTS.sizes.xs, fontWeight: '700' }} numberOfLines={1}>
-                  {col.name}
-                </Text>
+                <Text style={{ color: col.color, fontSize: FONTS.sizes.xs, fontWeight: '700' }} numberOfLines={1}>{col.name}</Text>
                 {(col.itemCount ?? 0) > 0 && (
                   <View style={{ backgroundColor: `${col.color}25`, borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 1 }}>
                     <Text style={{ color: col.color, fontSize: 10, fontWeight: '700' }}>{col.itemCount}</Text>
@@ -450,19 +265,9 @@ function CollectionsPreviewCard({ onManage }: { onManage: () => void }) {
               </TouchableOpacity>
             ))}
             {overflowCount > 0 && (
-              <TouchableOpacity
-                onPress={onManage}
-                activeOpacity={0.8}
-                style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 5,
-                  backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full,
-                  paddingHorizontal: 12, paddingVertical: 7,
-                  borderWidth: 1, borderColor: COLORS.border,
-                }}
-              >
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                  +{overflowCount} more
-                </Text>
+              <TouchableOpacity onPress={onManage} activeOpacity={0.8}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: COLORS.border }}>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>+{overflowCount} more</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -472,23 +277,15 @@ function CollectionsPreviewCard({ onManage }: { onManage: () => void }) {
   );
 }
 
-// ─── CreditsCard ──────────────────────────────────────────────────────────────
-
 function CreditsCard() {
   const { balance, isLoading } = useCredits();
-  const isLow   = balance < LOW_BALANCE_THRESHOLD && balance > 0;
-  const isEmpty = balance === 0;
+  const isLow    = balance < LOW_BALANCE_THRESHOLD && balance > 0;
+  const isEmpty  = balance === 0;
   const accentColor = isEmpty ? COLORS.error : isLow ? COLORS.warning : COLORS.primary;
 
   return (
     <TouchableOpacity onPress={() => router.push('/(app)/credits-store' as any)} activeOpacity={0.85}>
-      <LinearGradient
-        colors={['#1A1A35', '#12122A']}
-        style={{
-          borderRadius: RADIUS.xl, padding: SPACING.lg, marginBottom: SPACING.sm,
-          borderWidth: 1, borderColor: `${accentColor}35`,
-        }}
-      >
+      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${accentColor}35` }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
           <LinearGradient
             colors={isEmpty ? [COLORS.error, '#CC0000'] : isLow ? [COLORS.warning, '#E67E22'] : COLORS.gradientPrimary as [string, string]}
@@ -498,21 +295,13 @@ function CreditsCard() {
           </LinearGradient>
           <View style={{ flex: 1 }}>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>YOUR CREDITS</Text>
-            <Text style={{ color: accentColor, fontSize: FONTS.sizes.xl, fontWeight: '900' }}>
-              {isLoading ? '...' : balance.toLocaleString()}
-            </Text>
+            <Text style={{ color: accentColor, fontSize: FONTS.sizes.xl, fontWeight: '900' }}>{isLoading ? '...' : balance.toLocaleString()}</Text>
           </View>
-          <View style={{
-            backgroundColor: `${accentColor}15`, borderRadius: RADIUS.full,
-            paddingHorizontal: 12, paddingVertical: 6,
-            borderWidth: 1, borderColor: `${accentColor}30`,
-            flexDirection: 'row', alignItems: 'center', gap: 5,
-          }}>
+          <View style={{ backgroundColor: `${accentColor}15`, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: `${accentColor}30`, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
             <Ionicons name="add" size={13} color={accentColor} />
             <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Buy Credits</Text>
           </View>
         </View>
-
         <View style={{ flexDirection: 'row', gap: SPACING.sm, flexWrap: 'wrap' }}>
           {[
             { label: 'Research', cost: FEATURE_COSTS.research_deep, icon: 'analytics-outline' },
@@ -520,25 +309,14 @@ function CreditsCard() {
             { label: 'Paper',    cost: FEATURE_COSTS.academic_paper, icon: 'school-outline' },
             { label: 'Debate',   cost: FEATURE_COSTS.debate, icon: 'people-outline' },
           ].map(item => (
-            <View key={item.label} style={{
-              flexDirection: 'row', alignItems: 'center', gap: 4,
-              backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.full,
-              paddingHorizontal: 8, paddingVertical: 3,
-              borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
-            }}>
+            <View key={item.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' }}>
               <Ionicons name={item.icon as any} size={10} color={COLORS.textMuted} />
               <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>{item.label} · {item.cost} cr</Text>
             </View>
           ))}
         </View>
-
         {(isEmpty || isLow) && (
-          <View style={{
-            flexDirection: 'row', alignItems: 'center', gap: 6,
-            backgroundColor: `${accentColor}10`, borderRadius: RADIUS.md,
-            padding: SPACING.sm, marginTop: SPACING.sm,
-            borderWidth: 1, borderColor: `${accentColor}20`,
-          }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${accentColor}10`, borderRadius: RADIUS.md, padding: SPACING.sm, marginTop: SPACING.sm, borderWidth: 1, borderColor: `${accentColor}20` }}>
             <Ionicons name="warning-outline" size={13} color={accentColor} />
             <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
               {isEmpty ? 'No credits left — buy a pack to keep researching' : 'Low balance — top up to avoid interruptions'}
@@ -550,14 +328,10 @@ function CreditsCard() {
   );
 }
 
-// ─── Cache summary type ───────────────────────────────────────────────────────
-
 interface CacheSummary {
   totalItems: number; totalBytes: number; limitBytes: number;
   percentUsed: number; autoCache: boolean;
 }
-
-// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ProfileScreen() {
   const { user, profile, signOut, refreshProfile } = useAuth();
@@ -568,6 +342,8 @@ export default function ProfileScreen() {
   const [notifLoading,         setNotifLoading]         = useState(false);
   const [cacheSummary,         setCacheSummary]         = useState<CacheSummary | null>(null);
   const [cacheModalVisible,    setCacheModalVisible]    = useState(false);
+  // Part 45 FIX: selectiveVisible lives here, not inside CacheManagerModal
+  const [selectiveVisible,     setSelectiveVisible]     = useState(false);
   const [collectionsVisible,   setCollectionsVisible]   = useState(false);
   const [editModalVisible,     setEditModalVisible]     = useState(false);
   const [editName,             setEditName]             = useState(profile?.full_name  || '');
@@ -575,18 +351,12 @@ export default function ProfileScreen() {
   const [editOccupation,       setEditOccupation]       = useState(profile?.occupation || '');
   const [editAvatarUri,        setEditAvatarUri]        = useState<string | null>(null);
 
-  // ── Part 36: Public profile toggle state ──────────────────────────────────
   const [isPublic,         setIsPublic]         = useState<boolean>(profile?.is_public ?? false);
   const [isTogglingPublic, setIsTogglingPublic] = useState(false);
 
-  // Sync from profile when it loads/refreshes
   useEffect(() => {
-    if (profile) {
-      setIsPublic(profile.is_public ?? false);
-    }
+    if (profile) setIsPublic(profile.is_public ?? false);
   }, [profile?.is_public]);
-
-  // ── Android back button ───────────────────────────────────────────────────
 
   useEffect(() => {
     if (!IS_ANDROID) return;
@@ -594,33 +364,25 @@ export default function ProfileScreen() {
       if (editModalVisible)   { setEditModalVisible(false);   return true; }
       if (collectionsVisible) { setCollectionsVisible(false); return true; }
       if (cacheModalVisible)  { setCacheModalVisible(false);  return true; }
+      if (selectiveVisible)   { setSelectiveVisible(false);   return true; }
       return false;
     });
     return () => handler.remove();
-  }, [editModalVisible, collectionsVisible, cacheModalVisible]);
-
-  // ── Notification state ────────────────────────────────────────────────────
+  }, [editModalVisible, collectionsVisible, cacheModalVisible, selectiveVisible]);
 
   useEffect(() => {
     (async () => {
       try {
-        const [storedEnabled, osStatus] = await Promise.all([
-          getNotificationsEnabled(), getPermissionStatus(),
-        ]);
+        const [storedEnabled, osStatus] = await Promise.all([getNotificationsEnabled(), getPermissionStatus()]);
         setNotificationsEnabled(storedEnabled && osStatus === 'granted');
       } catch {}
     })();
   }, []);
 
-  // ── Cache stats ───────────────────────────────────────────────────────────
-
   const loadCacheStats = useCallback(async () => {
     try {
       const [s, settings] = await Promise.all([getCacheStats(), getCacheSettings()]);
-      setCacheSummary({
-        totalItems: s.totalItems, totalBytes: s.totalBytes,
-        limitBytes: s.limitBytes, percentUsed: s.percentUsed, autoCache: settings.autoCache,
-      });
+      setCacheSummary({ totalItems: s.totalItems, totalBytes: s.totalBytes, limitBytes: s.limitBytes, percentUsed: s.percentUsed, autoCache: settings.autoCache });
     } catch {
       setCacheSummary({ totalItems: 0, totalBytes: 0, limitBytes: 100 * 1024 * 1024, percentUsed: 0, autoCache: true });
     }
@@ -628,8 +390,12 @@ export default function ProfileScreen() {
 
   useEffect(() => { loadCacheStats(); }, [loadCacheStats]);
 
-  const handleCacheModalClose   = useCallback(() => { setCacheModalVisible(false); loadCacheStats(); }, [loadCacheStats]);
-  const handleAutoCacheToggle   = useCallback(async (value: boolean) => {
+  const handleCacheModalClose = useCallback(() => {
+    setCacheModalVisible(false);
+    loadCacheStats();
+  }, [loadCacheStats]);
+
+  const handleAutoCacheToggle = useCallback(async (value: boolean) => {
     await setAutoCache(value);
     setCacheSummary(prev => prev ? { ...prev, autoCache: value } : null);
   }, []);
@@ -641,8 +407,6 @@ export default function ProfileScreen() {
       { text: 'Clear Cache', style: 'destructive', onPress: async () => { await clearAllCache(); await loadCacheStats(); Alert.alert('Done', 'Offline cache cleared.'); } },
     ]);
   }, [cacheSummary, loadCacheStats]);
-
-  // ── Edit profile ──────────────────────────────────────────────────────────
 
   const openEditModal = () => {
     setEditName(profile?.full_name || '');
@@ -667,48 +431,28 @@ export default function ProfileScreen() {
       if (error) { Alert.alert('Upload Error', error); return; }
       avatarUrl = url;
     }
-    const { error } = await updateProfile(user.id, {
-      full_name: editName.trim() || null, bio: editBio.trim() || null,
-      occupation: editOccupation.trim() || null, avatar_url: avatarUrl,
-    });
+    const { error } = await updateProfile(user.id, { full_name: editName.trim() || null, bio: editBio.trim() || null, occupation: editOccupation.trim() || null, avatar_url: avatarUrl });
     if (error) { Alert.alert('Error', error); return; }
     await refreshProfile();
     setEditModalVisible(false);
     setEditAvatarUri(null);
   };
 
-  // ── Part 36: Public profile toggle ───────────────────────────────────────
-
   const handleTogglePublic = useCallback(async (val: boolean) => {
     if (!user || isTogglingPublic) return;
-
     if (val && !profile?.username) {
-      Alert.alert(
-        'Username Required',
-        'You need a username to have a public profile. Set one in your profile setup.',
-        [{ text: 'OK' }],
-      );
+      Alert.alert('Username Required', 'You need a username to have a public profile. Set one in your profile setup.', [{ text: 'OK' }]);
       return;
     }
-
-    setIsPublic(val); // optimistic
+    setIsPublic(val);
     setIsTogglingPublic(true);
     try {
       const { error } = await updateProfilePublic(user.id, val);
-      if (error) {
-        setIsPublic(!val); // rollback
-        Alert.alert('Error', 'Could not update profile visibility.');
-      } else {
-        await refreshProfile();
-      }
-    } catch {
-      setIsPublic(!val);
-    } finally {
-      setIsTogglingPublic(false);
-    }
+      if (error) { setIsPublic(!val); Alert.alert('Error', 'Could not update profile visibility.'); }
+      else await refreshProfile();
+    } catch { setIsPublic(!val); }
+    finally { setIsTogglingPublic(false); }
   }, [user, profile?.username, isTogglingPublic, refreshProfile]);
-
-  // ── Notifications ─────────────────────────────────────────────────────────
 
   const handleNotifSwitch = async (value: boolean) => {
     if (notifLoading || !user) return;
@@ -716,9 +460,8 @@ export default function ProfileScreen() {
     try {
       if (value) {
         const result = await enableNotifications(user.id);
-        if (result === 'enabled') {
-          setNotificationsEnabled(true);
-        } else {
+        if (result === 'enabled') { setNotificationsEnabled(true); }
+        else {
           Alert.alert('Enable Notifications', 'Tap "Open Settings" to allow them.', [
             { text: 'Not Now', style: 'cancel' },
             { text: 'Open Settings', onPress: async () => { await openAppSettings(); setNotificationsEnabled(true); } },
@@ -728,11 +471,8 @@ export default function ProfileScreen() {
         await disableNotifications();
         setNotificationsEnabled(false);
       }
-    } catch (err) {
-      console.warn('[Profile] Notification toggle error:', err);
-    } finally {
-      setNotifLoading(false);
-    }
+    } catch (err) { console.warn('[Profile] Notification toggle error:', err); }
+    finally { setNotifLoading(false); }
   };
 
   const handleSignOut = () => {
@@ -742,9 +482,7 @@ export default function ProfileScreen() {
     ]);
   };
 
-  // ── Derived ───────────────────────────────────────────────────────────────
-
-  const safeStats: UserStats    = { ...DEFAULT_STATS, ...stats };
+  const safeStats: UserStats = { ...DEFAULT_STATS, ...stats };
   const followerCount  = profile?.follower_count  ?? 0;
   const followingCount = profile?.following_count ?? 0;
 
@@ -769,126 +507,66 @@ export default function ProfileScreen() {
             showsVerticalScrollIndicator={false}
             overScrollMode={IS_ANDROID ? 'never' : 'auto'}
           >
-            {/* ── Profile header ── */}
-            <Animated.View
-              entering={FadeIn.duration(600)}
-              style={{ alignItems: 'center', paddingTop: SPACING.lg, paddingBottom: SPACING.xl }}
-            >
-              {/* Bell icon — top right of avatar section */}
+            {/* Profile header */}
+            <Animated.View entering={FadeIn.duration(600)} style={{ alignItems: 'center', paddingTop: SPACING.lg, paddingBottom: SPACING.xl }}>
               <View style={{ position: 'absolute', top: SPACING.md, right: 0 }}>
                 <SocialNotificationBell userId={user?.id ?? null} />
               </View>
-
               <View style={{ marginBottom: SPACING.md }}>
                 <Avatar url={profile?.avatar_url} name={profile?.full_name} size={88} />
               </View>
               <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', textAlign: 'center' }}>
                 {profile?.full_name ?? 'Researcher'}
               </Text>
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 4 }}>
-                {user?.email}
-              </Text>
-              {profile?.username && (
-                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, marginTop: 2 }}>
-                  @{profile.username}
-                </Text>
-              )}
-              {profile?.occupation && (
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 3 }}>
-                  {profile.occupation}
-                </Text>
-              )}
-              <TouchableOpacity
-                onPress={openEditModal}
-                style={{
-                  marginTop: SPACING.md, backgroundColor: `${COLORS.primary}15`,
-                  borderRadius: RADIUS.full, paddingHorizontal: 20, paddingVertical: 8,
-                  flexDirection: 'row', alignItems: 'center', gap: 6,
-                  borderWidth: 1, borderColor: `${COLORS.primary}30`,
-                }}
-                activeOpacity={0.75}
-              >
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 4 }}>{user?.email}</Text>
+              {profile?.username && <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, marginTop: 2 }}>@{profile.username}</Text>}
+              {profile?.occupation && <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 3 }}>{profile.occupation}</Text>}
+              <TouchableOpacity onPress={openEditModal}
+                style={{ marginTop: SPACING.md, backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 20, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: `${COLORS.primary}30` }}
+                activeOpacity={0.75}>
                 <Ionicons name="pencil-outline" size={14} color={COLORS.primary} />
-                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
-                  Edit Profile
-                </Text>
+                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>Edit Profile</Text>
               </TouchableOpacity>
             </Animated.View>
 
-            {/* ── Stats card ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(50)}>
               <StatsCard stats={safeStats} />
             </Animated.View>
 
-            {/* ══════════════════════════════════════════
-                Part 36 — SOCIAL & DISCOVERY
-            ══════════════════════════════════════════ */}
             <Animated.View entering={FadeInDown.duration(400).delay(70)}>
               <SectionHeader label="Social &amp; Discovery" />
-              <SocialDiscoveryCard
-                userId={user?.id ?? ''}
-                username={profile?.username ?? null}
-                isPublic={isPublic}
-                followerCount={followerCount}
-                followingCount={followingCount}
-                onTogglePublic={handleTogglePublic}
-                isTogglingPublic={isTogglingPublic}
-              />
+              <SocialDiscoveryCard userId={user?.id ?? ''} username={profile?.username ?? null} isPublic={isPublic} followerCount={followerCount} followingCount={followingCount} onTogglePublic={handleTogglePublic} isTogglingPublic={isTogglingPublic} />
             </Animated.View>
 
-            {/* ── Your Collections ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(80)}>
               <SectionHeader label="Your Collections" />
               <CollectionsPreviewCard onManage={() => setCollectionsVisible(true)} />
             </Animated.View>
 
-            {/* ── Refer & Earn ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(90)}>
               <SectionHeader label="Refer &amp; Earn" />
               <ReferralCard />
             </Animated.View>
 
-            {/* ── Credits & Billing ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(110)}>
               <SectionHeader label="Credits &amp; Billing" />
               <CreditsCard />
-              <SettingsRow
-                icon="receipt-outline" label="Transaction History"
-                sublabel="View all credit purchases and usage"
-                onPress={() => router.push('/(app)/transaction-history' as any)}
-              />
-              <SettingsRow
-                icon="flash-outline" label="Buy Credits"
-                sublabel="Top up your balance with a credit pack"
-                iconColor={COLORS.warning} iconBg={`${COLORS.warning}15`}
-                onPress={() => router.push('/(app)/credits-store' as any)}
-              />
+              <SettingsRow icon="receipt-outline" label="Transaction History" sublabel="View all credit purchases and usage" onPress={() => router.push('/(app)/transaction-history' as any)} />
+              <SettingsRow icon="flash-outline" label="Buy Credits" sublabel="Top up your balance with a credit pack" iconColor={COLORS.warning} iconBg={`${COLORS.warning}15`} onPress={() => router.push('/(app)/credits-store' as any)} />
             </Animated.View>
 
-            {/* ── Preferences ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(140)}>
               <SectionHeader label="Preferences" />
               <SettingsRow
                 icon="notifications-outline" label="Push Notifications"
-                sublabel={notificationsEnabled
-                  ? 'You will be notified when reports are ready'
-                  : 'Get notified when your research is complete'}
+                sublabel={notificationsEnabled ? 'You will be notified when reports are ready' : 'Get notified when your research is complete'}
                 iconColor={notificationsEnabled ? COLORS.success : COLORS.primary}
                 iconBg={notificationsEnabled ? `${COLORS.success}15` : `${COLORS.primary}15`}
                 onPress={() => handleNotifSwitch(!notificationsEnabled)}
-                right={
-                  <Switch
-                    value={notificationsEnabled}
-                    onValueChange={handleNotifSwitch}
-                    disabled={notifLoading}
-                    trackColor={{ false: COLORS.border, true: `${COLORS.primary}80` }}
-                    thumbColor={notificationsEnabled ? COLORS.primary : COLORS.textMuted}
-                  />
-                }
+                right={<Switch value={notificationsEnabled} onValueChange={handleNotifSwitch} disabled={notifLoading} trackColor={{ false: COLORS.border, true: `${COLORS.primary}80` }} thumbColor={notificationsEnabled ? COLORS.primary : COLORS.textMuted} />}
               />
             </Animated.View>
 
-            {/* ── Offline & Cache ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(170)}>
               <SectionHeader label="Offline &amp; Cache" />
               <SettingsRow
@@ -913,14 +591,7 @@ export default function ProfileScreen() {
                 sublabel="Automatically save all content for offline access"
                 iconColor={cacheSummary?.autoCache ? COLORS.success : COLORS.textMuted}
                 iconBg={cacheSummary?.autoCache ? `${COLORS.success}15` : COLORS.border}
-                right={
-                  <Switch
-                    value={cacheSummary?.autoCache ?? true}
-                    onValueChange={handleAutoCacheToggle}
-                    trackColor={{ false: COLORS.border, true: `${COLORS.success}80` }}
-                    thumbColor={cacheSummary?.autoCache ? COLORS.success : COLORS.textMuted}
-                  />
-                }
+                right={<Switch value={cacheSummary?.autoCache ?? true} onValueChange={handleAutoCacheToggle} trackColor={{ false: COLORS.border, true: `${COLORS.success}80` }} thumbColor={cacheSummary?.autoCache ? COLORS.success : COLORS.textMuted} />}
               />
               {cacheSummary && cacheSummary.totalItems > 0 && (
                 <SettingsRow
@@ -932,60 +603,36 @@ export default function ProfileScreen() {
                   right={<Text style={{ color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Clear</Text>}
                 />
               )}
-              <View style={{
-                backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg,
-                padding: SPACING.md, marginBottom: SPACING.sm,
-                borderWidth: 1, borderColor: `${COLORS.info}20`,
-                flexDirection: 'row', alignItems: 'flex-start', gap: 10,
-              }}>
+              <View style={{ backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.info}20`, flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
                 <Ionicons name="information-circle-outline" size={17} color={COLORS.info} style={{ marginTop: 1, flexShrink: 0 }} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 18, flex: 1 }}>
-                  When offline, DeepDive AI shows all cached content — reports, podcasts, debates, papers and slides.{'\n\n'}
+                  When offline, DeepDive AI shows all cached content — reports, podcasts, debates, papers, slides and voice debates.{'\n\n'}
                   Workspace &amp; Teams features require an internet connection.
                 </Text>
               </View>
             </Animated.View>
 
-            {/* ── Sign out ── */}
             <Animated.View entering={FadeInDown.duration(400).delay(220)}>
-              <TouchableOpacity
-                onPress={handleSignOut}
-                style={{
-                  backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg,
-                  padding: SPACING.md, marginTop: SPACING.lg,
-                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                  gap: 8, borderWidth: 1, borderColor: `${COLORS.error}25`,
-                }}
-                activeOpacity={0.75}
-              >
+              <TouchableOpacity onPress={handleSignOut}
+                style={{ backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginTop: SPACING.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: `${COLORS.error}25` }}
+                activeOpacity={0.75}>
                 <Ionicons name="log-out-outline" size={20} color={COLORS.error} />
                 <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Sign Out</Text>
               </TouchableOpacity>
             </Animated.View>
 
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginTop: SPACING.xl }}>
-              DeepDive AI · v1.36.0
+              DeepDive AI · v1.45.0
             </Text>
           </ScrollView>
         </SafeAreaView>
       </LinearGradient>
 
-      {/* ── Edit Profile Modal ── */}
-      <Modal
-        visible={editModalVisible}
-        animationType="slide"
-        transparent
-        statusBarTranslucent
-        onRequestClose={() => setEditModalVisible(false)}
-      >
+      {/* Edit Profile Modal */}
+      <Modal visible={editModalVisible} animationType="slide" transparent statusBarTranslucent onRequestClose={() => setEditModalVisible(false)}>
         <View style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.75)', justifyContent: 'flex-end' }}>
           <KeyboardAvoidingView behavior={IS_IOS ? 'padding' : 'height'} keyboardVerticalOffset={IS_IOS ? 0 : 20}>
-            <View style={{
-              backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 30,
-              borderTopRightRadius: 30, padding: SPACING.xl,
-              paddingBottom: IS_IOS ? SPACING.xl + 34 : SPACING.xl,
-              borderTopWidth: 1, borderTopColor: COLORS.border, maxHeight: '90%',
-            }}>
+            <View style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: SPACING.xl, paddingBottom: IS_IOS ? SPACING.xl + 34 : SPACING.xl, borderTopWidth: 1, borderTopColor: COLORS.border, maxHeight: '90%' }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.xl }}>
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>Edit Profile</Text>
                 <TouchableOpacity onPress={() => setEditModalVisible(false)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}>
@@ -1023,10 +670,36 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* ── Cache Manager ── */}
-      <CacheManagerModal visible={cacheModalVisible} onClose={handleCacheModalClose} />
+      {/* ── Cache Manager — FIX: passes onOpenSelectiveCache, no longer nests SelectiveCacheSheet inside */}
+      <CacheManagerModal
+        visible={cacheModalVisible}
+        onClose={handleCacheModalClose}
+        onOpenSelectiveCache={() => {
+          // Close cache manager first, then open the sheet after it fully dismisses
+          setCacheModalVisible(false);
+          setTimeout(() => setSelectiveVisible(true), 350);
+        }}
+      />
 
-      {/* ── Collections Sheet ── */}
+      {/* ── Selective Cache Sheet — sibling of CacheManagerModal, never nested ── */}
+      {/* FIX 1: onDone reopens the cache manager so user stays in cache flow,
+          not kicked back to the profile tab scroll position. */}
+      <SelectiveCacheSheet
+        visible={selectiveVisible}
+        onClose={() => {
+          setSelectiveVisible(false);
+          // Reopen cache manager so user returns to it after closing the sheet
+          setTimeout(() => setCacheModalVisible(true), 300);
+        }}
+        onDone={() => {
+          setSelectiveVisible(false);
+          loadCacheStats();
+          // Reopen cache manager after save so user sees updated stats
+          setTimeout(() => setCacheModalVisible(true), 300);
+        }}
+      />
+
+      {/* Collections Sheet */}
       <ManageCollectionsSheet visible={collectionsVisible} onClose={() => setCollectionsVisible(false)} />
     </View>
   );

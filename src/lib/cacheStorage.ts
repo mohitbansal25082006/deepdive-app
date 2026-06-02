@@ -1,8 +1,17 @@
 // src/lib/cacheStorage.ts
-// Part 41.7 — Updated: evictItemById and evictByType for 'presentation' type
-// now also call evictPresentationAssets() to clean up downloaded image/SVG files.
+// Part 45 — Updated: added 'voice_debate' to TYPE_META and all helpers.
 //
-// All other code byte-for-byte identical to Part 23.
+// CHANGES from Part 41.7:
+//   • voice_debate added to TYPE_META with icon, color, dir
+//   • evictItemById / evictByType / clearAllCache handle voice_debate eviction
+//     (calls evictVoiceDebateJson + evictVoiceDebateAudio)
+//   • getCacheStats includes voiceDebatesWithAudio / voiceDebateAudioBytes
+//   • markVoiceDebateAudioCached helper added (mirrors markPodcastAudioCached)
+//   • cacheVoiceDebate / getCachedVoiceDebate convenience wrappers added
+//   • INDEX_VERSION bumped to 45 (migration: existing v22 entries are read
+//     as-is; version mismatch triggers a clean index which forces re-cache)
+//
+// All other code is byte-for-byte identical to Part 41.7.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -16,14 +25,15 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const INDEX_KEY        = 'deepdive:cache:index:v22';
-const SETTINGS_KEY     = 'deepdive:cache:settings:v22';
+const INDEX_KEY        = 'deepdive:cache:index:v45';
+const SETTINGS_KEY     = 'deepdive:cache:settings:v45';
 const CACHE_DIR        = `${FileSystem.documentDirectory}deepdive_cache/`;
-const INDEX_VERSION    = 22;
+const INDEX_VERSION    = 45;
 const DEFAULT_LIMIT_MB = 100;
 const DEFAULT_EXPIRY_D = 30;
 
 // ─── Type metadata ────────────────────────────────────────────────────────────
+// Part 45: voice_debate added
 
 const TYPE_META: Record<CachedContentType, { icon: string; color: string; dir: string }> = {
   report:         { icon: 'document-text-outline',   color: '#6C63FF', dir: 'reports'        },
@@ -31,6 +41,7 @@ const TYPE_META: Record<CachedContentType, { icon: string; color: string; dir: s
   debate:         { icon: 'chatbox-ellipses-outline', color: '#F97316', dir: 'debates'        },
   academic_paper: { icon: 'school-outline',           color: '#43E97B', dir: 'papers'         },
   presentation:   { icon: 'easel-outline',            color: '#29B6F6', dir: 'presentations'  },
+  voice_debate:   { icon: 'mic-circle-outline',       color: '#8B5CF6', dir: 'voice_debates'  },
 };
 
 // ─── Ensure cache directories exist ──────────────────────────────────────────
@@ -62,6 +73,20 @@ async function loadIndex(): Promise<CacheIndex> {
       const parsed = JSON.parse(raw) as CacheIndex;
       if (parsed.version === INDEX_VERSION) return parsed;
     }
+    // Try reading old v22 index and migrate entries
+    const oldRaw = await AsyncStorage.getItem('deepdive:cache:index:v22');
+    if (oldRaw) {
+      const oldParsed = JSON.parse(oldRaw) as CacheIndex;
+      // Migrate: keep existing entries but bump version
+      const migrated: CacheIndex = {
+        entries:    oldParsed.entries ?? [],
+        totalBytes: oldParsed.totalBytes ?? 0,
+        limitBytes: oldParsed.limitBytes ?? DEFAULT_LIMIT_MB * 1024 * 1024,
+        version:    INDEX_VERSION,
+      };
+      await saveIndex(migrated);
+      return migrated;
+    }
   } catch {}
   return {
     entries:    [],
@@ -84,20 +109,33 @@ async function saveIndex(index: CacheIndex): Promise<void> {
 
 export async function loadSettings(): Promise<CacheSettings> {
   try {
+    // Try new key first
     const raw = await AsyncStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as CacheSettings;
-      if (typeof parsed.cacheAudio === 'undefined') {
-        parsed.cacheAudio = false;
-      }
+      if (typeof parsed.cacheAudio === 'undefined') parsed.cacheAudio = false;
+      if (typeof parsed.cacheVoiceDebate === 'undefined') parsed.cacheVoiceDebate = false;
       return parsed;
+    }
+    // Try migrating old settings key
+    const oldRaw = await AsyncStorage.getItem('deepdive:cache:settings:v22');
+    if (oldRaw) {
+      const oldParsed = JSON.parse(oldRaw) as Partial<CacheSettings>;
+      return {
+        limitBytes:       oldParsed.limitBytes       ?? DEFAULT_LIMIT_MB * 1024 * 1024,
+        autoCache:        oldParsed.autoCache        ?? true,
+        expiryDays:       oldParsed.expiryDays       ?? DEFAULT_EXPIRY_D,
+        cacheAudio:       oldParsed.cacheAudio       ?? false,
+        cacheVoiceDebate: false,
+      };
     }
   } catch {}
   return {
-    limitBytes: DEFAULT_LIMIT_MB * 1024 * 1024,
-    autoCache:  true,
-    expiryDays: DEFAULT_EXPIRY_D,
-    cacheAudio: false,
+    limitBytes:       DEFAULT_LIMIT_MB * 1024 * 1024,
+    autoCache:        true,
+    expiryDays:       DEFAULT_EXPIRY_D,
+    cacheAudio:       false,
+    cacheVoiceDebate: false,
   };
 }
 
@@ -138,6 +176,20 @@ async function evictPresentationAssetsFor(id: string): Promise<void> {
   } catch {}
 }
 
+/**
+ * Part 45: Clean up voice debate JSON + audio for an evicted voice_debate entry.
+ */
+async function evictVoiceDebateFor(id: string): Promise<void> {
+  try {
+    const { evictVoiceDebateJson }   = await import('./voiceDebateCache');
+    const { evictVoiceDebateAudio }  = await import('./voiceDebateAudioCache');
+    await Promise.allSettled([
+      evictVoiceDebateJson(id),
+      evictVoiceDebateAudio(id),
+    ]);
+  } catch {}
+}
+
 // ─── Eviction ─────────────────────────────────────────────────────────────────
 
 async function evictExpired(index: CacheIndex): Promise<void> {
@@ -147,6 +199,7 @@ async function evictExpired(index: CacheIndex): Promise<void> {
     try { await FileSystem.deleteAsync(entry.filePath, { idempotent: true }); } catch {}
     if (entry.type === 'podcast')      await evictPodcastAudioFor(entry.id);
     if (entry.type === 'presentation') await evictPresentationAssetsFor(entry.id);
+    if (entry.type === 'voice_debate') await evictVoiceDebateFor(entry.id);
   }
   index.entries = index.entries.filter(e => e.expiresAt >= now);
 }
@@ -159,6 +212,7 @@ async function evictToFitLimit(index: CacheIndex): Promise<void> {
     try { await FileSystem.deleteAsync(victim.filePath, { idempotent: true }); } catch {}
     if (victim.type === 'podcast')      await evictPodcastAudioFor(victim.id);
     if (victim.type === 'presentation') await evictPresentationAssetsFor(victim.id);
+    if (victim.type === 'voice_debate') await evictVoiceDebateFor(victim.id);
   }
 }
 
@@ -265,7 +319,7 @@ export async function getCacheIndex(): Promise<CacheEntry[]> {
 
 /**
  * Evict a single item by id + type.
- * Part 41.7: also evicts presentation assets for 'presentation' type.
+ * Part 45: also evicts voice_debate audio+JSON for 'voice_debate' type.
  */
 export async function evictItemById(type: CachedContentType, id: string): Promise<void> {
   try {
@@ -279,6 +333,7 @@ export async function evictItemById(type: CachedContentType, id: string): Promis
 
     if (type === 'podcast')      await evictPodcastAudioFor(id);
     if (type === 'presentation') await evictPresentationAssetsFor(id);
+    if (type === 'voice_debate') await evictVoiceDebateFor(id);
   } catch (err) {
     console.warn('[CacheStorage] evictItemById error:', err);
   }
@@ -286,7 +341,7 @@ export async function evictItemById(type: CachedContentType, id: string): Promis
 
 /**
  * Evict all items of a given type.
- * Part 41.7: also evicts all presentation assets when type === 'presentation'.
+ * Part 45: also clears all voice_debate audio+JSON when type === 'voice_debate'.
  */
 export async function evictByType(type: CachedContentType): Promise<void> {
   try {
@@ -305,6 +360,16 @@ export async function evictByType(type: CachedContentType): Promise<void> {
         await clearAllPodcastAudio();
       } catch {}
     }
+    if (type === 'voice_debate') {
+      try {
+        const { clearAllVoiceDebateJsonCache } = await import('./voiceDebateCache');
+        const { clearAllVoiceDebateAudioCache } = await import('./voiceDebateAudioCache');
+        await Promise.allSettled([
+          clearAllVoiceDebateJsonCache(),
+          clearAllVoiceDebateAudioCache(),
+        ]);
+      } catch {}
+    }
   } catch (err) {
     console.warn('[CacheStorage] evictByType error:', err);
   }
@@ -312,7 +377,7 @@ export async function evictByType(type: CachedContentType): Promise<void> {
 
 /**
  * Clear the entire cache (all types).
- * Part 41.7: also clears all presentation assets.
+ * Part 45: also clears all voice_debate audio+JSON.
  */
 export async function clearAllCache(): Promise<void> {
   try {
@@ -328,6 +393,15 @@ export async function clearAllCache(): Promise<void> {
     try {
       const { clearAllPodcastAudio } = await import('./podcastAudioCache');
       await clearAllPodcastAudio();
+    } catch {}
+
+    try {
+      const { clearAllVoiceDebateJsonCache }  = await import('./voiceDebateCache');
+      const { clearAllVoiceDebateAudioCache } = await import('./voiceDebateAudioCache');
+      await Promise.allSettled([
+        clearAllVoiceDebateJsonCache(),
+        clearAllVoiceDebateAudioCache(),
+      ]);
     } catch {}
 
     await saveIndex({
@@ -352,11 +426,14 @@ export async function getCacheStats(): Promise<CacheStats> {
     debate:         { count: 0, bytes: 0 },
     academic_paper: { count: 0, bytes: 0 },
     presentation:   { count: 0, bytes: 0 },
+    voice_debate:   { count: 0, bytes: 0 },
   } as Record<CachedContentType, { count: number; bytes: number }>;
 
-  let totalBytes        = 0;
-  let podcastsWithAudio = 0;
-  let audioBytesTotal   = 0;
+  let totalBytes             = 0;
+  let podcastsWithAudio      = 0;
+  let audioBytesTotal        = 0;
+  let voiceDebatesWithAudio  = 0;
+  let voiceDebateAudioBytes  = 0;
 
   for (const e of valid) {
     byType[e.type].count++;
@@ -367,16 +444,22 @@ export async function getCacheStats(): Promise<CacheStats> {
       podcastsWithAudio++;
       audioBytesTotal += e.audioSizeBytes ?? 0;
     }
+    if (e.type === 'voice_debate' && e.hasAudio) {
+      voiceDebatesWithAudio++;
+      voiceDebateAudioBytes += e.audioSizeBytes ?? 0;
+    }
   }
 
   return {
-    totalItems:  valid.length,
+    totalItems:           valid.length,
     totalBytes,
-    limitBytes:  index.limitBytes,
-    percentUsed: index.limitBytes > 0 ? (totalBytes / index.limitBytes) * 100 : 0,
+    limitBytes:           index.limitBytes,
+    percentUsed:          index.limitBytes > 0 ? (totalBytes / index.limitBytes) * 100 : 0,
     byType,
     podcastsWithAudio,
     audioBytesTotal,
+    voiceDebatesWithAudio,
+    voiceDebateAudioBytes,
   };
 }
 
@@ -394,13 +477,39 @@ export async function markPodcastAudioCached(
     const index = await loadIndex();
     const entry = index.entries.find(e => e.id === podcastId && e.type === 'podcast');
     if (entry) {
-      entry.hasAudio       = true;
-      entry.audioSizeBytes = audioSizeBytes;
-      entry.sizeBytes      = (entry.sizeBytes - (entry.audioSizeBytes ?? 0)) + audioSizeBytes;
+      // Capture the OLD audio size BEFORE overwriting — otherwise the subtraction
+      // cancels the addition and sizeBytes never increases.
+      const oldAudioBytes    = entry.audioSizeBytes ?? 0;
+      entry.hasAudio         = true;
+      entry.audioSizeBytes   = audioSizeBytes;
+      entry.sizeBytes        = (entry.sizeBytes - oldAudioBytes) + audioSizeBytes;
     }
     await saveIndex(index);
   } catch (err) {
     console.warn('[CacheStorage] markPodcastAudioCached error:', err);
+  }
+}
+
+/**
+ * Part 45: Mark voice debate as having audio cached (updates index entry).
+ */
+export async function markVoiceDebateAudioCached(
+  voiceDebateId:  string,
+  audioSizeBytes: number,
+): Promise<void> {
+  try {
+    const index = await loadIndex();
+    const entry = index.entries.find(e => e.id === voiceDebateId && e.type === 'voice_debate');
+    if (entry) {
+      // Capture the OLD audio size BEFORE overwriting — same fix as markPodcastAudioCached.
+      const oldAudioBytes    = entry.audioSizeBytes ?? 0;
+      entry.hasAudio         = true;
+      entry.audioSizeBytes   = audioSizeBytes;
+      entry.sizeBytes        = (entry.sizeBytes - oldAudioBytes) + audioSizeBytes;
+    }
+    await saveIndex(index);
+  } catch (err) {
+    console.warn('[CacheStorage] markVoiceDebateAudioCached error:', err);
   }
 }
 
@@ -439,6 +548,20 @@ export async function cachePresentation(pres: { id: string; title: string; [key:
 }
 export async function getCachedPresentation<T = unknown>(id: string): Promise<T | null> {
   return getCachedItem<T>('presentation', id);
+}
+
+/**
+ * Part 45: Cache a voice debate object in the main index.
+ * Also see voiceDebateCache.ts for the separate JSON cache (used by OfflineVoiceDebateViewer).
+ */
+export async function cacheVoiceDebate(vd: { id: string; topic: string; [key: string]: unknown }): Promise<void> {
+  const turns    = (vd as any).totalTurns ?? 0;
+  const durMin   = Math.round(((vd as any).durationSeconds ?? 0) / 60);
+  const subtitle = `${turns} turns · ${durMin} min`;
+  await cacheItem('voice_debate', vd.id, vd.topic as string, vd, { subtitle });
+}
+export async function getCachedVoiceDebate<T = unknown>(id: string): Promise<T | null> {
+  return getCachedItem<T>('voice_debate', id);
 }
 
 // ─── Legacy compat ────────────────────────────────────────────────────────────
