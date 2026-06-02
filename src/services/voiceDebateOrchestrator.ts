@@ -1,14 +1,11 @@
 // src/services/voiceDebateOrchestrator.ts
 // Part 40 + Part 41.2 UPDATE
 //
-// KEY CHANGES in 41.2:
-//   1. Background upload now uses voiceDebateAudioUploadService (dedicated,
-//      with retry + timeout + terminal logs) instead of the old inline function.
-//   2. Final DB save (status=completed) wrapped in a retry loop with 15s timeout
-//      each attempt — fixes "network request failed" / "timed out" errors that
-//      happened when the device was on a slow connection at end of generation.
-//   3. supabase DB calls that could hang now use a withTimeout() wrapper.
-//   4. Cleaner error messages surfaced to the UI for network failures.
+// FIX: DOMException is not available in React Native's Hermes JS engine.
+// Every `throw new DOMException(...)` and `instanceof DOMException` check
+// is replaced with a lightweight plain-class AbortError that works everywhere.
+//
+// All other logic (retry, timeout, script gen, TTS, upload) is unchanged.
 
 import { supabase }                        from '../lib/supabase';
 import { generateVoiceDebateScript }       from './agents/voiceDebateScriptAgent';
@@ -30,6 +27,19 @@ import type {
 
 // ─── Derive the key type from VOICE_PERSONAS ──────────────────────────────────
 type VoicePersonaKey = keyof typeof VOICE_PERSONAS;
+
+// ─── FIX: React Native / Hermes does not have DOMException ───────────────────
+// Replace every `new DOMException('...', 'AbortError')` with this class.
+// `instanceof AbortError` works because it's a plain JS class.
+
+class AbortError extends Error {
+  public readonly name = 'AbortError';
+  constructor(message = 'The operation was aborted.') {
+    super(message);
+    // Maintains correct prototype chain in transpiled code
+    Object.setPrototypeOf(this, AbortError.prototype);
+  }
+}
 
 // ─── Timeout helper ───────────────────────────────────────────────────────────
 
@@ -120,8 +130,6 @@ async function deleteStaleVoiceDebate(
 }
 
 // ─── Retry-wrapped DB update ──────────────────────────────────────────────────
-// Wraps supabase.from().update() with up to 3 attempts and a per-attempt
-// timeout so we don't hang forever on slow connections.
 
 async function updateWithRetry(
   table:   string,
@@ -166,11 +174,12 @@ export async function runVoiceDebatePipeline(
   signal?:   AbortSignal,
 ): Promise<void> {
 
+  // ── FIX: use plain boolean + AbortError instead of DOMException ───────────
   const isAborted = () => signal?.aborted ?? false;
 
   const checkAbort = () => {
     if (isAborted()) {
-      throw new DOMException('Voice debate generation was cancelled.', 'AbortError');
+      throw new AbortError('Voice debate generation was cancelled.');
     }
   };
 
@@ -300,7 +309,8 @@ export async function runVoiceDebatePipeline(
         },
       });
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      // ── FIX: check instanceof AbortError instead of DOMException ─────────
+      if (err instanceof AbortError) throw err;
       const msg = err instanceof Error ? err.message : 'Script generation failed';
       await updateStatus('failed', { error_message: msg });
       callbacks.onError(`Script generation failed: ${msg}`);
@@ -364,7 +374,8 @@ export async function runVoiceDebatePipeline(
         },
       );
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      // ── FIX: check instanceof AbortError instead of DOMException ─────────
+      if (err instanceof AbortError) throw err;
       const msg = err instanceof Error ? err.message : 'Audio generation failed';
       await updateStatus('failed', { error_message: msg });
       callbacks.onError(`Audio generation failed: ${msg}`);
@@ -428,7 +439,6 @@ export async function runVoiceDebatePipeline(
     );
 
     if (!finalSaved) {
-      // Last-ditch attempt with minimal payload (just mark completed)
       console.warn('[VoiceDebateOrchestrator] Full final save failed — attempting minimal save');
       await updateWithRetry(
         'voice_debates',
@@ -469,13 +479,12 @@ export async function runVoiceDebatePipeline(
     callbacks.onComplete(finalVoiceDebate);
 
     // ── STEP 4: Background cloud upload (non-blocking) ─────────────────────
-    // Uses the new dedicated upload service with retry + timeout + terminal logs
     console.log(`[VoiceDebateOrchestrator] 📡  Kicking off background audio upload for voiceDebateId=${voiceDebateId}`);
     uploadVoiceDebateAudioBackground(voiceDebateId, audioPaths);
 
   } catch (error) {
-    // ── Cancelled ─────────────────────────────────────────────────────────
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    // ── FIX: catch AbortError instead of DOMException ─────────────────────
+    if (error instanceof AbortError) {
       if (voiceDebateId) {
         supabase
           .from('voice_debates')

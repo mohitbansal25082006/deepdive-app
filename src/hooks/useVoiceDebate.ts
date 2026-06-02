@@ -1,30 +1,15 @@
 // src/hooks/useVoiceDebate.ts
-// Part 40 + Part 41.2 + Part 44 UPDATE
+// Part 40 + Part 41.2 + Part 44 + CREDIT GATE UPDATE
 //
-// CHANGES in Part 44:
-//   1. After onComplete fires, immediately triggers uploadVoiceDebateAudioBackground()
-//      (was already done in 41.2 via cacheAudioBackground — now ALSO explicitly
-//       triggers the upload service so cloud URLs appear faster and the share
-//       button becomes available sooner).
-//
-//   2. On mount, if an existing completed voice debate is loaded but
-//      audio_all_uploaded = false AND local paths exist, triggers a background
-//      upload automatically so the user doesn't have to wait.
-//
-//   3. After upload completes, if the debate session is already shared to
-//      workspaces (via shared_debates), calls updateSharedDebateVoiceAudio()
-//      to sync the audio URLs to all workspace copies.
-//
-//   4. Exposes `uploadProgress` state (0-100) so VoiceDebateCard can show
-//      a progress indicator while upload runs.
-//
-//   5. Exposes `triggerUploadNow()` helper — called from VoiceDebateCard's
-//      "Upload Now" button (shown when audioAllUploaded = false).
-//
-// All Part 40 + 41.2 functionality preserved unchanged.
+// FIX: COST is now derived from FEATURE_COSTS['voice_debate'] at the top of
+// this file. Previously COST was only defined in VoiceDebateCard.tsx, causing
+// "Cannot find name 'COST'" errors throughout this hook.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth }                                   from '../context/AuthContext';
+import { useCredits }                                from '../context/CreditsContext';
+import { FEATURE_COSTS, FEATURE_LABELS }             from '../constants/credits';
+import { fetchUserCredits, InsufficientCreditsError } from '../services/creditsService';
 import {
   runVoiceDebatePipeline,
   fetchVoiceDebateForSession,
@@ -49,6 +34,13 @@ import type {
   VoiceDebateGenerationState,
   VoiceDebateGenerationPhase,
 }                                                    from '../types/voiceDebate';
+import type { InsufficientCreditsInfo }              from '../types/credits';
+
+// ─── Credit cost constant ─────────────────────────────────────────────────────
+// Defined here (not only in VoiceDebateCard) so this hook can use it directly.
+
+const VOICE_DEBATE_COST  = FEATURE_COSTS['voice_debate'];  // 50
+const VOICE_DEBATE_LABEL = FEATURE_LABELS['voice_debate']; // 'Voice Debate'
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -87,12 +79,6 @@ async function cacheAudioBackground(vd: VoiceDebate): Promise<void> {
 }
 
 // ─── Part 44: Sync audio to workspace shares after upload ────────────────────
-//
-// If the debate session was already shared to workspaces (via shared_debates)
-// BEFORE the voice debate was generated, we need to push the audio URLs to
-// all shared_voice_debates rows that reference the same debate_session_id.
-//
-// This is a fire-and-forget operation — failures are non-fatal.
 
 async function syncAudioToWorkspaceShares(
   voiceDebateId: string,
@@ -104,25 +90,17 @@ async function syncAudioToWorkspaceShares(
     const validUrls = audioUrls.filter(
       (u): u is string => typeof u === 'string' && u.startsWith('https://')
     );
-
     if (validUrls.length === 0) {
       console.log('[useVoiceDebate] 📡  No cloud URLs yet — skipping workspace sync');
       return;
     }
-
     const { rowsUpdated, error } = await updateSharedDebateVoiceAudio(
-      voiceDebateId,
-      sessionId,
-      validUrls,
-      allUploaded,
+      voiceDebateId, sessionId, validUrls, allUploaded,
     );
-
     if (error) {
       console.warn('[useVoiceDebate] Workspace sync error (non-fatal):', error);
     } else if (rowsUpdated > 0) {
       console.log(`[useVoiceDebate] ✅  Synced audio to ${rowsUpdated} workspace share(s) for session ${sessionId}`);
-    } else {
-      console.log('[useVoiceDebate] ℹ️  No workspace shares to sync for this session');
     }
   } catch (err) {
     console.warn('[useVoiceDebate] Workspace sync threw (non-fatal):', err);
@@ -130,30 +108,18 @@ async function syncAudioToWorkspaceShares(
 }
 
 // ─── Part 44: On-visit upload for existing debates ────────────────────────────
-//
-// If a completed voice debate exists on this device but hasn't been uploaded
-// (e.g. it was generated before Part 44 was deployed, or the upload was
-// interrupted), trigger an upload now in the background.
 
 async function onVisitUploadCheck(
-  vd:            VoiceDebate,
-  onProgress:    (progress: number) => void,
-  onComplete:    (audioUrls: (string | null)[], allUploaded: boolean) => void,
+  vd:         VoiceDebate,
+  onProgress: (progress: number) => void,
+  onComplete: (audioUrls: (string | null)[], allUploaded: boolean) => void,
 ): Promise<void> {
-  // Skip if already uploaded
-  if (vd.audioAllUploaded) {
-    console.log('[useVoiceDebate] ℹ️  Audio already uploaded for voiceDebateId=' + vd.id);
-    return;
-  }
+  if (vd.audioAllUploaded) return;
 
   const localPaths = (vd.audioSegmentPaths ?? []).filter(
     p => p && (p.startsWith('file://') || p.startsWith('/'))
   );
-
-  if (localPaths.length === 0) {
-    console.log('[useVoiceDebate] ℹ️  No local audio paths found for on-visit upload');
-    return;
-  }
+  if (localPaths.length === 0) return;
 
   console.log(`[useVoiceDebate] 📡  On-visit upload triggered for voiceDebateId=${vd.id} — ${localPaths.length} local segments`);
 
@@ -162,12 +128,10 @@ async function onVisitUploadCheck(
       vd.id,
       vd.audioSegmentPaths ?? [],
       (progress) => {
-        const pct = Math.round((progress.uploaded / Math.max(progress.total, 1)) * 100);
-        onProgress(pct);
+        onProgress(Math.round((progress.uploaded / Math.max(progress.total, 1)) * 100));
       },
     );
 
-    // Update voice_debates row with cloud URLs
     if (result.successCount > 0) {
       await supabase
         .from('voice_debates')
@@ -181,12 +145,8 @@ async function onVisitUploadCheck(
       console.log(`[useVoiceDebate] ✅  On-visit upload complete — ${result.successCount}/${vd.audioSegmentPaths?.length ?? 0} segments`);
       onComplete(result.uploadedUrls, result.allSucceeded);
 
-      // Sync to workspace shares
       await syncAudioToWorkspaceShares(
-        vd.id,
-        vd.debateSessionId,
-        result.uploadedUrls,
-        result.allSucceeded,
+        vd.id, vd.debateSessionId, result.uploadedUrls, result.allSucceeded,
       );
     }
   } catch (err) {
@@ -197,19 +157,26 @@ async function onVisitUploadCheck(
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useVoiceDebate(session: DebateSession | null) {
-  const { user }                            = useAuth();
-  const [state, setState]                   = useState<VoiceDebateGenerationState>(INITIAL_STATE);
-  const [isLoadingExisting, setIsLoadingExisting] = useState(false);
-  const [isCancelling, setIsCancelling]     = useState(false);
+  const { user }   = useAuth();
+  const { balance, consumeTotal, refresh: refreshCredits } = useCredits();
 
-  // Part 44: Upload progress for the VoiceDebateCard cloud badge
+  const [state, setState]               = useState<VoiceDebateGenerationState>(INITIAL_STATE);
+  const [isLoadingExisting, setIsLoadingExisting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  // Part 44: upload progress
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading,    setIsUploading]    = useState(false);
+
+  // ── Credit gate state ─────────────────────────────────────────────────────
+  const [insufficientCreditsInfo, setInsufficientCreditsInfo] =
+    useState<InsufficientCreditsInfo | null>(null);
+  const [isConsumingCredits, setIsConsumingCredits] = useState(false);
 
   const abortRef           = useRef(false);
   const generatingRef      = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const onVisitUploadRan   = useRef(false);   // guard: only trigger once per mount
+  const onVisitUploadRan   = useRef(false);
 
   const patch = useCallback((partial: Partial<VoiceDebateGenerationState>) => {
     if (!abortRef.current) {
@@ -218,32 +185,17 @@ export function useVoiceDebate(session: DebateSession | null) {
   }, []);
 
   // ── Load existing voice debate on mount ───────────────────────────────────
-  //
-  // KEY BEHAVIOURS:
-  //   • isLoadingExisting = true while the DB fetch is in flight.
-  //     VoiceDebateCard disables the Generate button during this window
-  //     (typically <500ms) to prevent a race condition.
-  //   • If no existing voice debate found → isLoadingExisting = false,
-  //     state stays INITIAL (idle, no voiceDebate), Generate button enabled.
-  //   • If existing voice debate found → state updated to 'done', card
-  //     shows CompletedDebateView immediately.
-  //   • On-visit upload ONLY triggers when the existing debate has local
-  //     audioSegmentPaths (i.e. was generated on THIS device) but hasn't
-  //     been uploaded yet. It does NOT trigger on brand-new debates.
 
   useEffect(() => {
     if (!session?.id || !user) return;
-
     let cancelled = false;
     setIsLoadingExisting(true);
 
     fetchVoiceDebateForSession(session.id)
       .then(async existing => {
-        if (cancelled) return;
-        if (generatingRef.current) return;
+        if (cancelled || generatingRef.current) return;
 
         if (existing) {
-          // Existing voice debate found — populate state so card shows player
           setState(prev => ({
             ...prev,
             voiceDebate:     existing,
@@ -251,15 +203,10 @@ export function useVoiceDebate(session: DebateSession | null) {
             progressPercent: 100,
           }));
 
-          // Part 41.2: auto-cache audio in background
           if (existing.status === 'completed') {
             cacheAudioBackground(existing);
           }
 
-          // Part 44: On-visit upload check.
-          // GUARD: only run if there are actual local file paths on this device.
-          // This prevents the upload from triggering on a debate that was
-          // generated on another device (where only cloud URLs exist).
           const hasLocalPaths = (existing.audioSegmentPaths ?? []).some(
             p => p && (p.startsWith('file://') || p.startsWith('/'))
           );
@@ -276,9 +223,7 @@ export function useVoiceDebate(session: DebateSession | null) {
 
             await onVisitUploadCheck(
               existing,
-              (pct) => {
-                if (!cancelled) setUploadProgress(pct);
-              },
+              (pct) => { if (!cancelled) setUploadProgress(pct); },
               (audioUrls, allUploaded) => {
                 if (!cancelled) {
                   setState(prev => {
@@ -301,14 +246,11 @@ export function useVoiceDebate(session: DebateSession | null) {
             if (!cancelled) setIsUploading(false);
           }
         }
-        // else: no existing debate found → state stays INITIAL_STATE (idle).
-        // isLoadingExisting will be set to false in .finally() below.
       })
       .catch(err => {
         console.warn('[useVoiceDebate] Failed to load existing voice debate:', err);
       })
       .finally(() => {
-        // Always reset isLoadingExisting so the Generate button enables.
         if (!cancelled) setIsLoadingExisting(false);
       });
 
@@ -336,13 +278,10 @@ export function useVoiceDebate(session: DebateSession | null) {
             const updated = mapRowToVoiceDebate(payload.new as Record<string, any>);
             patch({ voiceDebate: updated });
 
-            // If cloud upload just completed on another device, update badge
             if (updated.audioAllUploaded && !state.voiceDebate?.audioAllUploaded) {
-              console.log('[useVoiceDebate] ✅  Realtime: cloud upload completed for this debate');
               setIsUploading(false);
               setUploadProgress(100);
             }
-
             if (updated.status === 'completed') {
               patch({ phase: 'done', progressPercent: 100 });
             } else if (updated.status === 'failed') {
@@ -360,6 +299,79 @@ export function useVoiceDebate(session: DebateSession | null) {
     return () => { supabase.removeChannel(channel); };
   }, [session?.id, user?.id]);
 
+  // ── Credit check & consume ────────────────────────────────────────────────
+  //
+  // Uses VOICE_DEBATE_COST (50) and VOICE_DEBATE_LABEL defined at module scope.
+  // Fetches a fresh balance from DB before deducting.
+  // Returns true if deduction succeeded; false if insufficient.
+
+  const checkAndConsumeCredits = useCallback(async (): Promise<boolean> => {
+    if (!user) return false;
+
+    setIsConsumingCredits(true);
+
+    try {
+      // Always fetch fresh balance before deducting
+      let currentBalance = balance;
+      try {
+        const fresh = await fetchUserCredits(user.id);
+        currentBalance = fresh?.balance ?? balance;
+      } catch {
+        // Use cached balance as fallback
+      }
+
+      if (currentBalance < VOICE_DEBATE_COST) {
+        setInsufficientCreditsInfo({
+          feature:      'voice_debate',
+          featureLabel: VOICE_DEBATE_LABEL,
+          required:     VOICE_DEBATE_COST,
+          current:      currentBalance,
+          shortfall:    VOICE_DEBATE_COST - currentBalance,
+        });
+        refreshCredits();
+        return false;
+      }
+
+      const { ok, currentBalance: newBalance } = await consumeTotal(
+        'voice_debate',
+        VOICE_DEBATE_COST,
+        `${VOICE_DEBATE_LABEL} — ${VOICE_DEBATE_COST} cr`,
+      );
+
+      if (!ok) {
+        setInsufficientCreditsInfo({
+          feature:      'voice_debate',
+          featureLabel: VOICE_DEBATE_LABEL,
+          required:     VOICE_DEBATE_COST,
+          current:      newBalance,
+          shortfall:    Math.max(0, VOICE_DEBATE_COST - newBalance),
+        });
+        return false;
+      }
+
+      console.log(`[useVoiceDebate] ✅  ${VOICE_DEBATE_COST} credits deducted for voice_debate`);
+      return true;
+    } catch (err) {
+      console.warn('[useVoiceDebate] Credit deduction error:', err);
+      if (err instanceof InsufficientCreditsError) {
+        setInsufficientCreditsInfo({
+          feature:      'voice_debate',
+          featureLabel: VOICE_DEBATE_LABEL,
+          required:     VOICE_DEBATE_COST,
+          current:      err.balance,
+          shortfall:    Math.max(0, VOICE_DEBATE_COST - err.balance),
+        });
+      }
+      return false;
+    } finally {
+      setIsConsumingCredits(false);
+    }
+  }, [user, balance, consumeTotal, refreshCredits]);
+
+  const clearInsufficientCredits = useCallback(() => {
+    setInsufficientCreditsInfo(null);
+  }, []);
+
   // ── Generate voice debate ──────────────────────────────────────────────────
 
   const generate = useCallback(async () => {
@@ -367,11 +379,15 @@ export function useVoiceDebate(session: DebateSession | null) {
       patch({ error: 'You must be signed in to generate a voice debate.' });
       return;
     }
-
     if (session.status !== 'completed') {
       patch({ error: 'The debate must be completed before generating voice audio.' });
       return;
     }
+
+    // ── CREDIT GATE ────────────────────────────────────────────────────────
+    const creditOk = await checkAndConsumeCredits();
+    if (!creditOk) return;
+    // ──────────────────────────────────────────────────────────────────────
 
     abortRef.current      = false;
     generatingRef.current = true;
@@ -420,10 +436,10 @@ export function useVoiceDebate(session: DebateSession | null) {
           error:           null,
         });
 
-        // Part 41.2: cache audio locally in background
+        // Part 41.2: cache audio locally
         cacheAudioBackground(voiceDebate);
 
-        // Part 44: Trigger cloud upload in background + sync to workspace shares
+        // Part 44: upload to cloud + sync to workspace shares
         console.log('[useVoiceDebate] 📡  Triggering cloud upload after generation...');
         setIsUploading(true);
         setUploadProgress(0);
@@ -433,13 +449,11 @@ export function useVoiceDebate(session: DebateSession | null) {
             voiceDebate.id,
             voiceDebate.audioSegmentPaths ?? [],
             (progress) => {
-              const pct = Math.round((progress.uploaded / Math.max(progress.total, 1)) * 100);
-              setUploadProgress(pct);
+              setUploadProgress(Math.round((progress.uploaded / Math.max(progress.total, 1)) * 100));
             },
           );
 
           if (result.successCount > 0) {
-            // Update voice_debates row with cloud URLs
             await supabase
               .from('voice_debates')
               .update({
@@ -449,7 +463,6 @@ export function useVoiceDebate(session: DebateSession | null) {
               })
               .eq('id', voiceDebate.id);
 
-            // Update local state so badge turns green immediately
             patch({
               voiceDebate: {
                 ...voiceDebate,
@@ -460,24 +473,18 @@ export function useVoiceDebate(session: DebateSession | null) {
 
             setIsUploading(false);
             setUploadProgress(100);
-
             console.log(`[useVoiceDebate] ✅  Cloud upload complete — ${result.successCount} segments`);
 
-            // Sync to any workspace shares that already exist for this session
             await syncAudioToWorkspaceShares(
-              voiceDebate.id,
-              voiceDebate.debateSessionId,
-              result.uploadedUrls,
-              result.allSucceeded,
+              voiceDebate.id, voiceDebate.debateSessionId,
+              result.uploadedUrls, result.allSucceeded,
             );
           } else {
-            console.warn('[useVoiceDebate] ⚠️  Cloud upload produced 0 successful segments');
             setIsUploading(false);
           }
         } catch (uploadErr) {
           console.warn('[useVoiceDebate] Cloud upload error (non-fatal):', uploadErr);
           setIsUploading(false);
-          // Fall back to the background upload service which has its own retry
           uploadVoiceDebateAudioBackground(voiceDebate.id, voiceDebate.audioSegmentPaths ?? []);
         }
       },
@@ -505,9 +512,9 @@ export function useVoiceDebate(session: DebateSession | null) {
     }, controller.signal);
 
     generatingRef.current = false;
-  }, [user, session, patch]);
+  }, [user, session, patch, checkAndConsumeCredits]);
 
-  // ── Part 44: Manual trigger upload (for "Upload Now" button) ─────────────
+  // ── Part 44: Manual trigger upload ────────────────────────────────────────
 
   const triggerUploadNow = useCallback(async () => {
     const vd = state.voiceDebate;
@@ -521,8 +528,7 @@ export function useVoiceDebate(session: DebateSession | null) {
         vd.id,
         vd.audioSegmentPaths ?? [],
         (progress) => {
-          const pct = Math.round((progress.uploaded / Math.max(progress.total, 1)) * 100);
-          setUploadProgress(pct);
+          setUploadProgress(Math.round((progress.uploaded / Math.max(progress.total, 1)) * 100));
         },
       );
 
@@ -545,10 +551,7 @@ export function useVoiceDebate(session: DebateSession | null) {
         });
 
         await syncAudioToWorkspaceShares(
-          vd.id,
-          vd.debateSessionId,
-          result.uploadedUrls,
-          result.allSucceeded,
+          vd.id, vd.debateSessionId, result.uploadedUrls, result.allSucceeded,
         );
       }
     } catch (err) {
@@ -559,18 +562,16 @@ export function useVoiceDebate(session: DebateSession | null) {
     }
   }, [state.voiceDebate, isUploading, patch]);
 
-  // ── Cancel generation ──────────────────────────────────────────────────────
+  // ── Cancel ────────────────────────────────────────────────────────────────
 
   const cancelGeneration = useCallback(() => {
     abortRef.current      = true;
     generatingRef.current = false;
     setIsCancelling(true);
-
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-
     setTimeout(() => {
       setState(INITIAL_STATE);
       setIsCancelling(false);
@@ -578,7 +579,7 @@ export function useVoiceDebate(session: DebateSession | null) {
     }, 800);
   }, []);
 
-  // ── Reset ──────────────────────────────────────────────────────────────────
+  // ── Reset ─────────────────────────────────────────────────────────────────
 
   const reset = useCallback(() => {
     abortRef.current      = true;
@@ -594,19 +595,16 @@ export function useVoiceDebate(session: DebateSession | null) {
     setTimeout(() => { abortRef.current = false; }, 100);
   }, []);
 
-  // ── Delete voice debate ────────────────────────────────────────────────────
+  // ── Delete ────────────────────────────────────────────────────────────────
 
   const deleteVoiceDebate = useCallback(async () => {
     if (!user || !state.voiceDebate) return;
-
     const { error } = await supabase
       .from('voice_debates')
       .delete()
       .eq('id', state.voiceDebate.id)
       .eq('user_id', user.id);
-
     if (!error) {
-      // Part 41.2: also evict local audio cache
       await evictVoiceDebateAudio(state.voiceDebate.id).catch(() => {});
       setState(INITIAL_STATE);
       setIsUploading(false);
@@ -614,10 +612,10 @@ export function useVoiceDebate(session: DebateSession | null) {
     }
   }, [user, state.voiceDebate]);
 
-  // ── Derived ────────────────────────────────────────────────────────────────
+  // ── Derived ───────────────────────────────────────────────────────────────
 
-  const isGenerating  = state.phase !== 'idle' && state.phase !== 'done' && state.phase !== 'error';
-  const hasCompleted  = state.voiceDebate?.status === 'completed';
+  const isGenerating     = state.phase !== 'idle' && state.phase !== 'done' && state.phase !== 'error';
+  const hasCompleted     = state.voiceDebate?.status === 'completed';
   const audioAllUploaded = state.voiceDebate?.audioAllUploaded === true;
 
   return {
@@ -631,6 +629,10 @@ export function useVoiceDebate(session: DebateSession | null) {
     isUploading,
     audioAllUploaded,
     triggerUploadNow,
+    // Credit gate:
+    insufficientCreditsInfo,
+    isConsumingCredits,
+    clearInsufficientCredits,
     generate,
     cancelGeneration,
     reset,

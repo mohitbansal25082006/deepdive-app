@@ -1,25 +1,17 @@
 // src/context/AuthContext.tsx
 // Part 43 FINAL FIX — Fixes OAuth setSession hanging/deadlock.
+// MINI PLAYER FIX — Stops both audio engines on signOut so the mini player
+//   cannot persist and crash when switching accounts.
 //
-// ROOT CAUSE OF "WHITE SCREEN + NEED RESTART":
-//   Supabase explicitly warns: do NOT use await inside onAuthStateChange.
-//   Our AuthContext called `await fetchProfile(uid)` directly inside the
-//   onAuthStateChange callback. When OAuth called setSession(), Supabase
-//   internally tried to fire onAuthStateChange and waited for it to complete
-//   before resolving the setSession promise. But setSession itself is what
-//   triggers onAuthStateChange — causing a DEADLOCK.
-//   Result: setSession hangs forever → white screen → no navigation.
-//   On restart: session already in AsyncStorage → getSession() reads it
-//   without needing setSession → no deadlock → works.
+// CHANGE from Part 43:
+//   signOut() now calls AudioEngine.stop() and VoiceDebateEngine.stop() before
+//   clearing React state. This ensures:
+//     1. The mini player disappears immediately on logout.
+//     2. No audio continues playing after the user signs out.
+//     3. The engines are in a clean state before the next user signs in,
+//        preventing the crash when signing into a different account.
 //
-// THE FIX:
-//   Wrap ALL async work inside onAuthStateChange in setTimeout(..., 0).
-//   This defers the async work to the next event loop tick, after
-//   onAuthStateChange returns. setSession can then resolve immediately.
-//   Navigation in signin.tsx then fires correctly without restart.
-//
-// All Part 32 suspension/deletion logic preserved exactly.
-// All Part 31 credit balance realtime update preserved exactly.
+// All other Part 43 logic unchanged.
 
 import React, {
   createContext, useContext, useEffect, useRef, useState, ReactNode,
@@ -28,6 +20,8 @@ import { AppState, AppStateStatus } from 'react-native';
 import { Session, User }            from '@supabase/supabase-js';
 import { router }                   from 'expo-router';
 import { supabase }                 from '../lib/supabase';
+import { AudioEngine }              from '../services/GlobalAudioEngine';
+import { VoiceDebateEngine }        from '../services/VoiceDebateAudioEngine';
 import type { Profile }             from '../types';
 
 interface AuthContextType {
@@ -94,7 +88,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── signOut ────────────────────────────────────────────────────────────────
+  // MINI PLAYER FIX: stop both audio engines before clearing state.
+  // This hides the mini player immediately and prevents the crash that
+  // occurred when the engines still held references to the previous user's
+  // audio while a new user was signing in.
   const signOut = async () => {
+    // Stop all audio first — this causes both engines to broadcast
+    // isVisible=false, which makes MiniPlayer unmount immediately.
+    try {
+      await AudioEngine.stop();
+    } catch {
+      // Non-fatal — engine may already be stopped
+    }
+    try {
+      await VoiceDebateEngine.stop();
+    } catch {
+      // Non-fatal
+    }
+
     setSession(null);
     setUser(null);
     setProfile(null);
@@ -168,6 +179,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!mounted) return;
 
       if (event === 'SIGNED_OUT') {
+        // Stop engines here too — covers the case where signOut was triggered
+        // externally (e.g. token expiry, admin deletion via Realtime).
+        AudioEngine.stop().catch(() => {});
+        VoiceDebateEngine.stop().catch(() => {});
+
         setSession(null);
         setUser(null);
         setProfile(null);
@@ -175,8 +191,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoading(false);
         teardownRealtimeProfile();
         if (!accountDeletedRef.current) {
-          // Use setTimeout to defer navigation — prevents issues during
-          // rapid state transitions (e.g. OAuth setSession then signOut)
           setTimeout(() => {
             if (mounted) router.replace('/(auth)/onboarding');
           }, 0);

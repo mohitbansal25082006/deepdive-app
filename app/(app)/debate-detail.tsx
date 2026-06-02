@@ -1,19 +1,9 @@
 // app/(app)/debate-detail.tsx
 // Part 44 UPDATE — Wires ShareVoiceDebateToWorkspaceModal + passes new props to VoiceDebateCard.
+// CREDIT GATE UPDATE — wires insufficientCreditsInfo, clearInsufficientCredits,
+//   isConsumingCredits from useVoiceDebate through to VoiceDebateCard.
 //
-// CHANGES from Part 40 Fix version:
-//   1. Imports ShareVoiceDebateToWorkspaceModal (new in Part 44B).
-//   2. Imports useVoiceDebateSharedWorkspaces (new in Part 44A).
-//   3. VoiceDebateCard receives:
-//        onShareToWorkspace  → opens the share modal
-//        sharedToCount       → badge on the share button
-//        audioAllUploaded    → drives the cloud upload badge in the card
-//   4. ShareVoiceDebateToWorkspaceModal rendered at the bottom.
-//   5. All Part 40 + earlier functionality unchanged.
-//
-// The share modal only appears when:
-//   - The voice debate is completed
-//   - audio_all_uploaded = true (enforced by the modal itself too)
+// Only the voiceDebateSlot block changed — everything else is identical to Part 44.
 
 import React, {
   useState,
@@ -147,9 +137,9 @@ function ExportBar({ session }: { session: DebateSession }) {
   type ExportOption = { id: ExportBusy; icon: string; label: string; color: string; onPress: () => void };
 
   const options: ExportOption[] = [
-    { id: 'pdf',   icon: 'document-text-outline',                               label: 'PDF',              color: COLORS.primary,   onPress: handlePDF   },
-    { id: 'copy',  icon: copied ? 'checkmark-circle-outline' : 'copy-outline',  label: copied ? 'Copied!' : 'Copy', color: copied ? COLORS.accent : COLORS.info, onPress: handleCopy },
-    { id: 'share', icon: 'share-outline',                                        label: 'Share',            color: COLORS.secondary, onPress: handleShare },
+    { id: 'pdf',   icon: 'document-text-outline',                              label: 'PDF',               color: COLORS.primary,   onPress: handlePDF   },
+    { id: 'copy',  icon: copied ? 'checkmark-circle-outline' : 'copy-outline', label: copied ? 'Copied!' : 'Copy', color: copied ? COLORS.accent : COLORS.info, onPress: handleCopy },
+    { id: 'share', icon: 'share-outline',                                       label: 'Share',             color: COLORS.secondary, onPress: handleShare },
   ];
 
   return (
@@ -312,7 +302,7 @@ function OverviewTab({
         ))}
       </View>
 
-      {/* Voice Debate Card (Part 40 + Part 44) */}
+      {/* Voice Debate Card (Part 40 + 44 + Credit Gate) */}
       {voiceDebateSlot}
 
       {completedDate && (
@@ -338,19 +328,24 @@ export default function DebateDetailScreen() {
   const [activeTab, setActiveTab] = useState<DebateTab>('overview');
 
   // ── Share debate to workspace modal (Part 16) ─────────────────────────────
-  const [showShareDebateModal,      setShowShareDebateModal]      = useState(false);
+  const [showShareDebateModal, setShowShareDebateModal] = useState(false);
   const { workspaceIds: sharedToIds, reload: reloadShared } =
     useDebateSharedWorkspaces(sessionId);
 
-  // ── Part 40 + 44: Voice debate hook ───────────────────────────────────────
+  // ── Part 40 + 44 + Credit Gate: Voice debate hook ─────────────────────────
   const {
-    state:              voiceDebateGenState,
-    isGenerating:       isVoiceGenerating,
-    isCancelling:       isVoiceCancelling,
+    state:                   voiceDebateGenState,
+    isGenerating:            isVoiceGenerating,
+    isCancelling:            isVoiceCancelling,
     isLoadingExisting,
     audioAllUploaded,
-    generate:           generateVoiceDebate,
-    cancelGeneration:   cancelVoiceDebate,
+    // ── Credit gate (new) ──────────────────────────────────────────────────
+    insufficientCreditsInfo,
+    clearInsufficientCredits,
+    isConsumingCredits,
+    // ──────────────────────────────────────────────────────────────────────
+    generate:                generateVoiceDebate,
+    cancelGeneration:        cancelVoiceDebate,
   } = useVoiceDebate(session);
 
   // ── Part 44: Voice debate workspace sharing ───────────────────────────────
@@ -377,7 +372,6 @@ export default function DebateDetailScreen() {
 
         if (fetchError) throw fetchError;
         if (!data) throw new Error('Debate session not found.');
-
         setSession(mapDbRow(data as Record<string, unknown>));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load debate.');
@@ -436,14 +430,8 @@ export default function DebateDetailScreen() {
       onCancel={cancelVoiceDebate}
       isGenerating={isVoiceGenerating}
       isCancelling={isVoiceCancelling}
-      // KEY FIX: pass the hook's real isLoadingExisting state so the card
-      // shows a brief spinner on the Generate button while the DB check runs,
-      // then immediately enables the button once the check resolves to nothing.
-      // Without this, the card re-derived isLoadingExisting internally and was
-      // ALWAYS true on a fresh visit (phase='idle', voiceDebate=null), making
-      // the card look like it was auto-generating.
       isLoadingExisting={isLoadingExisting}
-      // Part 44: share to workspace
+      // Part 44: workspace share
       onShareToWorkspace={
         voiceDebateGenState.voiceDebate?.status === 'completed'
           ? () => setShowShareVoiceModal(true)
@@ -451,6 +439,10 @@ export default function DebateDetailScreen() {
       }
       sharedToCount={voiceSharedToIds.length}
       audioAllUploaded={audioAllUploaded}
+      // Credit gate: pass through so VoiceDebateCard can show cost + modal
+      insufficientCreditsInfo={insufficientCreditsInfo}
+      clearInsufficientCredits={clearInsufficientCredits}
+      isConsumingCredits={isConsumingCredits}
     />
   ) : null;
 
@@ -554,7 +546,6 @@ export default function DebateDetailScreen() {
           {TABS.map(tab => {
             const isActive   = activeTab === tab.id;
             const isDisabled = tab.id === 'moderator' && !session.moderator;
-
             return (
               <TouchableOpacity
                 key={tab.id}
@@ -595,18 +586,13 @@ export default function DebateDetailScreen() {
           keyboardShouldPersistTaps="handled"
         >
           {activeTab === 'overview' && (
-            <OverviewTab
-              session={session}
-              voiceDebateSlot={voiceDebateSlot}
-            />
+            <OverviewTab session={session} voiceDebateSlot={voiceDebateSlot} />
           )}
-
           {activeTab === 'perspectives' && (
             <Animated.View entering={FadeIn.duration(300)}>
               <DebatePerspectiveView perspectives={session.perspectives} />
             </Animated.View>
           )}
-
           {activeTab === 'moderator' && session.moderator && (
             <Animated.View entering={FadeIn.duration(300)}>
               <ModeratorSummary moderator={session.moderator} />
