@@ -1,19 +1,22 @@
 // src/services/debateSharingService.ts
-// Part 16 — Sharing debate sessions into / out of workspaces.
+// Part 46 FIX — getWorkspaceSharedDebates now detects P0001 membership
+// errors (permission_denied / not_member / access denied) and returns
+// { data: [], error: null, notMember: true } instead of throwing.
 //
-// Pattern mirrors podcastSharingService.ts exactly, but simpler:
-// debates have no audio to upload — the full JSON perspectives + moderator
-// data is stored directly in the shared_debates row by the RPC.
+// ROOT CAUSE of "[getWorkspaceSharedDebates] RPC error: permission_denied":
+//   When user B is blocked/removed, their member row is deleted.
+//   The get_workspace_shared_debates RPC starts with:
+//     IF NOT public.is_workspace_member(...) THEN RAISE EXCEPTION 'permission_denied'
+//   B's session still calls this RPC on mount/refresh → gets P0001.
+//   Previously this error was console.error'd and thrown, causing the
+//   useDebateSharing hook to log the error and set error state — showing
+//   the red error banner and retrying on every version bump.
 //
-// Public API:
-//   shareDebateToWorkspace(workspaceId, debateId)
-//   removeSharedDebate(workspaceId, debateId)
-//   getWorkspaceSharedDebates(workspaceId)
-//   getSharedDebateById(workspaceId, sharedId)
-//   getWorkspacesDebateIsSharedTo(debateId)
-//   trackDebateView(sharedId)          — fire-and-forget
-//   trackDebateDownload(sharedId)
-//   sharedDebateToSession(sd)          — convert for export/render reuse
+// FIX: Intercept P0001 / known membership error messages at the service
+//   level and return the notMember sentinel. The hook's notMemberRef
+//   then prevents any further load() calls.
+//
+// All other Part 16 functions unchanged.
 
 import { supabase } from '../lib/supabase';
 import {
@@ -24,6 +27,26 @@ import {
   DebateSession,
   DebateStatus,
 } from '../types';
+
+// ─── Membership error detector ────────────────────────────────────────────────
+
+function isMembershipError(err: unknown): boolean {
+  if (!err) return false;
+  const code = (err as any)?.code ?? '';
+  const msg  = (
+    (err as any)?.message ??
+    (err as any)?.details ??
+    String(err)
+  ).toLowerCase();
+  return (
+    code === 'P0001' ||
+    msg.includes('permission_denied') ||
+    msg.includes('not_member') ||
+    msg.includes('not a member') ||
+    msg.includes('access denied') ||
+    msg.includes('access_denied')
+  );
+}
 
 // ─── Row mapper ───────────────────────────────────────────────────────────────
 
@@ -112,16 +135,23 @@ export async function removeSharedDebate(
 }
 
 // ─── Get all shared debates for a workspace ───────────────────────────────────
+// Part 46 FIX: Returns { notMember: true } when B is no longer a member
+// so useDebateSharing stops retrying and suppresses the error banner.
 
 export async function getWorkspaceSharedDebates(
   workspaceId: string,
-): Promise<{ data: SharedDebate[]; error: string | null }> {
+): Promise<{ data: SharedDebate[]; error: string | null; notMember?: boolean }> {
   try {
     const { data, error } = await supabase.rpc('get_workspace_shared_debates', {
       p_workspace_id: workspaceId,
     });
 
     if (error) {
+      // Part 46 FIX: intercept membership errors before throwing
+      if (isMembershipError(error)) {
+        // Silently suppressed — user is no longer a member
+        return { data: [], error: null, notMember: true };
+      }
       console.error('[getWorkspaceSharedDebates] RPC error:', error);
       throw error;
     }
@@ -129,6 +159,9 @@ export async function getWorkspaceSharedDebates(
     const rows = (data as Record<string, unknown>[]) ?? [];
     return { data: rows.map(mapSharedDebateRow), error: null };
   } catch (err) {
+    if (isMembershipError(err)) {
+      return { data: [], error: null, notMember: true };
+    }
     return {
       data:  [],
       error: err instanceof Error ? err.message : 'Failed to load shared debates',

@@ -1,15 +1,16 @@
 // src/services/podcastSharingService.ts
-// Part 15 UPDATED — Now uploads audio segments to Supabase Storage
-// BEFORE inserting the shared_podcasts row, so workspace members on
-// other devices can stream the audio via HTTPS URLs.
+// Part 46 FIX — getWorkspaceSharedPodcasts now detects P0001 membership
+// errors (Access denied: not a member / permission_denied) and returns
+// { data: [], error: null, notMember: true } instead of throwing.
 //
-// KEY CHANGE from original:
-//   sharePodcastToWorkspace() now:
-//     1. Uploads all local audio segments to Supabase Storage.
-//     2. Replaces local file:/// paths with signed Supabase URLs.
-//     3. Calls share_podcast_to_workspace RPC with the cloud URLs.
-//   This means the audio_segment_paths stored in shared_podcasts
-//   are always HTTPS URLs, playable by any workspace member.
+// ROOT CAUSE: Same as debateSharingService — when B is removed/blocked,
+// the get_workspace_shared_podcasts RPC throws 'Access denied: not a member'
+// (P0001). Previously this crashed through to the hook's error state.
+//
+// FIX: Intercept the error before throwing and return the notMember sentinel.
+//
+// All other Part 15 functions (sharePodcastToWorkspace, removeSharedPodcast,
+// getSharedPodcastForWorkspace, sharedPodcastToPodcast, etc.) unchanged.
 
 import { supabase }       from '../lib/supabase';
 import {
@@ -21,6 +22,26 @@ import {
   uploadPodcastAudioToStorage,
   UploadProgressCallback,
 } from './podcastAudioUploadService';
+
+// ─── Membership error detector ────────────────────────────────────────────────
+
+function isMembershipError(err: unknown): boolean {
+  if (!err) return false;
+  const code = (err as any)?.code ?? '';
+  const msg  = (
+    (err as any)?.message ??
+    (err as any)?.details ??
+    String(err)
+  ).toLowerCase();
+  return (
+    code === 'P0001' ||
+    msg.includes('permission_denied') ||
+    msg.includes('not_member') ||
+    msg.includes('not a member') ||
+    msg.includes('access denied') ||
+    msg.includes('access_denied')
+  );
+}
 
 // ─── Mapper ───────────────────────────────────────────────────────────────────
 
@@ -92,7 +113,6 @@ async function getPodcastAudioPaths(
 }
 
 // ─── Share a podcast into a workspace ────────────────────────────────────────
-// Now uploads audio to Supabase Storage first so other devices can play it.
 
 export async function sharePodcastToWorkspace(
   workspaceId:  string,
@@ -101,7 +121,6 @@ export async function sharePodcastToWorkspace(
   onProgress?:  UploadProgressCallback,
 ): Promise<{ data: SharedPodcast | null; error: string | null }> {
   try {
-    // ── Step 1: Get local audio paths from source podcast ──────────────────
     const { paths: localPaths, error: pathError } =
       await getPodcastAudioPaths(podcastId);
 
@@ -109,7 +128,6 @@ export async function sharePodcastToWorkspace(
       return { data: null, error: pathError };
     }
 
-    // ── Step 2: Upload local segments to Supabase Storage ──────────────────
     let cloudPaths: (string | null)[] = localPaths.map(() => null);
 
     if (localPaths.length > 0) {
@@ -123,7 +141,6 @@ export async function sharePodcastToWorkspace(
 
       cloudPaths = uploadResult.uploadedUrls;
 
-      // Require at least 50% of segments uploaded for a usable podcast
       if (uploadResult.successCount < Math.ceil(localPaths.length * 0.5)) {
         console.warn(
           `[sharePodcastToWorkspace] Only ${uploadResult.successCount}/${localPaths.length} ` +
@@ -131,11 +148,6 @@ export async function sharePodcastToWorkspace(
         );
       }
     }
-
-    // ── Step 3: Update the shared_podcasts row via SECURITY DEFINER RPC ────
-    // We pass the cloud URLs so the RPC stores them directly.
-    // The RPC patch (schema_part15_patch3.sql) accepts an optional
-    // p_audio_paths parameter to override the source podcast paths.
 
     onProgress?.({
       uploaded: localPaths.length,
@@ -193,16 +205,22 @@ export async function removeSharedPodcast(
 }
 
 // ─── Get all shared podcasts for a workspace ──────────────────────────────────
+// Part 46 FIX: Returns { notMember: true } when B is no longer a member.
 
 export async function getWorkspaceSharedPodcasts(
   workspaceId: string,
-): Promise<{ data: SharedPodcast[]; error: string | null }> {
+): Promise<{ data: SharedPodcast[]; error: string | null; notMember?: boolean }> {
   try {
     const { data, error } = await supabase.rpc('get_workspace_shared_podcasts', {
       p_workspace_id: workspaceId,
     });
 
     if (error) {
+      // Part 46 FIX: intercept membership errors before throwing
+      if (isMembershipError(error)) {
+        // Silently suppressed — user is no longer a member
+        return { data: [], error: null, notMember: true };
+      }
       console.error('[getWorkspaceSharedPodcasts] RPC error:', error);
       throw error;
     }
@@ -210,6 +228,9 @@ export async function getWorkspaceSharedPodcasts(
     const rows = (data as Record<string, unknown>[]) ?? [];
     return { data: rows.map(mapSharedPodcastRow), error: null };
   } catch (err) {
+    if (isMembershipError(err)) {
+      return { data: [], error: null, notMember: true };
+    }
     return {
       data:  [],
       error: err instanceof Error ? err.message : 'Failed to load shared podcasts',
@@ -289,7 +310,7 @@ export async function trackPodcastDownload(sharedId: string): Promise<void> {
   if (error) console.warn('[trackPodcastDownload] error:', error.message);
 }
 
-// ─── Convert SharedPodcast → Podcast (for reuse in usePodcastPlayer) ─────────
+// ─── Convert SharedPodcast → Podcast ─────────────────────────────────────────
 
 export function sharedPodcastToPodcast(sp: SharedPodcast): Podcast {
   return {

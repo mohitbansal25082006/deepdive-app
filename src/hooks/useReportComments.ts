@@ -1,5 +1,22 @@
 // src/hooks/useReportComments.ts
-// Full comment state with realtime updates via subscribeToComments.
+// Part 46 UPDATE — Two fixes:
+//
+// FIX 1 — "Unknown" author on the sender's own screen:
+//   Previously addComment / addReply returned the raw DB row without author,
+//   so the sender saw "Unknown" until they refreshed. Now commentService.ts
+//   fetches the current user's profile and attaches it. This hook just
+//   uses the returned data directly — no change needed in postComment/postReply.
+//
+// FIX 2 — "Unknown" author for other users receiving via realtime:
+//   subscribeToComments in commentService.ts (Part 46) now awaits fetchProfile()
+//   before calling onInsert/onReplyInsert. So incoming comments already have
+//   author attached. This hook no longer needs to skip self-comments because
+//   the profile is now correctly attached for all senders.
+//
+// FIX 3 — Reply activity logging:
+//   postReply now calls logCommentReplied so the Activity tab shows replies.
+//
+// All Part 11/12 comment state, section counts, and filtering is preserved.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ReportComment, CommentReply, CommentState } from '../types';
@@ -8,6 +25,7 @@ import {
   addComment, addReply, toggleCommentResolved,
   deleteComment, deleteReply, subscribeToComments,
 } from '../services/commentService';
+import { logCommentReplied } from '../services/activityService';
 import { useAuth } from '../context/AuthContext';
 
 export function useReportComments(
@@ -21,7 +39,7 @@ export function useReportComments(
   });
   const unsubRef = useRef<(() => void) | null>(null);
 
-  // ── Load ──────────────────────────────────────────────────────────────────────
+  // ── Load ──────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
     if (!reportId || !workspaceId) return;
     setState(s => ({ ...s, isLoading: true, error: null }));
@@ -40,25 +58,34 @@ export function useReportComments(
     }));
   }, [reportId, workspaceId]);
 
-  // ── Realtime ──────────────────────────────────────────────────────────────────
+  // ── Realtime ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!reportId || !workspaceId) return;
 
     load();
 
     unsubRef.current = subscribeToComments(reportId, workspaceId, {
+      // Part 46 FIX: commentService now fetches the author profile before
+      // calling onInsert, so incoming.author is always populated.
+      // We no longer skip self-comments here — we rely on optimistic state
+      // from postComment for the sender's own view, and let the realtime
+      // event carry the correct author for everyone else.
+      // Deduplication: check by id to avoid double-adding own comment.
       onInsert: (incoming) => {
-        // Don't add if it's from the current user — we already added it optimistically
-        if (incoming.userId === user?.id) return;
-        setState(s => ({
-          ...s,
-          comments: [...s.comments, incoming as ReportComment],
-          sectionCounts: incoming.sectionId ? {
-            ...s.sectionCounts,
-            [incoming.sectionId]: (s.sectionCounts[incoming.sectionId] ?? 0) + 1,
-          } : s.sectionCounts,
-        }));
+        setState(s => {
+          // Deduplicate: if we already have this comment (from optimistic insert), skip
+          if (s.comments.some(c => c.id === incoming.id)) return s;
+          return {
+            ...s,
+            comments: [...s.comments, incoming as ReportComment],
+            sectionCounts: incoming.sectionId ? {
+              ...s.sectionCounts,
+              [incoming.sectionId]: (s.sectionCounts[incoming.sectionId] ?? 0) + 1,
+            } : s.sectionCounts,
+          };
+        });
       },
+
       onUpdate: (updated) => {
         setState(s => ({
           ...s,
@@ -67,6 +94,7 @@ export function useReportComments(
           ),
         }));
       },
+
       onDelete: (commentId) => {
         setState(s => {
           const comment = s.comments.find(c => c.id === commentId);
@@ -81,16 +109,23 @@ export function useReportComments(
           };
         });
       },
+
       onReplyInsert: (reply) => {
-        if (reply.userId === user?.id) return;
-        setState(s => ({
-          ...s,
-          comments: s.comments.map(c =>
-            c.id === reply.commentId
-              ? { ...c, replies: [...(c.replies ?? []), reply as CommentReply] }
-              : c
-          ),
-        }));
+        setState(s => {
+          // Deduplicate: skip if reply already exists (from optimistic insert)
+          const parentComment = s.comments.find(c => c.id === reply.commentId);
+          if (!parentComment) return s;
+          if ((parentComment.replies ?? []).some(r => r.id === reply.id)) return s;
+
+          return {
+            ...s,
+            comments: s.comments.map(c =>
+              c.id === reply.commentId
+                ? { ...c, replies: [...(c.replies ?? []), reply as CommentReply] }
+                : c
+            ),
+          };
+        });
       },
     });
 
@@ -98,10 +133,9 @@ export function useReportComments(
       if (unsubRef.current) unsubRef.current();
       unsubRef.current = null;
     };
-  }, [reportId, workspaceId, load, user?.id]);
+  }, [reportId, workspaceId, load]);
 
-  // ── Actions ───────────────────────────────────────────────────────────────────
-
+  // ── Post comment (optimistic) ─────────────────────────────────────────────
   const postComment = useCallback(async (
     content: string,
     sectionId?: string,
@@ -112,18 +146,26 @@ export function useReportComments(
 
     const { data, error } = await addComment(workspaceId, reportId, content, sectionId, mentions);
 
-    setState(s => ({
-      ...s,
-      isSending: false,
-      comments: data ? [...s.comments, data] : s.comments,
-      sectionCounts: data?.sectionId ? {
-        ...s.sectionCounts,
-        [data.sectionId]: (s.sectionCounts[data.sectionId] ?? 0) + 1,
-      } : s.sectionCounts,
-      error,
-    }));
+    setState(s => {
+      if (!data) return { ...s, isSending: false, error };
+
+      // Deduplicate: realtime may fire before this setState resolves
+      const alreadyExists = s.comments.some(c => c.id === data.id);
+      return {
+        ...s,
+        isSending: false,
+        // Part 46: data now includes author profile from commentService fix
+        comments: alreadyExists ? s.comments : [...s.comments, data],
+        sectionCounts: data.sectionId ? {
+          ...s.sectionCounts,
+          [data.sectionId]: (s.sectionCounts[data.sectionId] ?? 0) + 1,
+        } : s.sectionCounts,
+        error,
+      };
+    });
   }, [reportId, workspaceId]);
 
+  // ── Post reply (optimistic) ───────────────────────────────────────────────
   const postReply = useCallback(async (
     commentId: string,
     content: string,
@@ -134,18 +176,39 @@ export function useReportComments(
 
     const { data, error } = await addReply(commentId, content, mentions);
 
-    setState(s => ({
-      ...s,
-      isReplying: false,
-      comments: data ? s.comments.map(c =>
-        c.id === commentId
-          ? { ...c, replies: [...(c.replies ?? []), data] }
-          : c
-      ) : s.comments,
-      error,
-    }));
-  }, []);
+    setState(s => {
+      if (!data) return { ...s, isReplying: false, error };
 
+      // Deduplicate: realtime may already have added this reply
+      const parentComment = s.comments.find(c => c.id === commentId);
+      const alreadyExists = (parentComment?.replies ?? []).some(r => r.id === data.id);
+
+      return {
+        ...s,
+        isReplying: false,
+        // Part 46: data now includes author profile from commentService fix
+        comments: alreadyExists
+          ? s.comments
+          : s.comments.map(c =>
+              c.id === commentId
+                ? { ...c, replies: [...(c.replies ?? []), data] }
+                : c
+            ),
+        error,
+      };
+    });
+
+    // Part 46: Log reply activity so it appears in the Activity tab
+    if (data && workspaceId) {
+      logCommentReplied({
+        workspaceId,
+        commentId,
+        reportId: reportId ?? '',
+      }).catch(() => {});
+    }
+  }, [workspaceId, reportId]);
+
+  // ── Toggle resolve ────────────────────────────────────────────────────────
   const toggleResolve = useCallback(async (commentId: string) => {
     if (!workspaceId) return;
     const { data } = await toggleCommentResolved(commentId, workspaceId);
@@ -157,6 +220,7 @@ export function useReportComments(
     }
   }, [workspaceId]);
 
+  // ── Remove comment (optimistic) ───────────────────────────────────────────
   const removeComment = useCallback(async (commentId: string) => {
     const comment = state.comments.find(c => c.id === commentId);
     setState(s => ({
@@ -170,6 +234,7 @@ export function useReportComments(
     if (error) load(); // Revert on failure
   }, [state.comments, load]);
 
+  // ── Remove reply (optimistic) ─────────────────────────────────────────────
   const removeReply = useCallback(async (commentId: string, replyId: string) => {
     setState(s => ({
       ...s,
@@ -183,7 +248,7 @@ export function useReportComments(
     if (error) load();
   }, [load]);
 
-  // Filtered helpers
+  // ── Filtered helpers ──────────────────────────────────────────────────────
   const getCommentsForSection = useCallback((sectionId: string) =>
     state.comments.filter(c => c.sectionId === sectionId && !c.isResolved),
     [state.comments],

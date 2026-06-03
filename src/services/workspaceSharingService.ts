@@ -1,13 +1,37 @@
 // src/services/workspaceSharingService.ts
-// Part 14 FINAL FIX — Maps "out_" prefixed column names returned by
-// the fixed get_workspace_shared_content and get_user_workspaces_for_sharing
-// RPCs. The prefix was added to fix Postgres 42702 ambiguous column error.
+// Part 46 FIX — Added isMembershipError() guard to all load functions.
+//
+// When a user is blocked/removed, any subsequent RPC call that checks
+// membership returns P0001 "Access denied" / "not_member". Previously
+// this surfaced as a load error in the Shared tab. Now we detect this
+// condition and return an empty array with a special sentinel error code
+// so the calling hook can handle it gracefully (stop retrying, optionally
+// trigger self-removal navigation).
+//
+// All Part 14/15 mapper and CRUD behaviour preserved exactly.
 
 import { supabase } from '../lib/supabase';
 import { SharedWorkspaceContent, SharedContentType } from '../types';
 
-// ─── Mapper: get_workspace_shared_content rows ────────────────────────────────
-// RPC now returns out_id, out_workspace_id, etc. (prefixed to avoid 42702)
+// ─── Membership error detector ────────────────────────────────────────────────
+
+export function isMembershipError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = (
+    (err as any)?.message ??
+    (err as any)?.details ??
+    String(err)
+  ).toLowerCase();
+  return (
+    msg.includes('access denied') ||
+    msg.includes('not_member') ||
+    msg.includes('not a member') ||
+    msg.includes('permission_denied') ||
+    (err as any)?.code === 'P0001'
+  );
+}
+
+// ─── Mappers ──────────────────────────────────────────────────────────────────
 
 function mapSharedContentRow(row: Record<string, unknown>): SharedWorkspaceContent {
   return {
@@ -26,8 +50,6 @@ function mapSharedContentRow(row: Record<string, unknown>): SharedWorkspaceConte
   };
 }
 
-// ─── Mapper for share_content_to_workspace return (no prefix — returns row) ──
-
 function mapShareRow(row: Record<string, unknown>): SharedWorkspaceContent {
   return {
     id:           row.id           as string,
@@ -45,7 +67,7 @@ function mapShareRow(row: Record<string, unknown>): SharedWorkspaceContent {
   };
 }
 
-// ─── Share a presentation into a workspace ────────────────────────────────────
+// ─── Share presentation ───────────────────────────────────────────────────────
 
 export async function sharePresentationToWorkspace(
   workspaceId:    string,
@@ -65,15 +87,9 @@ export async function sharePresentationToWorkspace(
       p_report_id:    reportId ?? null,
       p_metadata:     metadata,
     });
-
-    if (error) {
-      console.error('[sharePresentationToWorkspace] RPC error:', error);
-      throw error;
-    }
-
+    if (error) throw error;
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
     if (!row) throw new Error('No data returned from share RPC');
-
     return { data: mapShareRow(row), error: null };
   } catch (err) {
     return {
@@ -83,7 +99,7 @@ export async function sharePresentationToWorkspace(
   }
 }
 
-// ─── Share an academic paper into a workspace ─────────────────────────────────
+// ─── Share academic paper ─────────────────────────────────────────────────────
 
 export async function shareAcademicPaperToWorkspace(
   workspaceId: string,
@@ -103,15 +119,9 @@ export async function shareAcademicPaperToWorkspace(
       p_report_id:    reportId ?? null,
       p_metadata:     metadata,
     });
-
-    if (error) {
-      console.error('[shareAcademicPaperToWorkspace] RPC error:', error);
-      throw error;
-    }
-
+    if (error) throw error;
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
     if (!row) throw new Error('No data returned from share RPC');
-
     return { data: mapShareRow(row), error: null };
   } catch (err) {
     return {
@@ -134,25 +144,21 @@ export async function removeSharedContent(
       p_content_type: contentType,
       p_content_id:   contentId,
     });
-
-    if (error) {
-      console.error('[removeSharedContent] RPC error:', error);
-      throw error;
-    }
-
+    if (error) throw error;
     return { error: null };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to remove' };
   }
 }
 
-// ─── Get all shared content for a workspace ───────────────────────────────────
-// Maps "out_" prefixed columns from the fixed RPC.
+// ─── Get all shared content ───────────────────────────────────────────────────
+// Part 46 FIX: Returns { notMember: true } sentinel when the user is no longer
+// a member so the calling hook can stop retrying and trigger navigation.
 
 export async function getWorkspaceSharedContent(
   workspaceId:  string,
   contentType?: SharedContentType,
-): Promise<{ data: SharedWorkspaceContent[]; error: string | null }> {
+): Promise<{ data: SharedWorkspaceContent[]; error: string | null; notMember?: boolean }> {
   try {
     const { data, error } = await supabase.rpc('get_workspace_shared_content', {
       p_workspace_id: workspaceId,
@@ -160,13 +166,20 @@ export async function getWorkspaceSharedContent(
     });
 
     if (error) {
-      console.error('[getWorkspaceSharedContent] RPC error:', error);
+      // Part 46 FIX: detect membership errors and return sentinel
+      if (isMembershipError(error)) {
+        // Silently suppressed — user is no longer a member
+        return { data: [], error: null, notMember: true };
+      }
       throw error;
     }
 
     const rows = (data as Record<string, unknown>[]) ?? [];
     return { data: rows.map(mapSharedContentRow), error: null };
   } catch (err) {
+    if (isMembershipError(err)) {
+      return { data: [], error: null, notMember: true };
+    }
     return {
       data:  [],
       error: err instanceof Error ? err.message : 'Failed to load shared content',
@@ -174,8 +187,7 @@ export async function getWorkspaceSharedContent(
   }
 }
 
-// ─── Get workspace IDs a piece of content is already shared to ───────────────
-// Direct table query — SELECT policy only needs caller to be a member.
+// ─── Get workspace IDs a piece of content is shared to ───────────────────────
 
 export async function getWorkspacesContentIsSharedTo(
   contentType: SharedContentType,
@@ -188,11 +200,7 @@ export async function getWorkspacesContentIsSharedTo(
       .eq('content_type', contentType)
       .eq('content_id',   contentId);
 
-    if (error) {
-      console.warn('[getWorkspacesContentIsSharedTo] query error:', error);
-      return [];
-    }
-
+    if (error) return [];
     return (data ?? []).map((r: { workspace_id: string }) => r.workspace_id);
   } catch {
     return [];

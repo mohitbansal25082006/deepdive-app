@@ -1,13 +1,11 @@
 // app/(app)/(tabs)/workspace.tsx
-// Part 14 fix — Better error messages when joining a workspace:
-//   • Already a member → "You are already a member of this workspace."
-//   • Blocked         → "You have been blocked from joining this workspace."
-//   • Invalid code    → "Invalid invite code. Please check and try again."
-// The joinWorkspaceByCode service function now maps Postgres error codes
-// to these friendly strings, so this file just displays the error as-is.
+// Part 46 UPDATE — useWorkspaceList now integrates useWorkspaceListRealtime
+// internally, so workspace cards appear/disappear in real time when the
+// current user joins, is removed, or is blocked — with no refresh needed.
 //
-// Also: join error shown inline below the code input (not just an Alert)
-// for a smoother UX.
+// The screen itself has no additional changes beyond consuming the
+// now-reactive useWorkspaceList hook. All Part 14 UI, join error messages,
+// create/join modals, and navigation are preserved exactly.
 
 import React, { useState } from 'react';
 import {
@@ -34,8 +32,6 @@ import { useWorkspaceList } from '../../../src/hooks/useWorkspaceList';
 import { WorkspaceCard } from '../../../src/components/workspace/WorkspaceCard';
 import { joinWorkspaceByCode, previewWorkspaceByCode } from '../../../src/services/workspaceService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
-
-// ─── Join error type so we can show a specific icon ──────────────────────────
 
 type JoinErrorKind = 'already_member' | 'blocked' | 'invalid_code' | 'generic';
 
@@ -65,10 +61,9 @@ function joinErrorColor(kind: JoinErrorKind): string {
   }
 }
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
-
 export default function WorkspaceTab() {
   const { user } = useAuth();
+  // Part 46: useWorkspaceList now auto-reacts to realtime events internally
   const { workspaces, isLoading, error, refresh, create } = useWorkspaceList();
 
   const [showCreate,  setShowCreate]  = useState(false);
@@ -82,8 +77,6 @@ export default function WorkspaceTab() {
   const [joinPreview, setJoinPreview] = useState<{
     id: string; name: string; description: string | null; memberCount: number;
   } | null>(null);
-
-  // Part 14: inline join error state (so we can show icon + colour)
   const [joinError,     setJoinError]     = useState<string | null>(null);
   const [joinErrorKind, setJoinErrorKind] = useState<JoinErrorKind>('generic');
 
@@ -133,20 +126,14 @@ export default function WorkspaceTab() {
     setIsJoining(false);
 
     if (error) {
-      // Part 14: show inline error with specific message + icon
       const kind = parseErrorKind(error);
       setJoinError(error);
       setJoinErrorKind(kind);
-
-      // For "already member" also navigate directly to that workspace
       if (kind === 'already_member' && joinPreview?.id) {
         setTimeout(() => {
           setShowJoin(false);
           resetJoinModal();
-          router.push({
-            pathname: '/(app)/workspace-detail' as any,
-            params: { id: joinPreview.id },
-          });
+          router.push({ pathname: '/(app)/workspace-detail' as any, params: { id: joinPreview.id } });
         }, 1400);
       }
       return;
@@ -154,12 +141,10 @@ export default function WorkspaceTab() {
 
     setShowJoin(false);
     resetJoinModal();
+    // Part 46: realtime already added the card — refresh() is a safety net
     refresh();
     if (data) {
-      router.push({
-        pathname: '/(app)/workspace-detail' as any,
-        params: { id: data.workspaceId },
-      });
+      router.push({ pathname: '/(app)/workspace-detail' as any, params: { id: data.workspaceId } });
     }
   };
 
@@ -216,10 +201,7 @@ export default function WorkspaceTab() {
               </TouchableOpacity>
             </View>
           ) : workspaces.length === 0 ? (
-            <EmptyState
-              onCreate={() => setShowCreate(true)}
-              onJoin={() => setShowJoin(true)}
-            />
+            <EmptyState onCreate={() => setShowCreate(true)} onJoin={() => setShowJoin(true)} />
           ) : (
             <>
               {personalWs.length > 0 && (
@@ -228,10 +210,7 @@ export default function WorkspaceTab() {
                   {personalWs.map((ws, i) => (
                     <WorkspaceCard
                       key={ws.id} workspace={ws} index={i}
-                      onPress={() => router.push({
-                        pathname: '/(app)/workspace-detail' as any,
-                        params: { id: ws.id },
-                      })}
+                      onPress={() => router.push({ pathname: '/(app)/workspace-detail' as any, params: { id: ws.id } })}
                     />
                   ))}
                 </Animated.View>
@@ -242,10 +221,7 @@ export default function WorkspaceTab() {
                   {teamWs.map((ws, i) => (
                     <WorkspaceCard
                       key={ws.id} workspace={ws} index={i}
-                      onPress={() => router.push({
-                        pathname: '/(app)/workspace-detail' as any,
-                        params: { id: ws.id },
-                      })}
+                      onPress={() => router.push({ pathname: '/(app)/workspace-detail' as any, params: { id: ws.id } })}
                     />
                   ))}
                 </Animated.View>
@@ -261,21 +237,9 @@ export default function WorkspaceTab() {
         </ScrollView>
 
         {/* ── Create workspace modal ── */}
-        <Modal
-          visible={showCreate}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowCreate(false)}
-        >
-          <KeyboardAvoidingView
-            style={styles.modalBackdrop}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          >
-            <TouchableOpacity
-              style={{ flex: 1 }}
-              onPress={() => setShowCreate(false)}
-              activeOpacity={1}
-            />
+        <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
+          <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            <TouchableOpacity style={{ flex: 1 }} onPress={() => setShowCreate(false)} activeOpacity={1} />
             <Animated.View entering={SlideInDown.duration(350).springify()} style={styles.sheet}>
               <View style={styles.sheetHandle} />
               <View style={styles.sheetHeader}>
@@ -287,35 +251,19 @@ export default function WorkspaceTab() {
                   <Ionicons name="close" size={18} color={COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
-
               <TextInput
-                value={createName}
-                onChangeText={setCreateName}
-                placeholder="Workspace name"
-                placeholderTextColor={COLORS.textMuted}
-                style={styles.input}
-                maxLength={60}
-                autoFocus
-                returnKeyType="next"
+                value={createName} onChangeText={setCreateName}
+                placeholder="Workspace name" placeholderTextColor={COLORS.textMuted}
+                style={styles.input} maxLength={60} autoFocus returnKeyType="next"
               />
               <TextInput
-                value={createDesc}
-                onChangeText={setCreateDesc}
-                placeholder="Description (optional)"
-                placeholderTextColor={COLORS.textMuted}
-                style={[styles.input, styles.inputMultiline]}
-                multiline
-                maxLength={200}
-                returnKeyType="done"
+                value={createDesc} onChangeText={setCreateDesc}
+                placeholder="Description (optional)" placeholderTextColor={COLORS.textMuted}
+                style={[styles.input, styles.inputMultiline]} multiline maxLength={200} returnKeyType="done"
               />
-
               <TouchableOpacity
-                onPress={handleCreate}
-                disabled={!createName.trim() || isCreating}
-                style={[
-                  styles.primaryBtn,
-                  { opacity: createName.trim() && !isCreating ? 1 : 0.45 },
-                ]}
+                onPress={handleCreate} disabled={!createName.trim() || isCreating}
+                style={[styles.primaryBtn, { opacity: createName.trim() && !isCreating ? 1 : 0.45 }]}
                 activeOpacity={0.85}
               >
                 {isCreating
@@ -328,20 +276,11 @@ export default function WorkspaceTab() {
 
         {/* ── Join workspace modal ── */}
         <Modal
-          visible={showJoin}
-          transparent
-          animationType="fade"
+          visible={showJoin} transparent animationType="fade"
           onRequestClose={() => { setShowJoin(false); resetJoinModal(); }}
         >
-          <KeyboardAvoidingView
-            style={styles.modalBackdrop}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          >
-            <TouchableOpacity
-              style={{ flex: 1 }}
-              onPress={() => { setShowJoin(false); resetJoinModal(); }}
-              activeOpacity={1}
-            />
+          <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            <TouchableOpacity style={{ flex: 1 }} onPress={() => { setShowJoin(false); resetJoinModal(); }} activeOpacity={1} />
             <Animated.View entering={SlideInDown.duration(350).springify()} style={styles.sheet}>
               <View style={styles.sheetHandle} />
               <View style={styles.sheetHeader}>
@@ -349,78 +288,42 @@ export default function WorkspaceTab() {
                   <Text style={styles.sheetTitle}>Join Workspace</Text>
                   <Text style={styles.sheetSub}>Enter the invite code shared with you.</Text>
                 </View>
-                <TouchableOpacity
-                  onPress={() => { setShowJoin(false); resetJoinModal(); }}
-                  style={styles.sheetCloseBtn}
-                >
+                <TouchableOpacity onPress={() => { setShowJoin(false); resetJoinModal(); }} style={styles.sheetCloseBtn}>
                   <Ionicons name="close" size={18} color={COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
-
               <TextInput
-                value={joinCode}
-                onChangeText={handleJoinCodeChange}
-                placeholder="Enter invite code"
-                placeholderTextColor={COLORS.textMuted}
+                value={joinCode} onChangeText={handleJoinCodeChange}
+                placeholder="Enter invite code" placeholderTextColor={COLORS.textMuted}
                 style={[
-                  styles.input,
-                  styles.inputCode,
-                  joinError ? {
-                    borderColor: joinErrorColor(joinErrorKind),
-                    backgroundColor: `${joinErrorColor(joinErrorKind)}08`,
-                  } : {},
+                  styles.input, styles.inputCode,
+                  joinError ? { borderColor: joinErrorColor(joinErrorKind), backgroundColor: `${joinErrorColor(joinErrorKind)}08` } : {},
                 ]}
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={12}
-                autoFocus
-                returnKeyType="go"
-                onSubmitEditing={handleJoin}
+                autoCapitalize="none" autoCorrect={false} maxLength={12}
+                autoFocus returnKeyType="go" onSubmitEditing={handleJoin}
               />
-
-              {/* Part 14: Inline join error with specific message + icon */}
               {joinError && (
                 <Animated.View
                   entering={FadeIn.duration(250)}
-                  style={[
-                    styles.joinErrorBanner,
-                    { backgroundColor: `${joinErrorColor(joinErrorKind)}12`,
-                      borderColor:     `${joinErrorColor(joinErrorKind)}35` },
-                  ]}
+                  style={[styles.joinErrorBanner, { backgroundColor: `${joinErrorColor(joinErrorKind)}12`, borderColor: `${joinErrorColor(joinErrorKind)}35` }]}
                 >
-                  <Ionicons
-                    name={joinErrorIcon(joinErrorKind)}
-                    size={16}
-                    color={joinErrorColor(joinErrorKind)}
-                    style={{ flexShrink: 0 }}
-                  />
-                  <Text style={[styles.joinErrorText, { color: joinErrorColor(joinErrorKind) }]}>
-                    {joinError}
-                  </Text>
+                  <Ionicons name={joinErrorIcon(joinErrorKind)} size={16} color={joinErrorColor(joinErrorKind)} style={{ flexShrink: 0 }} />
+                  <Text style={[styles.joinErrorText, { color: joinErrorColor(joinErrorKind) }]}>{joinError}</Text>
                 </Animated.View>
               )}
-
-              {/* Workspace preview */}
               {joinPreview && !joinError && (
                 <Animated.View entering={FadeIn.duration(300)} style={styles.joinPreview}>
                   <Ionicons name="checkmark-circle" size={18} color={COLORS.success} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.joinPreviewName}>{joinPreview.name}</Text>
-                    {joinPreview.description
-                      ? <Text style={styles.joinPreviewDesc} numberOfLines={1}>{joinPreview.description}</Text>
-                      : null}
+                    {joinPreview.description ? <Text style={styles.joinPreviewDesc} numberOfLines={1}>{joinPreview.description}</Text> : null}
                     <Text style={styles.joinPreviewMeta}>{joinPreview.memberCount} members</Text>
                   </View>
                 </Animated.View>
               )}
-
               <TouchableOpacity
-                onPress={handleJoin}
-                disabled={!joinCode.trim() || isJoining}
-                style={[
-                  styles.primaryBtn,
-                  { opacity: joinCode.trim() && !isJoining ? 1 : 0.45 },
-                ]}
+                onPress={handleJoin} disabled={!joinCode.trim() || isJoining}
+                style={[styles.primaryBtn, { opacity: joinCode.trim() && !isJoining ? 1 : 0.45 }]}
                 activeOpacity={0.85}
               >
                 {isJoining
@@ -435,8 +338,6 @@ export default function WorkspaceTab() {
     </LinearGradient>
   );
 }
-
-// ─── EmptyState ───────────────────────────────────────────────────────────────
 
 function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => void }) {
   return (
@@ -461,136 +362,45 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md,
-  },
+  header:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md },
   headerTitle:   { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
   headerSub:     { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 2 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  headerBtn: {
-    width: 38, height: 38, borderRadius: 12,
-    backgroundColor: COLORS.backgroundCard,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  scroll:       { paddingHorizontal: SPACING.xl, paddingBottom: 120, flexGrow: 1 },
-  sectionLabel: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
-    letterSpacing: 1, textTransform: 'uppercase',
-    marginBottom: SPACING.sm, marginTop: SPACING.md,
-  },
-  createCta: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    padding: SPACING.md, borderRadius: RADIUS.lg,
-    borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`,
-    marginTop: SPACING.sm,
-  },
+  headerBtn:     { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
+  scroll:        { paddingHorizontal: SPACING.xl, paddingBottom: 120, flexGrow: 1 },
+  sectionLabel:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm, marginTop: SPACING.md },
+  createCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginTop: SPACING.sm },
   createCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-
-  loadingWrap: { alignItems: 'center', paddingTop: 80, gap: 12 },
-  loadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
-  errorWrap:   { alignItems: 'center', paddingTop: 80, gap: 12 },
-  errorText:   { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center' },
-  retryBtn:    {
-    backgroundColor: COLORS.primary, borderRadius: RADIUS.lg,
-    paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
-  },
-  retryText: { color: '#FFF', fontWeight: '700' },
-
-  emptyWrap:  { alignItems: 'center', paddingTop: 60, paddingHorizontal: SPACING.xl },
-  emptyIcon: {
-    width: 80, height: 80, borderRadius: 24,
-    backgroundColor: `${COLORS.primary}15`,
-    alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg,
-  },
-  emptyTitle:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm },
-  emptySub:          { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, marginBottom: SPACING.xl },
-  emptyCreateBtn: {
-    backgroundColor: COLORS.primary, borderRadius: RADIUS.lg,
-    paddingVertical: 14, paddingHorizontal: SPACING.xl,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    marginBottom: SPACING.sm, width: '100%', justifyContent: 'center',
-  },
+  loadingWrap:   { alignItems: 'center', paddingTop: 80, gap: 12 },
+  loadingText:   { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+  errorWrap:     { alignItems: 'center', paddingTop: 80, gap: 12 },
+  errorText:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center' },
+  retryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
+  retryText:     { color: '#FFF', fontWeight: '700' },
+  emptyWrap:     { alignItems: 'center', paddingTop: 60, paddingHorizontal: SPACING.xl },
+  emptyIcon:     { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg },
+  emptyTitle:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm },
+  emptySub:      { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, marginBottom: SPACING.xl },
+  emptyCreateBtn:     { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, width: '100%', justifyContent: 'center' },
   emptyCreateBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
-  emptyJoinBtn: {
-    borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    borderWidth: 1, borderColor: `${COLORS.primary}40`,
-    width: '100%', justifyContent: 'center',
-  },
-  emptyJoinBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.base, fontWeight: '600' },
-
-  modalBackdrop: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: COLORS.backgroundCard,
-    borderTopLeftRadius: 26, borderTopRightRadius: 26,
-    paddingHorizontal: SPACING.xl,
-    paddingTop: SPACING.md,
-    paddingBottom: SPACING.xl,
-  },
-  sheetHandle: {
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: COLORS.border,
-    alignSelf: 'center', marginBottom: SPACING.lg,
-  },
-  sheetHeader: {
-    flexDirection: 'row', alignItems: 'flex-start',
-    justifyContent: 'space-between', marginBottom: SPACING.lg,
-  },
-  sheetTitle:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  sheetSub:      { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 3 },
-  sheetCloseBtn: {
-    width: 32, height: 32, borderRadius: 10,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border, marginLeft: SPACING.md,
-  },
-  input: {
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.lg,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 13,
-    color: COLORS.textPrimary,
-    fontSize: FONTS.sizes.base,
-    borderWidth: 1, borderColor: COLORS.border,
-    marginBottom: SPACING.md,
-  },
-  inputMultiline: { height: 88, textAlignVertical: 'top' },
-  inputCode: {
-    textAlign: 'center',
-    letterSpacing: 4,
-    fontSize: FONTS.sizes.xl,
-    fontWeight: '800',
-  },
-  primaryBtn: {
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.lg,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: SPACING.sm,
-  },
-  primaryBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
-
-  // Part 14: Inline join error banner
-  joinErrorBanner: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
-    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm,
-    borderWidth: 1,
-  },
-  joinErrorText: { fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 },
-
-  joinPreview: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
-    backgroundColor: `${COLORS.success}12`,
-    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
-    borderWidth: 1, borderColor: `${COLORS.success}30`,
-  },
+  emptyJoinBtn:       { borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: `${COLORS.primary}40`, width: '100%', justifyContent: 'center' },
+  emptyJoinBtnText:   { color: COLORS.primary, fontSize: FONTS.sizes.base, fontWeight: '600' },
+  modalBackdrop:   { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
+  sheet:           { backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.xl },
+  sheetHandle:     { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.lg },
+  sheetHeader:     { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: SPACING.lg },
+  sheetTitle:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  sheetSub:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 3 },
+  sheetCloseBtn:   { width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, marginLeft: SPACING.md },
+  input:           { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 13, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
+  inputMultiline:  { height: 88, textAlignVertical: 'top' },
+  inputCode:       { textAlign: 'center', letterSpacing: 4, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  primaryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, alignItems: 'center', marginTop: SPACING.sm },
+  primaryBtnText:  { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
+  joinErrorBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1 },
+  joinErrorText:   { fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 },
+  joinPreview:     { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: `${COLORS.success}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.success}30` },
   joinPreviewName: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
   joinPreviewDesc: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, marginTop: 2 },
   joinPreviewMeta: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 },

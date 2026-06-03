@@ -1,9 +1,18 @@
 // src/hooks/useWorkspaceSharing.ts
-// Part 14 FIX — After a successful share/unshare, reload from the RPC
-// instead of optimistically updating, so the Shared tab always shows
-// fresh server data (avoids stale-cache display bugs).
+// Part 46 UPDATE — Auto-reloads when realtime shared content events fire.
+//
+// The central useWorkspaceRealtime hook (via useWorkspace) bumps
+// sharedContentVersion on INSERT/DELETE for shared_workspace_content.
+// This hook accepts that version as an optional prop and reloads
+// whenever it changes — giving instant Shared tab updates.
+//
+// Pass sharedContentVersion from useWorkspace into this hook in
+// workspace-detail.tsx:
+//   const sharing = useWorkspaceSharing(id, sharedContentVersion);
+//
+// All Part 14 FIX behaviour (server reload after share/unshare) preserved.
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   getWorkspaceSharedContent,
   sharePresentationToWorkspace,
@@ -16,26 +25,39 @@ import {
   WorkspaceSharingState,
 } from '../types';
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
-export function useWorkspaceSharing(workspaceId: string | null) {
+export function useWorkspaceSharing(
+  workspaceId: string | null,
+  // Part 46: optional realtime version counter — reload when it changes
+  sharedContentVersion?: number,
+) {
   const [state, setState] = useState<WorkspaceSharingState>({
     items:     [],
     isLoading: false,
     isSharing: false,
     error:     null,
   });
+  // Track previous version to detect changes
+  const prevVersionRef = useRef<number | undefined>(sharedContentVersion);
 
   const patch = useCallback((partial: Partial<WorkspaceSharingState>) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
 
-  // ── Load all shared content via SECURITY DEFINER RPC ──────────────────────
+  // Part 46 FIX: stop retrying when user is confirmed not-a-member
+  const notMemberRef = useRef(false);
+
+  // ── Load all shared content ────────────────────────────────────────────
   const load = useCallback(async (contentType?: SharedContentType) => {
-    if (!workspaceId) return;
+    if (!workspaceId || notMemberRef.current) return;
     patch({ isLoading: true, error: null });
 
-    const { data, error } = await getWorkspaceSharedContent(workspaceId, contentType);
+    const { data, error, notMember } = await getWorkspaceSharedContent(workspaceId, contentType);
+
+    if (notMember) {
+      notMemberRef.current = true;
+      patch({ items: [], isLoading: false, error: null });
+      return;
+    }
 
     if (error) {
       console.error('[useWorkspaceSharing] load error:', error);
@@ -45,12 +67,27 @@ export function useWorkspaceSharing(workspaceId: string | null) {
     }
   }, [workspaceId, patch]);
 
-  // Auto-load when workspaceId changes
+  // ── Auto-load on mount and workspaceId change ──────────────────────────
   useEffect(() => {
-    if (workspaceId) load();
-  }, [workspaceId, load]);
+    if (workspaceId) {
+      load();
+      prevVersionRef.current = sharedContentVersion;
+    }
+  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Share presentation ─────────────────────────────────────────────────────
+  // ── Part 46: Reload when sharedContentVersion bumps ───────────────────
+  useEffect(() => {
+    if (
+      sharedContentVersion !== undefined &&
+      sharedContentVersion !== prevVersionRef.current &&
+      workspaceId
+    ) {
+      prevVersionRef.current = sharedContentVersion;
+      load();
+    }
+  }, [sharedContentVersion, workspaceId, load]);
+
+  // ── Share presentation ─────────────────────────────────────────────────
   const sharePresentation = useCallback(async (
     presentationId: string,
     title:          string,
@@ -59,26 +96,18 @@ export function useWorkspaceSharing(workspaceId: string | null) {
     metadata:       Record<string, unknown> = {},
   ): Promise<{ error: string | null }> => {
     if (!workspaceId) return { error: 'No workspace selected' };
-
     patch({ isSharing: true, error: null });
 
     const { error } = await sharePresentationToWorkspace(
       workspaceId, presentationId, title, subtitle, reportId, metadata,
     );
-
     patch({ isSharing: false });
-
-    if (!error) {
-      // Reload from server so the Shared tab shows the real inserted row
-      await load();
-    } else {
-      patch({ error });
-    }
-
+    if (!error) await load();
+    else patch({ error });
     return { error };
   }, [workspaceId, patch, load]);
 
-  // ── Share academic paper ───────────────────────────────────────────────────
+  // ── Share academic paper ───────────────────────────────────────────────
   const sharePaper = useCallback(async (
     paperId:   string,
     title:     string,
@@ -87,25 +116,18 @@ export function useWorkspaceSharing(workspaceId: string | null) {
     metadata:  Record<string, unknown> = {},
   ): Promise<{ error: string | null }> => {
     if (!workspaceId) return { error: 'No workspace selected' };
-
     patch({ isSharing: true, error: null });
 
     const { error } = await shareAcademicPaperToWorkspace(
       workspaceId, paperId, title, subtitle, reportId, metadata,
     );
-
     patch({ isSharing: false });
-
-    if (!error) {
-      await load();
-    } else {
-      patch({ error });
-    }
-
+    if (!error) await load();
+    else patch({ error });
     return { error };
   }, [workspaceId, patch, load]);
 
-  // ── Remove shared item ─────────────────────────────────────────────────────
+  // ── Remove shared item ─────────────────────────────────────────────────
   const remove = useCallback(async (
     contentType: SharedContentType,
     contentId:   string,
@@ -115,19 +137,18 @@ export function useWorkspaceSharing(workspaceId: string | null) {
     const { error } = await removeSharedContent(workspaceId, contentType, contentId);
 
     if (!error) {
-      // Optimistic removal is fine here — just filter out the deleted item
+      // Optimistic removal — realtime DELETE will confirm
       setState(prev => ({
         ...prev,
         items: prev.items.filter(
-          i => !(i.contentType === contentType && i.contentId === contentId)
+          i => !(i.contentType === contentType && i.contentId === contentId),
         ),
       }));
     }
-
     return { error };
   }, [workspaceId]);
 
-  // ── Computed ───────────────────────────────────────────────────────────────
+  // ── Computed ───────────────────────────────────────────────────────────
   const presentations = state.items.filter(i => i.contentType === 'presentation');
   const papers        = state.items.filter(i => i.contentType === 'academic_paper');
 
@@ -146,7 +167,6 @@ export function useWorkspaceSharing(workspaceId: string | null) {
 }
 
 // ─── Simpler hook: just the workspace IDs this content is shared to ───────────
-// Used by slide-preview / academic-paper to show shared badges.
 
 export function useContentSharedWorkspaces(
   contentType: SharedContentType,
@@ -159,7 +179,6 @@ export function useContentSharedWorkspaces(
     if (!contentId) return;
     setIsLoading(true);
     try {
-      // Use the RPC that already has all data — just grab workspace_ids
       const { data } = await import('../lib/supabase').then(async ({ supabase }) => {
         return supabase
           .from('shared_workspace_content')

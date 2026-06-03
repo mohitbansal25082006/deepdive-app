@@ -1,14 +1,13 @@
 // src/hooks/usePodcastSharing.ts
-// Part 15 — Manages state for podcast sharing into/out of workspaces.
+// Part 46 UPDATE — Auto-reloads when realtime shared podcast events fire.
 //
-// Two export hooks:
-//   usePodcastSharing(workspaceId)
-//     → lists all shared podcasts in a workspace, share/remove actions
-//   usePodcastSharedWorkspaces(podcastId)
-//     → tells you which workspaces a podcast is already shared to
-//       (used in the share modal to show "Shared ✓" badges)
+// Accepts optional sharedContentVersion from useWorkspace.
+// When it changes, load() is called automatically so the Shared tab
+// podcast section updates without any manual refresh.
+//
+// All Part 15 behaviour preserved exactly.
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   getWorkspaceSharedPodcasts,
   sharePodcastToWorkspace,
@@ -17,89 +16,99 @@ import {
 } from '../services/podcastSharingService';
 import { SharedPodcast, SharedPodcastState } from '../types';
 
-// ─── usePodcastSharing ────────────────────────────────────────────────────────
-
-export function usePodcastSharing(workspaceId: string | null) {
+export function usePodcastSharing(
+  workspaceId: string | null,
+  // Part 46: optional realtime version counter
+  sharedContentVersion?: number,
+) {
   const [state, setState] = useState<SharedPodcastState>({
     podcasts:  [],
     isLoading: false,
     isSharing: false,
     error:     null,
   });
+  const prevVersionRef = useRef<number | undefined>(sharedContentVersion);
 
   const patch = useCallback((partial: Partial<SharedPodcastState>) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
 
-  // ── Load shared podcasts ───────────────────────────────────────────────────
+  // ── Load shared podcasts ───────────────────────────────────────────────
+  // Part 46 FIX: stop retrying when user is confirmed not-a-member
+  const notMemberRef = useRef(false);
 
   const load = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!workspaceId || notMemberRef.current) return;
     patch({ isLoading: true, error: null });
 
-    const { data, error } = await getWorkspaceSharedPodcasts(workspaceId);
+    const { data, error, notMember } = await getWorkspaceSharedPodcasts(workspaceId);
+
+    // Part 46 FIX: service now returns notMember:true for membership errors
+    if (notMember) {
+      notMemberRef.current = true;
+      patch({ podcasts: [], isLoading: false, error: null });
+      return;
+    }
 
     if (error) {
-      console.error('[usePodcastSharing] load error:', error);
       patch({ isLoading: false, error });
     } else {
       patch({ podcasts: data, isLoading: false, error: null });
     }
   }, [workspaceId, patch]);
 
-  // Auto-load when workspaceId changes
+  // ── Auto-load on mount ─────────────────────────────────────────────────
   useEffect(() => {
-    if (workspaceId) load();
-  }, [workspaceId, load]);
+    if (workspaceId) {
+      load();
+      prevVersionRef.current = sharedContentVersion;
+    }
+  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Share a podcast ────────────────────────────────────────────────────────
+  // ── Part 46: Reload when sharedContentVersion bumps ───────────────────
+  useEffect(() => {
+    if (
+      sharedContentVersion !== undefined &&
+      sharedContentVersion !== prevVersionRef.current &&
+      workspaceId
+    ) {
+      prevVersionRef.current = sharedContentVersion;
+      load();
+    }
+  }, [sharedContentVersion, workspaceId, load]);
 
+  // ── Share a podcast ────────────────────────────────────────────────────
   const share = useCallback(async (
     podcastId: string,
     reportId?: string,
   ): Promise<{ error: string | null }> => {
     if (!workspaceId) return { error: 'No workspace selected' };
-
     patch({ isSharing: true, error: null });
-
     const { error } = await sharePodcastToWorkspace(workspaceId, podcastId, reportId);
-
     patch({ isSharing: false });
-
-    if (!error) {
-      // Reload to get the fresh row with sharer info
-      await load();
-    } else {
-      patch({ error });
-    }
-
+    if (!error) await load();
+    else patch({ error });
     return { error };
   }, [workspaceId, patch, load]);
 
-  // ── Remove a shared podcast ────────────────────────────────────────────────
-
+  // ── Remove a shared podcast ────────────────────────────────────────────
   const remove = useCallback(async (
     podcastId: string,
   ): Promise<{ error: string | null }> => {
     if (!workspaceId) return { error: 'No workspace' };
-
     const { error } = await removeSharedPodcast(workspaceId, podcastId);
-
     if (!error) {
-      // Optimistic removal
       setState(prev => ({
         ...prev,
         podcasts: prev.podcasts.filter(p => p.podcastId !== podcastId),
       }));
     }
-
     return { error };
   }, [workspaceId]);
 
-  // ── Derived ────────────────────────────────────────────────────────────────
-
+  // ── Derived ────────────────────────────────────────────────────────────
   const totalMinutes = Math.round(
-    state.podcasts.reduce((sum, p) => sum + p.durationSeconds, 0) / 60
+    state.podcasts.reduce((sum, p) => sum + p.durationSeconds, 0) / 60,
   );
 
   return {
@@ -115,8 +124,6 @@ export function usePodcastSharing(workspaceId: string | null) {
 }
 
 // ─── usePodcastSharedWorkspaces ───────────────────────────────────────────────
-// Lightweight hook used by podcast-player / podcast tab to know which
-// workspaces a specific podcast is already shared to.
 
 export function usePodcastSharedWorkspaces(podcastId: string | null | undefined) {
   const [workspaceIds, setWorkspaceIds] = useState<string[]>([]);

@@ -1,17 +1,24 @@
 // src/services/workspaceInviteService.ts
-// Invite link generation, email invites, and member management.
+// Part 46 UPDATE — Removed double activity logging from updateMemberRole
+// and removeMember. Activity logging is now done in useWorkspaceMembers
+// (with workspace name lookup and notification) to avoid duplicate entries
+// in the Activity feed.
+//
+// subscribeToMembers is kept for backward compatibility but marked as
+// LEGACY — useWorkspaceRealtime (Part 46) is the preferred approach.
+// It will still work correctly alongside useWorkspaceRealtime.
+//
+// All Part 13B behaviour (buildInviteUrl, copyInviteLink, shareInviteLink,
+// getWorkspaceMembersWithProfiles, updateMemberRole, removeMember,
+// leaveWorkspace, transferOwnership) is preserved exactly.
 
 import { Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { supabase } from '../lib/supabase';
 import { WorkspaceMember, WorkspaceRole } from '../types';
 import { mapWorkspaceMember } from './workspaceService';
-import { logActivity } from './activityService';
 
 // ─── Build a shareable invite URL ─────────────────────────────────────────────
-// Format: deepdive://workspace/join/{code}
-// A production app would use a universal link; for this project we use a
-// custom scheme that the app handles via Expo Router's deep-link handler.
 
 export function buildInviteUrl(inviteCode: string): string {
   return `deepdive://workspace/join/${inviteCode}`;
@@ -55,6 +62,8 @@ export async function getWorkspaceMembersWithProfiles(
 }
 
 // ─── Update member role ───────────────────────────────────────────────────────
+// Part 46: activity logging moved to useWorkspaceMembers.changeRole()
+// to avoid duplicates and to include workspace name + notification.
 
 export async function updateMemberRole(
   workspaceId: string,
@@ -69,8 +78,7 @@ export async function updateMemberRole(
       .eq('user_id', userId);
 
     if (error) throw error;
-
-    await logActivity(workspaceId, 'member_role_changed', 'member', userId, { new_role: newRole });
+    // NOTE: Activity logging intentionally removed here — done in useWorkspaceMembers
     return { error: null };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to update role' };
@@ -78,6 +86,7 @@ export async function updateMemberRole(
 }
 
 // ─── Remove a member ─────────────────────────────────────────────────────────
+// Part 46: activity logging moved to useWorkspaceMembers.remove()
 
 export async function removeMember(
   workspaceId: string,
@@ -91,8 +100,7 @@ export async function removeMember(
       .eq('user_id', userId);
 
     if (error) throw error;
-
-    await logActivity(workspaceId, 'member_removed', 'member', userId);
+    // NOTE: Activity logging intentionally removed here — done in useWorkspaceMembers
     return { error: null };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to remove member' };
@@ -116,7 +124,24 @@ export async function leaveWorkspace(
 
     if (error) throw error;
 
-    await logActivity(workspaceId, 'member_left', 'member', user.id);
+    // Log member_left — safe to do here (not duplicated elsewhere)
+    // Wrapped in void async to avoid ts(2551): .catch() doesn't exist on
+    // PostgrestFilterBuilder directly in the Supabase TS types.
+    void (async () => {
+      try {
+        await supabase.from('workspace_activity').insert({
+          workspace_id:  workspaceId,
+          user_id:       user.id,
+          action:        'member_left',
+          resource_type: 'member',
+          resource_id:   user.id,
+          metadata:      {},
+        });
+      } catch {
+        // Non-fatal — ignore silently
+      }
+    })();
+
     return { error: null };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to leave workspace' };
@@ -142,7 +167,9 @@ export async function transferOwnership(
   }
 }
 
-// ─── Subscribe to member list changes ────────────────────────────────────────
+// ─── LEGACY: subscribeToMembers ───────────────────────────────────────────────
+// Kept for backward compatibility. Part 46 uses useWorkspaceRealtime instead.
+// Both can coexist — Supabase allows multiple subscriptions on different channels.
 
 export function subscribeToMembers(
   workspaceId: string,
@@ -153,15 +180,11 @@ export function subscribeToMembers(
   },
 ): () => void {
   const channel = supabase
-    .channel(`workspace:${workspaceId}:members`)
+    .channel(`legacy:workspace:${workspaceId}:members`)
     .on(
       'postgres_changes',
-      {
-        event:  'INSERT',
-        schema: 'public',
-        table:  'workspace_members',
-        filter: `workspace_id=eq.${workspaceId}`,
-      },
+      { event: 'INSERT', schema: 'public', table: 'workspace_members',
+        filter: `workspace_id=eq.${workspaceId}` },
       (payload) => {
         const row = payload.new as Record<string, unknown>;
         callbacks.onInsert({ userId: row.user_id as string, role: row.role as WorkspaceRole });
@@ -172,7 +195,9 @@ export function subscribeToMembers(
       { event: 'DELETE', schema: 'public', table: 'workspace_members',
         filter: `workspace_id=eq.${workspaceId}` },
       (payload) => {
-        callbacks.onDelete((payload.old as Record<string, unknown>).user_id as string);
+        // With REPLICA IDENTITY FULL, old has user_id
+        const old = payload.old as Record<string, unknown>;
+        callbacks.onDelete(old.user_id as string);
       },
     )
     .on(

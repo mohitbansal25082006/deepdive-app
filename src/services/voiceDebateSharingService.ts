@@ -1,25 +1,38 @@
 // src/services/voiceDebateSharingService.ts
-// Part 44 — Sharing voice debates to workspaces.
+// Part 46 FIX — getWorkspaceSharedVoiceDebates now detects P0001 membership
+// errors and returns { data: [], error: null, notMember: true } instead of throwing.
 //
-// Pattern mirrors podcastSharingService.ts (Part 15) exactly.
-// Audio is already uploaded to Supabase Storage before sharing —
-// the share_voice_debate_to_workspace RPC validates audio_all_uploaded=true
-// and copies the cloud URLs into shared_voice_debates.
+// ROOT CAUSE: Same pattern as debateSharingService / podcastSharingService.
+// get_workspace_shared_voice_debates RPC raises 'permission_denied' (P0001)
+// when the caller is no longer a workspace member.
 //
-// PUBLIC API:
-//   shareVoiceDebateToWorkspace(workspaceId, voiceDebateId)
-//   removeSharedVoiceDebate(workspaceId, voiceDebateId)
-//   getWorkspaceSharedVoiceDebates(workspaceId)
-//   getSharedVoiceDebateById(workspaceId, sharedId)
-//   getWorkspacesVoiceDebateIsSharedTo(voiceDebateId)
-//   trackVoiceDebateView(sharedId)   — fire-and-forget
-//   trackVoiceDebateDownload(sharedId)
-//   updateSharedDebateVoiceAudio(voiceDebateId, sessionId, audioUrls, allUploaded)
-//     — called when voice debate is generated AFTER debate is already shared
+// FIX: isMembershipError() guard applied before throwing, returning notMember sentinel.
+//
+// All other Part 44 functions unchanged.
 
 import { supabase } from '../lib/supabase';
 import type { SharedVoiceDebate } from '../types/voiceDebateSharing';
 import type { VoiceDebateScript } from '../types/voiceDebate';
+
+// ─── Membership error detector ────────────────────────────────────────────────
+
+function isMembershipError(err: unknown): boolean {
+  if (!err) return false;
+  const code = (err as any)?.code ?? '';
+  const msg  = (
+    (err as any)?.message ??
+    (err as any)?.details ??
+    String(err)
+  ).toLowerCase();
+  return (
+    code === 'P0001' ||
+    msg.includes('permission_denied') ||
+    msg.includes('not_member') ||
+    msg.includes('not a member') ||
+    msg.includes('access denied') ||
+    msg.includes('access_denied')
+  );
+}
 
 // ─── Row mapper ───────────────────────────────────────────────────────────────
 
@@ -53,10 +66,6 @@ function mapSharedVoiceDebateRow(row: Record<string, unknown>): SharedVoiceDebat
 }
 
 // ─── Share a voice debate to a workspace ─────────────────────────────────────
-//
-// IMPORTANT: Audio must be fully uploaded before calling this.
-// The RPC validates audio_all_uploaded = TRUE and will throw if not.
-// Use useVoiceDebate.state.voiceDebate.audioAllUploaded to check first.
 
 export async function shareVoiceDebateToWorkspace(
   workspaceId:    string,
@@ -115,16 +124,22 @@ export async function removeSharedVoiceDebate(
 }
 
 // ─── Get all shared voice debates for a workspace ─────────────────────────────
+// Part 46 FIX: Returns { notMember: true } when B is no longer a member.
 
 export async function getWorkspaceSharedVoiceDebates(
   workspaceId: string,
-): Promise<{ data: SharedVoiceDebate[]; error: string | null }> {
+): Promise<{ data: SharedVoiceDebate[]; error: string | null; notMember?: boolean }> {
   try {
     const { data, error } = await supabase.rpc('get_workspace_shared_voice_debates', {
       p_workspace_id: workspaceId,
     });
 
     if (error) {
+      // Part 46 FIX: intercept membership errors before throwing
+      if (isMembershipError(error)) {
+        // Silently suppressed — user is no longer a member
+        return { data: [], error: null, notMember: true };
+      }
       console.error('[getWorkspaceSharedVoiceDebates] RPC error:', error);
       throw error;
     }
@@ -132,6 +147,9 @@ export async function getWorkspaceSharedVoiceDebates(
     const rows = (data as Record<string, unknown>[]) ?? [];
     return { data: rows.map(mapSharedVoiceDebateRow), error: null };
   } catch (err) {
+    if (isMembershipError(err)) {
+      return { data: [], error: null, notMember: true };
+    }
     return {
       data:  [],
       error: err instanceof Error ? err.message : 'Failed to load shared voice debates',
@@ -212,10 +230,6 @@ export async function trackVoiceDebateDownload(sharedId: string): Promise<void> 
 }
 
 // ─── Update shared copies after voice debate generated post-sharing ───────────
-//
-// Called from useVoiceDebate.onComplete when voice debate was generated
-// AFTER the base debate was already shared to workspaces.
-// Updates all shared_voice_debates rows for the same debate_session_id.
 
 export async function updateSharedDebateVoiceAudio(
   voiceDebateId: string,
@@ -245,9 +259,7 @@ export async function updateSharedDebateVoiceAudio(
   }
 }
 
-// ─── Load workspaces the debate is shared to (for modal) ─────────────────────
-// Helper used by ShareVoiceDebateToWorkspaceModal.
-// Loads all workspaces where caller is editor/owner, with isShared flag per row.
+// ─── Load workspaces the voice debate is shared to (for modal) ───────────────
 
 export async function loadWorkspacesForVoiceDebate(
   voiceDebateId: string,
@@ -258,12 +270,7 @@ export async function loadWorkspacesForVoiceDebate(
   userRole:      string;
   isShared:      boolean;
 }[]> {
-  // Strategy: use get_user_workspaces_for_sharing with content_type='voice_debate'
-  // (the RPC handles non-voice-debate content types generically via shared_workspace_content,
-  // but voice debates use shared_voice_debates — so we need a custom query here).
-
   try {
-    // 1. Load workspaces the user belongs to as editor/owner
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('Not authenticated');
 
@@ -293,7 +300,6 @@ export async function loadWorkspacesForVoiceDebate(
 
     if (workspaces.length === 0) return [];
 
-    // 2. Check which are already shared
     const ids = workspaces.map(w => w.workspaceId);
     const { data: sharedRows } = await supabase
       .from('shared_voice_debates')
