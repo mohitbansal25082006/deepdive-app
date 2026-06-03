@@ -1,10 +1,9 @@
 // src/components/workspace/ChatFileFilter.tsx
 // Part 18 — File search and filtering panel for workspace chat.
-//
-// Shows all messages with attachments, grouped by type.
-// Filter chips: All · Images · Videos · Audio · Documents
-// Search bar filters by file name.
-// Each result is a tappable card that scrolls to the message in the chat.
+// Part 47 — DUAL ACTION: tapping a file card selects it and shows an action bar
+//            with two buttons: "Open File" (direct preview/download) and
+//            "Go to Message" (scroll + highlight the chat message).
+//            Press another card to change selection, or X to deselect.
 
 import React, {
   useState,
@@ -24,6 +23,7 @@ import {
   StyleSheet,
   Dimensions,
   ScrollView,
+  Alert,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -38,6 +38,7 @@ import {
   formatFileSize,
   getFileIcon,
   getSignedUrl,
+  openOrDownloadAttachment,
 } from '../../services/chatAttachmentService';
 import { ChatMessage, ChatAttachment } from '../../types/chat';
 import { ChatFileFilterType } from '../../types';
@@ -49,20 +50,20 @@ const SHEET_HEIGHT = SCREEN_H * 0.88;
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface FileEntry {
-  messageId:    string;
-  attachment:   ChatAttachment;
-  sentAt:       string;
-  authorName:   string | null;
+  messageId:  string;
+  attachment: ChatAttachment;
+  sentAt:     string;
+  authorName: string | null;
 }
 
 // ─── Filter config ────────────────────────────────────────────────────────────
 
 const FILTERS: { type: ChatFileFilterType; label: string; icon: string }[] = [
-  { type: 'all',       label: 'All',       icon: 'attach-outline' },
-  { type: 'images',    label: 'Images',    icon: 'image-outline' },
-  { type: 'videos',    label: 'Videos',    icon: 'videocam-outline' },
-  { type: 'audio',     label: 'Audio',     icon: 'musical-notes-outline' },
-  { type: 'documents', label: 'Docs',      icon: 'document-text-outline' },
+  { type: 'all',       label: 'All',    icon: 'attach-outline' },
+  { type: 'images',    label: 'Images', icon: 'image-outline' },
+  { type: 'videos',    label: 'Videos', icon: 'videocam-outline' },
+  { type: 'audio',     label: 'Audio',  icon: 'musical-notes-outline' },
+  { type: 'documents', label: 'Docs',   icon: 'document-text-outline' },
 ];
 
 function matchesFilter(mime: string, filter: ChatFileFilterType): boolean {
@@ -75,6 +76,8 @@ function matchesFilter(mime: string, filter: ChatFileFilterType): boolean {
     default:          return true;
   }
 }
+
+function entryKey(e: FileEntry) { return `${e.messageId}:${e.attachment.url}`; }
 
 // ─── Image thumbnail (needs signed URL) ──────────────────────────────────────
 
@@ -93,24 +96,18 @@ function ImageThumb({ url }: { url: string }) {
     );
   }
 
-  return (
-    <Image
-      source={{ uri: signedUrl }}
-      style={styles.imageThumb}
-      resizeMode="cover"
-    />
-  );
+  return <Image source={{ uri: signedUrl }} style={styles.imageThumb} resizeMode="cover" />;
 }
 
 // ─── File entry card ──────────────────────────────────────────────────────────
 
-function FileCard({
-  entry,
-  onPress,
-}: {
-  entry:   FileEntry;
-  onPress: (messageId: string) => void;
-}) {
+interface FileCardProps {
+  entry:      FileEntry;
+  isSelected: boolean;
+  onPress:    (entry: FileEntry) => void;
+}
+
+function FileCard({ entry, isSelected, onPress }: FileCardProps) {
   const { attachment, sentAt, authorName } = entry;
   const isImg = isImageMime(attachment.type);
   const isVid = isVideoMime(attachment.type);
@@ -123,11 +120,11 @@ function FileCard({
 
   return (
     <TouchableOpacity
-      style={styles.card}
-      onPress={() => onPress(entry.messageId)}
+      style={[styles.card, isSelected && styles.cardSelected]}
+      onPress={() => onPress(entry)}
       activeOpacity={0.75}
     >
-      {/* Thumbnail / Icon */}
+      {/* Thumbnail / icon */}
       <View style={styles.cardThumbWrap}>
         {isImg ? (
           <ImageThumb url={attachment.url} />
@@ -135,11 +132,16 @@ function FileCard({
           <View style={[
             styles.fileIconWrap,
             isVid && { backgroundColor: `${COLORS.info}15` },
+            attachment.type.startsWith('audio/') && { backgroundColor: `${COLORS.warning}15` },
           ]}>
             <Ionicons
               name={icon}
               size={22}
-              color={isVid ? COLORS.info : COLORS.primary}
+              color={
+                isVid ? COLORS.info
+                : attachment.type.startsWith('audio/') ? COLORS.warning
+                : COLORS.primary
+              }
             />
           </View>
         )}
@@ -151,23 +153,23 @@ function FileCard({
           {attachment.name || 'Attachment'}
         </Text>
         <View style={styles.cardSubRow}>
-          {attachment.size !== undefined && attachment.size > 0 && (
-            <Text style={styles.cardSize}>{formatFileSize(attachment.size)}</Text>
-          )}
-          {attachment.size !== undefined && attachment.size > 0 && (
-            <Text style={styles.cardDot}>·</Text>
-          )}
+          {!!attachment.size && <Text style={styles.cardSize}>{formatFileSize(attachment.size)}</Text>}
+          {!!attachment.size && <Text style={styles.cardDot}>·</Text>}
           <Text style={styles.cardTime}>{timeLabel}</Text>
         </View>
         {authorName && (
-          <Text style={styles.cardAuthor} numberOfLines={1}>
-            Sent by {authorName}
-          </Text>
+          <Text style={styles.cardAuthor} numberOfLines={1}>by {authorName}</Text>
         )}
       </View>
 
-      {/* Chevron */}
-      <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+      {/* Selection indicator */}
+      {isSelected ? (
+        <View style={styles.selectedCheck}>
+          <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />
+        </View>
+      ) : (
+        <Ionicons name="chevron-forward" size={13} color={COLORS.textMuted} />
+      )}
     </TouchableOpacity>
   );
 }
@@ -175,9 +177,9 @@ function FileCard({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props {
-  visible:          boolean;
-  messages:         ChatMessage[];
-  onClose:          () => void;
+  visible:           boolean;
+  messages:          ChatMessage[];
+  onClose:           () => void;
   onScrollToMessage: (messageId: string) => void;
 }
 
@@ -188,9 +190,10 @@ export function ChatFileFilter({
   onScrollToMessage,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const scrollViewRef = useRef<ScrollView>(null);
   const [activeFilter, setActiveFilter] = useState<ChatFileFilterType>('all');
   const [searchQuery,  setSearchQuery]  = useState('');
+  const [selectedEntry, setSelectedEntry] = useState<FileEntry | null>(null);
+  const [isOpening, setIsOpening] = useState(false);
 
   // ── Extract all file entries ──────────────────────────────────────────────
 
@@ -208,53 +211,75 @@ export function ChatFileFilter({
           });
         });
       });
-    // Newest first
     return result.sort(
       (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
     );
   }, [messages]);
 
-  // ── Apply filter + search ────────────────────────────────────────────────
+  // ── Filter + search ───────────────────────────────────────────────────────
 
   const filtered = useMemo<FileEntry[]>(() => {
-    let result = allFiles.filter(e =>
-      matchesFilter(e.attachment.type, activeFilter),
-    );
+    let result = allFiles.filter(e => matchesFilter(e.attachment.type, activeFilter));
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
-      result = result.filter(e =>
-        (e.attachment.name ?? '').toLowerCase().includes(q),
-      );
+      result = result.filter(e => (e.attachment.name ?? '').toLowerCase().includes(q));
     }
     return result;
   }, [allFiles, activeFilter, searchQuery]);
 
-  // ── Per-filter counts ────────────────────────────────────────────────────
+  // ── Per-filter counts ─────────────────────────────────────────────────────
 
-  const counts = useMemo<Record<ChatFileFilterType, number>>(() => {
-    return {
-      all:       allFiles.length,
-      images:    allFiles.filter(e => e.attachment.type.startsWith('image/')).length,
-      videos:    allFiles.filter(e => e.attachment.type.startsWith('video/')).length,
-      audio:     allFiles.filter(e => e.attachment.type.startsWith('audio/')).length,
-      documents: allFiles.filter(e =>
-        !e.attachment.type.startsWith('image/') &&
-        !e.attachment.type.startsWith('video/') &&
-        !e.attachment.type.startsWith('audio/'),
-      ).length,
-    };
-  }, [allFiles]);
+  const counts = useMemo<Record<ChatFileFilterType, number>>(() => ({
+    all:       allFiles.length,
+    images:    allFiles.filter(e => e.attachment.type.startsWith('image/')).length,
+    videos:    allFiles.filter(e => e.attachment.type.startsWith('video/')).length,
+    audio:     allFiles.filter(e => e.attachment.type.startsWith('audio/')).length,
+    documents: allFiles.filter(e =>
+      !e.attachment.type.startsWith('image/') &&
+      !e.attachment.type.startsWith('video/') &&
+      !e.attachment.type.startsWith('audio/'),
+    ).length,
+  }), [allFiles]);
 
-  const handleSelect = useCallback((messageId: string) => {
+  // ── Handlers ─────────────────────────────────────────────────────────────
+
+  // Tapping a card: select/deselect
+  const handleCardPress = useCallback((entry: FileEntry) => {
+    const key = entryKey(entry);
+    setSelectedEntry(prev =>
+      prev && entryKey(prev) === key ? null : entry
+    );
+  }, []);
+
+  // "Open File" action
+  const handleOpenFile = useCallback(async () => {
+    if (!selectedEntry || isOpening) return;
+    setIsOpening(true);
+    const { error } = await openOrDownloadAttachment(selectedEntry.attachment);
+    setIsOpening(false);
+    if (error) Alert.alert('Could not open file', error);
+    // Keep panel open so user can pick another file
+    setSelectedEntry(null);
+  }, [selectedEntry, isOpening]);
+
+  // "Go to Message" action
+  const handleGoToMessage = useCallback(() => {
+    if (!selectedEntry) return;
+    const msgId = selectedEntry.messageId;
+    setSelectedEntry(null);
     onClose();
-    setTimeout(() => onScrollToMessage(messageId), 300);
-  }, [onClose, onScrollToMessage]);
+    // Allow modal to close before scrolling
+    setTimeout(() => onScrollToMessage(msgId), 320);
+  }, [selectedEntry, onClose, onScrollToMessage]);
 
   const handleClose = useCallback(() => {
     setSearchQuery('');
     setActiveFilter('all');
+    setSelectedEntry(null);
     onClose();
   }, [onClose]);
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <Modal
@@ -265,37 +290,25 @@ export function ChatFileFilter({
       statusBarTranslucent
     >
       {/* Backdrop */}
-      <TouchableOpacity
-        style={styles.backdrop}
-        activeOpacity={1}
-        onPress={handleClose}
-      />
+      <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={handleClose} />
 
       {/* Sheet */}
       <Animated.View
         entering={SlideInDown.duration(300)}
         exiting={SlideOutDown.duration(200)}
-        style={[
-          styles.sheet,
-          {
-            height: SHEET_HEIGHT,
-            paddingBottom: Math.max(insets.bottom, 16),
-          },
-        ]}
+        style={[styles.sheet, { height: SHEET_HEIGHT, paddingBottom: Math.max(insets.bottom, 16) }]}
       >
         {/* Handle */}
-        <View style={styles.handleWrap}>
-          <View style={styles.handle} />
-        </View>
+        <View style={styles.handleWrap}><View style={styles.handle} /></View>
 
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Files & Media</Text>
           <View style={styles.totalBadge}>
-            <Text style={styles.totalBadgeText}>{allFiles.length} total</Text>
+            <Text style={styles.totalBadgeText}>{allFiles.length} files</Text>
           </View>
           <TouchableOpacity onPress={handleClose} style={styles.closeBtn}>
-            <Ionicons name="close" size={18} color={COLORS.textMuted} />
+            <Ionicons name="close" size={17} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
 
@@ -319,9 +332,8 @@ export function ChatFileFilter({
           )}
         </View>
 
-        {/* Filter chips - now scrollable horizontally */}
+        {/* Filter chips */}
         <ScrollView
-          ref={scrollViewRef}
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterScrollContent}
@@ -333,27 +345,16 @@ export function ChatFileFilter({
             return (
               <TouchableOpacity
                 key={f.type}
-                onPress={() => setActiveFilter(f.type)}
+                onPress={() => { setActiveFilter(f.type); setSelectedEntry(null); }}
                 style={[styles.chip, active && styles.chipActive]}
                 activeOpacity={0.7}
                 disabled={count === 0 && f.type !== 'all'}
               >
-                <Ionicons
-                  name={f.icon as any}
-                  size={13}
-                  color={active ? '#FFF' : COLORS.textSecondary}
-                />
-                <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
-                  {f.label}
-                </Text>
+                <Ionicons name={f.icon as any} size={12} color={active ? '#FFF' : COLORS.textSecondary} />
+                <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>{f.label}</Text>
                 {count > 0 && (
                   <View style={[styles.chipCount, active && styles.chipCountActive]}>
-                    <Text style={[
-                      styles.chipCountText,
-                      active && styles.chipCountTextActive,
-                    ]}>
-                      {count}
-                    </Text>
+                    <Text style={[styles.chipCountText, active && styles.chipCountTextActive]}>{count}</Text>
                   </View>
                 )}
               </TouchableOpacity>
@@ -364,7 +365,7 @@ export function ChatFileFilter({
         {/* Results */}
         {filtered.length === 0 ? (
           <Animated.View entering={FadeIn.duration(300)} style={styles.empty}>
-            <Ionicons name="folder-open-outline" size={40} color={COLORS.textMuted} />
+            <Ionicons name="folder-open-outline" size={38} color={COLORS.textMuted} />
             <Text style={styles.emptyTitle}>No files found</Text>
             <Text style={styles.emptyDesc}>
               {searchQuery
@@ -377,12 +378,67 @@ export function ChatFileFilter({
             data={filtered}
             keyExtractor={(e, i) => `${e.messageId}-${i}`}
             renderItem={({ item }) => (
-              <FileCard entry={item} onPress={handleSelect} />
+              <FileCard
+                entry={item}
+                isSelected={selectedEntry !== null && entryKey(selectedEntry) === entryKey(item)}
+                onPress={handleCardPress}
+              />
             )}
-            contentContainerStyle={styles.list}
+            contentContainerStyle={[
+              styles.list,
+              // Extra bottom padding so action bar doesn't cover last item
+              selectedEntry && { paddingBottom: 100 },
+            ]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           />
+        )}
+
+        {/* ── Dual-action bar (appears when a file is selected) ── */}
+        {selectedEntry && (
+          <Animated.View entering={FadeIn.duration(180)} style={styles.actionBar}>
+            {/* File name */}
+            <Text style={styles.actionBarName} numberOfLines={1}>
+              {selectedEntry.attachment.name || 'Attachment'}
+            </Text>
+            <View style={styles.actionBarBtns}>
+              {/* Open File */}
+              <TouchableOpacity
+                onPress={handleOpenFile}
+                style={[styles.actionBarBtn, styles.actionBarBtnPrimary]}
+                activeOpacity={0.8}
+                disabled={isOpening}
+              >
+                {isOpening ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Ionicons name="open-outline" size={16} color="#FFF" />
+                )}
+                <Text style={styles.actionBarBtnTextPrimary}>
+                  {isOpening ? 'Opening…' : 'Open File'}
+                </Text>
+              </TouchableOpacity>
+
+              {/* Go to Message */}
+              <TouchableOpacity
+                onPress={handleGoToMessage}
+                style={[styles.actionBarBtn, styles.actionBarBtnSecondary]}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="arrow-redo-outline" size={16} color={COLORS.textSecondary} />
+                <Text style={styles.actionBarBtnTextSecondary}>Go to Message</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Deselect */}
+            <TouchableOpacity
+              onPress={() => setSelectedEntry(null)}
+              style={styles.actionBarClose}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="close" size={15} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          </Animated.View>
         )}
       </Animated.View>
     </Modal>
@@ -410,41 +466,26 @@ const styles = StyleSheet.create({
     shadowRadius:         20,
     elevation:            24,
   },
-  handleWrap: {
-    alignItems:    'center',
-    paddingTop:    10,
-    paddingBottom: 4,
-  },
-  handle: {
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: COLORS.border,
-  },
+  handleWrap:  { alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
+  handle:      { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
+
   header: {
-    flexDirection:     'row',
-    alignItems:        'center',
+    flexDirection:    'row',
+    alignItems:       'center',
     paddingHorizontal: SPACING.xl,
-    paddingVertical:   SPACING.sm,
-    gap:               8,
+    paddingVertical:  SPACING.sm,
+    gap:              8,
   },
-  headerTitle: {
-    color:      COLORS.textPrimary,
-    fontSize:   FONTS.sizes.lg,
-    fontWeight: '800',
-    flex:       1,
-  },
+  headerTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', flex: 1 },
   totalBadge: {
-    backgroundColor: `${COLORS.primary}15`,
-    borderRadius:    RADIUS.full,
+    backgroundColor:  `${COLORS.primary}15`,
+    borderRadius:     RADIUS.full,
     paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderWidth:     1,
-    borderColor:     `${COLORS.primary}25`,
+    paddingVertical:  3,
+    borderWidth:      1,
+    borderColor:      `${COLORS.primary}25`,
   },
-  totalBadgeText: {
-    color:      COLORS.primary,
-    fontSize:   FONTS.sizes.xs,
-    fontWeight: '700',
-  },
+  totalBadgeText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
   closeBtn: {
     width:           32,
     height:          32,
@@ -455,72 +496,54 @@ const styles = StyleSheet.create({
     borderWidth:     1,
     borderColor:     COLORS.border,
   },
+
   searchRow: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    gap:               8,
-    marginHorizontal:  SPACING.xl,
-    marginBottom:      SPACING.sm,
+    flexDirection:    'row',
+    alignItems:       'center',
+    gap:              8,
+    marginHorizontal: SPACING.xl,
+    marginBottom:     SPACING.sm,
     paddingHorizontal: SPACING.md,
-    paddingVertical:   SPACING.sm,
-    backgroundColor:   COLORS.backgroundElevated,
-    borderRadius:      RADIUS.lg,
-    borderWidth:       1,
-    borderColor:       COLORS.border,
+    paddingVertical:  SPACING.sm,
+    backgroundColor:  COLORS.backgroundElevated,
+    borderRadius:     RADIUS.lg,
+    borderWidth:      1,
+    borderColor:      COLORS.border,
   },
-  searchInput: {
-    flex:      1,
-    color:     COLORS.textPrimary,
-    fontSize:  FONTS.sizes.sm,
-    paddingVertical: 0,
-  },
-  filterScroll: {
-    maxHeight: 48,
-    marginBottom: SPACING.sm,
-  },
-  filterScrollContent: {
-    paddingHorizontal: SPACING.xl,
-    gap: 6,
-  },
+  searchInput: { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, paddingVertical: 0 },
+
+  filterScroll:        { maxHeight: 46, marginBottom: SPACING.sm },
+  filterScrollContent: { paddingHorizontal: SPACING.xl, gap: 6 },
   chip: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    gap:               4,
+    flexDirection:    'row',
+    alignItems:       'center',
+    gap:              4,
     paddingHorizontal: 10,
-    paddingVertical:   6,
-    borderRadius:      RADIUS.full,
-    backgroundColor:   COLORS.backgroundElevated,
-    borderWidth:       1,
-    borderColor:       COLORS.border,
+    paddingVertical:  6,
+    borderRadius:     RADIUS.full,
+    backgroundColor:  COLORS.backgroundElevated,
+    borderWidth:      1,
+    borderColor:      COLORS.border,
   },
-  chipActive: {
-    backgroundColor: COLORS.primary,
-    borderColor:     COLORS.primary,
-  },
-  chipLabel: {
-    color:      COLORS.textSecondary,
-    fontSize:   FONTS.sizes.xs,
-    fontWeight: '600',
-  },
-  chipLabelActive: { color: '#FFF' },
+  chipActive:          { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  chipLabel:           { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  chipLabelActive:     { color: '#FFF' },
   chipCount: {
-    backgroundColor: COLORS.border,
-    borderRadius:    RADIUS.full,
-    minWidth:        16,
-    height:          16,
-    alignItems:      'center',
-    justifyContent:  'center',
+    backgroundColor:  COLORS.border,
+    borderRadius:     RADIUS.full,
+    minWidth:         16,
+    height:           16,
+    alignItems:       'center',
+    justifyContent:   'center',
     paddingHorizontal: 3,
   },
   chipCountActive:     { backgroundColor: 'rgba(255,255,255,0.25)' },
   chipCountText:       { color: COLORS.textMuted, fontSize: 9, fontWeight: '800' },
   chipCountTextActive: { color: '#FFF' },
 
-  list: {
-    paddingHorizontal: SPACING.xl,
-    paddingBottom:     20,
-    gap:               8,
-  },
+  list: { paddingHorizontal: SPACING.xl, paddingBottom: 20, gap: 8 },
+
+  // ── File card ─────────────────────────────────────────────────────────────
   card: {
     flexDirection:   'row',
     alignItems:      'center',
@@ -531,43 +554,100 @@ const styles = StyleSheet.create({
     borderColor:     COLORS.border,
     gap:             12,
   },
-  cardThumbWrap: { flexShrink: 0 },
-  imageThumb: {
-    width:        52,
-    height:       52,
-    borderRadius: RADIUS.lg,
+  cardSelected: {
+    borderColor:     COLORS.primary,
+    borderWidth:     1.5,
+    backgroundColor: `${COLORS.primary}08`,
   },
+  cardThumbWrap:    { flexShrink: 0 },
+  imageThumb:       { width: 50, height: 50, borderRadius: RADIUS.lg },
   thumbPlaceholder: {
-    width:           52,
-    height:          52,
+    width:           50,
+    height:          50,
     borderRadius:    RADIUS.lg,
     backgroundColor: COLORS.backgroundCard,
     alignItems:      'center',
     justifyContent:  'center',
   },
   fileIconWrap: {
-    width:           52,
-    height:          52,
+    width:           50,
+    height:          50,
     borderRadius:    RADIUS.lg,
     backgroundColor: `${COLORS.primary}12`,
     alignItems:      'center',
     justifyContent:  'center',
   },
-  cardMeta:  { flex: 1 },
-  cardName:  { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', lineHeight: 18 },
-  cardSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
-  cardSize:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  cardDot:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  cardTime:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  cardAuthor:{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  cardMeta:     { flex: 1 },
+  cardName:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', lineHeight: 17 },
+  cardSubRow:   { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  cardSize:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  cardDot:      { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  cardTime:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  cardAuthor:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  selectedCheck:{ flexShrink: 0 },
 
+  // ── Empty state ───────────────────────────────────────────────────────────
   empty: {
-    flex:           1,
-    alignItems:     'center',
-    justifyContent: 'center',
-    gap:            12,
+    flex:              1,
+    alignItems:        'center',
+    justifyContent:    'center',
+    gap:               12,
     paddingHorizontal: SPACING.xl,
   },
   emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
   emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22 },
+
+  // ── Dual-action bar ───────────────────────────────────────────────────────
+  actionBar: {
+    position:         'absolute',
+    left:             0,
+    right:            0,
+    bottom:           0,
+    backgroundColor:  COLORS.backgroundCard,
+    borderTopWidth:   1,
+    borderTopColor:   COLORS.border,
+    paddingHorizontal: SPACING.xl,
+    paddingTop:       SPACING.md,
+    paddingBottom:    SPACING.xl,
+    shadowColor:      '#000',
+    shadowOffset:     { width: 0, height: -4 },
+    shadowOpacity:    0.2,
+    shadowRadius:     12,
+    elevation:        12,
+    gap:              10,
+  },
+  actionBarName: {
+    color:      COLORS.textSecondary,
+    fontSize:   FONTS.sizes.xs,
+    fontWeight: '600',
+    textAlign:  'center',
+  },
+  actionBarBtns: { flexDirection: 'row', gap: 10 },
+  actionBarBtn: {
+    flex:            1,
+    flexDirection:   'row',
+    alignItems:      'center',
+    justifyContent:  'center',
+    gap:             7,
+    paddingVertical: 13,
+    borderRadius:    RADIUS.lg,
+    borderWidth:     1,
+  },
+  actionBarBtnPrimary:   { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  actionBarBtnSecondary: { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border },
+  actionBarBtnTextPrimary:   { color: '#FFF',               fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  actionBarBtnTextSecondary: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  actionBarClose: {
+    position:  'absolute',
+    top:       SPACING.md,
+    right:     SPACING.xl,
+    width:     28,
+    height:    28,
+    borderRadius: 8,
+    backgroundColor: COLORS.backgroundElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
 });

@@ -1,6 +1,7 @@
 // src/types/chat.ts
 // Part 17 — Workspace Chat System types
 // Part 18 — Added `mentions` field to ChatMessage
+// Part 47 — Added `highlightedMessageId` to ChatState (search-and-highlight feature)
 
 import { MiniProfile } from './index';
 
@@ -97,21 +98,27 @@ export interface ChatPinnedMessage {
 // ─── State Shapes ─────────────────────────────────────────────────────────────
 
 export interface ChatState {
-  messages:        ChatMessage[];
-  isLoading:       boolean;
-  isSending:       boolean;
-  isLoadingMore:   boolean;
-  hasMore:         boolean;
-  error:           string | null;
-  unreadCount:     number;
-  typingUsers:     TypingPayload[];
-  pinnedMessages:  ChatPinnedMessage[];
-  chatMembers:     ChatMember[];
-  replyingTo:      ChatMessage | null;
-  editingMessage:  ChatMessage | null;
-  searchQuery:     string;
-  searchResults:   ChatMessage[];
-  isSearching:     boolean;
+  messages:             ChatMessage[];
+  isLoading:            boolean;
+  isSending:            boolean;
+  isLoadingMore:        boolean;
+  hasMore:              boolean;
+  error:                string | null;
+  unreadCount:          number;
+  typingUsers:          TypingPayload[];
+  pinnedMessages:       ChatPinnedMessage[];
+  chatMembers:          ChatMember[];
+  replyingTo:           ChatMessage | null;
+  editingMessage:       ChatMessage | null;
+  searchQuery:          string;
+  searchResults:        ChatMessage[];
+  isSearching:          boolean;
+  /**
+   * Part 47: ID of the message currently highlighted after a search/pin tap.
+   * Parent sets this via scrollToAndHighlight(), clears it after 2500ms.
+   * ChatBubble applies a visual highlight style when message.id === this value.
+   */
+  highlightedMessageId: string | null;
 }
 
 // ─── Chat Stats ───────────────────────────────────────────────────────────────

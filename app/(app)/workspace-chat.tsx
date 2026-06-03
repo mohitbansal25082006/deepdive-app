@@ -1,6 +1,11 @@
 // app/(app)/workspace-chat.tsx
 // Part 18D — Screen-focus tracking for suppressing notifications when on screen.
-// Fires: notifyChatMessage, notifyReply, notifyMention (only when off-screen).
+// Part 47 — Full realtime (via useWorkspaceChat + useChatRealtime).
+//            Android nav-bar fix: ChatInput receives bottomInset from useSafeAreaInsets.
+//            iOS keyboard fix: KeyboardAvoidingView moved to screen level (removed from ChatInput).
+//            scrollToAndHighlight: scroll + amber highlight for search results & pinned taps.
+//            Search result "Jump to message" button.
+//            isHighlighted passed to each ChatBubble.
 
 import React, {
   useState, useCallback, useRef, useEffect, useMemo,
@@ -8,11 +13,12 @@ import React, {
 import {
   View, Text, FlatList, TouchableOpacity, ActivityIndicator,
   TextInput, StyleSheet, Platform, Alert, Keyboard,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, SlideInUp } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 
 import { useAuth }          from '../../src/context/AuthContext';
@@ -29,9 +35,7 @@ import { ChatFileFilter }   from '../../src/components/workspace/ChatFileFilter'
 import {
   notifyMention, notifyChatMessage, notifyReply,
 } from '../../src/services/workspaceNotificationService';
-import {
-  setActiveChatWorkspaceId,
-} from '../../src/lib/screenState';
+import { setActiveChatWorkspaceId } from '../../src/lib/screenState';
 
 import { ChatMessage, ChatAttachment } from '../../src/types/chat';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
@@ -41,8 +45,10 @@ import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 function isSameDay(a: string, b: string): boolean {
   const da = new Date(a); const db = new Date(b);
   return da.getFullYear() === db.getFullYear()
-    && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate();
 }
+
 function formatDateLabel(ds: string): string {
   const d = new Date(ds); const now = new Date();
   const yest = new Date(now); yest.setDate(yest.getDate() - 1);
@@ -63,10 +69,11 @@ export default function WorkspaceChatScreen() {
     useLocalSearchParams<{ id: string; name: string; role: string }>();
 
   const { user, profile } = useAuth();
-  const flatListRef   = useRef<FlatList<ListItem>>(null);
-  const chat          = useWorkspaceChat(workspaceId ?? null);
+  const insets            = useSafeAreaInsets();   // Part 47: bottom inset for nav bar
+  const flatListRef       = useRef<FlatList<ListItem>>(null);
+  const chat              = useWorkspaceChat(workspaceId ?? null);
   const { typingText, sendTyping } = useChatTyping(workspaceId ?? null);
-  const presence      = usePresence(workspaceId ?? null, true);
+  const presence          = usePresence(workspaceId ?? null, true);
 
   const [showSearch,  setShowSearch]  = useState(false);
   const [showMembers, setShowMembers] = useState(false);
@@ -74,9 +81,12 @@ export default function WorkspaceChatScreen() {
   const [searchInput, setSearchInput] = useState('');
   const searchRef = useRef<TextInput>(null);
 
+  // Part 47: pending scroll after search clear
+  const pendingScrollRef = useRef<string | null>(null);
+
   const isOwnerOrEditor = userRole === 'owner' || userRole === 'editor';
 
-  // ── Part 18D: Register / deregister this screen as the active chat ──────────
+  // ── Focus tracking for notification suppression (Part 18D) ────────────────
   useFocusEffect(
     useCallback(() => {
       if (workspaceId) setActiveChatWorkspaceId(workspaceId);
@@ -84,8 +94,7 @@ export default function WorkspaceChatScreen() {
     }, [workspaceId]),
   );
 
-  // ── Part 18D: Notify on incoming messages from OTHER users ──────────────────
-  // We track the last known message count to detect new arrivals.
+  // ── Incoming message notifications (Part 18D) ─────────────────────────────
   const prevMsgCountRef = useRef(0);
   const chatRef = useRef(chat);
   useEffect(() => { chatRef.current = chat; }, [chat]);
@@ -94,53 +103,27 @@ export default function WorkspaceChatScreen() {
     const msgs = chat.messages;
     if (msgs.length === 0) { prevMsgCountRef.current = 0; return; }
     if (msgs.length <= prevMsgCountRef.current) { prevMsgCountRef.current = msgs.length; return; }
-
-    // Only look at genuinely new messages (after initial load)
     const newMsgs = msgs.slice(prevMsgCountRef.current);
     prevMsgCountRef.current = msgs.length;
-
     if (!workspaceId || !user?.id) return;
 
     newMsgs.forEach(msg => {
-      // Skip our own messages and system messages
       if (msg.userId === user.id || msg.contentType === 'system') return;
-
       const senderName = msg.author?.fullName ?? msg.author?.username ?? 'Someone';
       const preview    = msg.content?.slice(0, 80) ?? '';
 
-      // Check if this message is a reply to one of OUR messages
       if (msg.replyToId) {
         const original = chatRef.current.messages.find(m => m.id === msg.replyToId);
         if (original?.userId === user.id) {
-          notifyReply({
-            workspaceId,
-            workspaceName: workspaceName ?? 'Workspace',
-            replierName:   senderName,
-            replyPreview:  preview,
-            messageId:     msg.id,
-          }).catch(() => {});
-          return; // reply notification takes priority over generic message notif
+          notifyReply({ workspaceId, workspaceName: workspaceName ?? 'Workspace', replierName: senderName, replyPreview: preview, messageId: msg.id }).catch(() => {});
+          return;
         }
       }
-
-      // Check if we're @mentioned
       if (msg.mentions?.includes(user.id)) {
-        notifyMention({
-          workspaceId,
-          workspaceName: workspaceName ?? 'Workspace',
-          mentionerName: senderName,
-          messagePreview: preview,
-        }).catch(() => {});
-        return; // mention notification takes priority
+        notifyMention({ workspaceId, workspaceName: workspaceName ?? 'Workspace', mentionerName: senderName, messagePreview: preview }).catch(() => {});
+        return;
       }
-
-      // Generic new message notification
-      notifyChatMessage({
-        workspaceId,
-        workspaceName: workspaceName ?? 'Workspace',
-        senderName,
-        messagePreview: preview,
-      }).catch(() => {});
+      notifyChatMessage({ workspaceId, workspaceName: workspaceName ?? 'Workspace', senderName, messagePreview: preview }).catch(() => {});
     });
   }, [chat.messages.length, workspaceId, workspaceName, user?.id]);
 
@@ -151,7 +134,7 @@ export default function WorkspaceChatScreen() {
         <SafeAreaView style={styles.lockScreen}>
           <View style={styles.lockIcon}><Ionicons name="lock-closed" size={40} color={COLORS.textMuted} /></View>
           <Text style={styles.lockTitle}>Team Chat</Text>
-          <Text style={styles.lockDesc}>Chat is only available to workspace owners and editors.{'\n'}Ask your workspace owner to upgrade your role.</Text>
+          <Text style={styles.lockDesc}>Chat is only available to owners and editors.{'\n'}Ask your workspace owner to upgrade your role.</Text>
           <TouchableOpacity onPress={() => router.back()} style={styles.lockBackBtn}>
             <Ionicons name="arrow-back-outline" size={16} color="#FFF" />
             <Text style={styles.lockBackBtnText}>Go Back</Text>
@@ -173,24 +156,62 @@ export default function WorkspaceChatScreen() {
       }
       const sameAuthor  = prev && prev.userId === msg.userId && prev.contentType !== 'system';
       const closeInTime = prev && (new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() < 5 * 60 * 1000);
-      result.push({ type: 'message', message: msg, isConsecutive: !!(sameAuthor && closeInTime), showAvatar: !(sameAuthor && closeInTime) });
+      result.push({
+        type: 'message', message: msg,
+        isConsecutive: !!(sameAuthor && closeInTime),
+        showAvatar: !(sameAuthor && closeInTime),
+      });
     });
     return result;
   }, [chat.messages, chat.searchResults, chat.searchQuery, chat.hasMore]);
 
-  // ── Auto-scroll ────────────────────────────────────────────────────────────
+  // ── Auto-scroll to bottom on new messages ─────────────────────────────────
   useEffect(() => {
     if (chat.messages.length > 0 && !chat.searchQuery) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
     }
   }, [chat.messages.length]);
 
-  const scrollToMessage = useCallback((messageId: string) => {
-    const idx = listItems.findIndex(item => item.type === 'message' && item.message.id === messageId);
-    if (idx !== -1) flatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.5 });
-  }, [listItems]);
+  // ── Part 47: scrollToAndHighlight ─────────────────────────────────────────
+  // Scrolls to a message by index and triggers the amber highlight animation.
+  // Used for: search result taps, pinned message taps, reply preview taps.
 
-  // ── Send (Part 18D: mentions → notifyMention already handled above via messages effect) ──
+  const scrollToAndHighlight = useCallback((messageId: string) => {
+    const idx = listItems.findIndex(
+      item => item.type === 'message' && item.message.id === messageId
+    );
+    if (idx !== -1) {
+      try {
+        flatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.5 });
+      } catch {
+        // Fallback: estimate offset
+        const offset = Math.max(0, (idx - 2)) * 80;
+        flatListRef.current?.scrollToOffset({ offset, animated: true });
+      }
+    }
+    chat.highlightMessage(messageId);
+  }, [listItems, chat.highlightMessage]);
+
+  // ── Part 47: Post-search scroll ────────────────────────────────────────────
+  // When a search result is tapped, we store the target messageId in pendingScrollRef,
+  // then clear the search. Once search clears and the full message list re-renders,
+  // we scroll to and highlight the target.
+
+  useEffect(() => {
+    if (!chat.searchQuery && pendingScrollRef.current) {
+      const id = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+      setTimeout(() => scrollToAndHighlight(id), 200);
+    }
+  }, [chat.searchQuery, scrollToAndHighlight]);
+
+  // When user taps "Jump to message" on a search result
+  const handleSearchResultTap = useCallback((messageId: string) => {
+    pendingScrollRef.current = messageId;
+    closeSearch();
+  }, []);
+
+  // ── Send / edit ────────────────────────────────────────────────────────────
   const handleSend = useCallback((
     text: string, replyToId?: string,
     attachments?: ChatAttachment[], mentions?: string[],
@@ -215,10 +236,18 @@ export default function WorkspaceChatScreen() {
     const { error } = await chat.unpin(id); if (error) Alert.alert('Error', error);
   }, [chat]);
 
-  const handleSearch  = useCallback((q: string) => {
-    setSearchInput(q); if (q.trim().length >= 2) chat.search(q); else chat.clearSearch();
+  // ── Search ─────────────────────────────────────────────────────────────────
+  const handleSearch = useCallback((q: string) => {
+    setSearchInput(q);
+    if (q.trim().length >= 2) chat.search(q);
+    else chat.clearSearch();
   }, [chat]);
-  const closeSearch   = useCallback(() => { setShowSearch(false); setSearchInput(''); chat.clearSearch(); }, [chat]);
+
+  const closeSearch = useCallback(() => {
+    setShowSearch(false);
+    setSearchInput('');
+    chat.clearSearch();
+  }, [chat]);
 
   const fileCount = useMemo(() =>
     chat.messages.filter(m => !m.isDeleted && m.attachments.length > 0)
@@ -226,30 +255,71 @@ export default function WorkspaceChatScreen() {
 
   // ── Render item ────────────────────────────────────────────────────────────
   const renderItem = useCallback(({ item }: { item: ListItem }) => {
+    // Load more button
     if (item.type === 'loader') return (
       <View style={styles.loadMoreWrap}>
         <TouchableOpacity onPress={chat.loadMore} disabled={chat.isLoadingMore} style={styles.loadMoreBtn} activeOpacity={0.7}>
-          {chat.isLoadingMore ? <ActivityIndicator size="small" color={COLORS.primary} /> : (
-            <><Ionicons name="chevron-up-outline" size={14} color={COLORS.primary} /><Text style={styles.loadMoreText}>Load earlier messages</Text></>
-          )}
+          {chat.isLoadingMore
+            ? <ActivityIndicator size="small" color={COLORS.primary} />
+            : <><Ionicons name="chevron-up-outline" size={14} color={COLORS.primary} /><Text style={styles.loadMoreText}>Load earlier messages</Text></>
+          }
         </TouchableOpacity>
       </View>
     );
+
+    // Date separator
     if (item.type === 'date') return (
-      <View style={styles.dateSep}><View style={styles.dateLine} /><Text style={styles.dateLbl}>{item.label}</Text><View style={styles.dateLine} /></View>
+      <View style={styles.dateSep}>
+        <View style={styles.dateLine} />
+        <Text style={styles.dateLbl}>{item.label}</Text>
+        <View style={styles.dateLine} />
+      </View>
     );
+
+    // Message bubble
     const { message, isConsecutive, showAvatar } = item;
-    return (
+    const bubble = (
       <ChatBubble
-        message={message} isOwnMessage={message.userId === user?.id}
-        isOwnerOrEditor={isOwnerOrEditor} showAvatar={showAvatar}
+        message={message}
+        isOwnMessage={message.userId === user?.id}
+        isOwnerOrEditor={isOwnerOrEditor}
+        showAvatar={showAvatar}
         isConsecutive={isConsecutive}
-        onReply={chat.setReplyingTo} onEdit={chat.setEditingMessage}
-        onDelete={handleDelete} onReact={handleReact} onPin={handlePin}
-        onUnpin={handleUnpin} onScrollToReply={scrollToMessage}
+        // Part 47: amber highlight when this is the target message
+        isHighlighted={message.id === chat.highlightedMessageId}
+        onReply={chat.setReplyingTo}
+        onEdit={chat.setEditingMessage}
+        onDelete={handleDelete}
+        onReact={handleReact}
+        onPin={handlePin}
+        onUnpin={handleUnpin}
+        // Part 47: reply preview taps also scroll + highlight
+        onScrollToReply={scrollToAndHighlight}
       />
     );
-  }, [user?.id, isOwnerOrEditor, chat, handleDelete, handleReact, handlePin, handleUnpin, scrollToMessage]);
+
+    // Part 47: In search mode, show a "Jump to message" button under each result
+    if (chat.searchQuery) {
+      return (
+        <View>
+          {bubble}
+          <TouchableOpacity
+            onPress={() => handleSearchResultTap(message.id)}
+            style={styles.jumpBtn}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="arrow-redo-outline" size={11} color={COLORS.primary} />
+            <Text style={styles.jumpBtnText}>Jump to message</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return bubble;
+  }, [
+    user?.id, isOwnerOrEditor, chat, handleDelete, handleReact, handlePin,
+    handleUnpin, scrollToAndHighlight, handleSearchResultTap,
+  ]);
 
   const keyExtractor = useCallback((item: ListItem) =>
     item.type === 'message' ? item.message.id : item.id, []);
@@ -262,164 +332,254 @@ export default function WorkspaceChatScreen() {
     </Animated.View>
   );
 
+  // ── Render ─────────────────────────────────────────────────────────────────
+  // Layout:
+  //   LinearGradient (full screen)
+  //   └─ SafeAreaView (top/left/right edges — NOT bottom; we handle it via bottomInset)
+  //      └─ KeyboardAvoidingView (iOS: 'padding'; Android: undefined — adjustPan in app.json)
+  //         ├─ Top bar
+  //         ├─ Search bar (conditional)
+  //         ├─ Search results banner (conditional)
+  //         ├─ Pinned bar
+  //         ├─ FlatList (flex:1)
+  //         ├─ Typing indicator
+  //         ├─ Unread badge
+  //         └─ ChatInput (bottomInset = insets.bottom for Android nav bar)
+  //   ChatMembersPanel (Modal — outside KAV, still full-screen)
+  //   ChatFileFilter   (Modal — outside KAV, still full-screen)
+
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
 
-        {/* Top bar */}
-        <Animated.View entering={FadeIn.duration(350)} style={styles.topBar}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
-          </TouchableOpacity>
-          <View style={styles.topCenter}>
-            <View style={styles.titleRow}>
-              <View style={styles.chatIcon}><Ionicons name="chatbubbles" size={16} color={COLORS.primary} /></View>
-              <Text style={styles.topTitle} numberOfLines={1}>{workspaceName ?? 'Team Chat'}</Text>
-            </View>
-            <Text style={styles.topSub}>
-              {chat.chatMembers.length} {chat.chatMembers.length === 1 ? 'member' : 'members'}
-              {presence.onlineCount > 0 && ` · ${presence.onlineCount} online`}
-            </Text>
-          </View>
-          <View style={styles.topActions}>
-            {/* Files */}
-            <TouchableOpacity onPress={() => setShowFiles(true)}
-              style={[styles.iconBtn, fileCount > 0 && styles.iconBtnFiles]} activeOpacity={0.7}>
-              <Ionicons name="folder-open-outline" size={17} color={fileCount > 0 ? COLORS.primary : COLORS.textSecondary} />
-              {fileCount > 0 && <View style={styles.badge}><Text style={styles.badgeTxt}>{fileCount > 99 ? '99+' : fileCount}</Text></View>}
-            </TouchableOpacity>
-            {/* Search */}
-            <TouchableOpacity onPress={() => { setShowSearch(v => !v); setTimeout(() => searchRef.current?.focus(), 100); }}
-              style={[styles.iconBtn, showSearch && styles.iconBtnActive]} activeOpacity={0.7}>
-              <Ionicons name={showSearch ? 'search' : 'search-outline'} size={17} color={showSearch ? COLORS.primary : COLORS.textSecondary} />
-            </TouchableOpacity>
-            {/* Members */}
-            <TouchableOpacity onPress={() => setShowMembers(true)} style={styles.iconBtn} activeOpacity={0.7}>
-              <Ionicons name="people-outline" size={17} color={COLORS.textSecondary} />
-              {chat.chatMembers.length > 0 && <View style={styles.badge}><Text style={styles.badgeTxt}>{chat.chatMembers.length > 9 ? '9+' : chat.chatMembers.length}</Text></View>}
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
+        {/* Part 47: KAV at SCREEN level — iOS pushes content above keyboard */}
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}
+        >
 
-        {/* Search bar */}
-        {showSearch && (
-          <Animated.View entering={SlideInUp.duration(220)} style={styles.searchBar}>
-            <Ionicons name="search-outline" size={15} color={COLORS.textMuted} />
-            <TextInput ref={searchRef} value={searchInput} onChangeText={handleSearch}
-              placeholder="Search messages…" placeholderTextColor={COLORS.textMuted}
-              style={styles.searchInput} returnKeyType="search" autoCapitalize="none" autoCorrect={false} />
-            {searchInput.length > 0 && (
-              <TouchableOpacity onPress={() => { setSearchInput(''); chat.clearSearch(); }}>
-                <Ionicons name="close-circle" size={15} color={COLORS.textMuted} />
+          {/* ── Top bar ─────────────────────────────────────────────────── */}
+          <Animated.View entering={FadeIn.duration(350)} style={styles.topBar}>
+            <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+              <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+            <View style={styles.topCenter}>
+              <View style={styles.titleRow}>
+                <View style={styles.chatIcon}><Ionicons name="chatbubbles" size={16} color={COLORS.primary} /></View>
+                <Text style={styles.topTitle} numberOfLines={1}>{workspaceName ?? 'Team Chat'}</Text>
+              </View>
+              <Text style={styles.topSub}>
+                {chat.chatMembers.length} {chat.chatMembers.length === 1 ? 'member' : 'members'}
+                {presence.onlineCount > 0 && ` · ${presence.onlineCount} online`}
+              </Text>
+            </View>
+            <View style={styles.topActions}>
+              {/* Files */}
+              <TouchableOpacity onPress={() => setShowFiles(true)}
+                style={[styles.iconBtn, fileCount > 0 && styles.iconBtnFiles]} activeOpacity={0.7}>
+                <Ionicons name="folder-open-outline" size={17} color={fileCount > 0 ? COLORS.primary : COLORS.textSecondary} />
+                {fileCount > 0 && <View style={styles.badge}><Text style={styles.badgeTxt}>{fileCount > 99 ? '99+' : fileCount}</Text></View>}
               </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={closeSearch} style={styles.cancelBtn}>
-              <Text style={styles.cancelTxt}>Cancel</Text>
-            </TouchableOpacity>
-          </Animated.View>
-        )}
-
-        {/* Search results banner */}
-        {chat.searchQuery && (
-          <View style={styles.searchBanner}>
-            <Ionicons name="search-outline" size={12} color={COLORS.primary} />
-            <Text style={styles.searchBannerTxt}>
-              {chat.isSearching ? 'Searching…' : `${chat.searchResults.length} result${chat.searchResults.length !== 1 ? 's' : ''} for "${chat.searchQuery}"`}
-            </Text>
-            <TouchableOpacity onPress={closeSearch}><Text style={styles.clearTxt}>Clear</Text></TouchableOpacity>
-          </View>
-        )}
-
-        {/* Pinned bar */}
-        <ChatPinnedBar pinnedMessages={chat.pinnedMessages} isEditorOrOwner={isOwnerOrEditor}
-          onTapMessage={msg => scrollToMessage(msg.id)} onUnpin={handleUnpin} />
-
-        {/* Message list */}
-        {chat.isLoading ? (
-          <View style={styles.loadWrap}><ActivityIndicator size="large" color={COLORS.primary} /><Text style={styles.loadTxt}>Loading messages…</Text></View>
-        ) : chat.error ? (
-          <View style={styles.errWrap}>
-            <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
-            <Text style={styles.errTxt}>{chat.error}</Text>
-            <TouchableOpacity onPress={chat.refresh} style={styles.retryBtn}><Text style={styles.retryTxt}>Retry</Text></TouchableOpacity>
-          </View>
-        ) : (
-          <FlatList
-            ref={flatListRef} data={listItems} keyExtractor={keyExtractor}
-            renderItem={renderItem} contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-            onScrollToIndexFailed={() => {}}
-            ListEmptyComponent={<EmptyState />}
-            keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive"
-            removeClippedSubviews={Platform.OS === 'android'}
-            maxToRenderPerBatch={20} windowSize={10}
-          />
-        )}
-
-        {/* Typing indicator */}
-        {typingText && (
-          <Animated.View entering={FadeIn.duration(200)} style={styles.typingBar}>
-            <View style={styles.typingDots}>
-              {[0,1,2].map(i => <View key={i} style={styles.dot} />)}
+              {/* Search */}
+              <TouchableOpacity
+                onPress={() => { setShowSearch(v => !v); setTimeout(() => searchRef.current?.focus(), 100); }}
+                style={[styles.iconBtn, showSearch && styles.iconBtnActive]}
+                activeOpacity={0.7}
+              >
+                <Ionicons name={showSearch ? 'search' : 'search-outline'} size={17} color={showSearch ? COLORS.primary : COLORS.textSecondary} />
+              </TouchableOpacity>
+              {/* Members */}
+              <TouchableOpacity onPress={() => setShowMembers(true)} style={styles.iconBtn} activeOpacity={0.7}>
+                <Ionicons name="people-outline" size={17} color={COLORS.textSecondary} />
+                {chat.chatMembers.length > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeTxt}>{chat.chatMembers.length > 9 ? '9+' : chat.chatMembers.length}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             </View>
-            <Text style={styles.typingTxt} numberOfLines={1}>{typingText}</Text>
           </Animated.View>
-        )}
 
-        {/* Unread badge */}
-        {chat.unreadCount > 0 && (
-          <Animated.View entering={FadeIn.duration(300)} style={styles.unreadBadge}>
-            <TouchableOpacity onPress={() => flatListRef.current?.scrollToEnd({ animated: true })} style={styles.unreadBtn}>
-              <Ionicons name="chevron-down" size={14} color="#FFF" />
-              <Text style={styles.unreadTxt}>{chat.unreadCount} new</Text>
-            </TouchableOpacity>
-          </Animated.View>
-        )}
+          {/* ── Search bar ──────────────────────────────────────────────── */}
+          {showSearch && (
+            <Animated.View entering={SlideInUp.duration(220)} style={styles.searchBar}>
+              <Ionicons name="search-outline" size={15} color={COLORS.textMuted} />
+              <TextInput
+                ref={searchRef}
+                value={searchInput}
+                onChangeText={handleSearch}
+                placeholder="Search messages…"
+                placeholderTextColor={COLORS.textMuted}
+                style={styles.searchInput}
+                returnKeyType="search"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {searchInput.length > 0 && (
+                <TouchableOpacity onPress={() => { setSearchInput(''); chat.clearSearch(); }}>
+                  <Ionicons name="close-circle" size={15} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={closeSearch} style={styles.cancelBtn}>
+                <Text style={styles.cancelTxt}>Cancel</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          )}
 
-        {/* Chat input */}
-        <ChatInput
-          workspaceId={workspaceId ?? ''} replyingTo={chat.replyingTo}
-          editingMessage={chat.editingMessage} isSending={chat.isSending}
-          chatMembers={chat.chatMembers} onSend={handleSend}
-          onCancelReply={() => chat.setReplyingTo(null)}
-          onCancelEdit={() => chat.setEditingMessage(null)}
-          onSaveEdit={handleSaveEdit} onTyping={sendTyping}
-        />
+          {/* ── Search results banner ───────────────────────────────────── */}
+          {chat.searchQuery && (
+            <View style={styles.searchBanner}>
+              <Ionicons name="search-outline" size={12} color={COLORS.primary} />
+              <Text style={styles.searchBannerTxt}>
+                {chat.isSearching
+                  ? 'Searching…'
+                  : `${chat.searchResults.length} result${chat.searchResults.length !== 1 ? 's' : ''} for "${chat.searchQuery}" · tap to jump`}
+              </Text>
+              <TouchableOpacity onPress={closeSearch}>
+                <Text style={styles.clearTxt}>Clear</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* ── Pinned bar (Part 47: onTapMessage scrolls + highlights) ── */}
+          <ChatPinnedBar
+            pinnedMessages={chat.pinnedMessages}
+            isEditorOrOwner={isOwnerOrEditor}
+            onTapMessage={msg => scrollToAndHighlight(msg.id)}
+            onUnpin={handleUnpin}
+          />
+
+          {/* ── Message list ────────────────────────────────────────────── */}
+          {chat.isLoading ? (
+            <View style={styles.loadWrap}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={styles.loadTxt}>Loading messages…</Text>
+            </View>
+          ) : chat.error ? (
+            <View style={styles.errWrap}>
+              <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
+              <Text style={styles.errTxt}>{chat.error}</Text>
+              <TouchableOpacity onPress={chat.refresh} style={styles.retryBtn}>
+                <Text style={styles.retryTxt}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <FlatList
+              ref={flatListRef}
+              data={listItems}
+              keyExtractor={keyExtractor}
+              renderItem={renderItem}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+              onScrollToIndexFailed={(info) => {
+                // Retry with estimated offset after a short delay
+                setTimeout(() => {
+                  const offset = info.averageItemLength * info.index;
+                  flatListRef.current?.scrollToOffset({ offset, animated: true });
+                }, 100);
+              }}
+              ListEmptyComponent={<EmptyState />}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
+              removeClippedSubviews={Platform.OS === 'android'}
+              maxToRenderPerBatch={20}
+              windowSize={10}
+            />
+          )}
+
+          {/* ── Typing indicator ────────────────────────────────────────── */}
+          {typingText && (
+            <Animated.View entering={FadeIn.duration(200)} style={styles.typingBar}>
+              <View style={styles.typingDots}>
+                {[0, 1, 2].map(i => <View key={i} style={styles.dot} />)}
+              </View>
+              <Text style={styles.typingTxt} numberOfLines={1}>{typingText}</Text>
+            </Animated.View>
+          )}
+
+          {/* ── Unread badge ─────────────────────────────────────────────── */}
+          {chat.unreadCount > 0 && (
+            <Animated.View entering={FadeIn.duration(300)} style={styles.unreadBadge}>
+              <TouchableOpacity
+                onPress={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                style={styles.unreadBtn}
+              >
+                <Ionicons name="chevron-down" size={14} color="#FFF" />
+                <Text style={styles.unreadTxt}>{chat.unreadCount} new</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          )}
+
+          {/* ── Chat input (Part 47: bottomInset for Android nav bar) ────── */}
+          <ChatInput
+            workspaceId={workspaceId ?? ''}
+            replyingTo={chat.replyingTo}
+            editingMessage={chat.editingMessage}
+            isSending={chat.isSending}
+            chatMembers={chat.chatMembers}
+            bottomInset={insets.bottom}
+            onSend={handleSend}
+            onCancelReply={() => chat.setReplyingTo(null)}
+            onCancelEdit={() => chat.setEditingMessage(null)}
+            onSaveEdit={handleSaveEdit}
+            onTyping={sendTyping}
+          />
+
+        </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* Panels */}
-      <ChatMembersPanel visible={showMembers} members={chat.chatMembers}
-        onlineUsers={presence.onlineUsers} onClose={() => setShowMembers(false)}
-        workspaceName={workspaceName ?? 'Workspace'} />
+      {/* ── Panels (modals — outside KAV so they cover full screen) ─────── */}
+      <ChatMembersPanel
+        visible={showMembers}
+        members={chat.chatMembers}
+        onlineUsers={presence.onlineUsers}
+        onClose={() => setShowMembers(false)}
+        workspaceName={workspaceName ?? 'Workspace'}
+      />
 
-      <ChatFileFilter visible={showFiles} messages={chat.messages}
+      <ChatFileFilter
+        visible={showFiles}
+        messages={chat.messages}
         onClose={() => setShowFiles(false)}
-        onScrollToMessage={id => { setShowFiles(false); setTimeout(() => scrollToMessage(id), 300); }} />
+        onScrollToMessage={id => {
+          setShowFiles(false);
+          // Small delay for modal to dismiss before scrolling
+          setTimeout(() => scrollToAndHighlight(id), 320);
+        }}
+      />
     </LinearGradient>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  lockScreen:    { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, gap: 16 },
-  lockIcon:      { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.textMuted}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.sm },
-  lockTitle:     { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
-  lockDesc:      { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, textAlign: 'center', lineHeight: 24, maxWidth: 300 },
-  lockBackBtn:   { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: 13, marginTop: SPACING.sm },
-  lockBackBtnText:{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
-  topBar:        { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 10 },
-  backBtn:       { width: 36, height: 36, borderRadius: 11, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, flexShrink: 0 },
-  topCenter:     { flex: 1 },
-  titleRow:      { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  chatIcon:      { width: 26, height: 26, borderRadius: 8, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  topTitle:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', flex: 1 },
-  topSub:        { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1, paddingLeft: 33 },
-  topActions:    { flexDirection: 'row', gap: 5, alignItems: 'center' },
-  iconBtn:       { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
+  // ── Lock screen ────────────────────────────────────────────────────────────
+  lockScreen:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, gap: 16 },
+  lockIcon:        { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.textMuted}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.sm },
+  lockTitle:       { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
+  lockDesc:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, textAlign: 'center', lineHeight: 24, maxWidth: 300 },
+  lockBackBtn:     { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: 13, marginTop: SPACING.sm },
+  lockBackBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
+
+  // ── Top bar ────────────────────────────────────────────────────────────────
+  topBar:     { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 10 },
+  backBtn:    { width: 36, height: 36, borderRadius: 11, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, flexShrink: 0 },
+  topCenter:  { flex: 1 },
+  titleRow:   { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  chatIcon:   { width: 26, height: 26, borderRadius: 8, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  topTitle:   { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', flex: 1 },
+  topSub:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1, paddingLeft: 33 },
+  topActions: { flexDirection: 'row', gap: 5, alignItems: 'center' },
+  iconBtn:    { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
   iconBtnActive: { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}40` },
   iconBtnFiles:  { borderColor: `${COLORS.primary}35` },
-  badge:         { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 15, height: 15, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2, borderWidth: 1.5, borderColor: COLORS.background },
-  badgeTxt:      { color: '#FFF', fontSize: 8, fontWeight: '800' },
+  badge:      { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 15, height: 15, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2, borderWidth: 1.5, borderColor: COLORS.background },
+  badgeTxt:   { color: '#FFF', fontSize: 8, fontWeight: '800' },
+
+  // ── Search ─────────────────────────────────────────────────────────────────
   searchBar:     { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, gap: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.backgroundCard },
   searchInput:   { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm },
   cancelBtn:     { paddingLeft: 4 },
@@ -427,28 +587,42 @@ const styles = StyleSheet.create({
   searchBanner:  { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: SPACING.md, paddingVertical: 7, backgroundColor: `${COLORS.primary}10`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}20` },
   searchBannerTxt:{ flex: 1, color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '500' },
   clearTxt:      { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
-  listContent:   { paddingTop: SPACING.sm, paddingBottom: SPACING.lg, flexGrow: 1 },
-  loadMoreWrap:  { alignItems: 'center', paddingVertical: SPACING.md },
-  loadMoreBtn:   { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.full, paddingHorizontal: SPACING.lg, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border },
-  loadMoreText:  { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  dateSep:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.xl, marginVertical: SPACING.md, gap: 10 },
-  dateLine:      { flex: 1, height: 1, backgroundColor: COLORS.border },
-  dateLbl:       { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  typingBar:     { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.xl, paddingVertical: 5, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border },
-  typingDots:    { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  dot:           { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.primary },
-  typingTxt:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic', flex: 1 },
-  unreadBadge:   { position: 'absolute', bottom: 90, alignSelf: 'center', zIndex: 100 },
-  unreadBtn:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: COLORS.primary, borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 7, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 8 },
-  unreadTxt:     { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
-  loadWrap:      { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  loadTxt:       { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
-  errWrap:       { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: SPACING.xl },
-  errTxt:        { color: COLORS.textSecondary, textAlign: 'center', fontSize: FONTS.sizes.sm },
-  retryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: SPACING.sm },
-  retryTxt:      { color: '#FFF', fontWeight: '700' },
-  emptyState:    { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, paddingTop: 80, gap: 14 },
-  emptyIcon:     { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center' },
-  emptyTitle:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  emptyDesc:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, maxWidth: 300 },
+
+  // ── Message list ───────────────────────────────────────────────────────────
+  listContent:  { paddingTop: SPACING.sm, paddingBottom: SPACING.lg, flexGrow: 1 },
+  loadMoreWrap: { alignItems: 'center', paddingVertical: SPACING.md },
+  loadMoreBtn:  { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.full, paddingHorizontal: SPACING.lg, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border },
+  loadMoreText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+
+  dateSep:  { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.xl, marginVertical: SPACING.md, gap: 10 },
+  dateLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
+  dateLbl:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+
+  // Part 47: "Jump to message" button shown in search mode
+  jumpBtn:     { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: SPACING.xl + 40, paddingBottom: 6, paddingTop: 2 },
+  jumpBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+
+  // ── Typing indicator ───────────────────────────────────────────────────────
+  typingBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.xl, paddingVertical: 5, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border },
+  typingDots:{ flexDirection: 'row', alignItems: 'center', gap: 3 },
+  dot:       { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.primary },
+  typingTxt: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic', flex: 1 },
+
+  // ── Unread badge ───────────────────────────────────────────────────────────
+  unreadBadge: { position: 'absolute', bottom: 90, alignSelf: 'center', zIndex: 100 },
+  unreadBtn:   { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: COLORS.primary, borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 7, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 8 },
+  unreadTxt:   { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
+  // ── States ─────────────────────────────────────────────────────────────────
+  loadWrap:  { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  loadTxt:   { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+  errWrap:   { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: SPACING.xl },
+  errTxt:    { color: COLORS.textSecondary, textAlign: 'center', fontSize: FONTS.sizes.sm },
+  retryBtn:  { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: SPACING.sm },
+  retryTxt:  { color: '#FFF', fontWeight: '700' },
+
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, paddingTop: 80, gap: 14 },
+  emptyIcon:  { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center' },
+  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+  emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, maxWidth: 300 },
 });

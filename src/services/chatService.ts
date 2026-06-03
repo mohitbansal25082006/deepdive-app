@@ -1,6 +1,7 @@
 // src/services/chatService.ts
 // Part 17 — Workspace Chat Service
 // Part 18 — sendChatMessage now accepts and forwards p_mentions (uuid[])
+// Part 47 — Added getChatMessageById() and getMessageReactions() helpers
 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
@@ -79,7 +80,7 @@ export function mapMessage(raw: Record<string, unknown>): ChatMessage {
 
     reactions: reactRaw.map(r => ({
       emoji:      get<string>(r,  'emoji',       'emoji')      ?? '',
-      count:      (get<number>(r,  'count',       'count')      ?? 0),
+      count:      (get<number>(r,  'count',       'count')      ?? (r as any).cnt ?? 0),
       hasReacted: !!(get<boolean>(r, 'has_reacted', 'hasReacted') ?? false),
     } satisfies ChatMessageReactionSummary)),
 
@@ -344,4 +345,54 @@ export async function broadcastTyping(
     const ch = supabase.channel(`chat:${workspaceId}:typing`);
     await ch.send({ type: 'broadcast', event: 'typing', payload: { ...user, isTyping } satisfies TypingPayload });
   } catch { /* non-fatal */ }
+}
+
+// ─── Part 47: Single-message hydration ───────────────────────────────────────
+
+/**
+ * Fetch a single chat message by ID with full details (author, reactions, replyTo).
+ * Used by useChatRealtime for INSERT hydration and manual refresh.
+ */
+export async function getChatMessageById(
+  messageId: string,
+): Promise<{ data: ChatMessage | null; error: string | null }> {
+  try {
+    const { data, error } = await supabase.rpc('get_chat_message_by_id', {
+      p_message_id: messageId,
+    });
+    if (error) throw error;
+    if (!data) return { data: null, error: null };
+    const raw = typeof data === 'string'
+      ? (JSON.parse(data) as Record<string, unknown>)
+      : (data as Record<string, unknown>);
+    return { data: mapMessage(raw), error: null };
+  } catch (err) {
+    return { data: null, error: err instanceof Error ? err.message : 'Failed to fetch message' };
+  }
+}
+
+/**
+ * Fetch fresh reaction summary for a single message.
+ * Used by useChatRealtime when a reaction INSERT/DELETE event fires.
+ */
+export async function getMessageReactions(
+  messageId: string,
+): Promise<{ data: ChatMessageReactionSummary[]; error: string | null }> {
+  try {
+    const { data, error } = await supabase.rpc('get_message_reactions', {
+      p_message_id: messageId,
+    });
+    if (error) throw error;
+    const arr = parseJsonb(data);
+    return {
+      data: arr.map(r => ({
+        emoji:      String(r.emoji      ?? ''),
+        count:      Number((r as any).cnt ?? r.count ?? 0),
+        hasReacted: !!((r as any).has_reacted ?? r.hasReacted ?? false),
+      })),
+      error: null,
+    };
+  } catch (err) {
+    return { data: [], error: err instanceof Error ? err.message : 'Failed to fetch reactions' };
+  }
 }
