@@ -1,9 +1,21 @@
 // src/components/workspace/ChatInput.tsx
-// Part 18C — Added audio picker + onPickAudio wired through ChatAttachmentPicker
-// Part 47 — Full emoji library via EmojiPickerModal (rn-emoji-keyboard, ~1500 emoji).
-//            Removed inline 8-emoji quick bar.
-//            Removed KeyboardAvoidingView (moved to workspace-chat.tsx screen level).
-//            Added bottomInset prop for Android nav-bar / iOS home-indicator gap.
+// Part 47 — Full emoji library; bottomInset prop.
+// Part 48  — Keyboard fix; emoji above input; document name in send.
+// Part 48b — Android keyboard + emoji fix.
+// Part 48e — FIXES:
+//   1. Android padding below message box: When the keyboard appears in Android,
+//      there is extra padding between the bottom of the screen and the input.
+//      Root cause: we were using `paddingBottom: Math.max(bottomInset, 4)` but
+//      on Android with softwareKeyboardLayoutMode="resize" the window is already
+//      resized, so bottomInset is 0 — the 4px padding is not the issue.
+//      The actual cause was the container's backgroundColor creating visual
+//      separation. Fixed by setting paddingBottom to 0 on Android when not
+//      at the home indicator (bottomInset === 0), and only keeping the inset
+//      on iOS where the home indicator needs clearance.
+//
+//   2. Multiple emoji selection: EmojiPickerModal now handles this via
+//      allowMultipleSelections. ChatInput's handleEmojiSelected still appends
+//      to text correctly and does NOT close the picker.
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
@@ -33,11 +45,6 @@ interface Props {
   editingMessage: ChatMessage | null;
   isSending:      boolean;
   chatMembers:    ChatMember[];
-  /**
-   * Part 47: Bottom safe-area inset (insets.bottom from useSafeAreaInsets).
-   * Used to push the input above Android navigation bar and iOS home indicator.
-   * Passed from workspace-chat.tsx.
-   */
   bottomInset?:   number;
   onSend:         (text: string, replyToId?: string, attachments?: ChatAttachment[], mentions?: string[]) => void;
   onCancelReply:  () => void;
@@ -72,7 +79,7 @@ export function ChatInput({
 
   const [text,              setText]              = useState('');
   const [focused,           setFocused]           = useState(false);
-  const [showEmojiPicker,   setShowEmojiPicker]   = useState(false);  // Part 47: replaces showEmoji
+  const [showEmojiPicker,   setShowEmojiPicker]   = useState(false);
   const [showPicker,        setShowPicker]        = useState(false);
   const [staged,            setStaged]            = useState<StagedAttachment[]>([]);
   const [activeMention,     setActiveMention]     = useState<ActiveMentionQuery | null>(null);
@@ -83,7 +90,6 @@ export function ChatInput({
   const sendBtnScale   = useRef(new RNAnimated.Value(1)).current;
   const cursorPosRef   = useRef<number>(0);
 
-  // Pre-fill input when editing a message
   useEffect(() => {
     if (editingMessage) {
       setText(editingMessage.content);
@@ -92,7 +98,16 @@ export function ChatInput({
     }
   }, [editingMessage?.id]);
 
-  // ── Text change + mention detection ─────────────────────────────────────────
+  // ── Input focus: close emoji picker so keyboard can appear ──────────────
+
+  const handleInputFocus = useCallback(() => {
+    setFocused(true);
+    if (showEmojiPicker) {
+      setShowEmojiPicker(false);
+    }
+  }, [showEmojiPicker]);
+
+  // ── Text change + mention detection ──────────────────────────────────────
 
   const handleTextChange = useCallback((val: string) => {
     setText(val);
@@ -116,7 +131,7 @@ export function ChatInput({
 
   useEffect(() => () => { if (typingTimerRef.current) clearTimeout(typingTimerRef.current); }, []);
 
-  // ── @Mention selection ───────────────────────────────────────────────────────
+  // ── @Mention selection ───────────────────────────────────────────────────
 
   const handleMentionSelect = useCallback((member: ChatMember) => {
     if (!activeMention) return;
@@ -128,24 +143,36 @@ export function ChatInput({
     setTimeout(() => inputRef.current?.setNativeProps({ selection: { start: newCursor, end: newCursor } }), 50);
   }, [activeMention, text]);
 
-  // ── Emoji picker (Part 47) ─────────────────────────────────────────────────
+  // ── Emoji picker toggle ───────────────────────────────────────────────────
 
   const handleEmojiButtonPress = useCallback(() => {
     if (showEmojiPicker) {
       setShowEmojiPicker(false);
     } else {
-      // Dismiss keyboard before opening emoji picker
       Keyboard.dismiss();
-      setTimeout(() => setShowEmojiPicker(true), 150);
+      inputRef.current?.blur();
+      setTimeout(() => setShowEmojiPicker(true), Platform.OS === 'ios' ? 200 : 100);
     }
   }, [showEmojiPicker]);
 
+  // Part 48e: append emoji — picker stays open (controlled by EmojiPickerModal)
   const handleEmojiSelected = useCallback((emoji: string) => {
-    // Append emoji to current text (picker stays open for multiple picks)
-    handleTextChange(text + emoji);
-  }, [text, handleTextChange]);
+    const newText = text + emoji;
+    setText(newText);
+    setActiveMention(detectMentionQuery(newText, newText.length));
+    if (newText.length > 0) {
+      onTyping(true);
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(() => onTyping(false), 3000);
+    }
+    // Intentionally do NOT close picker — user can keep selecting
+  }, [text, onTyping]);
 
-  // ── Attachment upload ────────────────────────────────────────────────────────
+  const handleEmojiClose = useCallback(() => {
+    setShowEmojiPicker(false);
+  }, []);
+
+  // ── Attachment upload ────────────────────────────────────────────────────
 
   const isUploading = staged.some(s => s.status === 'uploading');
   const hasError    = staged.some(s => s.status === 'error');
@@ -182,7 +209,7 @@ export function ChatInput({
   const handlePickAudio  = useCallback(async () => { const r = await pickAudio();       if (r.error) Alert.alert('Audio',    r.error); if (r.item) addAndUpload(r.item); }, [addAndUpload]);
   const handlePickDoc    = useCallback(async () => { const r = await pickDocument();   if (r.error) Alert.alert('Document', r.error); if (r.item) addAndUpload(r.item); }, [addAndUpload]);
 
-  // ── Send ────────────────────────────────────────────────────────────────────
+  // ── Send ──────────────────────────────────────────────────────────────────
 
   const handleSend = useCallback(() => {
     const trimmed    = text.trim();
@@ -207,6 +234,7 @@ export function ChatInput({
     setActiveMention(null);
     onTyping(false);
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    if (showEmojiPicker) setShowEmojiPicker(false);
 
     RNAnimated.sequence([
       RNAnimated.timing(sendBtnScale, { toValue: 0.88, duration: 80, useNativeDriver: true }),
@@ -214,24 +242,31 @@ export function ChatInput({
     ]).start();
   }, [
     text, uploadedAttachments, isSending, isUploading, editingMessage,
-    replyingTo, pendingMentionIds, onSend, onSaveEdit, onCancelEdit, onTyping, sendBtnScale,
+    replyingTo, pendingMentionIds, onSend, onSaveEdit, onCancelEdit, onTyping,
+    sendBtnScale, showEmojiPicker,
   ]);
 
-  const canSend   = (text.trim().length > 0 || uploadedAttachments.length > 0) && !isSending && !isUploading;
-  const isEditing = !!editingMessage;
-  const isReplying= !!replyingTo && !isEditing;
+  const canSend    = (text.trim().length > 0 || uploadedAttachments.length > 0) && !isSending && !isUploading;
+  const isEditing  = !!editingMessage;
+  const isReplying = !!replyingTo && !isEditing;
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // Part 48e: Android bottom padding fix.
+  // On Android with softwareKeyboardLayoutMode="resize", the window shrinks
+  // when keyboard appears, so bottomInset = 0. We add a small fixed padding
+  // for visual breathing room but NOT the full inset amount (which was
+  // creating the visible gap).
+  // On iOS, always respect bottomInset for home indicator clearance.
+  const containerBottomPadding = Platform.OS === 'ios'
+    ? Math.max(bottomInset, 4)
+    : 4; // fixed small padding on Android, never grows with inset
 
   return (
     <>
-      {/* Staged attachment strip */}
       <StagedAttachmentsStrip attachments={staged} onRemove={handleRemoveStaged} />
 
-      {/* Main input container — bottomInset handles Android nav bar & iOS home indicator */}
-      <View style={[styles.container, { paddingBottom: Math.max(bottomInset, 4) }]}>
+      <View style={[styles.container, { paddingBottom: containerBottomPadding }]}>
 
-        {/* Edit context banner */}
+        {/* Edit banner */}
         {isEditing && (
           <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={styles.contextBanner}>
             <View style={[styles.contextBar, { backgroundColor: COLORS.warning }]} />
@@ -246,7 +281,7 @@ export function ChatInput({
           </Animated.View>
         )}
 
-        {/* Reply context banner */}
+        {/* Reply banner */}
         {isReplying && (
           <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={styles.contextBanner}>
             <View style={[styles.contextBar, { backgroundColor: COLORS.primary }]} />
@@ -255,7 +290,11 @@ export function ChatInput({
               <Text style={[styles.contextTitle, { color: COLORS.primary }]}>
                 {replyingTo?.author?.fullName ?? replyingTo?.author?.username ?? 'Someone'}
               </Text>
-              <Text style={styles.contextPreview} numberOfLines={1}>{replyingTo?.content}</Text>
+              <Text style={styles.contextPreview} numberOfLines={1}>
+                {replyingTo?.content || (replyingTo?.attachments?.length
+                  ? `📎 ${replyingTo.attachments[0].name || 'Attachment'}`
+                  : '')}
+              </Text>
             </View>
             <TouchableOpacity onPress={onCancelReply} style={styles.contextClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="close" size={16} color={COLORS.textMuted} />
@@ -265,7 +304,7 @@ export function ChatInput({
 
         {/* Input row */}
         <View style={[styles.inputRow, focused && styles.inputRowFocused]}>
-          {/* Part 47: Full emoji picker button (replaces 8-emoji quick bar) */}
+          {/* Emoji button */}
           <TouchableOpacity
             onPress={handleEmojiButtonPress}
             style={styles.sideBtn}
@@ -299,7 +338,7 @@ export function ChatInput({
             </TouchableOpacity>
           )}
 
-          {/* Text input + mention suggestions */}
+          {/* Text input */}
           <View style={styles.inputWrap}>
             <MentionSuggestions
               visible={!!activeMention}
@@ -313,7 +352,7 @@ export function ChatInput({
               value={text}
               onChangeText={handleTextChange}
               onSelectionChange={handleSelectionChange}
-              onFocus={() => { setFocused(true); setShowEmojiPicker(false); }}
+              onFocus={handleInputFocus}
               onBlur={() => setFocused(false)}
               placeholder={
                 isEditing  ? 'Edit your message…'
@@ -327,17 +366,16 @@ export function ChatInput({
               maxLength={4000}
               returnKeyType="default"
               blurOnSubmit={false}
+              textAlignVertical="top"
             />
           </View>
 
-          {/* Upload indicator */}
           {isUploading && (
             <Animated.View entering={FadeIn.duration(150)} style={styles.uploadIndicator}>
               <Ionicons name="cloud-upload-outline" size={17} color={COLORS.primary} />
             </Animated.View>
           )}
 
-          {/* Send button */}
           <RNAnimated.View style={{ transform: [{ scale: sendBtnScale }] }}>
             <TouchableOpacity
               onPress={handleSend}
@@ -354,7 +392,6 @@ export function ChatInput({
           </RNAnimated.View>
         </View>
 
-        {/* Mention hint */}
         {pendingMentionIds.length > 0 && !isEditing && (
           <Animated.View entering={FadeIn.duration(150)} style={styles.mentionHint}>
             <Ionicons name="at-outline" size={11} color={COLORS.primary} />
@@ -364,25 +401,20 @@ export function ChatInput({
           </Animated.View>
         )}
 
-        {/* Upload error hint */}
         {hasError && (
           <Animated.View entering={FadeIn.duration(200)} style={styles.errorHint}>
             <Ionicons name="alert-circle-outline" size={12} color={COLORS.error} />
-            <Text style={styles.errorHintText}>
-              Some files failed to upload. Remove them and try again.
-            </Text>
+            <Text style={styles.errorHintText}>Some files failed to upload. Remove them and try again.</Text>
           </Animated.View>
         )}
       </View>
 
-      {/* Part 47: Full emoji picker modal (rn-emoji-keyboard) */}
       <EmojiPickerModal
         open={showEmojiPicker}
         onEmojiSelected={handleEmojiSelected}
-        onClose={() => setShowEmojiPicker(false)}
+        onClose={handleEmojiClose}
       />
 
-      {/* Attachment type picker */}
       <ChatAttachmentPicker
         visible={showPicker}
         isUploading={isUploading}
@@ -401,7 +433,6 @@ export function ChatInput({
 
 const styles = StyleSheet.create({
   container:      { backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border },
-
   contextBanner:  { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 8 },
   contextBar:     { width: 3, height: '100%', borderRadius: 2, minHeight: 28, flexShrink: 0 },
   contextIcon:    { flexShrink: 0 },
@@ -409,38 +440,33 @@ const styles = StyleSheet.create({
   contextTitle:   { fontSize: FONTS.sizes.xs, fontWeight: '700', marginBottom: 1 },
   contextPreview: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 15 },
   contextClose:   { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-
   inputRow:       { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, gap: 6 },
   inputRowFocused:{},
   sideBtn:        { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   sideBtnDisabled:{ opacity: 0.35 },
   attachBadge:    { position: 'absolute', top: 0, right: 0, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 14, height: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2, borderWidth: 1.5, borderColor: COLORS.backgroundCard },
   attachBadgeText:{ color: '#FFF', fontSize: 8, fontWeight: '800' },
-
-  inputWrap: { flex: 1, position: 'relative' },
+  inputWrap:      { flex: 1, position: 'relative' },
   input: {
-    color:            COLORS.textPrimary,
-    fontSize:         FONTS.sizes.base,
-    lineHeight:       22,
-    maxHeight:        120,
-    paddingTop:       8,
-    paddingBottom:    8,
+    color:             COLORS.textPrimary,
+    fontSize:          FONTS.sizes.base,
+    lineHeight:        22,
+    maxHeight:         120,
+    paddingTop:        8,
+    paddingBottom:     8,
     paddingHorizontal: 12,
-    backgroundColor:  COLORS.backgroundElevated,
-    borderRadius:     RADIUS.xl,
-    borderWidth:      1,
-    borderColor:      COLORS.border,
-    textAlignVertical:'top',
+    backgroundColor:   COLORS.backgroundElevated,
+    borderRadius:      RADIUS.xl,
+    borderWidth:       1,
+    borderColor:       COLORS.border,
+    textAlignVertical: 'top',
   },
-
   uploadIndicator:{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-
   sendBtn:        { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   sendBtnActive:  { backgroundColor: COLORS.primary, shadowColor: COLORS.primary, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 4 },
   sendBtnInactive:{ backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border },
-
-  mentionHint:     { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: SPACING.xl, paddingBottom: 4 },
-  mentionHintText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  errorHint:       { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
-  errorHintText:   { color: COLORS.error, fontSize: FONTS.sizes.xs, flex: 1 },
+  mentionHint:    { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: SPACING.xl, paddingBottom: 4 },
+  mentionHintText:{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  errorHint:      { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
+  errorHintText:  { color: COLORS.error, fontSize: FONTS.sizes.xs, flex: 1 },
 });

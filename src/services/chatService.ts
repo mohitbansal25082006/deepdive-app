@@ -2,6 +2,8 @@
 // Part 17 — Workspace Chat Service
 // Part 18 — sendChatMessage now accepts and forwards p_mentions (uuid[])
 // Part 47 — Added getChatMessageById() and getMessageReactions() helpers
+// Part 48 — getMessageReactions() is now a named export used by useWorkspaceChat
+//            for broadcasting fresh reaction data after toggleChatReaction().
 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
@@ -46,9 +48,13 @@ export function mapMessage(raw: Record<string, unknown>): ChatMessage {
   const reactRaw  = safeArray<Record<string, unknown>>(raw.reactions);
   const attRaw    = safeArray<Record<string, unknown>>(raw.attachments);
 
-  // Part 18: mentions
   const mentionsRaw = safeArray<unknown>(raw.mentions);
   const mentions: string[] = mentionsRaw.filter(m => typeof m === 'string') as string[];
+
+  // Part 48: parse reply attachments
+  const replyAttRaw = replyRaw
+    ? safeArray<Record<string, unknown>>(replyRaw.attachments)
+    : [];
 
   return {
     id:          get<string>(raw, 'id', 'id') ?? '',
@@ -63,7 +69,14 @@ export function mapMessage(raw: Record<string, unknown>): ChatMessage {
       content:    get<string>(replyRaw, 'content', 'content') ?? '',
       userId:     get<string>(replyRaw, 'user_id', 'userId') ?? '',
       authorName: get<string | null>(replyRaw, 'author_name', 'authorName') ?? null,
-    } satisfies ChatReplyPreview : null,
+      // Part 48: include attachments in reply preview so ChatBubble can show file name
+      attachments: replyAttRaw.map(a => ({
+        url:  get<string>(a, 'url',  'url')  ?? '',
+        name: get<string>(a, 'name', 'name') ?? '',
+        type: get<string>(a, 'type', 'type') ?? '',
+        size: get<number | undefined>(a, 'size', 'size') ?? undefined,
+      })),
+    } as any : null,
 
     attachments: attRaw.map(a => ({
       url:  get<string>(a, 'url',  'url')  ?? '',
@@ -72,7 +85,7 @@ export function mapMessage(raw: Record<string, unknown>): ChatMessage {
       size: get<number | undefined>(a, 'size', 'size') ?? undefined,
     } satisfies ChatAttachment)),
 
-    mentions, // Part 18
+    mentions,
 
     isEdited:  !!(get<boolean>(raw, 'is_edited',  'isEdited')  ?? false),
     isDeleted: !!(get<boolean>(raw, 'is_deleted', 'isDeleted') ?? false),
@@ -148,7 +161,6 @@ export async function fetchChatMessages(
 }
 
 // ─── Send message ─────────────────────────────────────────────────────────────
-// Part 18: added mentions?: string[]
 
 export async function sendChatMessage(
   workspaceId:  string,
@@ -156,13 +168,12 @@ export async function sendChatMessage(
   contentType:  ChatMessage['contentType'] = 'text',
   replyToId?:   string,
   attachments?: ChatAttachment[],
-  mentions?:    string[],           // ← Part 18
+  mentions?:    string[],
 ): Promise<{ data: ChatMessage | null; error: string | null }> {
   try {
     const attachmentsPayload: ChatAttachment[] =
       (attachments && attachments.length > 0) ? attachments : [];
 
-    // Pass mentions as a native array — PostgREST maps string[] → uuid[] automatically
     const mentionsPayload: string[] =
       (mentions && mentions.length > 0) ? mentions : [];
 
@@ -172,7 +183,7 @@ export async function sendChatMessage(
       p_content_type: contentType,
       p_reply_to_id:  replyToId ?? null,
       p_attachments:  attachmentsPayload,
-      p_mentions:     mentionsPayload,    // ← Part 18
+      p_mentions:     mentionsPayload,
     });
 
     if (error) {
@@ -285,7 +296,7 @@ export async function getChatMembers(workspaceId: string): Promise<{ data: ChatM
   } catch (err) { return { data: [], error: err instanceof Error ? err.message : 'Failed to load members' }; }
 }
 
-// ─── Realtime ─────────────────────────────────────────────────────────────────
+// ─── Realtime (legacy — kept for compatibility, not used in Part 47+) ─────────
 
 export interface ChatRealtimeCallbacks {
   onInsert: (msg: ChatMessage) => void;
@@ -347,12 +358,8 @@ export async function broadcastTyping(
   } catch { /* non-fatal */ }
 }
 
-// ─── Part 47: Single-message hydration ───────────────────────────────────────
+// ─── Part 47/48: Single-message hydration ─────────────────────────────────────
 
-/**
- * Fetch a single chat message by ID with full details (author, reactions, replyTo).
- * Used by useChatRealtime for INSERT hydration and manual refresh.
- */
 export async function getChatMessageById(
   messageId: string,
 ): Promise<{ data: ChatMessage | null; error: string | null }> {
@@ -371,10 +378,8 @@ export async function getChatMessageById(
   }
 }
 
-/**
- * Fetch fresh reaction summary for a single message.
- * Used by useChatRealtime when a reaction INSERT/DELETE event fires.
- */
+// Part 48: getMessageReactions is a named export so useWorkspaceChat can call it
+// after toggling a reaction to broadcast fresh data to all members.
 export async function getMessageReactions(
   messageId: string,
 ): Promise<{ data: ChatMessageReactionSummary[]; error: string | null }> {

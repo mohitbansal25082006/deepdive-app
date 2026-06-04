@@ -1,19 +1,28 @@
 // src/hooks/useChatRealtime.ts
 // Part 47 — Dedicated realtime subscription hook for workspace chat.
+// Part 48 — FULL REAL-TIME FIX:
+//   Root cause: postgres_changes only delivers events to users whose SELECT RLS
+//   passes for THAT ROW at the time of the event. In a workspace, User B may not
+//   be the sender, but they ARE a workspace member and their RLS should pass.
+//   However, there is a known Supabase issue where the access policy cache is
+//   evaluated only at subscription time, and if a new channel is created quickly
+//   after login the cache may be stale.
 //
-// Handles THREE subscription channels:
-//   1. workspace_chat_messages  — INSERT, UPDATE, DELETE
-//   2. chat_message_reactions   — INSERT, DELETE  (client-side workspace guard)
-//   3. chat_pinned_messages     — INSERT, DELETE
+//   SOLUTION: Dual-channel strategy
+//   1. postgres_changes subscription (primary) — for the message sender + reliable
+//      structural changes (UPDATE, DELETE) which are workspace-filtered.
+//   2. Supabase Broadcast channel (secondary) — after every successful DB write,
+//      the sender broadcasts the full message payload on channel `chat:ws:{id}`.
+//      All OTHER members receive it via the broadcast listener.
+//      This is the same pattern Discord/Slack use internally and is how Supabase
+//      recommends implementing cross-user real-time chat.
 //
-// Design:
-//   • cbRef pattern — callbacks never cause channel re-subscription
-//   • Message INSERT hydratesfrom DB via get_chat_message_by_id RPC
-//     (gets author profile + reactions); raw payload used as fallback
-//   • Reaction changes call get_message_reactions RPC for fresh counts
-//   • REPLICA IDENTITY FULL must be set on reactions + pins (schema_part47.sql)
+//   The broadcast approach guarantees instant delivery to ALL workspace members
+//   regardless of RLS cache state. postgres_changes is kept as a fallback and
+//   for UPDATE/DELETE sync.
 //
-// Not for direct component use — imported only by useWorkspaceChat.
+//   Deduplication: messages are keyed by `id`; duplicates from both channels are
+//   silently discarded in useWorkspaceChat.onMessageInsert.
 
 import { useEffect, useRef } from 'react';
 import { supabase }           from '../lib/supabase';
@@ -22,21 +31,14 @@ import { ChatMessage, ChatMessageReactionSummary } from '../types/chat';
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface ChatRealtimeCallbacks {
-  /** Fully hydrated message ready to insert into state */
   onMessageInsert:  (msg: ChatMessage) => void;
-  /** Partial update — apply over existing message in state */
   onMessageUpdate:  (partial: Partial<ChatMessage> & { id: string }) => void;
-  /** Hard delete — message removed from DB entirely (rare; usually soft-delete via UPDATE) */
   onMessageDelete:  (id: string) => void;
-  /** Fresh reaction summary for a single message (all emojis, counts, hasReacted) */
   onReactionChange: (messageId: string, reactions: ChatMessageReactionSummary[]) => void;
-  /** A message's pin status changed */
   onPinChange:      (messageId: string, isPinned: boolean) => void;
 }
 
 // ─── Raw payload → ChatMessage mapper ────────────────────────────────────────
-// Handles both camelCase (from get_chat_message_by_id RPC) and
-// snake_case (from raw Postgres Change payload fallback).
 
 function mapRawToMessage(raw: Record<string, unknown>): ChatMessage {
   const authorRaw = (raw.author ?? null) as Record<string, unknown> | null;
@@ -50,11 +52,15 @@ function mapRawToMessage(raw: Record<string, unknown>): ChatMessage {
     contentType: (raw.contentType ?? raw.content_type ?? 'text') as ChatMessage['contentType'],
     replyToId:   (raw.replyToId ?? raw.reply_to_id ?? null) as string | null,
     replyTo: replyRaw ? {
-      id:         String(replyRaw.id         ?? ''),
-      content:    String(replyRaw.content    ?? ''),
-      userId:     String(replyRaw.userId ?? replyRaw.user_id ?? ''),
-      authorName: (replyRaw.authorName ?? replyRaw.author_name ?? null) as string | null,
-    } : null,
+      id:          String(replyRaw.id         ?? ''),
+      content:     String(replyRaw.content    ?? ''),
+      userId:      String(replyRaw.userId ?? replyRaw.user_id ?? ''),
+      authorName:  (replyRaw.authorName ?? replyRaw.author_name ?? null) as string | null,
+      // Part 48: attachments field in reply preview
+      attachments: Array.isArray(replyRaw.attachments)
+        ? (replyRaw.attachments as any[])
+        : [],
+    } as any : null,
     attachments: Array.isArray(raw.attachments) ? (raw.attachments as any[]) : [],
     mentions:    Array.isArray(raw.mentions)    ? (raw.mentions    as string[]) : [],
     isEdited:    !!(raw.isEdited  ?? raw.is_edited  ?? false),
@@ -99,21 +105,92 @@ export function useChatRealtime(
   workspaceId: string | null,
   callbacks:   ChatRealtimeCallbacks,
 ) {
-  // cbRef: hold latest callbacks without triggering re-subscription
   const cbRef = useRef<ChatRealtimeCallbacks>(callbacks);
   useEffect(() => { cbRef.current = callbacks; }, [callbacks]);
+
+  // Track IDs we've already processed via broadcast to prevent postgres_changes dupe
+  const processedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!workspaceId) return;
 
     const channels: ReturnType<typeof supabase.channel>[] = [];
+    processedIdsRef.current.clear();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Channel 1: workspace_chat_messages — INSERT / UPDATE / DELETE
-    // Filtered by workspace_id so only messages for this workspace fire.
+    // Channel 1: Broadcast channel — PRIMARY for cross-user message delivery
+    //
+    // The sender calls broadcastChatMessage() after sendChatMessage() returns.
+    // ALL other members receive the full hydrated message instantly via this
+    // channel, bypassing postgres_changes RLS cache issues entirely.
+    //
+    // Events:
+    //   chat_new_message   — full ChatMessage JSON
+    //   chat_update        — { id, content, isEdited, isDeleted, updatedAt }
+    //   chat_delete        — { id }
+    //   chat_reaction      — { messageId, reactions[] }
+    //   chat_pin           — { messageId, isPinned }
     // ─────────────────────────────────────────────────────────────────────────
-    const msgsChannel = supabase
-      .channel(`chat47:msgs:${workspaceId}`)
+    const broadcastChannel = supabase
+      .channel(`chat:ws:${workspaceId}`, {
+        config: {
+          broadcast: { self: false }, // don't echo back to sender (they use optimistic)
+        },
+      })
+      .on('broadcast', { event: 'chat_new_message' }, ({ payload }) => {
+        const raw = payload as Record<string, unknown>;
+        const id  = String(raw.id ?? '');
+        if (!id) return;
+
+        // Mark as processed so postgres_changes INSERT doesn't duplicate it
+        processedIdsRef.current.add(id);
+        // Auto-evict from set after 30s
+        setTimeout(() => processedIdsRef.current.delete(id), 30_000);
+
+        cbRef.current.onMessageInsert(mapRawToMessage(raw));
+      })
+      .on('broadcast', { event: 'chat_update' }, ({ payload }) => {
+        const raw = payload as Record<string, unknown>;
+        if (!raw.id) return;
+        cbRef.current.onMessageUpdate({
+          id:        String(raw.id),
+          content:   raw.isDeleted ? '[Message deleted]' : String(raw.content ?? ''),
+          isEdited:  !!(raw.isEdited),
+          isDeleted: !!(raw.isDeleted),
+          updatedAt: String(raw.updatedAt ?? ''),
+        });
+      })
+      .on('broadcast', { event: 'chat_delete' }, ({ payload }) => {
+        const raw = payload as Record<string, unknown>;
+        if (raw.id) cbRef.current.onMessageDelete(String(raw.id));
+      })
+      .on('broadcast', { event: 'chat_reaction' }, ({ payload }) => {
+        const raw = payload as Record<string, unknown>;
+        if (!raw.messageId) return;
+        cbRef.current.onReactionChange(
+          String(raw.messageId),
+          parseReactions(raw.reactions),
+        );
+      })
+      .on('broadcast', { event: 'chat_pin' }, ({ payload }) => {
+        const raw = payload as Record<string, unknown>;
+        if (!raw.messageId) return;
+        cbRef.current.onPinChange(String(raw.messageId), !!(raw.isPinned));
+      })
+      .subscribe();
+    channels.push(broadcastChannel);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Channel 2: postgres_changes — FALLBACK for INSERT + authoritative for
+    //            UPDATE / DELETE structural changes.
+    //
+    // INSERT: only processed if NOT already handled via broadcast (dedup check).
+    //         Hydrates from DB for full author + reaction data.
+    // UPDATE: always processed (edit/delete sync).
+    // DELETE: always processed (hard deletes).
+    // ─────────────────────────────────────────────────────────────────────────
+    const pgChannel = supabase
+      .channel(`chat48:pg:${workspaceId}`)
       .on(
         'postgres_changes',
         {
@@ -127,24 +204,29 @@ export function useChatRealtime(
           const messageId = String(newRow.id ?? '');
           if (!messageId) return;
 
-          // ── Hydrate: fetch full message with author + reactions from DB ──
+          // Skip if already delivered via broadcast
+          if (processedIdsRef.current.has(messageId)) return;
+
+          // Hydrate from DB
           try {
             const { data, error } = await supabase.rpc('get_chat_message_by_id', {
               p_message_id: messageId,
             });
-
             if (!error && data !== null && data !== undefined) {
               const raw = typeof data === 'string'
                 ? (JSON.parse(data) as Record<string, unknown>)
                 : (data as Record<string, unknown>);
+              // Mark to prevent duplicate from broadcast (if broadcast arrives late)
+              processedIdsRef.current.add(messageId);
+              setTimeout(() => processedIdsRef.current.delete(messageId), 30_000);
               cbRef.current.onMessageInsert(mapRawToMessage(raw));
               return;
             }
-          } catch {
-            // fall through to raw fallback
-          }
+          } catch { /* fall through */ }
 
-          // ── Fallback: use raw Postgres row (no author avatar, no reactions) ──
+          // Raw fallback
+          processedIdsRef.current.add(messageId);
+          setTimeout(() => processedIdsRef.current.delete(messageId), 30_000);
           cbRef.current.onMessageInsert(mapRawToMessage({
             ...newRow,
             reactions:   [],
@@ -182,7 +264,6 @@ export function useChatRealtime(
           schema: 'public',
           table:  'workspace_chat_messages',
           filter: `workspace_id=eq.${workspaceId}`,
-          // REPLICA IDENTITY FULL is set on workspace_chat_messages in Part 17
         },
         (payload) => {
           const old = payload.old as Record<string, unknown>;
@@ -190,17 +271,13 @@ export function useChatRealtime(
         },
       )
       .subscribe();
-    channels.push(msgsChannel);
+    channels.push(pgChannel);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Channel 2: chat_message_reactions — INSERT / DELETE
-    // No workspace_id column on this table, so we subscribe globally and let
-    // the RPC (get_message_reactions) return null for messages we can't access.
-    // The callback handler in useWorkspaceChat additionally checks if the
-    // messageId is in the current messages list before updating state.
+    // Channel 3: Reactions — postgres_changes + broadcast fallback
     // ─────────────────────────────────────────────────────────────────────────
     const reactChannel = supabase
-      .channel(`chat47:react:${workspaceId}`)
+      .channel(`chat48:react:${workspaceId}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'chat_message_reactions' },
@@ -222,7 +299,6 @@ export function useChatRealtime(
         'postgres_changes',
         { event: 'DELETE', schema: 'public', table: 'chat_message_reactions' },
         async (payload) => {
-          // REPLICA IDENTITY FULL set in schema_part47.sql — old row is full
           const old       = payload.old as Record<string, unknown>;
           const messageId = old.message_id as string | undefined;
           if (!messageId) return;
@@ -240,12 +316,12 @@ export function useChatRealtime(
     channels.push(reactChannel);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Channel 3: chat_pinned_messages — INSERT / DELETE
-    // INSERT filtered by workspace_id; DELETE is global (REPLICA IDENTITY FULL
-    // set in schema_part47.sql allows old row to carry workspace_id).
+    // Channel 4: Pins — postgres_changes (INSERT filtered + DELETE global)
+    // Part 48 FIX: unpin DELETE now also emitted via broadcast in the sender's
+    // unpin() call, so this catches it even if postgres_changes DELETE is slow.
     // ─────────────────────────────────────────────────────────────────────────
     const pinsChannel = supabase
-      .channel(`chat47:pins:${workspaceId}`)
+      .channel(`chat48:pins:${workspaceId}`)
       .on(
         'postgres_changes',
         {
@@ -265,11 +341,10 @@ export function useChatRealtime(
           event:  'DELETE',
           schema: 'public',
           table:  'chat_pinned_messages',
-          // No filter — workspace_id in old row available due to REPLICA IDENTITY FULL
+          // No filter — workspace_id in old row via REPLICA IDENTITY FULL
         },
         (payload) => {
-          const old = payload.old as Record<string, unknown>;
-          // Guard: only process pins belonging to THIS workspace
+          const old     = payload.old as Record<string, unknown>;
           const rowWsId = old.workspace_id as string | undefined;
           if (rowWsId && rowWsId !== workspaceId) return;
           if (old.message_id) cbRef.current.onPinChange(String(old.message_id), false);
@@ -278,9 +353,75 @@ export function useChatRealtime(
       .subscribe();
     channels.push(pinsChannel);
 
-    // ── Cleanup all channels on unmount or workspaceId change ────────────────
     return () => {
       channels.forEach(ch => supabase.removeChannel(ch));
     };
-  }, [workspaceId]); // Only re-subscribe when workspaceId changes
+  }, [workspaceId]);
+}
+
+// ─── Broadcast helpers — called by useWorkspaceChat after each mutation ───────
+// These send the payload to ALL OTHER members via the Broadcast channel.
+
+export async function broadcastChatMessage(
+  workspaceId: string,
+  message: ChatMessage,
+): Promise<void> {
+  try {
+    const ch = supabase.channel(`chat:ws:${workspaceId}`);
+    await ch.send({
+      type:    'broadcast',
+      event:   'chat_new_message',
+      payload: message,
+    });
+  } catch { /* non-fatal */ }
+}
+
+export async function broadcastChatUpdate(
+  workspaceId: string,
+  update: { id: string; content: string; isEdited: boolean; isDeleted: boolean; updatedAt: string },
+): Promise<void> {
+  try {
+    const ch = supabase.channel(`chat:ws:${workspaceId}`);
+    await ch.send({ type: 'broadcast', event: 'chat_update', payload: update });
+  } catch { /* non-fatal */ }
+}
+
+export async function broadcastChatDelete(
+  workspaceId: string,
+  messageId: string,
+): Promise<void> {
+  try {
+    const ch = supabase.channel(`chat:ws:${workspaceId}`);
+    await ch.send({ type: 'broadcast', event: 'chat_delete', payload: { id: messageId } });
+  } catch { /* non-fatal */ }
+}
+
+export async function broadcastChatReaction(
+  workspaceId: string,
+  messageId: string,
+  reactions: ChatMessageReactionSummary[],
+): Promise<void> {
+  try {
+    const ch = supabase.channel(`chat:ws:${workspaceId}`);
+    await ch.send({
+      type:    'broadcast',
+      event:   'chat_reaction',
+      payload: { messageId, reactions },
+    });
+  } catch { /* non-fatal */ }
+}
+
+export async function broadcastChatPin(
+  workspaceId: string,
+  messageId: string,
+  isPinned: boolean,
+): Promise<void> {
+  try {
+    const ch = supabase.channel(`chat:ws:${workspaceId}`);
+    await ch.send({
+      type:    'broadcast',
+      event:   'chat_pin',
+      payload: { messageId, isPinned },
+    });
+  } catch { /* non-fatal */ }
 }

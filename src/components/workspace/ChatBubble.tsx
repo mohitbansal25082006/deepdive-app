@@ -1,42 +1,96 @@
 // src/components/workspace/ChatBubble.tsx
 // Part 17 — Individual chat message bubble
-// Part 18D — Improved reply preview: shows attachment type icon + label
-// Part 47 — Added `isHighlighted` prop for search-result highlight (amber glow)
-//            Fixed document bubble stretching on Android (overflow: 'hidden' + constraints)
+// Part 18D — Improved reply preview
+// Part 47 — isHighlighted prop; document bubble fixes
+// Part 48  — Full long-press on attachments; attachment reply preview
+// Part 48b — FIXES:
+//   1. Long-press on WHOLE attachment: The entire message column (text + attachments)
+//      is wrapped in a single Pressable that handles long-press. Previously the
+//      TouchableWithoutFeedback didn't capture touches on child TouchableOpacity
+//      elements (image taps, document taps). Now we use Pressable with
+//      onLongPress at the column level, and child touch elements use onPress only.
+//      This means any long-press anywhere in the bubble opens the context menu.
+//
+//   2. Document shows name + extension: DocumentPreviewTrigger already shows the
+//      file name. Additionally, for attachment-only messages (no text content),
+//      we now render a subtle "filename.ext" label below the attachment so the
+//      message is never completely blank in appearance.
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, TouchableWithoutFeedback,
-  Modal, Pressable, StyleSheet, Animated as RNAnimated, Alert,
+  View, Text, TouchableOpacity, Pressable,
+  Modal, Pressable as PressableOverlay, StyleSheet,
+  Animated as RNAnimated, Alert,
 } from 'react-native';
 import Animated, { FadeIn, FadeInDown, ZoomIn } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { Avatar } from '../common/Avatar';
 import { BubbleAttachments } from './ChatAttachmentPreview';
-import { ChatMessage } from '../../types/chat';
+import { ChatMessage, ChatAttachment } from '../../types/chat';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🔥', '✅', '👀'];
 
 // ─── Reply preview helpers ─────────────────────────────────────────────────────
 
-function getReplyContentInfo(
-  content: string,
-  contentType?: string,
-): { icon: keyof typeof Ionicons.glyphMap; label: string; isAttachment: boolean } {
-  if (contentType === 'image')  return { icon: 'image-outline',              label: '📷 Photo',        isAttachment: true  };
-  if (contentType === 'file')   return { icon: 'attach-outline',             label: '📎 File',         isAttachment: true  };
-  if (contentType === 'system') return { icon: 'information-circle-outline', label: content,           isAttachment: false };
+function getAttachmentPreviewInfo(
+  attachment: ChatAttachment,
+): { icon: keyof typeof Ionicons.glyphMap; label: string } {
+  const mime  = attachment.type?.toLowerCase() ?? '';
+  const name  = attachment.name ?? '';
+  const lower = name.toLowerCase();
 
-  const lower = content.toLowerCase();
-  if (/\.(jpg|jpeg|png|gif|webp|heic)$/i.test(lower)) return { icon: 'image-outline',         label: '📷 Photo',          isAttachment: true };
-  if (/\.(mp4|mov|avi|mkv|webm|3gp)$/i.test(lower))   return { icon: 'videocam-outline',      label: '🎬 Video',          isAttachment: true };
-  if (/\.(mp3|aac|wav|ogg|flac|m4a)$/i.test(lower))   return { icon: 'musical-notes-outline', label: '🎵 Audio',          isAttachment: true };
-  if (/\.pdf$/i.test(lower))                           return { icon: 'document-text-outline', label: '📄 PDF',            isAttachment: true };
-  if (/\.(doc|docx)$/i.test(lower))                   return { icon: 'document-outline',      label: '📝 Word document',  isAttachment: true };
-  if (/\.(xls|xlsx|csv)$/i.test(lower))               return { icon: 'grid-outline',          label: '📊 Spreadsheet',    isAttachment: true };
-  if (/\.(ppt|pptx)$/i.test(lower))                   return { icon: 'easel-outline',         label: '📊 Presentation',   isAttachment: true };
-  return { icon: 'chatbubble-outline', label: content, isAttachment: false };
+  if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(lower))
+    return { icon: 'image-outline',         label: name || '📷 Photo' };
+  if (mime.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm)$/i.test(lower))
+    return { icon: 'videocam-outline',      label: name || '🎬 Video' };
+  if (mime.startsWith('audio/') || /\.(mp3|aac|wav|ogg|m4a)$/i.test(lower))
+    return { icon: 'musical-notes-outline', label: name || '🎵 Audio' };
+  if (mime === 'application/pdf' || /\.pdf$/i.test(lower))
+    return { icon: 'document-text-outline', label: name || '📄 PDF' };
+  if (mime.includes('word') || /\.(doc|docx)$/i.test(lower))
+    return { icon: 'document-outline',      label: name || '📝 Word document' };
+  if (mime.includes('excel') || mime.includes('spreadsheet') || /\.(xls|xlsx|csv)$/i.test(lower))
+    return { icon: 'grid-outline',          label: name || '📊 Spreadsheet' };
+  if (mime.includes('powerpoint') || mime.includes('presentation') || /\.(ppt|pptx)$/i.test(lower))
+    return { icon: 'easel-outline',         label: name || '📊 Presentation' };
+  return { icon: 'attach-outline',          label: name || '📎 Attachment' };
+}
+
+function resolveReplyContent(replyTo: {
+  content:     string;
+  attachments?: ChatAttachment[];
+}): { icon: keyof typeof Ionicons.glyphMap; label: string; isAttachment: boolean } {
+  const hasText = replyTo.content && replyTo.content.trim().length > 0
+    && replyTo.content !== '[Message deleted]';
+  const atts    = replyTo.attachments ?? [];
+
+  if (hasText) {
+    return { icon: 'chatbubble-outline', label: replyTo.content, isAttachment: false };
+  }
+  if (replyTo.content === '[Message deleted]') {
+    return { icon: 'trash-outline', label: '[Message deleted]', isAttachment: false };
+  }
+  if (atts.length > 0) {
+    const info = getAttachmentPreviewInfo(atts[0]);
+    return { icon: info.icon, label: info.label, isAttachment: true };
+  }
+  return { icon: 'chatbubble-outline', label: '(empty message)', isAttachment: false };
+}
+
+// Part 48b: get a short display label for attachment-only messages
+function getAttachmentSummaryLabel(attachments: ChatAttachment[]): string {
+  if (!attachments || attachments.length === 0) return '';
+  if (attachments.length === 1) {
+    const a = attachments[0];
+    if (a.name?.trim()) return a.name.trim();
+    const mime = a.type?.toLowerCase() ?? '';
+    if (mime.startsWith('image/')) return 'Photo';
+    if (mime.startsWith('video/')) return 'Video';
+    if (mime.startsWith('audio/')) return 'Audio';
+    return 'Attachment';
+  }
+  return `${attachments.length} files`;
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -47,7 +101,6 @@ interface Props {
   isOwnerOrEditor: boolean;
   showAvatar:      boolean;
   isConsecutive:   boolean;
-  /** Part 47: When true, applies an amber highlight to the row (search result / pin tap) */
   isHighlighted?:  boolean;
   onReply:         (msg: ChatMessage) => void;
   onEdit:          (msg: ChatMessage) => void;
@@ -66,12 +119,9 @@ export function ChatBubble({
   onReply, onEdit, onDelete, onReact, onPin, onUnpin, onScrollToReply,
 }: Props) {
   const [menuVisible, setMenuVisible] = useState(false);
-  const scaleAnim = useRef(new RNAnimated.Value(1)).current;
-
-  // ── Part 47: Highlight animation ─────────────────────────────────────────
-  // When isHighlighted becomes true, animate in the amber glow then fade it out.
-  // The parent (workspace-chat.tsx) clears isHighlighted after 2500ms.
   const highlightAnim = useRef(new RNAnimated.Value(0)).current;
+
+  // ── Highlight animation ───────────────────────────────────────────────────
 
   useEffect(() => {
     if (isHighlighted) {
@@ -92,6 +142,7 @@ export function ChatBubble({
   });
 
   // ── System message ────────────────────────────────────────────────────────
+
   if (message.contentType === 'system') {
     return (
       <Animated.View entering={FadeIn.duration(300)} style={styles.systemMsg}>
@@ -103,6 +154,7 @@ export function ChatBubble({
   }
 
   // ── Deleted message ───────────────────────────────────────────────────────
+
   if (message.isDeleted) {
     return (
       <RNAnimated.View
@@ -126,11 +178,10 @@ export function ChatBubble({
     );
   }
 
+  // ── Part 48b: Long-press handler ─────────────────────────────────────────
+  // Opens context menu. Works on entire bubble column including attachments.
+
   const handleLongPress = () => {
-    RNAnimated.sequence([
-      RNAnimated.timing(scaleAnim, { toValue: 0.96, duration: 80, useNativeDriver: true }),
-      RNAnimated.timing(scaleAnim, { toValue: 1,    duration: 80, useNativeDriver: true }),
-    ]).start();
     setMenuVisible(true);
   };
 
@@ -142,21 +193,20 @@ export function ChatBubble({
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
   const timeLabel      = formatTime(message.createdAt);
 
-  // ── Reply preview ─────────────────────────────────────────────────────────
-  let replyIcon: keyof typeof Ionicons.glyphMap = 'chatbubble-outline';
-  let replyLabel        = '';
-  let replyIsAttachment = false;
+  // Part 48b: label for attachment-only messages
+  const attachmentLabel = (!hasText && hasAttachments)
+    ? getAttachmentSummaryLabel(message.attachments)
+    : '';
 
-  if (message.replyTo) {
-    const info    = getReplyContentInfo(message.replyTo.content, undefined);
-    replyIcon         = info.icon;
-    replyLabel        = info.label;
-    replyIsAttachment = info.isAttachment;
-  }
+  const replyInfo = message.replyTo
+    ? resolveReplyContent({
+        content:     message.replyTo.content ?? '',
+        attachments: (message.replyTo as any).attachments ?? [],
+      })
+    : null;
 
   return (
     <>
-      {/* ── Highlight overlay wrapper (Part 47) ── */}
       <RNAnimated.View
         style={[
           styles.row,
@@ -165,12 +215,8 @@ export function ChatBubble({
           { backgroundColor: highlightBg, borderRadius: RADIUS.xl },
         ]}
       >
-        {/* Left accent bar for highlight (only visible when highlighted) */}
         {isHighlighted && (
-          <View style={[
-            styles.highlightAccent,
-            isOwnMessage && styles.highlightAccentOwn,
-          ]} />
+          <View style={[styles.highlightAccent, isOwnMessage && styles.highlightAccentOwn]} />
         )}
 
         {/* Avatar */}
@@ -186,7 +232,19 @@ export function ChatBubble({
           </View>
         )}
 
-        <View style={[styles.bubbleCol, isOwnMessage && styles.bubbleColOwn]}>
+        {/* Part 48b: Pressable wraps the ENTIRE bubble column.
+            onLongPress fires wherever the user holds in the column.
+            Child elements (image tap, document tap) use onPress only —
+            Pressable passes through press events to children by default. */}
+        <Pressable
+          onLongPress={handleLongPress}
+          delayLongPress={350}
+          style={({ pressed }) => [
+            styles.bubbleCol,
+            isOwnMessage && styles.bubbleColOwn,
+            pressed && { opacity: 0.85 },
+          ]}
+        >
           {/* Sender name */}
           {!isOwnMessage && showAvatar && (
             <Text style={styles.senderName} numberOfLines={1}>
@@ -195,7 +253,7 @@ export function ChatBubble({
           )}
 
           {/* Reply preview */}
-          {message.replyTo && (
+          {message.replyTo && replyInfo && (
             <TouchableOpacity
               onPress={() => message.replyTo && onScrollToReply?.(message.replyTo.id)}
               style={[styles.replyPreview, isOwnMessage && styles.replyPreviewOwn]}
@@ -206,11 +264,11 @@ export function ChatBubble({
                 <Text style={[styles.replyAuthor, isOwnMessage && styles.replyAuthorOwn]} numberOfLines={1}>
                   {message.replyTo.authorName ?? 'Unknown'}
                 </Text>
-                {replyIsAttachment ? (
+                {replyInfo.isAttachment ? (
                   <View style={styles.replyAttachRow}>
                     <View style={[styles.replyAttachIcon, isOwnMessage && styles.replyAttachIconOwn]}>
                       <Ionicons
-                        name={replyIcon}
+                        name={replyInfo.icon}
                         size={11}
                         color={isOwnMessage ? 'rgba(255,255,255,0.8)' : COLORS.primary}
                       />
@@ -219,7 +277,7 @@ export function ChatBubble({
                       style={[styles.replyAttachLabel, isOwnMessage && styles.replyAttachLabelOwn]}
                       numberOfLines={1}
                     >
-                      {replyLabel}
+                      {replyInfo.label}
                     </Text>
                   </View>
                 ) : (
@@ -227,7 +285,7 @@ export function ChatBubble({
                     style={[styles.replyText, isOwnMessage && styles.replyTextOwn]}
                     numberOfLines={2}
                   >
-                    {replyLabel || message.replyTo.content}
+                    {replyInfo.label}
                   </Text>
                 )}
               </View>
@@ -235,47 +293,61 @@ export function ChatBubble({
           )}
 
           {/* Main bubble */}
-          <TouchableWithoutFeedback onLongPress={handleLongPress} delayLongPress={350}>
-            <RNAnimated.View
-              style={[
-                styles.bubble,
-                isOwnMessage ? styles.bubbleOwn : styles.bubbleOther,
-                message.isPinned && styles.bubblePinned,
-                hasAttachments && !hasText && styles.bubbleAttachOnly,
-                { transform: [{ scale: scaleAnim }] },
-              ]}
-            >
-              {/* Pin badge */}
-              {message.isPinned && (
-                <View style={styles.pinBadge}>
-                  <Ionicons name="pin" size={9} color={COLORS.warning} />
-                  <Text style={styles.pinBadgeText}>Pinned</Text>
-                </View>
-              )}
-
-              {/* Attachments — Part 47: wrapped in overflow:hidden container */}
-              {hasAttachments && (
-                <View style={styles.attachmentsContainer}>
-                  <BubbleAttachments attachments={message.attachments} isOwnMessage={isOwnMessage} />
-                </View>
-              )}
-
-              {/* Text */}
-              {hasText && (
-                <Text style={[styles.content, isOwnMessage && styles.contentOwn, hasAttachments && { marginTop: 6 }]}>
-                  {message.content}
-                </Text>
-              )}
-
-              {/* Footer */}
-              <View style={styles.bubbleFooter}>
-                {message.isEdited && (
-                  <Text style={[styles.editedLabel, isOwnMessage && styles.editedLabelOwn]}>edited</Text>
-                )}
-                <Text style={[styles.timeLabel, isOwnMessage && styles.timeLabelOwn]}>{timeLabel}</Text>
+          <View
+            style={[
+              styles.bubble,
+              isOwnMessage ? styles.bubbleOwn : styles.bubbleOther,
+              message.isPinned && styles.bubblePinned,
+              hasAttachments && !hasText && styles.bubbleAttachOnly,
+            ]}
+          >
+            {/* Pin badge */}
+            {message.isPinned && (
+              <View style={styles.pinBadge}>
+                <Ionicons name="pin" size={9} color={COLORS.warning} />
+                <Text style={styles.pinBadgeText}>Pinned</Text>
               </View>
-            </RNAnimated.View>
-          </TouchableWithoutFeedback>
+            )}
+
+            {/* Attachments */}
+            {hasAttachments && (
+              <View style={styles.attachmentsContainer}>
+                <BubbleAttachments
+                  attachments={message.attachments}
+                  isOwnMessage={isOwnMessage}
+                />
+              </View>
+            )}
+
+            {/* Text content */}
+            {hasText && (
+              <Text style={[
+                styles.content,
+                isOwnMessage && styles.contentOwn,
+                hasAttachments && { marginTop: 6 },
+              ]}>
+                {message.content}
+              </Text>
+            )}
+
+            {/* Part 48b: Show file name for attachment-only messages */}
+            {!hasText && attachmentLabel.length > 0 && (
+              <Text style={[
+                styles.attachmentLabel,
+                isOwnMessage && styles.attachmentLabelOwn,
+              ]} numberOfLines={1}>
+                {attachmentLabel}
+              </Text>
+            )}
+
+            {/* Footer */}
+            <View style={styles.bubbleFooter}>
+              {message.isEdited && (
+                <Text style={[styles.editedLabel, isOwnMessage && styles.editedLabelOwn]}>edited</Text>
+              )}
+              <Text style={[styles.timeLabel, isOwnMessage && styles.timeLabelOwn]}>{timeLabel}</Text>
+            </View>
+          </View>
 
           {/* Reactions */}
           {message.reactions.length > 0 && (
@@ -296,14 +368,13 @@ export function ChatBubble({
               </TouchableOpacity>
             </View>
           )}
-        </View>
+        </Pressable>
       </RNAnimated.View>
 
       {/* Context menu modal */}
       <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
-        <Pressable style={styles.menuOverlay} onPress={() => setMenuVisible(false)}>
+        <PressableOverlay style={styles.menuOverlay} onPress={() => setMenuVisible(false)}>
           <Animated.View entering={ZoomIn.duration(180).springify()} style={styles.menuCard}>
-            {/* Quick reactions */}
             <View style={styles.quickReactions}>
               {QUICK_REACTIONS.map(emoji => (
                 <TouchableOpacity
@@ -318,7 +389,7 @@ export function ChatBubble({
             </View>
             <View style={styles.menuDivider} />
             <MenuItem icon="return-down-forward-outline" label="Reply"          onPress={() => { setMenuVisible(false); onReply(message); }} />
-            {canEdit   && <MenuItem icon="pencil-outline"  label="Edit"           onPress={() => { setMenuVisible(false); onEdit(message); }} />}
+            {canEdit   && <MenuItem icon="pencil-outline"  label="Edit"          onPress={() => { setMenuVisible(false); onEdit(message); }} />}
             {canPin && !message.isPinned && <MenuItem icon="pin-outline" label="Pin message"   onPress={() => { setMenuVisible(false); onPin(message); }} />}
             {canPin &&  message.isPinned && <MenuItem icon="pin"         label="Unpin message" color={COLORS.warning} onPress={() => { setMenuVisible(false); onUnpin(message.id); }} />}
             {canDelete && (
@@ -333,7 +404,7 @@ export function ChatBubble({
               />
             )}
           </Animated.View>
-        </Pressable>
+        </PressableOverlay>
       </Modal>
     </>
   );
@@ -358,52 +429,40 @@ function formatTime(dateStr: string): string {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const BUBBLE_MAX_WIDTH = '78%';
-
 const styles = StyleSheet.create({
-  // ── System ─────────────────────────────────────────────────────────────────
   systemMsg:  { flexDirection: 'row', alignItems: 'center', marginVertical: SPACING.md, paddingHorizontal: SPACING.xl, gap: 10 },
   systemLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
   systemText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '500', textAlign: 'center' },
 
-  // ── Row ────────────────────────────────────────────────────────────────────
   row:            { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: SPACING.md, marginBottom: 6, gap: 8 },
   rowOwn:         { flexDirection: 'row-reverse' },
   rowOther:       {},
   rowConsecutive: { marginBottom: 2 },
   avatarSlot:     { width: 30, flexShrink: 0 },
 
-  // Part 47: Highlight accent bar (left side for others, right side for own)
   highlightAccent: {
     position:        'absolute',
-    left:            0,
-    top:             4,
-    bottom:          4,
-    width:           3,
+    left:            0, top: 4, bottom: 4, width: 3,
     borderRadius:    2,
     backgroundColor: COLORS.warning,
     zIndex:          1,
   },
   highlightAccentOwn: { left: 'auto', right: 0 },
 
-  // ── Bubble column ──────────────────────────────────────────────────────────
-  bubbleCol:    { maxWidth: BUBBLE_MAX_WIDTH, alignItems: 'flex-start' },
+  // Part 48b: Pressable as the column container
+  bubbleCol:    { maxWidth: '78%', alignItems: 'flex-start' },
   bubbleColOwn: { alignItems: 'flex-end' },
   senderName:   { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', marginBottom: 3, paddingLeft: 4 },
 
-  // ── Reply preview ─────────────────────────────────────────────────────────
   replyPreview: {
-    flexDirection:  'row',
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius:   RADIUS.lg, borderTopLeftRadius: 4,
-    padding:        SPACING.xs, marginBottom: 4, maxWidth: '100%',
-    borderWidth:    1, borderColor: COLORS.border,
-    overflow:       'hidden',
+    flexDirection: 'row', backgroundColor: COLORS.backgroundElevated,
+    borderRadius: RADIUS.lg, borderTopLeftRadius: 4,
+    padding: SPACING.xs, marginBottom: 4, maxWidth: '100%',
+    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
   },
   replyPreviewOwn: {
     borderTopRightRadius: 4, borderTopLeftRadius: RADIUS.lg,
-    backgroundColor:      'rgba(255,255,255,0.12)',
-    borderColor:          'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.12)', borderColor: 'rgba(255,255,255,0.22)',
   },
   replyBar:    { width: 3, borderRadius: 2, backgroundColor: COLORS.primary, marginRight: 7, flexShrink: 0 },
   replyBarOwn: { backgroundColor: 'rgba(255,255,255,0.7)' },
@@ -411,59 +470,51 @@ const styles = StyleSheet.create({
   replyAuthor:    { color: COLORS.primary, fontSize: 10, fontWeight: '700', marginBottom: 2 },
   replyAuthorOwn: { color: 'rgba(255,255,255,0.85)' },
   replyAttachRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  replyAttachIcon: {
-    width: 20, height: 20, borderRadius: 5,
-    backgroundColor: `${COLORS.primary}18`,
-    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-  },
+  replyAttachIcon: { width: 20, height: 20, borderRadius: 5, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   replyAttachIconOwn:  { backgroundColor: 'rgba(255,255,255,0.18)' },
   replyAttachLabel:    { color: COLORS.textSecondary, fontSize: 11, fontWeight: '600', flex: 1 },
   replyAttachLabelOwn: { color: 'rgba(255,255,255,0.75)' },
   replyText:    { color: COLORS.textMuted, fontSize: 11, lineHeight: 15 },
   replyTextOwn: { color: 'rgba(255,255,255,0.6)' },
 
-  // ── Main bubble ────────────────────────────────────────────────────────────
   bubble: {
-    borderRadius:          RADIUS.xl,
-    borderBottomLeftRadius: 4,
-    paddingHorizontal:     14,
-    paddingVertical:       10,
-    backgroundColor:       COLORS.backgroundElevated,
-    borderWidth:           1,
-    borderColor:           COLORS.border,
-    // Part 47: prevent document chips from stretching bubble on Android
-    overflow:              'hidden',
+    borderRadius: RADIUS.xl, borderBottomLeftRadius: 4,
+    paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: COLORS.backgroundElevated,
+    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
   },
   bubbleOwn: {
-    backgroundColor:        COLORS.primary,
-    borderColor:            COLORS.primary,
-    borderBottomLeftRadius: RADIUS.xl,
-    borderBottomRightRadius: 4,
+    backgroundColor: COLORS.primary, borderColor: COLORS.primary,
+    borderBottomLeftRadius: RADIUS.xl, borderBottomRightRadius: 4,
   },
   bubbleOther:      {},
   bubblePinned:     { borderColor: `${COLORS.warning}60`, borderWidth: 1.5 },
   bubbleAttachOnly: { paddingHorizontal: 6, paddingVertical: 6 },
 
-  // Part 47: container for attachments — ensures proper width constraints
-  attachmentsContainer: {
-    width:    '100%',
-    maxWidth: 280,
-  },
+  attachmentsContainer: { width: '100%', maxWidth: 280 },
 
-  // ── Pin badge ──────────────────────────────────────────────────────────────
   pinBadge:     { flexDirection: 'row', alignItems: 'center', gap: 3, marginBottom: 5 },
   pinBadgeText: { color: COLORS.warning, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  // ── Content + footer ───────────────────────────────────────────────────────
   content:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 21 },
   contentOwn:     { color: '#FFFFFF' },
+
+  // Part 48b: file name label for attachment-only messages
+  attachmentLabel: {
+    color:      COLORS.textMuted,
+    fontSize:   10,
+    fontStyle:  'italic',
+    marginTop:  4,
+    maxWidth:   260,
+  },
+  attachmentLabelOwn: { color: 'rgba(255,255,255,0.55)' },
+
   bubbleFooter:   { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, justifyContent: 'flex-end' },
-  editedLabel:    { color: COLORS.textMuted,             fontSize: 10, fontStyle: 'italic' },
+  editedLabel:    { color: COLORS.textMuted, fontSize: 10, fontStyle: 'italic' },
   editedLabelOwn: { color: 'rgba(255,255,255,0.55)' },
-  timeLabel:      { color: COLORS.textMuted,             fontSize: 10 },
+  timeLabel:      { color: COLORS.textMuted, fontSize: 10 },
   timeLabelOwn:   { color: 'rgba(255,255,255,0.65)' },
 
-  // ── Reactions ──────────────────────────────────────────────────────────────
   reactionsRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 5, paddingLeft: 2 },
   reactionsRowOwn:    { justifyContent: 'flex-end' },
   reactionChip:       { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: COLORS.border },
@@ -473,18 +524,16 @@ const styles = StyleSheet.create({
   reactionCountActive:{ color: COLORS.primary },
   addReactionBtn:     { width: 26, height: 26, borderRadius: 13, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
 
-  // ── Deleted bubble ─────────────────────────────────────────────────────────
   deletedBubble:    { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${COLORS.textMuted}10`, borderRadius: RADIUS.xl, borderBottomLeftRadius: 4, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
   deletedBubbleOwn: { borderBottomLeftRadius: RADIUS.xl, borderBottomRightRadius: 4 },
   deletedText:      { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic' },
 
-  // ── Context menu ───────────────────────────────────────────────────────────
-  menuOverlay:       { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: SPACING.xl },
-  menuCard:          { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, paddingVertical: SPACING.sm, width: '100%', maxWidth: 320, borderWidth: 1, borderColor: COLORS.border, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20, elevation: 16 },
-  quickReactions:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md },
-  quickReactionBtn:  { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center' },
-  quickReactionEmoji:{ fontSize: 22 },
-  menuDivider:       { height: 1, backgroundColor: COLORS.border, marginHorizontal: SPACING.md, marginBottom: SPACING.xs },
-  menuItem:          { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: SPACING.lg, paddingVertical: 12 },
-  menuItemLabel:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '500' },
+  menuOverlay:        { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: SPACING.xl },
+  menuCard:           { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, paddingVertical: SPACING.sm, width: '100%', maxWidth: 320, borderWidth: 1, borderColor: COLORS.border, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20, elevation: 16 },
+  quickReactions:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md },
+  quickReactionBtn:   { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center' },
+  quickReactionEmoji: { fontSize: 22 },
+  menuDivider:        { height: 1, backgroundColor: COLORS.border, marginHorizontal: SPACING.md, marginBottom: SPACING.xs },
+  menuItem:           { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: SPACING.lg, paddingVertical: 12 },
+  menuItemLabel:      { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '500' },
 });

@@ -2,8 +2,12 @@
 // Part 17 — Workspace Chat hook
 // Part 18 — send() accepts mentions?: string[] and forwards to sendChatMessage
 // Part 47 — Full realtime via useChatRealtime (messages + reactions + pins).
-//            Removed subscribeToChatMessages — useChatRealtime replaces it.
-//            Added highlightedMessageId to state + highlightMessage() function.
+// Part 48 — REAL-TIME FIX: After every mutation (send, edit, delete, react, pin,
+//            unpin) the hook now also broadcasts the change on the Broadcast
+//            channel so ALL workspace members receive updates instantly.
+//            broadcastChatMessage/Update/Delete/Reaction/Pin imported from
+//            useChatRealtime.ts.
+//            Also fixed: reply preview now includes attachment data from server.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
@@ -12,9 +16,16 @@ import {
   fetchChatMessages, sendChatMessage, editChatMessage, deleteChatMessage,
   toggleChatReaction, markMessagesRead, getChatUnreadCount,
   pinChatMessage, unpinChatMessage, getPinnedChatMessages,
-  searchChatMessages, getChatMembers,
+  searchChatMessages, getChatMembers, getMessageReactions,
 } from '../services/chatService';
-import { useChatRealtime } from './useChatRealtime';
+import {
+  useChatRealtime,
+  broadcastChatMessage,
+  broadcastChatUpdate,
+  broadcastChatDelete,
+  broadcastChatReaction,
+  broadcastChatPin,
+} from './useChatRealtime';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -34,7 +45,7 @@ const INITIAL_STATE: ChatState = {
   searchQuery:          '',
   searchResults:        [],
   isSearching:          false,
-  highlightedMessageId: null,   // Part 47
+  highlightedMessageId: null,
 };
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -43,7 +54,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
   const { user, profile } = useAuth();
   const [state, setState] = useState<ChatState>(INITIAL_STATE);
 
-  // Stable refs — avoid stale closures without causing re-subscriptions
   const stateRef = useRef<ChatState>(INITIAL_STATE);
   useEffect(() => { stateRef.current = state; }, [state]);
 
@@ -53,23 +63,19 @@ export function useWorkspaceChat(workspaceId: string | null) {
   const workspaceIdRef = useRef(workspaceId);
   useEffect(() => { workspaceIdRef.current = workspaceId; }, [workspaceId]);
 
-  // Part 47: timer ref for auto-clearing highlight after 2500ms
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Part 47: Full realtime subscriptions via useChatRealtime ─────────────
-  // Covers: message INSERT/UPDATE/DELETE, reaction INSERT/DELETE, pin INSERT/DELETE.
-  // Replaces the old subscribeToChatMessages() call in useEffect below.
+  // ── Realtime subscriptions ────────────────────────────────────────────────
 
   useChatRealtime(workspaceId, {
 
-    // ── New message from any user ──────────────────────────────────────────
     onMessageInsert: (msg) => {
       const { user: u } = authRef.current;
       setState(s => {
-        // Already present (non-temp)? Skip.
+        // Already present as non-temp? Skip.
         if (s.messages.some(m => m.id === msg.id && !m.id.startsWith('temp-'))) return s;
 
-        // Replace matching optimistic (temp) message
+        // Replace matching optimistic temp message
         const tempIdx = s.messages.findIndex(m =>
           m.id.startsWith('temp-') &&
           m.userId   === msg.userId &&
@@ -93,7 +99,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
       }
     },
 
-    // ── Message edited or soft-deleted ────────────────────────────────────
     onMessageUpdate: (partial) => {
       setState(s => ({
         ...s,
@@ -103,7 +108,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
       }));
     },
 
-    // ── Hard delete (rare — typically soft-delete via UPDATE) ─────────────
     onMessageDelete: (id) => {
       setState(s => ({
         ...s,
@@ -113,12 +117,9 @@ export function useWorkspaceChat(workspaceId: string | null) {
       }));
     },
 
-    // ── Emoji reaction added or removed ───────────────────────────────────
-    // Receives fresh summary from get_message_reactions RPC.
-    // Guard: only update if the message is currently loaded (belongs to this workspace).
     onReactionChange: (messageId, reactions) => {
       setState(s => {
-        if (!s.messages.some(m => m.id === messageId)) return s; // not our workspace
+        if (!s.messages.some(m => m.id === messageId)) return s;
         return {
           ...s,
           messages: s.messages.map(m =>
@@ -128,21 +129,19 @@ export function useWorkspaceChat(workspaceId: string | null) {
       });
     },
 
-    // ── Message pinned or unpinned ────────────────────────────────────────
+    // Part 48 FIX: onPinChange now also reloads pinned list on UNPIN (isPinned=false)
     onPinChange: (messageId, isPinned) => {
-      // Immediately update isPinned on the message
       setState(s => ({
         ...s,
         messages: s.messages.map(m =>
           m.id === messageId ? { ...m, isPinned } : m
         ),
-        // Optimistically remove from pinnedMessages when unpinned
         pinnedMessages: isPinned
-          ? s.pinnedMessages   // keep stale; reloaded below
+          ? s.pinnedMessages
           : s.pinnedMessages.filter(p => p.id !== messageId),
       }));
 
-      // Reload full pinned list to get accurate author data
+      // Always reload pinned list to get accurate data (for both pin and unpin)
       const wsId = workspaceIdRef.current;
       if (wsId) {
         getPinnedChatMessages(wsId).then(({ data }) => {
@@ -187,9 +186,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
     }));
   }, []);
 
-  // ── Initial load when workspaceId changes ─────────────────────────────────
-  // Realtime is handled by useChatRealtime above — no subscribeToChatMessages here.
-
   useEffect(() => {
     if (!workspaceId) return;
     setState(INITIAL_STATE);
@@ -198,15 +194,13 @@ export function useWorkspaceChat(workspaceId: string | null) {
     loadAuxData();
   }, [workspaceId, loadMessages, loadAuxData]);
 
-  // ── Cleanup highlight timer on unmount ────────────────────────────────────
-
   useEffect(() => {
     return () => {
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
     };
   }, []);
 
-  // ── Load more (cursor pagination) ─────────────────────────────────────────
+  // ── Load more ─────────────────────────────────────────────────────────────
 
   const loadMore = useCallback(async () => {
     const wsId = workspaceIdRef.current;
@@ -227,6 +221,8 @@ export function useWorkspaceChat(workspaceId: string | null) {
   }, []);
 
   // ── Send ──────────────────────────────────────────────────────────────────
+  // Part 48: After DB write, broadcast the full message so other members
+  // receive it instantly via the Broadcast channel.
 
   const send = useCallback(async (
     content:      string,
@@ -244,6 +240,18 @@ export function useWorkspaceChat(workspaceId: string | null) {
     const replyMsg = capturedReplyId ? s.messages.find(m => m.id === capturedReplyId) : undefined;
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
+    // Build reply preview for optimistic message including attachment info
+    let replyPreview = null;
+    if (replyMsg) {
+      replyPreview = {
+        id:          replyMsg.id,
+        content:     replyMsg.content,
+        userId:      replyMsg.userId ?? '',
+        authorName:  replyMsg.author?.fullName ?? replyMsg.author?.username ?? null,
+        attachments: replyMsg.attachments ?? [],
+      };
+    }
+
     const optimistic: ChatMessage = {
       id:           tempId,
       workspaceId:  wsId,
@@ -251,12 +259,7 @@ export function useWorkspaceChat(workspaceId: string | null) {
       content:      content.trim(),
       contentType:  attachments?.length && !content.trim() ? 'image' : 'text',
       replyToId:    capturedReplyId,
-      replyTo: replyMsg ? {
-        id:         replyMsg.id,
-        content:    replyMsg.content,
-        userId:     replyMsg.userId ?? '',
-        authorName: replyMsg.author?.fullName ?? replyMsg.author?.username ?? null,
-      } : null,
+      replyTo:      replyPreview as any,
       attachments:  attachments ?? [],
       mentions:     mentions    ?? [],
       isEdited:  false,
@@ -297,45 +300,81 @@ export function useWorkspaceChat(workspaceId: string | null) {
       return;
     }
 
+    const finalMsg = serverMsg ?? optimistic;
+
     setState(prev => ({
       ...prev,
       isSending: false,
       error:     null,
-      messages:  prev.messages.map(m => m.id === tempId ? (serverMsg ?? m) : m),
+      messages:  prev.messages.map(m => m.id === tempId ? finalMsg : m),
     }));
+
+    // Part 48: Broadcast to all other workspace members
+    if (serverMsg) {
+      broadcastChatMessage(wsId, serverMsg).catch(() => {});
+    }
   }, []);
 
   // ── Edit ──────────────────────────────────────────────────────────────────
 
   const editMessage = useCallback(async (messageId: string, newContent: string) => {
+    const wsId = workspaceIdRef.current;
     const { error } = await editChatMessage(messageId, newContent);
-    if (!error) setState(s => ({
-      ...s,
-      editingMessage: null,
-      messages: s.messages.map(m =>
-        m.id === messageId ? { ...m, content: newContent, isEdited: true } : m
-      ),
-    }));
+    if (!error) {
+      setState(s => ({
+        ...s,
+        editingMessage: null,
+        messages: s.messages.map(m =>
+          m.id === messageId ? { ...m, content: newContent, isEdited: true } : m
+        ),
+      }));
+      // Part 48: Broadcast edit to all members
+      if (wsId) {
+        broadcastChatUpdate(wsId, {
+          id:        messageId,
+          content:   newContent,
+          isEdited:  true,
+          isDeleted: false,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
+    }
     return { error };
   }, []);
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
   const deleteMessage = useCallback(async (messageId: string) => {
+    const wsId = workspaceIdRef.current;
     const { error } = await deleteChatMessage(messageId);
-    if (!error) setState(s => ({
-      ...s,
-      messages: s.messages.map(m =>
-        m.id === messageId ? { ...m, isDeleted: true, content: '[Message deleted]' } : m
-      ),
-    }));
+    if (!error) {
+      setState(s => ({
+        ...s,
+        messages: s.messages.map(m =>
+          m.id === messageId ? { ...m, isDeleted: true, content: '[Message deleted]' } : m
+        ),
+      }));
+      // Part 48: Broadcast delete to all members
+      if (wsId) {
+        broadcastChatDelete(wsId, messageId).catch(() => {});
+        broadcastChatUpdate(wsId, {
+          id:        messageId,
+          content:   '[Message deleted]',
+          isEdited:  false,
+          isDeleted: true,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
+    }
     return { error };
   }, []);
 
   // ── React ─────────────────────────────────────────────────────────────────
 
   const react = useCallback(async (messageId: string, emoji: string) => {
-    // Optimistic update — realtime onReactionChange will sync the authoritative count
+    const wsId = workspaceIdRef.current;
+
+    // Optimistic update
     setState(s => ({
       ...s,
       messages: s.messages.map(m => {
@@ -355,30 +394,65 @@ export function useWorkspaceChat(workspaceId: string | null) {
         return { ...m, reactions: [...m.reactions, { emoji, count: 1, hasReacted: true }] };
       }),
     }));
+
     await toggleChatReaction(messageId, emoji);
+
+    // Part 48: Fetch fresh reactions and broadcast to all members
+    if (wsId) {
+      try {
+        const { data: freshReactions } = await getMessageReactions(messageId);
+        // Update own state with fresh data
+        setState(s => ({
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === messageId ? { ...m, reactions: freshReactions } : m
+          ),
+        }));
+        // Broadcast fresh reactions to others
+        broadcastChatReaction(wsId, messageId, freshReactions).catch(() => {});
+      } catch { /* non-fatal */ }
+    }
   }, []);
 
-  // ── Pin / unpin ───────────────────────────────────────────────────────────
+  // ── Pin ───────────────────────────────────────────────────────────────────
 
   const pin = useCallback(async (message: ChatMessage) => {
+    const wsId = workspaceIdRef.current;
     const { error } = await pinChatMessage(message.id);
     if (!error) {
-      // Optimistic — realtime onPinChange reloads pinnedMessages with author data
       setState(s => ({
         ...s,
         messages: s.messages.map(m => m.id === message.id ? { ...m, isPinned: true } : m),
       }));
+      // Part 48: Broadcast pin to all members
+      if (wsId) {
+        broadcastChatPin(wsId, message.id, true).catch(() => {});
+        // Reload pinned list
+        getPinnedChatMessages(wsId).then(({ data }) => {
+          setState(s => ({ ...s, pinnedMessages: data }));
+        }).catch(() => {});
+      }
     }
     return { error };
   }, []);
 
+  // ── Unpin ─────────────────────────────────────────────────────────────────
+  // Part 48 FIX: Also broadcasts unpin event so all members see pin bar update
+
   const unpin = useCallback(async (messageId: string) => {
+    const wsId = workspaceIdRef.current;
     const { error } = await unpinChatMessage(messageId);
-    if (!error) setState(s => ({
-      ...s,
-      messages: s.messages.map(m => m.id === messageId ? { ...m, isPinned: false } : m),
-      pinnedMessages: s.pinnedMessages.filter(p => p.id !== messageId),
-    }));
+    if (!error) {
+      setState(s => ({
+        ...s,
+        messages:      s.messages.map(m => m.id === messageId ? { ...m, isPinned: false } : m),
+        pinnedMessages: s.pinnedMessages.filter(p => p.id !== messageId),
+      }));
+      // Part 48 FIX: Broadcast unpin so all OTHER members update their pin bar immediately
+      if (wsId) {
+        broadcastChatPin(wsId, messageId, false).catch(() => {});
+      }
+    }
     return { error };
   }, []);
 
@@ -397,9 +471,7 @@ export function useWorkspaceChat(workspaceId: string | null) {
     setState(s => ({ ...s, searchQuery: '', searchResults: [], isSearching: false }));
   }, []);
 
-  // ── Part 47: Highlight ───────────────────────────────────────────────────
-  // Sets highlightedMessageId and auto-clears after 2500ms.
-  // Called by workspace-chat.tsx after scrolling to a search result or pinned msg.
+  // ── Highlight ─────────────────────────────────────────────────────────────
 
   const highlightMessage = useCallback((messageId: string) => {
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -414,8 +486,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
   const setReplyingTo     = useCallback((msg: ChatMessage | null) => setState(s => ({ ...s, replyingTo: msg })),     []);
   const setEditingMessage = useCallback((msg: ChatMessage | null) => setState(s => ({ ...s, editingMessage: msg })), []);
   const refresh           = useCallback(async () => { await Promise.all([loadMessages(true), loadAuxData()]); }, [loadMessages, loadAuxData]);
-
-  // ── Return ────────────────────────────────────────────────────────────────
 
   return {
     ...state,
@@ -432,6 +502,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
     setReplyingTo,
     setEditingMessage,
     refresh,
-    highlightMessage,   // Part 47
+    highlightMessage,
   };
 }
