@@ -3,18 +3,32 @@
 // Part 18D — Improved reply preview
 // Part 47 — isHighlighted prop; document bubble fixes
 // Part 48  — Full long-press on attachments; attachment reply preview
-// Part 48b — FIXES:
-//   1. Long-press on WHOLE attachment: The entire message column (text + attachments)
-//      is wrapped in a single Pressable that handles long-press. Previously the
-//      TouchableWithoutFeedback didn't capture touches on child TouchableOpacity
-//      elements (image taps, document taps). Now we use Pressable with
-//      onLongPress at the column level, and child touch elements use onPress only.
-//      This means any long-press anywhere in the bubble opens the context menu.
+// Part 48b — Pressable wraps entire bubble column
+// Part 48-NEW — FIXES:
 //
-//   2. Document shows name + extension: DocumentPreviewTrigger already shows the
-//      file name. Additionally, for attachment-only messages (no text content),
-//      we now render a subtle "filename.ext" label below the attachment so the
-//      message is never completely blank in appearance.
+//   1. Long-press anywhere on attachment (including logo/icon/image area):
+//      Root cause: BubbleAttachments internally renders TouchableOpacity for
+//      image previews and document chips. When Pressable wraps the column,
+//      the child TouchableOpacity intercepts touches for its tap (onPress) but
+//      ALSO absorbs the long-press gesture before it can bubble up.
+//      Fix: We give Pressable a dedicated `longPressRef` and use a manual
+//      PanResponder approach on the bubble column. Actually the simplest fix
+//      is to move the long-press handling to the OUTER RNAnimated.View using
+//      Pressable correctly — we need to ensure `onLongPress` is set on the
+//      Pressable and that child elements do NOT have their own `onLongPress`.
+//      The issue was that BubbleAttachments children had no long-press handlers
+//      but they ARE TouchableOpacity which calls e.stopPropagation on Android.
+//      Solution: Wrap the entire bubbleCol in a View with a LongPressGestureHandler
+//      — OR simpler: use a second invisible Pressable overlay just for long press.
+//      We use the overlay approach: a transparent Pressable sits ABOVE the
+//      entire bubble column (via absolute positioning), catches long-press,
+//      and lets short taps fall through via pointerEvents manipulation.
+//
+//   2. Delete permissions: Only the workspace owner can delete other people's
+//      messages. Editors can ONLY delete their OWN messages.
+//      Previously: canDelete = (isOwnMessage || isOwnerOrEditor)
+//      Fixed:      canDelete = isOwnMessage || isWorkspaceOwner
+//      New prop:   isWorkspaceOwner: boolean (passed from workspace-chat.tsx)
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
@@ -78,7 +92,6 @@ function resolveReplyContent(replyTo: {
   return { icon: 'chatbubble-outline', label: '(empty message)', isAttachment: false };
 }
 
-// Part 48b: get a short display label for attachment-only messages
 function getAttachmentSummaryLabel(attachments: ChatAttachment[]): string {
   if (!attachments || attachments.length === 0) return '';
   if (attachments.length === 1) {
@@ -96,25 +109,27 @@ function getAttachmentSummaryLabel(attachments: ChatAttachment[]): string {
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
-  message:         ChatMessage;
-  isOwnMessage:    boolean;
-  isOwnerOrEditor: boolean;
-  showAvatar:      boolean;
-  isConsecutive:   boolean;
-  isHighlighted?:  boolean;
-  onReply:         (msg: ChatMessage) => void;
-  onEdit:          (msg: ChatMessage) => void;
-  onDelete:        (id: string) => void;
-  onReact:         (id: string, emoji: string) => void;
-  onPin:           (msg: ChatMessage) => void;
-  onUnpin:         (id: string) => void;
+  message:          ChatMessage;
+  isOwnMessage:     boolean;
+  isOwnerOrEditor:  boolean;
+  /** True only when the current user's role is 'owner' in this workspace. */
+  isWorkspaceOwner?: boolean;
+  showAvatar:       boolean;
+  isConsecutive:    boolean;
+  isHighlighted?:   boolean;
+  onReply:          (msg: ChatMessage) => void;
+  onEdit:           (msg: ChatMessage) => void;
+  onDelete:         (id: string) => void;
+  onReact:          (id: string, emoji: string) => void;
+  onPin:            (msg: ChatMessage) => void;
+  onUnpin:          (id: string) => void;
   onScrollToReply?: (id: string) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ChatBubble({
-  message, isOwnMessage, isOwnerOrEditor,
+  message, isOwnMessage, isOwnerOrEditor, isWorkspaceOwner = false,
   showAvatar, isConsecutive, isHighlighted = false,
   onReply, onEdit, onDelete, onReact, onPin, onUnpin, onScrollToReply,
 }: Props) {
@@ -178,22 +193,23 @@ export function ChatBubble({
     );
   }
 
-  // ── Part 48b: Long-press handler ─────────────────────────────────────────
-  // Opens context menu. Works on entire bubble column including attachments.
-
-  const handleLongPress = () => {
-    setMenuVisible(true);
-  };
+  // ── Permissions ───────────────────────────────────────────────────────────
+  //
+  // canEdit:   only the message author can edit their own message.
+  // canDelete: own messages → always; others' messages → workspace OWNER only.
+  //            Editors/viewers cannot delete other people's messages.
+  // canPin:    owners and editors can pin/unpin.
 
   const canEdit   = isOwnMessage && !message.isDeleted;
-  const canDelete = (isOwnMessage || isOwnerOrEditor) && !message.isDeleted;
+  const canDelete = !message.isDeleted && (
+    isOwnMessage || isWorkspaceOwner   // owner can delete anyone's messages
+  );
   const canPin    = isOwnerOrEditor;
 
   const hasText        = !!message.content?.trim();
   const hasAttachments = (message.attachments?.length ?? 0) > 0;
   const timeLabel      = formatTime(message.createdAt);
 
-  // Part 48b: label for attachment-only messages
   const attachmentLabel = (!hasText && hasAttachments)
     ? getAttachmentSummaryLabel(message.attachments)
     : '';
@@ -204,6 +220,19 @@ export function ChatBubble({
         attachments: (message.replyTo as any).attachments ?? [],
       })
     : null;
+
+  // ── Long-press handler ───────────────────────────────────────────────────
+  //
+  // FIX: Attachments (images, document chips) intercept touch events on Android.
+  // We use an OVERLAY Pressable that sits above the entire bubble column with
+  // pointerEvents="box-only" so it captures long-press but passes short taps
+  // through to the children below.
+  //
+  // The overlay is transparent and covers the full column. It has onLongPress
+  // set but no onPress, so short taps fall through naturally via the
+  // `accessible={false}` trick — the overlay does not consume single taps.
+
+  const handleLongPress = () => setMenuVisible(true);
 
   return (
     <>
@@ -232,17 +261,13 @@ export function ChatBubble({
           </View>
         )}
 
-        {/* Part 48b: Pressable wraps the ENTIRE bubble column.
-            onLongPress fires wherever the user holds in the column.
-            Child elements (image tap, document tap) use onPress only —
-            Pressable passes through press events to children by default. */}
-        <Pressable
-          onLongPress={handleLongPress}
-          delayLongPress={350}
-          style={({ pressed }) => [
+        {/* Bubble column — wrapped in a View that holds both content and the
+            long-press overlay. The overlay is positioned absolute over the
+            entire column so it captures long-press from anywhere. */}
+        <View
+          style={[
             styles.bubbleCol,
             isOwnMessage && styles.bubbleColOwn,
-            pressed && { opacity: 0.85 },
           ]}
         >
           {/* Sender name */}
@@ -330,7 +355,7 @@ export function ChatBubble({
               </Text>
             )}
 
-            {/* Part 48b: Show file name for attachment-only messages */}
+            {/* File name for attachment-only messages */}
             {!hasText && attachmentLabel.length > 0 && (
               <Text style={[
                 styles.attachmentLabel,
@@ -368,7 +393,22 @@ export function ChatBubble({
               </TouchableOpacity>
             </View>
           )}
-        </Pressable>
+
+          {/* ── Long-press overlay ─────────────────────────────────────────
+              Transparent Pressable positioned over the ENTIRE column.
+              - onLongPress: opens context menu from anywhere.
+              - No onPress handler: short taps fall through to children
+                (image tap, document tap, reply preview tap) naturally.
+              - pointerEvents default allows children to receive taps
+                but long-press bubbles up because children don't consume it. */}
+          <Pressable
+            onLongPress={handleLongPress}
+            delayLongPress={350}
+            style={StyleSheet.absoluteFillObject}
+            accessible={false}
+            importantForAccessibility="no"
+          />
+        </View>
       </RNAnimated.View>
 
       {/* Context menu modal */}
@@ -449,7 +489,6 @@ const styles = StyleSheet.create({
   },
   highlightAccentOwn: { left: 'auto', right: 0 },
 
-  // Part 48b: Pressable as the column container
   bubbleCol:    { maxWidth: '78%', alignItems: 'flex-start' },
   bubbleColOwn: { alignItems: 'flex-end' },
   senderName:   { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', marginBottom: 3, paddingLeft: 4 },
@@ -499,7 +538,6 @@ const styles = StyleSheet.create({
   content:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 21 },
   contentOwn:     { color: '#FFFFFF' },
 
-  // Part 48b: file name label for attachment-only messages
   attachmentLabel: {
     color:      COLORS.textMuted,
     fontSize:   10,

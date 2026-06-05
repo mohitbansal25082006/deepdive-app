@@ -1,22 +1,27 @@
 // src/services/chatSoundService.ts
 // Part 48b — Chat message send/receive sounds using expo-av
-// Part 48e — FIX: Sound was playing when screen opened (not just on send/receive).
-//   Root cause: the WAV data URIs were generated at MODULE LOAD TIME (top-level
-//   code). On some React Native versions this triggers Audio initialization which
-//   can emit a brief sound. Also, `prewarmChatSounds` was calling
-//   `ensureAudioConfig` which sets audio mode — that itself caused an audio
-//   session activation sound on some Android devices.
+// Part 48e — Fix: Sound was playing when screen opened (lazy init fix)
+// Part 48-NEW — Android sound fix:
 //
-//   Fixes applied:
-//   1. WAV generation is now LAZY — URIs are generated on first play, not at
-//      module import time. This prevents any audio-related side-effects on import.
-//   2. `prewarmChatSounds` is a no-op (kept for API compatibility but does nothing
-//      that would trigger a sound). Audio session is configured lazily on first play.
-//   3. Added a `_soundEnabled` flag — sounds only play after the first explicit
-//      call to `playSendSound` or `playReceiveSound`. This ensures no accidental
-//      playback during initialization.
-//   4. Cooldown guard: receive sound won't play more than once per 500ms to
-//      prevent rapid-fire sounds when loading a batch of messages.
+//   Root cause of Android silence:
+//   Previous code called Audio.setAudioModeAsync with:
+//     shouldDuckAndroid: true   ← correct
+//     playsInSilentModeIOS: false
+//   But on Android the audio category was not being set to "duckOthers"
+//   which is required for short UI sounds. Android also needs
+//   interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DUCK_OTHERS
+//   to allow playback over other apps.
+//
+//   Additionally, Audio.Sound.createAsync with a base64 data URI can fail
+//   silently on Android due to a known expo-av issue. We now:
+//   1. Set interruptionModeAndroid correctly.
+//   2. Set volume to 1.0 and also call sound.setVolumeAsync(1.0) explicitly
+//      since some Android versions need the call AFTER createAsync.
+//   3. Call sound.playAsync() explicitly rather than relying on shouldPlay:true
+//      in createAsync (this is the most reliable cross-platform approach).
+//   4. On Android, add a small artificial delay (80ms) before play so the
+//      audio session has time to initialize — especially important for the
+//      first sound after app launch.
 
 import { Audio } from 'expo-av';
 import { Platform } from 'react-native';
@@ -106,6 +111,9 @@ function getReceiveToneUri(): string {
 }
 
 // ─── Audio session ────────────────────────────────────────────────────────────
+// Part 48-NEW: Correct Android audio mode configuration.
+// interruptionModeAndroid: DUCK_OTHERS lets short UI sounds play over music.
+// playsInSilentModeIOS: false respects the ringer switch on iOS.
 
 let _audioConfigured = false;
 
@@ -113,31 +121,61 @@ async function ensureAudioConfig(): Promise<void> {
   if (_audioConfigured) return;
   try {
     await Audio.setAudioModeAsync({
-      playsInSilentModeIOS:    false, // respect silent/ringer switch on iOS
-      allowsRecordingIOS:      false,
-      staysActiveInBackground: false,
-      shouldDuckAndroid:       true,
+      // iOS: respect the ringer/silent switch (false = muted when on silent)
+      playsInSilentModeIOS:          false,
+      allowsRecordingIOS:            false,
+      staysActiveInBackground:       false,
+      // Android: duck other audio (music/media) while playing our short tone,
+      // then restore. This is required for UI sounds on Android.
+      shouldDuckAndroid:             true,
+      // INTERRUPTION_MODE_ANDROID_DUCK_OTHERS = 2
+      // Without this the Android audio focus request fails silently.
+      interruptionModeAndroid:       (Audio as any).INTERRUPTION_MODE_ANDROID_DUCK_OTHERS ?? 2,
+      // iOS interruption mode: mix with others (we don't need exclusive focus)
+      interruptionModeIOS:           (Audio as any).INTERRUPTION_MODE_IOS_MIX_WITH_OTHERS ?? 2,
     });
     _audioConfigured = true;
   } catch { /* non-fatal */ }
 }
 
 // ─── Cooldown guard ───────────────────────────────────────────────────────────
-// Prevents receive sound playing multiple times in rapid succession when a
-// batch of messages loads (e.g. opening chat with unread messages).
 
 let _lastReceiveSoundAt = 0;
 const RECEIVE_SOUND_COOLDOWN_MS = 500;
 
 // ─── Core player ─────────────────────────────────────────────────────────────
+//
+// Part 48-NEW Android fix:
+//   1. ensureAudioConfig() first (sets audio mode).
+//   2. createAsync with shouldPlay: false — we call playAsync() explicitly.
+//   3. setVolumeAsync(1.0) — some Android versions ignore the createAsync volume.
+//   4. Small delay on Android (80ms) so the audio session is ready.
+//   5. playAsync() — the only reliable trigger on both platforms.
 
 async function playTone(uri: string): Promise<void> {
   try {
     await ensureAudioConfig();
+
+    // Android: give the audio session a moment to activate
+    if (Platform.OS === 'android') {
+      await new Promise<void>(resolve => setTimeout(resolve, 80));
+    }
+
     const { sound } = await Audio.Sound.createAsync(
       { uri },
-      { shouldPlay: true, volume: 1.0 },
+      {
+        shouldPlay: false, // we start manually via playAsync()
+        volume:     1.0,
+      },
     );
+
+    // Explicitly set volume (Android may ignore the option above)
+    try { await sound.setVolumeAsync(1.0); } catch { /* non-fatal */ }
+
+    // Start playback explicitly — most reliable cross-platform
+    await sound.playAsync();
+
+    // Unload after playback completes
     sound.setOnPlaybackStatusUpdate((status) => {
       if (!status.isLoaded) return;
       if (status.didJustFinish) {
@@ -151,32 +189,29 @@ async function playTone(uri: string): Promise<void> {
 
 /**
  * Play the message-sent sound.
- * Call this ONLY when the user explicitly taps Send.
+ * Call ONLY when the user explicitly taps Send.
  * Do NOT call on screen mount or initial message load.
  */
 export async function playSendSound(): Promise<void> {
-  // Generate URI lazily (only when actually needed)
   await playTone(getSendToneUri());
 }
 
 /**
  * Play the message-received sound.
- * Call this ONLY for genuinely new incoming messages from OTHER users.
+ * Call ONLY for genuinely new incoming messages from OTHER users.
  * Has a 500ms cooldown to prevent rapid-fire playback on batch load.
  */
 export async function playReceiveSound(): Promise<void> {
   const now = Date.now();
-  // Cooldown: skip if we played within the last 500ms
   if (now - _lastReceiveSoundAt < RECEIVE_SOUND_COOLDOWN_MS) return;
   _lastReceiveSoundAt = now;
   await playTone(getReceiveToneUri());
 }
 
 /**
- * No-op kept for API compatibility.
- * Previously called ensureAudioConfig() on mount which could trigger sounds.
- * Now does nothing — audio session is configured lazily on first play.
+ * No-op — kept for API compatibility.
+ * Audio session is configured lazily on first play.
  */
 export async function prewarmChatSounds(): Promise<void> {
-  // Intentionally empty — see Part 48e fix notes above.
+  // Intentionally empty.
 }

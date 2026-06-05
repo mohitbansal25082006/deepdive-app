@@ -3,18 +3,27 @@
 // Part 47 — Full realtime (via useWorkspaceChat + useChatRealtime).
 // Part 48  — Broadcast-based real-time, document name fixes.
 // Part 48b — Sounds, Android keyboard, swipeable pin bar.
-// Part 48c — Uses useWorkspaceChatPresence (not report-level usePresence).
-// Part 48e — FIXES:
-//   1. Sound on screen open: `prevMsgCountRef` was initialized to 0 so ALL
-//      messages loaded on first render were treated as "new" → sounds fired.
-//      Fix: use a `initialLoadDoneRef` flag. After the first full load
-//      completes (chat.isLoading goes false → true→false), we set
-//      prevMsgCountRef to the current count SILENTLY (no sound). Only
-//      SUBSEQUENT increases trigger sounds.
-//   2. Send sound: guarded by `isFocusedRef` so it only plays when the
-//      chat screen is actually in the foreground.
-//   3. Receive sound: same focus guard + relies on chatSoundService's
-//      500ms cooldown to prevent batch-load sounds.
+// Part 48e — Sound-on-open fix, focus guard, initialLoadDoneRef.
+// Part 48-NEW — FIXES:
+//
+//   1. Android keyboard behind nav bar:
+//      • behavior="height" on KeyboardAvoidingView (was "padding").
+//        "padding" adds paddingBottom as the keyboard rises — this conflicts
+//        with Android's window resize mode and pushes content too high.
+//        "height" adjusts the VIEW's height instead, which works correctly
+//        alongside softwareKeyboardLayoutMode="pan" in app.json.
+//      • keyboardVerticalOffset=0 — correct for Android.
+//      • Also fixed in ChatInput.tsx: containerBottomPadding=0 on Android.
+//
+//   2. Scroll to bottom on open:
+//      • After initialLoadDoneRef is set (first load complete), we do ONE
+//        guaranteed scrollToEnd call with animated:false so the user lands
+//        at the latest message immediately on entering chat.
+//      • Subsequent new-message auto-scrolls stay animated:true.
+//
+//   3. isWorkspaceOwner prop passed to ChatBubble via renderItem:
+//      • Derived from userRole === 'owner'.
+//      • ChatBubble uses it to gate the Delete option on others' messages.
 
 import React, {
   useState, useCallback, useRef, useEffect, useMemo,
@@ -47,7 +56,6 @@ import {
 import { setActiveChatWorkspaceId } from '../../src/lib/screenState';
 import {
   playSendSound, playReceiveSound,
-  // prewarmChatSounds is now a no-op (Part 48e fix)
 } from '../../src/services/chatSoundService';
 
 import { ChatMessage, ChatAttachment } from '../../src/types/chat';
@@ -96,15 +104,16 @@ export default function WorkspaceChatScreen() {
   const searchRef = useRef<TextInput>(null);
 
   const pendingScrollRef = useRef<string | null>(null);
-  const isOwnerOrEditor  = userRole === 'owner' || userRole === 'editor';
 
-  // Part 48e: track whether the initial message load has completed.
-  // We must NOT play sounds for messages loaded on first render.
-  const initialLoadDoneRef = useRef(false);
+  // Derive role booleans
+  const isOwner         = userRole === 'owner';
+  const isOwnerOrEditor = userRole === 'owner' || userRole === 'editor';
 
-  // Part 48e: track whether the chat screen is currently focused.
-  // Sounds should only play when user is on THIS screen.
-  const isFocusedRef = useRef(false);
+  // ── Sound & initial-load tracking ─────────────────────────────────────────
+
+  const initialLoadDoneRef  = useRef(false);
+  const isFocusedRef        = useRef(false);
+  const prevMsgCountRef     = useRef<number>(-1);
 
   // ── Focus tracking ────────────────────────────────────────────────────────
   useFocusEffect(
@@ -118,33 +127,32 @@ export default function WorkspaceChatScreen() {
     }, [workspaceId]),
   );
 
-  // Part 48e: NO prewarmChatSounds call on mount — it was the cause of sounds
-  // playing when the screen opened (prewarm triggered audio session activation).
-  // chatSoundService.ts now initializes lazily on first actual play.
-
-  // ── Incoming message notifications + sounds ───────────────────────────────
-  //
-  // Part 48e fix: prevMsgCountRef starts at -1 (sentinel).
-  // First time chat.isLoading goes from true → false, we snapshot the count
-  // silently (no sound). After that, any increase triggers receive sound.
-  const prevMsgCountRef = useRef<number>(-1);
-  const chatRef         = useRef(chat);
+  const chatRef = useRef(chat);
   useEffect(() => { chatRef.current = chat; }, [chat]);
 
-  // Watch for initial load completion — set baseline count silently
+  // ── Initial load complete → scroll to bottom once ────────────────────────
+  //
+  // FIX: When the chat screen opens, we want to land at the LATEST message
+  // immediately (no animation — it should already be there when the list
+  // first renders). We fire scrollToEnd after isLoading goes false the
+  // first time (initialLoadDoneRef transitions false → true).
+
   useEffect(() => {
     if (!chat.isLoading && !initialLoadDoneRef.current) {
-      // Initial load just finished — record count WITHOUT playing any sound
       initialLoadDoneRef.current = true;
       prevMsgCountRef.current    = chat.messages.length;
+
+      // Scroll to bottom immediately after first load (no animation)
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 50);
     }
   }, [chat.isLoading, chat.messages.length]);
 
-  // Watch for NEW messages AFTER initial load
+  // ── New messages after initial load → sounds + notifications ─────────────
+
   useEffect(() => {
-    // Skip until initial load is done
     if (!initialLoadDoneRef.current) return;
-    // Skip if count unchanged or decreased (e.g. search mode)
     if (prevMsgCountRef.current < 0) return;
 
     const msgs = chat.messages;
@@ -154,7 +162,6 @@ export default function WorkspaceChatScreen() {
       return;
     }
 
-    // Genuinely new messages arrived after initial load
     const newMsgs = msgs.slice(prevMsgCountRef.current);
     prevMsgCountRef.current = msgs.length;
 
@@ -163,8 +170,6 @@ export default function WorkspaceChatScreen() {
     newMsgs.forEach(msg => {
       if (msg.userId === user.id || msg.contentType === 'system') return;
 
-      // Part 48e: only play receive sound when screen is focused
-      // chatSoundService has its own 500ms cooldown for batch protection
       if (isFocusedRef.current) {
         playReceiveSound().catch(() => {});
       }
@@ -196,7 +201,7 @@ export default function WorkspaceChatScreen() {
     });
   }, [chat.messages.length, workspaceId, workspaceName, user?.id]);
 
-  // Reset on workspaceId change so switching workspaces resets baseline
+  // Reset on workspaceId change
   useEffect(() => {
     initialLoadDoneRef.current = false;
     prevMsgCountRef.current    = -1;
@@ -247,9 +252,9 @@ export default function WorkspaceChatScreen() {
     return result;
   }, [chat.messages, chat.searchResults, chat.searchQuery, chat.hasMore]);
 
-  // ── Auto-scroll to bottom ─────────────────────────────────────────────────
+  // ── Auto-scroll to bottom on new messages ─────────────────────────────────
   useEffect(() => {
-    if (chat.messages.length > 0 && !chat.searchQuery) {
+    if (chat.messages.length > 0 && !chat.searchQuery && initialLoadDoneRef.current) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
     }
   }, [chat.messages.length]);
@@ -284,14 +289,12 @@ export default function WorkspaceChatScreen() {
   }, []);
 
   // ── Send / edit ────────────────────────────────────────────────────────────
-  // Part 48e: playSendSound guarded by isFocusedRef
   const handleSend = useCallback((
     text: string, replyToId?: string,
     attachments?: ChatAttachment[], mentions?: string[],
   ) => {
     const effectiveReplyToId = replyToId ?? chatRef.current.replyingTo?.id;
     chatRef.current.send(text, effectiveReplyToId, attachments, mentions);
-    // Only play sound when screen is focused (user is actively in chat)
     if (isFocusedRef.current) {
       playSendSound().catch(() => {});
     }
@@ -376,6 +379,7 @@ export default function WorkspaceChatScreen() {
         message={message}
         isOwnMessage={message.userId === user?.id}
         isOwnerOrEditor={isOwnerOrEditor}
+        isWorkspaceOwner={isOwner}
         showAvatar={showAvatar}
         isConsecutive={isConsecutive}
         isHighlighted={message.id === chat.highlightedMessageId}
@@ -407,7 +411,7 @@ export default function WorkspaceChatScreen() {
 
     return bubble;
   }, [
-    user?.id, isOwnerOrEditor, chat, handleDelete, handleReact, handlePin,
+    user?.id, isOwnerOrEditor, isOwner, chat, handleDelete, handleReact, handlePin,
     handleUnpin, scrollToAndHighlight, handleSearchResultTap,
   ]);
 
@@ -428,9 +432,18 @@ export default function WorkspaceChatScreen() {
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+
+        {/*
+          Android keyboard fix:
+          behavior="height" adjusts the KAV's height (not padding) as the keyboard
+          rises. This works correctly with softwareKeyboardLayoutMode="pan" in
+          app.json — the window pans up and the KAV shrinks to fill the remaining
+          space. On iOS, "height" also works but "padding" would also be fine.
+          keyboardVerticalOffset=0 — no additional offset needed on either platform.
+        */}
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior="padding"
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={0}
         >
 
@@ -547,7 +560,7 @@ export default function WorkspaceChatScreen() {
             </View>
           )}
 
-          {/* ── Pinned bar (swipeable + hooks-fixed) ────────────────────── */}
+          {/* ── Pinned bar ───────────────────────────────────────────────── */}
           <ChatPinnedBar
             pinnedMessages={chat.pinnedMessages}
             isEditorOrOwner={isOwnerOrEditor}
@@ -616,7 +629,7 @@ export default function WorkspaceChatScreen() {
             </Animated.View>
           )}
 
-          {/* ── Chat input ───────────────────────────────────────────────── */}
+          {/* ── Chat input (includes InlineEmojiPicker above it) ─────────── */}
           <ChatInput
             workspaceId={workspaceId ?? ''}
             replyingTo={chat.replyingTo}

@@ -2,20 +2,24 @@
 // Part 47 — Full emoji library; bottomInset prop.
 // Part 48  — Keyboard fix; emoji above input; document name in send.
 // Part 48b — Android keyboard + emoji fix.
-// Part 48e — FIXES:
-//   1. Android padding below message box: When the keyboard appears in Android,
-//      there is extra padding between the bottom of the screen and the input.
-//      Root cause: we were using `paddingBottom: Math.max(bottomInset, 4)` but
-//      on Android with softwareKeyboardLayoutMode="resize" the window is already
-//      resized, so bottomInset is 0 — the 4px padding is not the issue.
-//      The actual cause was the container's backgroundColor creating visual
-//      separation. Fixed by setting paddingBottom to 0 on Android when not
-//      at the home indicator (bottomInset === 0), and only keeping the inset
-//      on iOS where the home indicator needs clearance.
+// Part 48e — Android padding, multi emoji selection fixes.
+// Part 48-NEW — FIXES:
 //
-//   2. Multiple emoji selection: EmojiPickerModal now handles this via
-//      allowMultipleSelections. ChatInput's handleEmojiSelected still appends
-//      to text correctly and does NOT close the picker.
+//   1. Android keyboard behind nav bar:
+//      • Removed KeyboardAvoidingView from ChatInput (it lives in workspace-chat.tsx).
+//      • containerBottomPadding: iOS uses Math.max(bottomInset, 4); Android uses 0.
+//        Android's "pan" mode resizes the window — the extra padding was pushing
+//        the input UP even further, creating a visual gap.
+//
+//   2. Emoji picker redesign:
+//      • Removed rn-emoji-keyboard dependency entirely.
+//      • Uses new InlineEmojiPicker which renders as a 260px inline View
+//        directly ABOVE the container, inside the KeyboardAvoidingView stack.
+//      • When emoji picker opens: Keyboard.dismiss() + input blur (same as before).
+//      • When user taps the text input while emoji picker is open: picker closes,
+//        keyboard opens — input is always visible.
+//      • Multi-select: picker stays open after every tap; user closes via
+//        emoji button toggle.
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
@@ -30,12 +34,12 @@ import {
   pickVideo, pickAudio, pickDocument, uploadAttachment,
 } from '../../services/chatAttachmentService';
 import { ChatAttachment, ChatMessage, ChatMember, ActiveMentionQuery } from '../../types/chat';
-import { ChatAttachmentPicker } from './ChatAttachmentPicker';
-import { StagedAttachmentsStrip } from './ChatAttachmentPreview';
-import { MentionSuggestions } from './MentionSuggestions';
-import { EmojiPickerModal } from './EmojiPickerModal';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
-import { useAuth } from '../../context/AuthContext';
+import { ChatAttachmentPicker }                   from './ChatAttachmentPicker';
+import { StagedAttachmentsStrip }                 from './ChatAttachmentPreview';
+import { MentionSuggestions }                     from './MentionSuggestions';
+import { InlineEmojiPicker }                      from './InlineEmojiPicker';
+import { COLORS, FONTS, SPACING, RADIUS }         from '../../constants/theme';
+import { useAuth }                                from '../../context/AuthContext';
 
 // ─── Props ─────────────────────────────────────────────────────────────────────
 
@@ -102,6 +106,7 @@ export function ChatInput({
 
   const handleInputFocus = useCallback(() => {
     setFocused(true);
+    // If emoji picker is open, close it so keyboard takes over
     if (showEmojiPicker) {
       setShowEmojiPicker(false);
     }
@@ -144,18 +149,24 @@ export function ChatInput({
   }, [activeMention, text]);
 
   // ── Emoji picker toggle ───────────────────────────────────────────────────
+  // Tapping the emoji icon:
+  //   • If picker is open  → close it (keyboard can reappear on next input tap).
+  //   • If picker is closed → dismiss keyboard + blur input, then open picker.
 
   const handleEmojiButtonPress = useCallback(() => {
     if (showEmojiPicker) {
       setShowEmojiPicker(false);
+      // Refocus input so user can continue typing immediately
+      setTimeout(() => inputRef.current?.focus(), 50);
     } else {
       Keyboard.dismiss();
       inputRef.current?.blur();
-      setTimeout(() => setShowEmojiPicker(true), Platform.OS === 'ios' ? 200 : 100);
+      // Small delay lets keyboard start dismissing before picker slides up
+      setTimeout(() => setShowEmojiPicker(true), Platform.OS === 'ios' ? 180 : 80);
     }
   }, [showEmojiPicker]);
 
-  // Part 48e: append emoji — picker stays open (controlled by EmojiPickerModal)
+  // Append emoji — picker stays open for multi-select
   const handleEmojiSelected = useCallback((emoji: string) => {
     const newText = text + emoji;
     setText(newText);
@@ -165,7 +176,7 @@ export function ChatInput({
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
       typingTimerRef.current = setTimeout(() => onTyping(false), 3000);
     }
-    // Intentionally do NOT close picker — user can keep selecting
+    // Intentionally do NOT close picker — multi-select behaviour
   }, [text, onTyping]);
 
   const handleEmojiClose = useCallback(() => {
@@ -250,20 +261,31 @@ export function ChatInput({
   const isEditing  = !!editingMessage;
   const isReplying = !!replyingTo && !isEditing;
 
-  // Part 48e: Android bottom padding fix.
-  // On Android with softwareKeyboardLayoutMode="resize", the window shrinks
-  // when keyboard appears, so bottomInset = 0. We add a small fixed padding
-  // for visual breathing room but NOT the full inset amount (which was
-  // creating the visible gap).
-  // On iOS, always respect bottomInset for home indicator clearance.
+  // ── Android bottom padding fix ────────────────────────────────────────────
+  // On Android with softwareKeyboardLayoutMode="pan", the OS resizes/pans the
+  // window when the keyboard appears. The KeyboardAvoidingView in the parent
+  // screen (workspace-chat.tsx) handles lifting. We must NOT add extra
+  // paddingBottom on Android or the input appears too high above the nav bar.
+  //
+  // On iOS: respect the home-indicator inset (bottomInset from useSafeAreaInsets).
+  // On Android: 0 — the window already panned up, no extra space needed.
   const containerBottomPadding = Platform.OS === 'ios'
     ? Math.max(bottomInset, 4)
-    : 4; // fixed small padding on Android, never grows with inset
+    : 0;
 
   return (
     <>
+      {/* Staged attachments strip */}
       <StagedAttachmentsStrip attachments={staged} onRemove={handleRemoveStaged} />
 
+      {/* ── Inline emoji picker (slides in ABOVE the input bar) ─────────── */}
+      <InlineEmojiPicker
+        visible={showEmojiPicker}
+        onEmojiSelected={handleEmojiSelected}
+        onClose={handleEmojiClose}
+      />
+
+      {/* ── Main input container ─────────────────────────────────────────── */}
       <View style={[styles.container, { paddingBottom: containerBottomPadding }]}>
 
         {/* Edit banner */}
@@ -355,7 +377,7 @@ export function ChatInput({
               onFocus={handleInputFocus}
               onBlur={() => setFocused(false)}
               placeholder={
-                isEditing  ? 'Edit your message…'
+                isEditing   ? 'Edit your message…'
                 : isReplying ? 'Write a reply…'
                 : staged.length > 0 ? 'Add a caption (optional)…'
                 : 'Message… (@ to mention)'
@@ -408,12 +430,6 @@ export function ChatInput({
           </Animated.View>
         )}
       </View>
-
-      <EmojiPickerModal
-        open={showEmojiPicker}
-        onEmojiSelected={handleEmojiSelected}
-        onClose={handleEmojiClose}
-      />
 
       <ChatAttachmentPicker
         visible={showPicker}
