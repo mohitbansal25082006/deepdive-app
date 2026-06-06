@@ -2,17 +2,20 @@
 // Part 47 — Full emoji library; bottomInset prop.
 // Part 48  — Keyboard fix; emoji above input; document name in send.
 // Part 48b — Android keyboard + emoji fix.
-// Part 48-FINAL — Android padding fix:
+// Part 48-FINAL — Bottom padding fix for edge-to-edge Android nav bar:
 //
-//   With softwareKeyboardLayoutMode="pan" AND behavior={undefined} on the
-//   parent KAV (workspace-chat.tsx), Android natively pans the whole screen
-//   up when the keyboard appears. The ChatInput container already sits at the
-//   bottom of the screen after the pan.
+//   Expo SDK 53+ enables Android edge-to-edge by default. The app renders
+//   behind the system navigation bar (gesture bar / 3-button nav bar).
+//   insets.bottom from useSafeAreaInsets() returns the nav bar height on
+//   Android and the home indicator height on iOS.
 //
-//   containerBottomPadding on Android must be 0 — the OS has already positioned
-//   everything correctly. Any non-zero padding here creates an extra gap.
+//   We apply paddingBottom = insets.bottom on BOTH platforms so the input
+//   bar is never hidden behind the system navigation bar.
 //
-//   On iOS, we respect the home indicator inset via bottomInset.
+//   With softwareKeyboardLayoutMode="pan", the OS pans the window up by the
+//   keyboard height. The nav bar inset stays constant (not removed during pan),
+//   so this padding is correct whether the keyboard is open or closed — it
+//   does NOT cause any gap above the keyboard.
 //
 //   Note: No KeyboardAvoidingView in this component — it lives in the parent.
 
@@ -248,16 +251,19 @@ export function ChatInput({
   const isEditing  = !!editingMessage;
   const isReplying = !!replyingTo && !isEditing;
 
-  // ── Android bottom padding fix ────────────────────────────────────────────
+  // ── Bottom padding (edge-to-edge Android + iOS safe area) ───────────────
   //
-  // With softwareKeyboardLayoutMode="pan" (app.json) and behavior={undefined}
-  // on the parent KAV, Android natively slides the whole screen up.
-  // This component must NOT add any extra paddingBottom on Android.
+  // Expo SDK 53+ enables Android edge-to-edge by default: the app renders
+  // behind the system navigation bar. useSafeAreaInsets().bottom (passed in
+  // as `bottomInset`) gives the nav bar height on Android and the home
+  // indicator height on iOS — both must be applied as paddingBottom so the
+  // input bar is never hidden behind the system bar.
   //
-  // On iOS: respect the home indicator / safe area inset.
-  const containerBottomPadding = Platform.OS === 'ios'
-    ? Math.max(bottomInset, 4)
-    : 0;
+  // With softwareKeyboardLayoutMode="pan" the OS pans the whole window up
+  // by the keyboard height. The nav bar inset is NOT removed during pan —
+  // it stays constant — so paddingBottom = insets.bottom is correct whether
+  // the keyboard is open or closed. It does NOT cause a gap above the keyboard.
+  const containerBottomPadding = bottomInset > 0 ? bottomInset : 0;
 
   return (
     <>
