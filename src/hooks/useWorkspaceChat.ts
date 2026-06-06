@@ -1,13 +1,33 @@
 // src/hooks/useWorkspaceChat.ts
 // Part 17 — Workspace Chat hook
-// Part 18 — send() accepts mentions?: string[] and forwards to sendChatMessage
-// Part 47 — Full realtime via useChatRealtime (messages + reactions + pins).
-// Part 48 — REAL-TIME FIX: After every mutation (send, edit, delete, react, pin,
-//            unpin) the hook now also broadcasts the change on the Broadcast
-//            channel so ALL workspace members receive updates instantly.
-//            broadcastChatMessage/Update/Delete/Reaction/Pin imported from
-//            useChatRealtime.ts.
-//            Also fixed: reply preview now includes attachment data from server.
+// Part 18 — send() accepts mentions?: string[]
+// Part 47 — Full realtime via useChatRealtime
+// Part 48 — Broadcast-based real-time fix
+// Part 48-FINAL — FIX for messages disappearing on back+return:
+//
+//   ROOT CAUSE:
+//   workspace-chat.tsx is pushed onto the navigation stack. When the user
+//   navigates away (back to workspace-detail), the screen UNMOUNTS completely.
+//   useWorkspaceChat resets to INITIAL_STATE (messages:[], isLoading:true).
+//   When the user comes back, the screen remounts fresh — loadMessages() fires
+//   again from scratch, causing:
+//     1. A visible flash of "Loading messages…" spinner
+//     2. A brief empty list before data arrives
+//     3. Sometimes messages appearing in wrong order (optimistic temp messages
+//        from before unmount are gone, but postgres_changes may re-deliver them)
+//
+//   FIX: Module-level message cache (Map<workspaceId, CachedChatState>).
+//   On mount, if the cache has messages for this workspace, we render them
+//   immediately (isLoading:false, real messages shown instantly) and then
+//   silently refresh in the background to pick up any messages received while
+//   the screen was unmounted.
+//   On unmount, the current messages are saved to the cache.
+//   Cache entries expire after 5 minutes to avoid stale data.
+//
+//   This means:
+//     - First open: normal loading spinner (cache is empty)
+//     - Back+return: instant message display, silent background refresh
+//     - After 5 min away: normal reload (cache expired, treated as fresh open)
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
@@ -27,34 +47,90 @@ import {
   broadcastChatPin,
 } from './useChatRealtime';
 
-// ─── Initial state ────────────────────────────────────────────────────────────
+// ─── Module-level message cache ───────────────────────────────────────────────
+// Persists between screen unmount/remount so messages don't flash empty on back.
 
-const INITIAL_STATE: ChatState = {
-  messages:             [],
-  isLoading:            true,
-  isSending:            false,
-  isLoadingMore:        false,
-  hasMore:              true,
-  error:                null,
-  unreadCount:          0,
-  typingUsers:          [],
-  pinnedMessages:       [],
-  chatMembers:          [],
-  replyingTo:           null,
-  editingMessage:       null,
-  searchQuery:          '',
-  searchResults:        [],
-  isSearching:          false,
-  highlightedMessageId: null,
-};
+interface CachedChatState {
+  messages:       ChatMessage[];
+  pinnedMessages: any[];
+  chatMembers:    any[];
+  hasMore:        boolean;
+  cachedAt:       number; // timestamp
+}
+
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const chatStateCache = new Map<string, CachedChatState>();
+
+function getCachedState(workspaceId: string): CachedChatState | null {
+  const entry = chatStateCache.get(workspaceId);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
+    chatStateCache.delete(workspaceId);
+    return null;
+  }
+  return entry;
+}
+
+function setCachedState(workspaceId: string, state: CachedChatState): void {
+  chatStateCache.set(workspaceId, state);
+}
+
+// ─── Initial state builder ────────────────────────────────────────────────────
+
+function buildInitialState(cached: CachedChatState | null): ChatState {
+  if (cached) {
+    // Use cached messages — no loading spinner, instant display
+    return {
+      messages:             cached.messages,
+      isLoading:            false,   // ← key: don't show spinner on back+return
+      isSending:            false,
+      isLoadingMore:        false,
+      hasMore:              cached.hasMore,
+      error:                null,
+      unreadCount:          0,
+      typingUsers:          [],
+      pinnedMessages:       cached.pinnedMessages,
+      chatMembers:          cached.chatMembers,
+      replyingTo:           null,
+      editingMessage:       null,
+      searchQuery:          '',
+      searchResults:        [],
+      isSearching:          false,
+      highlightedMessageId: null,
+    };
+  }
+  return {
+    messages:             [],
+    isLoading:            true,
+    isSending:            false,
+    isLoadingMore:        false,
+    hasMore:              true,
+    error:                null,
+    unreadCount:          0,
+    typingUsers:          [],
+    pinnedMessages:       [],
+    chatMembers:          [],
+    replyingTo:           null,
+    editingMessage:       null,
+    searchQuery:          '',
+    searchResults:        [],
+    isSearching:          false,
+    highlightedMessageId: null,
+  };
+}
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useWorkspaceChat(workspaceId: string | null) {
   const { user, profile } = useAuth();
-  const [state, setState] = useState<ChatState>(INITIAL_STATE);
 
-  const stateRef = useRef<ChatState>(INITIAL_STATE);
+  // On first render, seed from cache if available so there's no empty flash
+  const [state, setState] = useState<ChatState>(() => {
+    const cached = workspaceId ? getCachedState(workspaceId) : null;
+    return buildInitialState(cached);
+  });
+
+  const stateRef = useRef<ChatState>(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
   const authRef = useRef({ user, profile });
@@ -69,13 +145,33 @@ export function useWorkspaceChat(workspaceId: string | null) {
 
   useChatRealtime(workspaceId, {
 
+    // onCatchUp fires 1.5s after SUBSCRIBED to fetch messages missed in the
+    // replication initialization window (~1-3s known supabase-js race condition)
+    onCatchUp: () => {
+      const wsId = workspaceIdRef.current;
+      if (!wsId) return;
+      // Silent fetch — merges new messages without showing loading spinner
+      fetchChatMessages(wsId).then(({ data }) => {
+        if (!data || data.length === 0) return;
+        setState(s => {
+          // Merge: keep existing messages, add any new ones not already present
+          const existingIds = new Set(s.messages.map(m => m.id));
+          const newMsgs = data.filter(m => !existingIds.has(m.id));
+          if (newMsgs.length === 0) return s;
+          // Insert new messages in chronological order
+          const merged = [...s.messages, ...newMsgs].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+          return { ...s, messages: merged };
+        });
+      }).catch(() => {});
+    },
+
     onMessageInsert: (msg) => {
       const { user: u } = authRef.current;
       setState(s => {
-        // Already present as non-temp? Skip.
         if (s.messages.some(m => m.id === msg.id && !m.id.startsWith('temp-'))) return s;
 
-        // Replace matching optimistic temp message
         const tempIdx = s.messages.findIndex(m =>
           m.id.startsWith('temp-') &&
           m.userId   === msg.userId &&
@@ -93,7 +189,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
         return { ...s, messages: [...s.messages, msg] };
       });
 
-      // Mark as read when another user sends
       if (msg.userId !== u?.id && workspaceIdRef.current) {
         markMessagesRead(workspaceIdRef.current, msg.id).catch(() => {});
       }
@@ -129,7 +224,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
       });
     },
 
-    // Part 48 FIX: onPinChange now also reloads pinned list on UNPIN (isPinned=false)
     onPinChange: (messageId, isPinned) => {
       setState(s => ({
         ...s,
@@ -141,7 +235,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
           : s.pinnedMessages.filter(p => p.id !== messageId),
       }));
 
-      // Always reload pinned list to get accurate data (for both pin and unpin)
       const wsId = workspaceIdRef.current;
       if (wsId) {
         getPinnedChatMessages(wsId).then(({ data }) => {
@@ -186,16 +279,66 @@ export function useWorkspaceChat(workspaceId: string | null) {
     }));
   }, []);
 
+  // ── Mount: use cache if available, then silently refresh ──────────────────
+
   useEffect(() => {
     if (!workspaceId) return;
-    setState(INITIAL_STATE);
-    stateRef.current = INITIAL_STATE;
-    loadMessages();
-    loadAuxData();
+
+    const cached = getCachedState(workspaceId);
+
+    if (cached) {
+      // Cache hit: messages already shown via buildInitialState.
+      // Silent background refresh: fetch latest and MERGE (not replace) so
+      // messages received while screen was unmounted are added, not lost.
+      setState(buildInitialState(cached));
+      fetchChatMessages(workspaceId).then(({ data }) => {
+        if (!data) return;
+        setState(s => {
+          const existingIds = new Set(s.messages.map(m => m.id));
+          // Replace existing real messages with fresh server versions (catches edits/deletes)
+          // and add any new messages not yet in state
+          const updatedMessages = s.messages
+            .filter(m => m.id.startsWith('temp-')) // keep pending temp messages
+            .concat(
+              data.map(serverMsg => {
+                // If we have a temp version of this message, replace it
+                return serverMsg;
+              })
+            );
+          // Sort chronologically
+          const sorted = updatedMessages.sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+          return { ...s, messages: sorted, isLoading: false };
+        });
+      }).catch(() => {});
+      loadAuxData();
+    } else {
+      // Cache miss: fresh load with spinner
+      setState(buildInitialState(null));
+      stateRef.current = buildInitialState(null);
+      loadMessages();
+      loadAuxData();
+    }
   }, [workspaceId, loadMessages, loadAuxData]);
+
+  // ── Unmount: save current messages to cache ───────────────────────────────
 
   useEffect(() => {
     return () => {
+      const wsId = workspaceIdRef.current;
+      const s    = stateRef.current;
+      if (wsId && s.messages.length > 0 && !s.error) {
+        // Filter out temp/optimistic messages before caching
+        const realMessages = s.messages.filter(m => !m.id.startsWith('temp-'));
+        setCachedState(wsId, {
+          messages:       realMessages,
+          pinnedMessages: s.pinnedMessages,
+          chatMembers:    s.chatMembers,
+          hasMore:        s.hasMore,
+          cachedAt:       Date.now(),
+        });
+      }
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
     };
   }, []);
@@ -221,8 +364,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
   }, []);
 
   // ── Send ──────────────────────────────────────────────────────────────────
-  // Part 48: After DB write, broadcast the full message so other members
-  // receive it instantly via the Broadcast channel.
 
   const send = useCallback(async (
     content:      string,
@@ -240,7 +381,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
     const replyMsg = capturedReplyId ? s.messages.find(m => m.id === capturedReplyId) : undefined;
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    // Build reply preview for optimistic message including attachment info
     let replyPreview = null;
     if (replyMsg) {
       replyPreview = {
@@ -309,7 +449,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
       messages:  prev.messages.map(m => m.id === tempId ? finalMsg : m),
     }));
 
-    // Part 48: Broadcast to all other workspace members
     if (serverMsg) {
       broadcastChatMessage(wsId, serverMsg).catch(() => {});
     }
@@ -328,7 +467,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
           m.id === messageId ? { ...m, content: newContent, isEdited: true } : m
         ),
       }));
-      // Part 48: Broadcast edit to all members
       if (wsId) {
         broadcastChatUpdate(wsId, {
           id:        messageId,
@@ -354,7 +492,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
           m.id === messageId ? { ...m, isDeleted: true, content: '[Message deleted]' } : m
         ),
       }));
-      // Part 48: Broadcast delete to all members
       if (wsId) {
         broadcastChatDelete(wsId, messageId).catch(() => {});
         broadcastChatUpdate(wsId, {
@@ -374,7 +511,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
   const react = useCallback(async (messageId: string, emoji: string) => {
     const wsId = workspaceIdRef.current;
 
-    // Optimistic update
     setState(s => ({
       ...s,
       messages: s.messages.map(m => {
@@ -397,18 +533,15 @@ export function useWorkspaceChat(workspaceId: string | null) {
 
     await toggleChatReaction(messageId, emoji);
 
-    // Part 48: Fetch fresh reactions and broadcast to all members
     if (wsId) {
       try {
         const { data: freshReactions } = await getMessageReactions(messageId);
-        // Update own state with fresh data
         setState(s => ({
           ...s,
           messages: s.messages.map(m =>
             m.id === messageId ? { ...m, reactions: freshReactions } : m
           ),
         }));
-        // Broadcast fresh reactions to others
         broadcastChatReaction(wsId, messageId, freshReactions).catch(() => {});
       } catch { /* non-fatal */ }
     }
@@ -424,10 +557,8 @@ export function useWorkspaceChat(workspaceId: string | null) {
         ...s,
         messages: s.messages.map(m => m.id === message.id ? { ...m, isPinned: true } : m),
       }));
-      // Part 48: Broadcast pin to all members
       if (wsId) {
         broadcastChatPin(wsId, message.id, true).catch(() => {});
-        // Reload pinned list
         getPinnedChatMessages(wsId).then(({ data }) => {
           setState(s => ({ ...s, pinnedMessages: data }));
         }).catch(() => {});
@@ -437,7 +568,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
   }, []);
 
   // ── Unpin ─────────────────────────────────────────────────────────────────
-  // Part 48 FIX: Also broadcasts unpin event so all members see pin bar update
 
   const unpin = useCallback(async (messageId: string) => {
     const wsId = workspaceIdRef.current;
@@ -445,10 +575,9 @@ export function useWorkspaceChat(workspaceId: string | null) {
     if (!error) {
       setState(s => ({
         ...s,
-        messages:      s.messages.map(m => m.id === messageId ? { ...m, isPinned: false } : m),
+        messages:       s.messages.map(m => m.id === messageId ? { ...m, isPinned: false } : m),
         pinnedMessages: s.pinnedMessages.filter(p => p.id !== messageId),
       }));
-      // Part 48 FIX: Broadcast unpin so all OTHER members update their pin bar immediately
       if (wsId) {
         broadcastChatPin(wsId, messageId, false).catch(() => {});
       }
@@ -487,6 +616,20 @@ export function useWorkspaceChat(workspaceId: string | null) {
   const setEditingMessage = useCallback((msg: ChatMessage | null) => setState(s => ({ ...s, editingMessage: msg })), []);
   const refresh           = useCallback(async () => { await Promise.all([loadMessages(true), loadAuxData()]); }, [loadMessages, loadAuxData]);
 
+  // clearUnread: marks the last real message as read in DB and resets badge to 0.
+  // Called from workspace-chat.tsx after scrollToEnd so the badge disappears
+  // when the user has visually seen all messages.
+  const clearUnread = useCallback(() => {
+    const wsId = workspaceIdRef.current;
+    const s    = stateRef.current;
+    if (!wsId || s.unreadCount === 0) return;
+    setState(prev => ({ ...prev, unreadCount: 0 }));
+    const lastReal = [...s.messages].reverse().find(m => !m.id.startsWith('temp-'));
+    if (lastReal) {
+      markMessagesRead(wsId, lastReal.id).catch(() => {});
+    }
+  }, []);
+
   return {
     ...state,
     currentUserId: user?.id ?? null,
@@ -503,5 +646,6 @@ export function useWorkspaceChat(workspaceId: string | null) {
     setEditingMessage,
     refresh,
     highlightMessage,
+    clearUnread,
   };
 }

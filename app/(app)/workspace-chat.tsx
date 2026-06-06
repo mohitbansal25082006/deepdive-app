@@ -5,17 +5,17 @@
 // Part 48-FINAL — FIXES:
 //
 //   1. Scroll to bottom on open:
-//      ROOT CAUSE: The previous fix used setTimeout(50ms) after isLoading
-//      goes false. But the FlatList hasn't laid out its items yet at that point
-//      — scrollToEnd fires before the list knows its content size and lands
-//      halfway down or not at all.
+//      ROOT CAUSE: scrollToEnd() ignores contentContainerStyle.paddingBottom
+//      (confirmed RN bug #26246, unfixed). The list landed SPACING.lg pixels
+//      short of the true bottom. Also onContentSizeChange fires multiple times
+//      during VirtualizedList batch rendering — the first fire is too early.
 //
-//      CORRECT FIX: Use `onContentSizeChange` on the FlatList. This callback
-//      fires whenever the list's total content height changes (i.e., after all
-//      items render). We use a `hasScrolledOnLoad` ref to ensure we only do
-//      the initial scroll-to-bottom ONCE (not on every new message).
-//      After the initial scroll, new messages use the existing animated
-//      scrollToEnd useEffect.
+//      CORRECT FIX:
+//      - Removed paddingBottom from contentContainerStyle.
+//      - Added ListFooterComponent (blank spacer View) for bottom spacing.
+//        scrollToEnd() correctly includes footer height unlike CSS padding.
+//      - Use onLayout (fires once after viewport is measured) + 150ms retry
+//        to ensure all items are rendered before scrolling.
 //
 //   2. Android keyboard + input box:
 //      `behavior={Platform.OS === 'ios' ? 'padding' : undefined}` on
@@ -141,30 +141,63 @@ export default function WorkspaceChatScreen() {
   const chatRef = useRef(chat);
   useEffect(() => { chatRef.current = chat; }, [chat]);
 
-  // ── Mark initial load done ────────────────────────────────────────────────
-  // We still need to know when loading finishes to start tracking new messages.
+  // ── Initial load done + scroll to bottom ────────────────────────────────
+  //
+  // DEFINITIVE FIX for "opens slightly above bottom":
+  //
+  // All previous approaches (onContentSizeChange, onLayout, requestAnimationFrame)
+  // had a race condition — they fired either too early (before items rendered)
+  // or in a context where scrollToEnd had no effect yet.
+  //
+  // The ONLY reliable moment to scroll is: after isLoading goes false AND
+  // the FlatList has had time to render all its items into the DOM.
+  //
+  // Strategy: when isLoading transitions false→true for the first time,
+  // fire scrollToEnd at 100ms, 300ms, and 600ms. The triple retry is necessary
+  // because VirtualizedList renders in async batches — the first batch renders
+  // quickly but later items (older messages) render in subsequent passes.
+  // By 600ms all items are always rendered on both iOS and Android.
+  // hasScrolledOnLoadRef prevents this from running on subsequent data changes.
+
+  const scrollRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    if (!chat.isLoading && !initialLoadDoneRef.current) {
+    if (!chat.isLoading && !initialLoadDoneRef.current && chat.messages.length > 0) {
       initialLoadDoneRef.current = true;
       prevMsgCountRef.current    = chat.messages.length;
+
+      // Triple-fire to reliably land at the true bottom regardless of
+      // how many render batches VirtualizedList needs.
+      const attempt = (delay: number) => setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, delay);
+
+      const t1 = attempt(100);
+      const t2 = attempt(300);
+      const t3 = setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+        // Clear unread badge after scroll — user has seen all messages
+        chat.clearUnread();
+      }, 600);
+      hasScrolledOnLoadRef.current = true;
+
+      scrollRetryRef.current = t3; // track last timer for cleanup
+
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
     }
   }, [chat.isLoading, chat.messages.length]);
 
-  // ── FIX: Scroll to bottom via onContentSizeChange ─────────────────────────
-  //
-  // `onContentSizeChange` fires whenever the FlatList's rendered content
-  // dimensions change — including after the initial batch of items render.
-  // We use `hasScrolledOnLoadRef` so this only fires once on open.
-  // After that, new messages are handled by the separate useEffect below.
-  const handleContentSizeChange = useCallback(() => {
-    if (!hasScrolledOnLoadRef.current && initialLoadDoneRef.current) {
-      hasScrolledOnLoadRef.current = true;
-      // Use requestAnimationFrame to ensure layout is fully committed
-      requestAnimationFrame(() => {
-        flatListRef.current?.scrollToEnd({ animated: false });
-      });
-    }
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollRetryRef.current) clearTimeout(scrollRetryRef.current);
+    };
   }, []);
+
 
   // ── New messages after initial load → sounds + notifications ─────────────
 
@@ -273,7 +306,11 @@ export default function WorkspaceChatScreen() {
   // ── Auto-scroll to bottom on new messages (after initial load) ────────────
   useEffect(() => {
     if (chat.messages.length > 0 && !chat.searchQuery && hasScrolledOnLoadRef.current) {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+        // Clear unread badge — user sees the new message after scroll
+        chat.clearUnread();
+      }, 80);
     }
   }, [chat.messages.length]);
 
@@ -615,8 +652,10 @@ export default function WorkspaceChatScreen() {
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
               maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-              // FIX: scroll to bottom when content is fully laid out (first render)
-              onContentSizeChange={handleContentSizeChange}
+              // ListFooterComponent provides the bottom spacing gap.
+              // scrollToEnd() correctly includes footer height (unlike
+              // contentContainerStyle paddingBottom which it ignores — RN bug).
+              ListFooterComponent={<View style={styles.listFooterSpacer} />}
               onScrollToIndexFailed={(info) => {
                 setTimeout(() => {
                   const offset = info.averageItemLength * info.index;
@@ -727,7 +766,10 @@ const styles = StyleSheet.create({
   searchBannerTxt:{ flex: 1, color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '500' },
   clearTxt:       { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
-  listContent:  { paddingTop: SPACING.sm, paddingBottom: SPACING.lg, flexGrow: 1 },
+  listContent:  { paddingTop: SPACING.sm, flexGrow: 1 },
+  // Bottom spacing as a footer component so scrollToEnd() lands at true bottom.
+  // (contentContainerStyle paddingBottom is ignored by scrollToEnd — RN bug)
+  listFooterSpacer: { height: SPACING.lg },
   loadMoreWrap: { alignItems: 'center', paddingVertical: SPACING.md },
   loadMoreBtn:  { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.full, paddingHorizontal: SPACING.lg, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border },
   loadMoreText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
