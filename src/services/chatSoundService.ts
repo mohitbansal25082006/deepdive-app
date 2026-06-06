@@ -1,36 +1,47 @@
 // src/services/chatSoundService.ts
 // Part 48b — Chat message send/receive sounds using expo-av
 // Part 48e — Fix: Sound was playing when screen opened (lazy init fix)
-// Part 48-NEW — Android sound fix:
+// Part 48-FINAL — Android sound fix (root cause + correct solution):
 //
-//   Root cause of Android silence:
-//   Previous code called Audio.setAudioModeAsync with:
-//     shouldDuckAndroid: true   ← correct
-//     playsInSilentModeIOS: false
-//   But on Android the audio category was not being set to "duckOthers"
-//   which is required for short UI sounds. Android also needs
-//   interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DUCK_OTHERS
-//   to allow playback over other apps.
+//   ROOT CAUSE OF ANDROID SILENCE:
+//   expo-av on Android uses Android's MediaPlayer under the hood.
+//   Android's MediaPlayer CANNOT play inline base64 data URIs
+//   ("data:audio/wav;base64,..."). This is a known, confirmed limitation:
+//     https://github.com/expo/expo/issues/2035
+//   The audio object is created successfully (no JS exception), but
+//   MediaPlayer silently fails to decode the data URI and plays nothing.
+//   This affects ALL Android versions and both Expo Go and dev builds.
 //
-//   Additionally, Audio.Sound.createAsync with a base64 data URI can fail
-//   silently on Android due to a known expo-av issue. We now:
-//   1. Set interruptionModeAndroid correctly.
-//   2. Set volume to 1.0 and also call sound.setVolumeAsync(1.0) explicitly
-//      since some Android versions need the call AFTER createAsync.
-//   3. Call sound.playAsync() explicitly rather than relying on shouldPlay:true
-//      in createAsync (this is the most reliable cross-platform approach).
-//   4. On Android, add a small artificial delay (80ms) before play so the
-//      audio session has time to initialize — especially important for the
-//      first sound after app launch.
+//   CORRECT FIX:
+//   1. Generate the WAV bytes (same as before).
+//   2. Extract the raw base64 payload (strip the "data:audio/wav;base64," prefix).
+//   3. Write it to a temp file in FileSystem.cacheDirectory using
+//      expo-file-system's writeAsStringAsync with base64 encoding.
+//   4. Pass the resulting file:// URI to Audio.Sound.createAsync.
+//   Android's MediaPlayer handles file:// URIs perfectly.
+//
+//   DOES THIS WORK IN EXPO GO?
+//   Yes — expo-file-system is available in Expo Go. The sound will play
+//   in both Expo Go and dev builds on Android.
+//
+//   iOS is unchanged — it can handle data URIs fine, but we now also
+//   use the file:// approach on iOS for consistency (it's equally fast).
 
-import { Audio } from 'expo-av';
-import { Platform } from 'react-native';
+import { Audio }      from 'expo-av';
+// SDK 54: expo-file-system became a new class-based API.
+// The old cacheDirectory / EncodingType / writeAsStringAsync / getInfoAsync
+// are now in expo-file-system/legacy. Import from there for full compatibility.
+import * as FileSystem from 'expo-file-system/legacy';
+import { Platform }   from 'react-native';
 
 // ─── Lazy WAV generation ──────────────────────────────────────────────────────
-// Generated only when first needed, not at import time.
 
-let _sendToneUri:    string | null = null;
-let _receiveToneUri: string | null = null;
+let _sendToneBase64:    string | null = null;
+let _receiveToneBase64: string | null = null;
+
+// Cached file URIs — written once, reused
+let _sendToneFileUri:    string | null = null;
+let _receiveToneFileUri: string | null = null;
 
 function generateToneWavBase64(
   freq:       number,
@@ -46,8 +57,8 @@ function generateToneWavBase64(
   const writeStr = (offset: number, s: string) => {
     for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
   };
-  writeStr(0,  'RIFF'); view.setUint32(4,  36 + dataLen, true);
-  writeStr(8,  'WAVE'); writeStr(12, 'fmt ');
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + dataLen, true);
+  writeStr(8, 'WAVE'); writeStr(12, 'fmt ');
   view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true); view.setUint16(34, 16, true);
@@ -61,10 +72,10 @@ function generateToneWavBase64(
     view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, Math.round(sample * 32767))), true);
   }
 
-  const bytes = new Uint8Array(buffer);
-  let binary  = '';
+  const bytes  = new Uint8Array(buffer);
+  let binary   = '';
   for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return `data:audio/wav;base64,${btoa(binary)}`;
+  return btoa(binary); // raw base64 only (no data URI prefix)
 }
 
 function generateReceiveToneBase64(): string {
@@ -78,42 +89,64 @@ function generateReceiveToneBase64(): string {
   const writeStr = (offset: number, s: string) => {
     for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
   };
-  writeStr(0,  'RIFF'); view.setUint32(4,  36 + dataLen, true);
-  writeStr(8,  'WAVE'); writeStr(12, 'fmt ');
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + dataLen, true);
+  writeStr(8, 'WAVE'); writeStr(12, 'fmt ');
   view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true); view.setUint16(34, 16, true);
   writeStr(36, 'data'); view.setUint32(40, dataLen, true);
 
   for (let i = 0; i < numSamples; i++) {
-    const t      = i / sampleRate;
-    const freq   = t < (durationMs / 2000) ? 660 : 880;
-    const fadeIn = Math.min(1, t / 0.010);
-    const fadeOut= Math.max(0, 1 - (t - (durationMs / 1000 - 0.050)) / 0.050);
-    const sample = Math.sin(2 * Math.PI * freq * t) * 0.28 * fadeIn * fadeOut;
+    const t       = i / sampleRate;
+    const freq    = t < (durationMs / 2000) ? 660 : 880;
+    const fadeIn  = Math.min(1, t / 0.010);
+    const fadeOut = Math.max(0, 1 - (t - (durationMs / 1000 - 0.050)) / 0.050);
+    const sample  = Math.sin(2 * Math.PI * freq * t) * 0.28 * fadeIn * fadeOut;
     view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, Math.round(sample * 32767))), true);
   }
 
   const bytes  = new Uint8Array(buffer);
   let binary   = '';
   for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return `data:audio/wav;base64,${btoa(binary)}`;
+  return btoa(binary); // raw base64 only
 }
 
-function getSendToneUri(): string {
-  if (!_sendToneUri) _sendToneUri = generateToneWavBase64(880, 80, 0.30);
-  return _sendToneUri;
+function getSendToneBase64(): string {
+  if (!_sendToneBase64) _sendToneBase64 = generateToneWavBase64(880, 80, 0.30);
+  return _sendToneBase64;
 }
 
-function getReceiveToneUri(): string {
-  if (!_receiveToneUri) _receiveToneUri = generateReceiveToneBase64();
-  return _receiveToneUri;
+function getReceiveToneBase64(): string {
+  if (!_receiveToneBase64) _receiveToneBase64 = generateReceiveToneBase64();
+  return _receiveToneBase64;
+}
+
+// ─── Write WAV to filesystem ──────────────────────────────────────────────────
+// On Android, MediaPlayer cannot play data: URIs.
+// We write the WAV bytes to a temp file once and reuse the file:// URI.
+// On iOS this also works perfectly and avoids any potential data URI issues.
+
+async function getOrCreateSoundFile(
+  fileName: string,
+  base64Payload: string,
+): Promise<string> {
+  const uri = `${FileSystem.cacheDirectory}${fileName}`;
+
+  // Check if already written
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (info.exists) return uri;
+  } catch { /* fall through to write */ }
+
+  // Write raw base64 as binary file
+  await FileSystem.writeAsStringAsync(uri, base64Payload, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return uri;
 }
 
 // ─── Audio session ────────────────────────────────────────────────────────────
-// Part 48-NEW: Correct Android audio mode configuration.
-// interruptionModeAndroid: DUCK_OTHERS lets short UI sounds play over music.
-// playsInSilentModeIOS: false respects the ringer switch on iOS.
 
 let _audioConfigured = false;
 
@@ -121,18 +154,14 @@ async function ensureAudioConfig(): Promise<void> {
   if (_audioConfigured) return;
   try {
     await Audio.setAudioModeAsync({
-      // iOS: respect the ringer/silent switch (false = muted when on silent)
-      playsInSilentModeIOS:          false,
-      allowsRecordingIOS:            false,
-      staysActiveInBackground:       false,
-      // Android: duck other audio (music/media) while playing our short tone,
-      // then restore. This is required for UI sounds on Android.
-      shouldDuckAndroid:             true,
+      playsInSilentModeIOS:    false,
+      allowsRecordingIOS:      false,
+      staysActiveInBackground: false,
+      shouldDuckAndroid:       true,
       // INTERRUPTION_MODE_ANDROID_DUCK_OTHERS = 2
-      // Without this the Android audio focus request fails silently.
-      interruptionModeAndroid:       (Audio as any).INTERRUPTION_MODE_ANDROID_DUCK_OTHERS ?? 2,
-      // iOS interruption mode: mix with others (we don't need exclusive focus)
-      interruptionModeIOS:           (Audio as any).INTERRUPTION_MODE_IOS_MIX_WITH_OTHERS ?? 2,
+      interruptionModeAndroid: (Audio as any).INTERRUPTION_MODE_ANDROID_DUCK_OTHERS ?? 2,
+      // INTERRUPTION_MODE_IOS_MIX_WITH_OTHERS = 2
+      interruptionModeIOS:     (Audio as any).INTERRUPTION_MODE_IOS_MIX_WITH_OTHERS ?? 2,
     });
     _audioConfigured = true;
   } catch { /* non-fatal */ }
@@ -145,34 +174,26 @@ const RECEIVE_SOUND_COOLDOWN_MS = 500;
 
 // ─── Core player ─────────────────────────────────────────────────────────────
 //
-// Part 48-NEW Android fix:
-//   1. ensureAudioConfig() first (sets audio mode).
-//   2. createAsync with shouldPlay: false — we call playAsync() explicitly.
-//   3. setVolumeAsync(1.0) — some Android versions ignore the createAsync volume.
-//   4. Small delay on Android (80ms) so the audio session is ready.
-//   5. playAsync() — the only reliable trigger on both platforms.
+// FIX: Pass a file:// URI to createAsync on ALL platforms.
+// Android's MediaPlayer works correctly with file:// URIs.
+// We write the WAV bytes to cacheDirectory once (lazy), then reuse.
 
-async function playTone(uri: string): Promise<void> {
+async function playTone(fileUri: string): Promise<void> {
   try {
     await ensureAudioConfig();
 
-    // Android: give the audio session a moment to activate
-    if (Platform.OS === 'android') {
-      await new Promise<void>(resolve => setTimeout(resolve, 80));
-    }
-
     const { sound } = await Audio.Sound.createAsync(
-      { uri },
+      { uri: fileUri },
       {
-        shouldPlay: false, // we start manually via playAsync()
+        shouldPlay: false,
         volume:     1.0,
       },
     );
 
-    // Explicitly set volume (Android may ignore the option above)
+    // Explicitly set volume (some Android versions ignore the option above)
     try { await sound.setVolumeAsync(1.0); } catch { /* non-fatal */ }
 
-    // Start playback explicitly — most reliable cross-platform
+    // Start playback explicitly
     await sound.playAsync();
 
     // Unload after playback completes
@@ -190,10 +211,17 @@ async function playTone(uri: string): Promise<void> {
 /**
  * Play the message-sent sound.
  * Call ONLY when the user explicitly taps Send.
- * Do NOT call on screen mount or initial message load.
  */
 export async function playSendSound(): Promise<void> {
-  await playTone(getSendToneUri());
+  try {
+    if (!_sendToneFileUri) {
+      _sendToneFileUri = await getOrCreateSoundFile(
+        'deepdive_chat_send.wav',
+        getSendToneBase64(),
+      );
+    }
+    await playTone(_sendToneFileUri);
+  } catch { /* non-fatal */ }
 }
 
 /**
@@ -202,16 +230,40 @@ export async function playSendSound(): Promise<void> {
  * Has a 500ms cooldown to prevent rapid-fire playback on batch load.
  */
 export async function playReceiveSound(): Promise<void> {
-  const now = Date.now();
-  if (now - _lastReceiveSoundAt < RECEIVE_SOUND_COOLDOWN_MS) return;
-  _lastReceiveSoundAt = now;
-  await playTone(getReceiveToneUri());
+  try {
+    const now = Date.now();
+    if (now - _lastReceiveSoundAt < RECEIVE_SOUND_COOLDOWN_MS) return;
+    _lastReceiveSoundAt = now;
+
+    if (!_receiveToneFileUri) {
+      _receiveToneFileUri = await getOrCreateSoundFile(
+        'deepdive_chat_receive.wav',
+        getReceiveToneBase64(),
+      );
+    }
+    await playTone(_receiveToneFileUri);
+  } catch { /* non-fatal */ }
 }
 
 /**
- * No-op — kept for API compatibility.
- * Audio session is configured lazily on first play.
+ * Prewarm: pre-generates and writes the WAV files to disk so the first
+ * sound plays without any file-write delay. Call once on app start or
+ * when the chat screen mounts. Fire-and-forget.
  */
 export async function prewarmChatSounds(): Promise<void> {
-  // Intentionally empty.
+  try {
+    if (!_sendToneFileUri) {
+      _sendToneFileUri = await getOrCreateSoundFile(
+        'deepdive_chat_send.wav',
+        getSendToneBase64(),
+      );
+    }
+    if (!_receiveToneFileUri) {
+      _receiveToneFileUri = await getOrCreateSoundFile(
+        'deepdive_chat_receive.wav',
+        getReceiveToneBase64(),
+      );
+    }
+    await ensureAudioConfig();
+  } catch { /* non-fatal */ }
 }

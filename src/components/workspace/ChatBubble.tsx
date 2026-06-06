@@ -4,35 +4,36 @@
 // Part 47 — isHighlighted prop; document bubble fixes
 // Part 48  — Full long-press on attachments; attachment reply preview
 // Part 48b — Pressable wraps entire bubble column
-// Part 48-NEW — FIXES:
+// Part 48-FINAL — FIXES:
 //
-//   1. Long-press anywhere on attachment (including logo/icon/image area):
-//      Root cause: BubbleAttachments internally renders TouchableOpacity for
-//      image previews and document chips. When Pressable wraps the column,
-//      the child TouchableOpacity intercepts touches for its tap (onPress) but
-//      ALSO absorbs the long-press gesture before it can bubble up.
-//      Fix: We give Pressable a dedicated `longPressRef` and use a manual
-//      PanResponder approach on the bubble column. Actually the simplest fix
-//      is to move the long-press handling to the OUTER RNAnimated.View using
-//      Pressable correctly — we need to ensure `onLongPress` is set on the
-//      Pressable and that child elements do NOT have their own `onLongPress`.
-//      The issue was that BubbleAttachments children had no long-press handlers
-//      but they ARE TouchableOpacity which calls e.stopPropagation on Android.
-//      Solution: Wrap the entire bubbleCol in a View with a LongPressGestureHandler
-//      — OR simpler: use a second invisible Pressable overlay just for long press.
-//      We use the overlay approach: a transparent Pressable sits ABOVE the
-//      entire bubble column (via absolute positioning), catches long-press,
-//      and lets short taps fall through via pointerEvents manipulation.
+//   1. Single-tap not working on attachments (images, document chips, etc.)
+//
+//      ROOT CAUSE:
+//      The previous fix used a `Pressable` with `StyleSheet.absoluteFillObject`
+//      positioned over the entire bubbleCol. On Android, an absolute Pressable
+//      consumes ALL touch events — including short taps — before they reach
+//      any child TouchableOpacity beneath it. Setting `accessible={false}` or
+//      `importantForAccessibility="no"` does NOT prevent this on Android;
+//      those flags are accessibility hints only, not touch-routing directives.
+//
+//      CORRECT FIX — Manual long-press via onTouchStart/onTouchEnd on a View:
+//      • Wrap bubbleCol content in a plain View with `onStartShouldSetResponder`
+//        returning false. This means the View does NOT steal touches from children.
+//      • Track long-press manually: onTouchStart starts a 350ms timer;
+//        onTouchEnd / onTouchCancel clears it.
+//      • If the timer fires → long press → open menu.
+//      • If the user lifts before 350ms → timer cleared → child's onPress fires
+//        normally (image tap, document tap, reply preview tap all work).
+//
+//      This is the correct pattern for "detect long press without blocking
+//      child tap handlers" in React Native.
 //
 //   2. Delete permissions: Only the workspace owner can delete other people's
 //      messages. Editors can ONLY delete their OWN messages.
-//      Previously: canDelete = (isOwnMessage || isOwnerOrEditor)
-//      Fixed:      canDelete = isOwnMessage || isWorkspaceOwner
-//      New prop:   isWorkspaceOwner: boolean (passed from workspace-chat.tsx)
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, Pressable,
+  View, Text, TouchableOpacity,
   Modal, Pressable as PressableOverlay, StyleSheet,
   Animated as RNAnimated, Alert,
 } from 'react-native';
@@ -43,7 +44,8 @@ import { BubbleAttachments } from './ChatAttachmentPreview';
 import { ChatMessage, ChatAttachment } from '../../types/chat';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
-const QUICK_REACTIONS = ['👍', '❤️', '😂', '🔥', '✅', '👀'];
+const QUICK_REACTIONS  = ['👍', '❤️', '😂', '🔥', '✅', '👀'];
+const LONG_PRESS_DELAY = 350; // ms
 
 // ─── Reply preview helpers ─────────────────────────────────────────────────────
 
@@ -72,19 +74,17 @@ function getAttachmentPreviewInfo(
 }
 
 function resolveReplyContent(replyTo: {
-  content:     string;
+  content:      string;
   attachments?: ChatAttachment[];
 }): { icon: keyof typeof Ionicons.glyphMap; label: string; isAttachment: boolean } {
   const hasText = replyTo.content && replyTo.content.trim().length > 0
     && replyTo.content !== '[Message deleted]';
   const atts    = replyTo.attachments ?? [];
 
-  if (hasText) {
+  if (hasText)
     return { icon: 'chatbubble-outline', label: replyTo.content, isAttachment: false };
-  }
-  if (replyTo.content === '[Message deleted]') {
+  if (replyTo.content === '[Message deleted]')
     return { icon: 'trash-outline', label: '[Message deleted]', isAttachment: false };
-  }
   if (atts.length > 0) {
     const info = getAttachmentPreviewInfo(atts[0]);
     return { icon: info.icon, label: info.label, isAttachment: true };
@@ -109,21 +109,20 @@ function getAttachmentSummaryLabel(attachments: ChatAttachment[]): string {
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
-  message:          ChatMessage;
-  isOwnMessage:     boolean;
-  isOwnerOrEditor:  boolean;
-  /** True only when the current user's role is 'owner' in this workspace. */
+  message:           ChatMessage;
+  isOwnMessage:      boolean;
+  isOwnerOrEditor:   boolean;
   isWorkspaceOwner?: boolean;
-  showAvatar:       boolean;
-  isConsecutive:    boolean;
-  isHighlighted?:   boolean;
-  onReply:          (msg: ChatMessage) => void;
-  onEdit:           (msg: ChatMessage) => void;
-  onDelete:         (id: string) => void;
-  onReact:          (id: string, emoji: string) => void;
-  onPin:            (msg: ChatMessage) => void;
-  onUnpin:          (id: string) => void;
-  onScrollToReply?: (id: string) => void;
+  showAvatar:        boolean;
+  isConsecutive:     boolean;
+  isHighlighted?:    boolean;
+  onReply:           (msg: ChatMessage) => void;
+  onEdit:            (msg: ChatMessage) => void;
+  onDelete:          (id: string) => void;
+  onReact:           (id: string, emoji: string) => void;
+  onPin:             (msg: ChatMessage) => void;
+  onUnpin:           (id: string) => void;
+  onScrollToReply?:  (id: string) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -133,8 +132,16 @@ export function ChatBubble({
   showAvatar, isConsecutive, isHighlighted = false,
   onReply, onEdit, onDelete, onReact, onPin, onUnpin, onScrollToReply,
 }: Props) {
-  const [menuVisible, setMenuVisible] = useState(false);
-  const highlightAnim = useRef(new RNAnimated.Value(0)).current;
+  const [menuVisible,   setMenuVisible]   = useState(false);
+  const highlightAnim   = useRef(new RNAnimated.Value(0)).current;
+  const longPressTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Cleanup timer on unmount ──────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    };
+  }, []);
 
   // ── Highlight animation ───────────────────────────────────────────────────
 
@@ -155,6 +162,37 @@ export function ChatBubble({
     inputRange:  [0, 1],
     outputRange: ['rgba(255, 167, 38, 0)', 'rgba(255, 167, 38, 0.15)'],
   });
+
+  // ── Manual long-press detection ───────────────────────────────────────────
+  //
+  // FIX: We do NOT use an absolute overlay Pressable (which blocks child taps).
+  // Instead, we attach touch handlers to the outer wrapper View.
+  //
+  // How it works:
+  //   onTouchStart  → start a 350ms timer
+  //   onTouchEnd    → clear timer (user lifted before threshold → normal tap)
+  //   onTouchCancel → clear timer (gesture cancelled)
+  //   timer fires   → open context menu (long press detected)
+  //
+  // The wrapper View has `onStartShouldSetResponder={() => false}` so it never
+  // claims the responder itself — all child TouchableOpacity handlers receive
+  // their events normally. The touch{Start,End,Cancel} events are passive
+  // listeners that don't interfere with child gesture handling.
+
+  const handleTouchStart = useCallback(() => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = setTimeout(() => {
+      longPressTimer.current = null;
+      setMenuVisible(true);
+    }, LONG_PRESS_DELAY);
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
 
   // ── System message ────────────────────────────────────────────────────────
 
@@ -182,7 +220,13 @@ export function ChatBubble({
       >
         {!isOwnMessage && (
           <View style={styles.avatarSlot}>
-            {showAvatar && <Avatar url={message.author?.avatarUrl} name={message.author?.fullName ?? message.author?.username} size={30} />}
+            {showAvatar && (
+              <Avatar
+                url={message.author?.avatarUrl}
+                name={message.author?.fullName ?? message.author?.username}
+                size={30}
+              />
+            )}
           </View>
         )}
         <View style={[styles.deletedBubble, isOwnMessage && styles.deletedBubbleOwn]}>
@@ -194,16 +238,9 @@ export function ChatBubble({
   }
 
   // ── Permissions ───────────────────────────────────────────────────────────
-  //
-  // canEdit:   only the message author can edit their own message.
-  // canDelete: own messages → always; others' messages → workspace OWNER only.
-  //            Editors/viewers cannot delete other people's messages.
-  // canPin:    owners and editors can pin/unpin.
 
   const canEdit   = isOwnMessage && !message.isDeleted;
-  const canDelete = !message.isDeleted && (
-    isOwnMessage || isWorkspaceOwner   // owner can delete anyone's messages
-  );
+  const canDelete = !message.isDeleted && (isOwnMessage || isWorkspaceOwner);
   const canPin    = isOwnerOrEditor;
 
   const hasText        = !!message.content?.trim();
@@ -220,19 +257,6 @@ export function ChatBubble({
         attachments: (message.replyTo as any).attachments ?? [],
       })
     : null;
-
-  // ── Long-press handler ───────────────────────────────────────────────────
-  //
-  // FIX: Attachments (images, document chips) intercept touch events on Android.
-  // We use an OVERLAY Pressable that sits above the entire bubble column with
-  // pointerEvents="box-only" so it captures long-press but passes short taps
-  // through to the children below.
-  //
-  // The overlay is transparent and covers the full column. It has onLongPress
-  // set but no onPress, so short taps fall through naturally via the
-  // `accessible={false}` trick — the overlay does not consume single taps.
-
-  const handleLongPress = () => setMenuVisible(true);
 
   return (
     <>
@@ -261,14 +285,27 @@ export function ChatBubble({
           </View>
         )}
 
-        {/* Bubble column — wrapped in a View that holds both content and the
-            long-press overlay. The overlay is positioned absolute over the
-            entire column so it captures long-press from anywhere. */}
+        {/*
+          ── Bubble column with manual long-press detection ──────────────────
+          
+          KEY FIX: We use a plain View with onTouchStart/onTouchEnd/onTouchCancel
+          instead of an absolute Pressable overlay.
+
+          `onStartShouldSetResponder={() => false}` ensures this View never
+          claims the touch responder — all child TouchableOpacity components
+          (image taps, document chip taps, reply preview taps) receive their
+          events WITHOUT any interference.
+
+          The touch handlers are passive event listeners that start/cancel a
+          timer. If the user lifts before 350ms, the timer is cancelled and the
+          child's onPress fires. If they hold for 350ms, the menu opens.
+        */}
         <View
-          style={[
-            styles.bubbleCol,
-            isOwnMessage && styles.bubbleColOwn,
-          ]}
+          style={[styles.bubbleCol, isOwnMessage && styles.bubbleColOwn]}
+          onStartShouldSetResponder={() => false}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchEnd}
         >
           {/* Sender name */}
           {!isOwnMessage && showAvatar && (
@@ -286,7 +323,10 @@ export function ChatBubble({
             >
               <View style={[styles.replyBar, isOwnMessage && styles.replyBarOwn]} />
               <View style={styles.replyPreviewContent}>
-                <Text style={[styles.replyAuthor, isOwnMessage && styles.replyAuthorOwn]} numberOfLines={1}>
+                <Text
+                  style={[styles.replyAuthor, isOwnMessage && styles.replyAuthorOwn]}
+                  numberOfLines={1}
+                >
                   {message.replyTo.authorName ?? 'Unknown'}
                 </Text>
                 {replyInfo.isAttachment ? (
@@ -334,7 +374,7 @@ export function ChatBubble({
               </View>
             )}
 
-            {/* Attachments */}
+            {/* Attachments — child taps work normally (no overlay blocking them) */}
             {hasAttachments && (
               <View style={styles.attachmentsContainer}>
                 <BubbleAttachments
@@ -357,10 +397,10 @@ export function ChatBubble({
 
             {/* File name for attachment-only messages */}
             {!hasText && attachmentLabel.length > 0 && (
-              <Text style={[
-                styles.attachmentLabel,
-                isOwnMessage && styles.attachmentLabelOwn,
-              ]} numberOfLines={1}>
+              <Text
+                style={[styles.attachmentLabel, isOwnMessage && styles.attachmentLabelOwn]}
+                numberOfLines={1}
+              >
                 {attachmentLabel}
               </Text>
             )}
@@ -385,34 +425,30 @@ export function ChatBubble({
                   activeOpacity={0.7}
                 >
                   <Text style={styles.reactionEmoji}>{r.emoji}</Text>
-                  <Text style={[styles.reactionCount, r.hasReacted && styles.reactionCountActive]}>{r.count}</Text>
+                  <Text style={[styles.reactionCount, r.hasReacted && styles.reactionCountActive]}>
+                    {r.count}
+                  </Text>
                 </TouchableOpacity>
               ))}
-              <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.addReactionBtn} activeOpacity={0.7}>
+              <TouchableOpacity
+                onPress={() => setMenuVisible(true)}
+                style={styles.addReactionBtn}
+                activeOpacity={0.7}
+              >
                 <Ionicons name="add" size={12} color={COLORS.textMuted} />
               </TouchableOpacity>
             </View>
           )}
-
-          {/* ── Long-press overlay ─────────────────────────────────────────
-              Transparent Pressable positioned over the ENTIRE column.
-              - onLongPress: opens context menu from anywhere.
-              - No onPress handler: short taps fall through to children
-                (image tap, document tap, reply preview tap) naturally.
-              - pointerEvents default allows children to receive taps
-                but long-press bubbles up because children don't consume it. */}
-          <Pressable
-            onLongPress={handleLongPress}
-            delayLongPress={350}
-            style={StyleSheet.absoluteFillObject}
-            accessible={false}
-            importantForAccessibility="no"
-          />
         </View>
       </RNAnimated.View>
 
       {/* Context menu modal */}
-      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
         <PressableOverlay style={styles.menuOverlay} onPress={() => setMenuVisible(false)}>
           <Animated.View entering={ZoomIn.duration(180).springify()} style={styles.menuCard}>
             <View style={styles.quickReactions}>
@@ -428,12 +464,38 @@ export function ChatBubble({
               ))}
             </View>
             <View style={styles.menuDivider} />
-            <MenuItem icon="return-down-forward-outline" label="Reply"          onPress={() => { setMenuVisible(false); onReply(message); }} />
-            {canEdit   && <MenuItem icon="pencil-outline"  label="Edit"          onPress={() => { setMenuVisible(false); onEdit(message); }} />}
-            {canPin && !message.isPinned && <MenuItem icon="pin-outline" label="Pin message"   onPress={() => { setMenuVisible(false); onPin(message); }} />}
-            {canPin &&  message.isPinned && <MenuItem icon="pin"         label="Unpin message" color={COLORS.warning} onPress={() => { setMenuVisible(false); onUnpin(message.id); }} />}
+            <MenuItem
+              icon="return-down-forward-outline"
+              label="Reply"
+              onPress={() => { setMenuVisible(false); onReply(message); }}
+            />
+            {canEdit && (
+              <MenuItem
+                icon="pencil-outline"
+                label="Edit"
+                onPress={() => { setMenuVisible(false); onEdit(message); }}
+              />
+            )}
+            {canPin && !message.isPinned && (
+              <MenuItem
+                icon="pin-outline"
+                label="Pin message"
+                onPress={() => { setMenuVisible(false); onPin(message); }}
+              />
+            )}
+            {canPin && message.isPinned && (
+              <MenuItem
+                icon="pin"
+                label="Unpin message"
+                color={COLORS.warning}
+                onPress={() => { setMenuVisible(false); onUnpin(message.id); }}
+              />
+            )}
             {canDelete && (
-              <MenuItem icon="trash-outline" label="Delete" color={COLORS.error}
+              <MenuItem
+                icon="trash-outline"
+                label="Delete"
+                color={COLORS.error}
                 onPress={() => {
                   setMenuVisible(false);
                   Alert.alert('Delete message', 'This cannot be undone.', [
@@ -453,7 +515,10 @@ export function ChatBubble({
 // ─── Menu item ────────────────────────────────────────────────────────────────
 
 function MenuItem({ icon, label, onPress, color }: {
-  icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void; color?: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  color?: string;
 }) {
   return (
     <TouchableOpacity onPress={onPress} style={styles.menuItem} activeOpacity={0.7}>
@@ -464,7 +529,9 @@ function MenuItem({ icon, label, onPress, color }: {
 }
 
 function formatTime(dateStr: string): string {
-  return new Date(dateStr).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  return new Date(dateStr).toLocaleTimeString('en-US', {
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  });
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -481,11 +548,8 @@ const styles = StyleSheet.create({
   avatarSlot:     { width: 30, flexShrink: 0 },
 
   highlightAccent: {
-    position:        'absolute',
-    left:            0, top: 4, bottom: 4, width: 3,
-    borderRadius:    2,
-    backgroundColor: COLORS.warning,
-    zIndex:          1,
+    position: 'absolute', left: 0, top: 4, bottom: 4, width: 3,
+    borderRadius: 2, backgroundColor: COLORS.warning, zIndex: 1,
   },
   highlightAccentOwn: { left: 'auto', right: 0 },
 
@@ -509,7 +573,7 @@ const styles = StyleSheet.create({
   replyAuthor:    { color: COLORS.primary, fontSize: 10, fontWeight: '700', marginBottom: 2 },
   replyAuthorOwn: { color: 'rgba(255,255,255,0.85)' },
   replyAttachRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  replyAttachIcon: { width: 20, height: 20, borderRadius: 5, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  replyAttachIcon:     { width: 20, height: 20, borderRadius: 5, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   replyAttachIconOwn:  { backgroundColor: 'rgba(255,255,255,0.18)' },
   replyAttachLabel:    { color: COLORS.textSecondary, fontSize: 11, fontWeight: '600', flex: 1 },
   replyAttachLabelOwn: { color: 'rgba(255,255,255,0.75)' },
@@ -538,13 +602,7 @@ const styles = StyleSheet.create({
   content:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 21 },
   contentOwn:     { color: '#FFFFFF' },
 
-  attachmentLabel: {
-    color:      COLORS.textMuted,
-    fontSize:   10,
-    fontStyle:  'italic',
-    marginTop:  4,
-    maxWidth:   260,
-  },
+  attachmentLabel:    { color: COLORS.textMuted, fontSize: 10, fontStyle: 'italic', marginTop: 4, maxWidth: 260 },
   attachmentLabelOwn: { color: 'rgba(255,255,255,0.55)' },
 
   bubbleFooter:   { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, justifyContent: 'flex-end' },
@@ -553,14 +611,14 @@ const styles = StyleSheet.create({
   timeLabel:      { color: COLORS.textMuted, fontSize: 10 },
   timeLabelOwn:   { color: 'rgba(255,255,255,0.65)' },
 
-  reactionsRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 5, paddingLeft: 2 },
-  reactionsRowOwn:    { justifyContent: 'flex-end' },
-  reactionChip:       { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: COLORS.border },
-  reactionChipActive: { backgroundColor: `${COLORS.primary}18`, borderColor: `${COLORS.primary}40` },
-  reactionEmoji:      { fontSize: 13 },
-  reactionCount:      { color: COLORS.textSecondary, fontSize: 11, fontWeight: '600' },
-  reactionCountActive:{ color: COLORS.primary },
-  addReactionBtn:     { width: 26, height: 26, borderRadius: 13, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
+  reactionsRow:        { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 5, paddingLeft: 2 },
+  reactionsRowOwn:     { justifyContent: 'flex-end' },
+  reactionChip:        { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: COLORS.border },
+  reactionChipActive:  { backgroundColor: `${COLORS.primary}18`, borderColor: `${COLORS.primary}40` },
+  reactionEmoji:       { fontSize: 13 },
+  reactionCount:       { color: COLORS.textSecondary, fontSize: 11, fontWeight: '600' },
+  reactionCountActive: { color: COLORS.primary },
+  addReactionBtn:      { width: 26, height: 26, borderRadius: 13, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
 
   deletedBubble:    { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${COLORS.textMuted}10`, borderRadius: RADIUS.xl, borderBottomLeftRadius: 4, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
   deletedBubbleOwn: { borderBottomLeftRadius: RADIUS.xl, borderBottomRightRadius: 4 },

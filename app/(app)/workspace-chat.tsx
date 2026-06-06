@@ -1,29 +1,31 @@
 // app/(app)/workspace-chat.tsx
-// Part 18D — Screen-focus tracking for suppressing notifications.
 // Part 47 — Full realtime (via useWorkspaceChat + useChatRealtime).
 // Part 48  — Broadcast-based real-time, document name fixes.
 // Part 48b — Sounds, Android keyboard, swipeable pin bar.
-// Part 48e — Sound-on-open fix, focus guard, initialLoadDoneRef.
-// Part 48-NEW — FIXES:
+// Part 48-FINAL — FIXES:
 //
-//   1. Android keyboard behind nav bar:
-//      • behavior="height" on KeyboardAvoidingView (was "padding").
-//        "padding" adds paddingBottom as the keyboard rises — this conflicts
-//        with Android's window resize mode and pushes content too high.
-//        "height" adjusts the VIEW's height instead, which works correctly
-//        alongside softwareKeyboardLayoutMode="pan" in app.json.
-//      • keyboardVerticalOffset=0 — correct for Android.
-//      • Also fixed in ChatInput.tsx: containerBottomPadding=0 on Android.
+//   1. Scroll to bottom on open:
+//      ROOT CAUSE: The previous fix used setTimeout(50ms) after isLoading
+//      goes false. But the FlatList hasn't laid out its items yet at that point
+//      — scrollToEnd fires before the list knows its content size and lands
+//      halfway down or not at all.
 //
-//   2. Scroll to bottom on open:
-//      • After initialLoadDoneRef is set (first load complete), we do ONE
-//        guaranteed scrollToEnd call with animated:false so the user lands
-//        at the latest message immediately on entering chat.
-//      • Subsequent new-message auto-scrolls stay animated:true.
+//      CORRECT FIX: Use `onContentSizeChange` on the FlatList. This callback
+//      fires whenever the list's total content height changes (i.e., after all
+//      items render). We use a `hasScrolledOnLoad` ref to ensure we only do
+//      the initial scroll-to-bottom ONCE (not on every new message).
+//      After the initial scroll, new messages use the existing animated
+//      scrollToEnd useEffect.
 //
-//   3. isWorkspaceOwner prop passed to ChatBubble via renderItem:
-//      • Derived from userRole === 'owner'.
-//      • ChatBubble uses it to gate the Delete option on others' messages.
+//   2. Android keyboard + input box:
+//      `behavior={Platform.OS === 'ios' ? 'padding' : undefined}` on
+//      KeyboardAvoidingView. On Android with softwareKeyboardLayoutMode="pan",
+//      the OS handles pushing the view up natively. Using any `behavior` value
+//      causes double-compensation and a gap. Setting behavior to `undefined`
+//      on Android disables KAV's own logic, letting the OS handle it correctly.
+//
+//   3. Sound prewarm: Call prewarmChatSounds() on mount so the first sound
+//      plays without any file-write delay.
 
 import React, {
   useState, useCallback, useRef, useEffect, useMemo,
@@ -55,7 +57,7 @@ import {
 } from '../../src/services/workspaceNotificationService';
 import { setActiveChatWorkspaceId } from '../../src/lib/screenState';
 import {
-  playSendSound, playReceiveSound,
+  playSendSound, playReceiveSound, prewarmChatSounds,
 } from '../../src/services/chatSoundService';
 
 import { ChatMessage, ChatAttachment } from '../../src/types/chat';
@@ -115,6 +117,15 @@ export default function WorkspaceChatScreen() {
   const isFocusedRef        = useRef(false);
   const prevMsgCountRef     = useRef<number>(-1);
 
+  // FIX: Track whether we've done the initial scroll to bottom.
+  // We use onContentSizeChange which fires after items are actually laid out.
+  const hasScrolledOnLoadRef = useRef(false);
+
+  // ── Prewarm sounds on mount ────────────────────────────────────────────────
+  useEffect(() => {
+    prewarmChatSounds().catch(() => {});
+  }, []);
+
   // ── Focus tracking ────────────────────────────────────────────────────────
   useFocusEffect(
     useCallback(() => {
@@ -130,24 +141,30 @@ export default function WorkspaceChatScreen() {
   const chatRef = useRef(chat);
   useEffect(() => { chatRef.current = chat; }, [chat]);
 
-  // ── Initial load complete → scroll to bottom once ────────────────────────
-  //
-  // FIX: When the chat screen opens, we want to land at the LATEST message
-  // immediately (no animation — it should already be there when the list
-  // first renders). We fire scrollToEnd after isLoading goes false the
-  // first time (initialLoadDoneRef transitions false → true).
-
+  // ── Mark initial load done ────────────────────────────────────────────────
+  // We still need to know when loading finishes to start tracking new messages.
   useEffect(() => {
     if (!chat.isLoading && !initialLoadDoneRef.current) {
       initialLoadDoneRef.current = true;
       prevMsgCountRef.current    = chat.messages.length;
-
-      // Scroll to bottom immediately after first load (no animation)
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: false });
-      }, 50);
     }
   }, [chat.isLoading, chat.messages.length]);
+
+  // ── FIX: Scroll to bottom via onContentSizeChange ─────────────────────────
+  //
+  // `onContentSizeChange` fires whenever the FlatList's rendered content
+  // dimensions change — including after the initial batch of items render.
+  // We use `hasScrolledOnLoadRef` so this only fires once on open.
+  // After that, new messages are handled by the separate useEffect below.
+  const handleContentSizeChange = useCallback(() => {
+    if (!hasScrolledOnLoadRef.current && initialLoadDoneRef.current) {
+      hasScrolledOnLoadRef.current = true;
+      // Use requestAnimationFrame to ensure layout is fully committed
+      requestAnimationFrame(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      });
+    }
+  }, []);
 
   // ── New messages after initial load → sounds + notifications ─────────────
 
@@ -203,8 +220,9 @@ export default function WorkspaceChatScreen() {
 
   // Reset on workspaceId change
   useEffect(() => {
-    initialLoadDoneRef.current = false;
-    prevMsgCountRef.current    = -1;
+    initialLoadDoneRef.current    = false;
+    hasScrolledOnLoadRef.current  = false;
+    prevMsgCountRef.current       = -1;
   }, [workspaceId]);
 
   // ── Access guard ───────────────────────────────────────────────────────────
@@ -252,9 +270,9 @@ export default function WorkspaceChatScreen() {
     return result;
   }, [chat.messages, chat.searchResults, chat.searchQuery, chat.hasMore]);
 
-  // ── Auto-scroll to bottom on new messages ─────────────────────────────────
+  // ── Auto-scroll to bottom on new messages (after initial load) ────────────
   useEffect(() => {
-    if (chat.messages.length > 0 && !chat.searchQuery && initialLoadDoneRef.current) {
+    if (chat.messages.length > 0 && !chat.searchQuery && hasScrolledOnLoadRef.current) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
     }
   }, [chat.messages.length]);
@@ -434,16 +452,22 @@ export default function WorkspaceChatScreen() {
       <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
 
         {/*
-          Android keyboard fix:
-          behavior="height" adjusts the KAV's height (not padding) as the keyboard
-          rises. This works correctly with softwareKeyboardLayoutMode="pan" in
-          app.json — the window pans up and the KAV shrinks to fill the remaining
-          space. On iOS, "height" also works but "padding" would also be fine.
-          keyboardVerticalOffset=0 — no additional offset needed on either platform.
+          FIX: Android keyboard behavior.
+
+          With softwareKeyboardLayoutMode="pan" in app.json, Android natively
+          pans (slides) the whole window up when the keyboard appears. We do NOT
+          need KeyboardAvoidingView to do anything on Android.
+
+          On Android: behavior={undefined} → KAV is a transparent pass-through.
+          On iOS:     behavior="padding"   → KAV adds bottom padding as keyboard rises.
+
+          Previously using behavior="height" on Android caused the KAV to
+          ALSO shrink the view height on top of the OS pan → double compensation
+          → visual gap between input and keyboard.
         */}
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={0}
         >
 
@@ -591,6 +615,8 @@ export default function WorkspaceChatScreen() {
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
               maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+              // FIX: scroll to bottom when content is fully laid out (first render)
+              onContentSizeChange={handleContentSizeChange}
               onScrollToIndexFailed={(info) => {
                 setTimeout(() => {
                   const offset = info.averageItemLength * info.index;
@@ -629,7 +655,7 @@ export default function WorkspaceChatScreen() {
             </Animated.View>
           )}
 
-          {/* ── Chat input (includes InlineEmojiPicker above it) ─────────── */}
+          {/* ── Chat input ────────────────────────────────────────────────── */}
           <ChatInput
             workspaceId={workspaceId ?? ''}
             replyingTo={chat.replyingTo}
