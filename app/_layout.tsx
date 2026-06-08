@@ -1,20 +1,39 @@
 // app/_layout.tsx
 // Part 43 CORRECT FIX — clean layout, no Linking handler.
+// Part 49 UPDATE — Wraps app in Stream Chat's OverlayProvider.
+// Part 50 FIX — Removed invalid topInset/bottomInset/translucentStatusBar props
+//   from OverlayProvider. In stream-chat-expo v8 those props were MOVED to the
+//   Channel component (not OverlayProvider). The TypeScript error confirmed this:
 //
-// The OAuth deep link is handled by Linking.useLinkingURL() in each
-// auth screen (signin.tsx, signup.tsx). This is the official Supabase
-// React Native pattern. No route file needed, no Linking handler here.
+//     "Property 'topInset' does not exist on type IntrinsicAttributes &
+//      ImageGalleryCustomComponents & ..."
 //
-// All Part 24 logic preserved (WebBrowser.warmUpAsync, all providers).
+//   OverlayProvider v8 only accepts:
+//     value              — theme object  ✓
+//     imageGalleryCustomComponents — gallery sub-component overrides
+//     autoPlayVideo      — bool
+//     giphyVersion       — string
+//
+//   The attachment picker insets (topInset, bottomInset) belong on <Channel>
+//   in workspace-chat.tsx — which already has them correctly set.
+//   That is the ONLY place they need to be in stream-chat-expo v8.
+//
+// WHY OverlayProvider AT ROOT:
+//   Stream's OverlayProvider must sit ABOVE the navigation stack so the
+//   long-press message overlay and fullscreen image gallery render on top
+//   of all navigation headers. No inset props needed here — just the theme.
 
+import 'react-native-gesture-handler';  // MUST be first import per Stream docs
 import { useEffect }              from 'react';
 import { Stack }                  from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider }       from 'react-native-safe-area-context';
 import * as WebBrowser            from 'expo-web-browser';
+import { OverlayProvider }        from 'stream-chat-expo';
 import { AuthProvider }           from '../src/context/AuthContext';
 import { NetworkProvider }        from '../src/context/NetworkContext';
 import { CreditsProvider }        from '../src/context/CreditsContext';
+import { streamChatTheme }        from '../src/constants/streamChatTheme';
 import { COLORS }                 from '../src/constants/theme';
 
 // Required — closes the auth browser on Android when app resumes via deep link
@@ -31,23 +50,35 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <NetworkProvider>
-          <AuthProvider>
-            <CreditsProvider>
-              <Stack
-                screenOptions={{
-                  headerShown:  false,
-                  contentStyle: { backgroundColor: COLORS.background },
-                  animation:    'fade',
-                }}
-              >
-                <Stack.Screen name="index" />
-                <Stack.Screen name="(auth)" options={{ animation: 'none' }} />
-                <Stack.Screen name="(app)"  options={{ animation: 'none' }} />
-              </Stack>
-            </CreditsProvider>
-          </AuthProvider>
-        </NetworkProvider>
+        {/*
+          Stream Chat OverlayProvider — wraps everything so overlays render
+          above all navigation layers.
+
+          v8 API: OverlayProvider only takes `value` for theming.
+          topInset / bottomInset are Channel props (set in workspace-chat.tsx).
+
+          value={{ style: streamChatTheme }} applies the DeepDive dark theme
+          to all Stream Chat UI components globally.
+        */}
+        <OverlayProvider value={{ style: streamChatTheme }}>
+          <NetworkProvider>
+            <AuthProvider>
+              <CreditsProvider>
+                <Stack
+                  screenOptions={{
+                    headerShown:  false,
+                    contentStyle: { backgroundColor: COLORS.background },
+                    animation:    'fade',
+                  }}
+                >
+                  <Stack.Screen name="index" />
+                  <Stack.Screen name="(auth)" options={{ animation: 'none' }} />
+                  <Stack.Screen name="(app)"  options={{ animation: 'none' }} />
+                </Stack>
+              </CreditsProvider>
+            </AuthProvider>
+          </NetworkProvider>
+        </OverlayProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

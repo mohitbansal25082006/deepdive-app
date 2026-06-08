@@ -1,9 +1,8 @@
 // app/(app)/_layout.tsx
 // Part 44 UPDATE — Registers workspace-shared-voice-debate-player screen route.
-//
-// CHANGE from Part 41.2 version:
-//   • Added <Stack.Screen name="workspace-shared-voice-debate-player" /> entry.
-//   • All Part 41.2 logic unchanged (offline audio pause, onboarding, mini player, etc.)
+// Part 49 UPDATE — No structural changes; workspace-chat screen now powered by
+//                  Stream Chat but uses the same route name and params as before.
+//                  All other screens preserved exactly from Part 44.
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
@@ -192,6 +191,12 @@ function AppLayoutInner() {
           <Stack.Screen name="workspace-shared-viewer"         options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-podcast-player" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-debate"         options={{ animation: 'slide_from_right' }} />
+
+          {/*
+            Part 49: workspace-chat now powered by Stream Chat.
+            Same route name and params (id, name, role) as before —
+            workspace-detail.tsx does not need any changes.
+          */}
           <Stack.Screen name="workspace-chat"                  options={{ animation: 'slide_from_right' }} />
 
           {/* Part 44: Workspace Shared Voice Debate Player */}

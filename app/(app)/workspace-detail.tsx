@@ -71,7 +71,6 @@ import {
 } from '../../src/services/debateExport';
 import { sharedDebateToSession }     from '../../src/services/debateSharingService';
 import { VOICE_PERSONAS }            from '../../src/constants/voiceDebate';
-import { getChatUnreadCount }        from '../../src/services/chatService';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
   SharedPodcast, SharedDebate,
@@ -179,16 +178,10 @@ export default function WorkspaceDetailScreen() {
   //   • Updated by Broadcast trigger for all members (real time)
   //   • Updated optimistically by updatePin() for the toggling member
 
-  // ── Chat unread ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!id || !isEditor) return;
-    getChatUnreadCount(id).then(count => setChatUnread(count));
-    const interval = setInterval(async () => {
-      const count = await getChatUnreadCount(id);
-      setChatUnread(count);
-    }, 30_000);
-    return () => clearInterval(interval);
-  }, [id, isEditor]);
+  // ── Chat unread ─────────────────────────────────────────────────────────
+  // Polling removed in Part 49 — chatService.ts deleted.
+  // chatUnread resets to 0 when user opens chat (openChat sets setChatUnread(0)).
+  // Stream's Channel component manages unread state internally.
 
   // ── Pin toggle ─────────────────────────────────────────────────────────
   const handleTogglePin = async (reportId: string, reportTitle: string) => {

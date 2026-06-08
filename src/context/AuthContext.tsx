@@ -2,16 +2,8 @@
 // Part 43 FINAL FIX — Fixes OAuth setSession hanging/deadlock.
 // MINI PLAYER FIX — Stops both audio engines on signOut so the mini player
 //   cannot persist and crash when switching accounts.
-//
-// CHANGE from Part 43:
-//   signOut() now calls AudioEngine.stop() and VoiceDebateEngine.stop() before
-//   clearing React state. This ensures:
-//     1. The mini player disappears immediately on logout.
-//     2. No audio continues playing after the user signs out.
-//     3. The engines are in a clean state before the next user signs in,
-//        preventing the crash when signing into a different account.
-//
-// All other Part 43 logic unchanged.
+// Part 49 UPDATE — disconnectStreamUser() called on signOut so Stream
+//   WebSocket is cleanly closed and token cache is cleared.
 
 import React, {
   createContext, useContext, useEffect, useRef, useState, ReactNode,
@@ -22,6 +14,7 @@ import { router }                   from 'expo-router';
 import { supabase }                 from '../lib/supabase';
 import { AudioEngine }              from '../services/GlobalAudioEngine';
 import { VoiceDebateEngine }        from '../services/VoiceDebateAudioEngine';
+import { disconnectStreamUser }     from '../services/streamChatService';
 import type { Profile }             from '../types';
 
 interface AuthContextType {
@@ -88,23 +81,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── signOut ────────────────────────────────────────────────────────────────
-  // MINI PLAYER FIX: stop both audio engines before clearing state.
-  // This hides the mini player immediately and prevents the crash that
-  // occurred when the engines still held references to the previous user's
-  // audio while a new user was signing in.
+  // Part 49: disconnectStreamUser() clears token cache and closes WebSocket.
   const signOut = async () => {
-    // Stop all audio first — this causes both engines to broadcast
-    // isVisible=false, which makes MiniPlayer unmount immediately.
-    try {
-      await AudioEngine.stop();
-    } catch {
-      // Non-fatal — engine may already be stopped
-    }
-    try {
-      await VoiceDebateEngine.stop();
-    } catch {
-      // Non-fatal
-    }
+    // Stop all audio first
+    try { await AudioEngine.stop(); } catch {}
+    try { await VoiceDebateEngine.stop(); } catch {}
+
+    // Part 49: Cleanly close Stream WebSocket + clear cached token
+    try { await disconnectStreamUser(); } catch {}
 
     setSession(null);
     setUser(null);
@@ -167,9 +151,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ── Auth state listener ────────────────────────────────────────────────────
-  // CRITICAL FIX: All async work is wrapped in setTimeout(..., 0).
-  // This prevents the setSession deadlock where onAuthStateChange awaits
-  // async work while setSession waits for onAuthStateChange to return.
   useEffect(() => {
     let mounted = true;
 
@@ -179,10 +160,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!mounted) return;
 
       if (event === 'SIGNED_OUT') {
-        // Stop engines here too — covers the case where signOut was triggered
-        // externally (e.g. token expiry, admin deletion via Realtime).
+        // Part 49: also disconnect Stream on external sign-out
         AudioEngine.stop().catch(() => {});
         VoiceDebateEngine.stop().catch(() => {});
+        disconnectStreamUser().catch(() => {});
 
         setSession(null);
         setUser(null);
@@ -205,7 +186,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (newSession?.user) {
           setProfileLoading(true);
           const uid = newSession.user.id;
-          // ── KEY FIX: setTimeout defers async work, prevents deadlock ──────
           setTimeout(() => {
             if (mounted) {
               fetchProfile(uid).then(() => {
@@ -221,14 +201,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // SIGNED_IN, TOKEN_REFRESHED, USER_UPDATED, PASSWORD_RECOVERY
       setSession(newSession);
       setUser(newSession?.user ?? null);
 
       if (newSession?.user) {
         setProfileLoading(true);
         const uid = newSession.user.id;
-        // ── KEY FIX: setTimeout defers async work, prevents deadlock ──────
         setTimeout(() => {
           if (mounted) {
             fetchProfile(uid).then(() => {
