@@ -1,7 +1,14 @@
 // src/components/workspace/ChatMembersSidebar.tsx
 // Part 50 — Members sidebar panel for workspace chat
-// Opens as a right-side overlay showing all workspace members,
-// their online status, and roles. Slide-in from right.
+// Part 50.1 FIX — Role display: Stream Chat doesn't store workspace roles.
+// Part 50.5 — Removed "X Owner" section header and stat chip. A workspace
+//             always has exactly one owner; no count badge needed. The owner
+//             member row sits at the top of the list identified only by their
+//             gold star RoleBadge — cleaner and less redundant.
+//   The sidebar now accepts an optional `workspaceMembers` prop containing the
+//   real Supabase workspace roles (owner / editor / viewer). When provided, the
+//   role shown in the badge is taken from Supabase, NOT from Stream.
+//   Without the prop it gracefully falls back to the previous behaviour.
 
 import React, { useEffect, useState, useMemo } from 'react';
 import {
@@ -34,9 +41,13 @@ export interface ChatMemberInfo {
   name:      string;
   username:  string | null;
   avatarUrl: string | null;
+  /** Role coming from Stream channel state (fallback if workspaceMembers not provided) */
   role:      'owner' | 'editor' | 'viewer';
   isOnline:  boolean;
 }
+
+/** Real workspace role from Supabase, keyed by userId */
+export type WorkspaceMemberRoles = Record<string, 'owner' | 'editor' | 'viewer'>;
 
 // ─── Avatar ───────────────────────────────────────────────────────────────────
 
@@ -72,32 +83,40 @@ function MemberAvatar({ member, size = 40 }: { member: ChatMemberInfo; size?: nu
 
 // ─── Role badge ───────────────────────────────────────────────────────────────
 
-const ROLE_COLORS: Record<string, string> = {
-  owner:  '#FFD700',
-  editor: COLORS.primary,
-  viewer: COLORS.textMuted,
+const ROLE_CONFIG: Record<
+  'owner' | 'editor' | 'viewer',
+  { color: string; icon: keyof typeof Ionicons.glyphMap; label: string }
+> = {
+  owner:  { color: '#FFD700', icon: 'star',          label: 'Owner'  },
+  editor: { color: COLORS.primary, icon: 'create-outline', label: 'Editor' },
+  viewer: { color: COLORS.textMuted, icon: 'eye-outline', label: 'Viewer' },
 };
 
-const ROLE_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
-  owner:  'star',
-  editor: 'create-outline',
-  viewer: 'eye-outline',
-};
-
-function RoleBadge({ role }: { role: ChatMemberInfo['role'] }) {
+function RoleBadge({ role }: { role: 'owner' | 'editor' | 'viewer' }) {
+  const cfg = ROLE_CONFIG[role] ?? ROLE_CONFIG.editor;
   return (
-    <View style={[styles.roleBadge, { borderColor: `${ROLE_COLORS[role]}40`, backgroundColor: `${ROLE_COLORS[role]}18` }]}>
-      <Ionicons name={ROLE_ICONS[role]} size={10} color={ROLE_COLORS[role]} />
-      <Text style={[styles.roleText, { color: ROLE_COLORS[role] }]}>
-        {role.charAt(0).toUpperCase() + role.slice(1)}
-      </Text>
+    <View style={[
+      styles.roleBadge,
+      { borderColor: `${cfg.color}40`, backgroundColor: `${cfg.color}18` },
+    ]}>
+      <Ionicons name={cfg.icon} size={10} color={cfg.color} />
+      <Text style={[styles.roleText, { color: cfg.color }]}>{cfg.label}</Text>
     </View>
   );
 }
 
 // ─── Member Row ───────────────────────────────────────────────────────────────
 
-function MemberRow({ member }: { member: ChatMemberInfo }) {
+interface MemberRowProps {
+  member:          ChatMemberInfo;
+  /** Override role from Supabase workspace data */
+  workspaceRole?:  'owner' | 'editor' | 'viewer';
+}
+
+function MemberRow({ member, workspaceRole }: MemberRowProps) {
+  // Part 50.1 FIX: prefer Supabase role over the Stream fallback
+  const displayRole = workspaceRole ?? member.role;
+
   return (
     <View style={styles.memberRow}>
       <View style={styles.avatarWrap}>
@@ -121,7 +140,7 @@ function MemberRow({ member }: { member: ChatMemberInfo }) {
       </View>
 
       <View style={styles.memberRight}>
-        <RoleBadge role={member.role} />
+        <RoleBadge role={displayRole} />
         <Text style={[
           styles.statusText,
           { color: member.isOnline ? COLORS.success : COLORS.textMuted },
@@ -133,30 +152,143 @@ function MemberRow({ member }: { member: ChatMemberInfo }) {
   );
 }
 
+// ─── Section header ───────────────────────────────────────────────────────────
+
+function SectionHeader({ title, count, color }: { title: string; count: number; color: string }) {
+  return (
+    <View style={[secStyles.row, { borderLeftColor: color }]}>
+      <Text style={secStyles.title}>{title}</Text>
+      <View style={[secStyles.badge, { backgroundColor: `${color}20` }]}>
+        <Text style={[secStyles.badgeText, { color }]}>{count}</Text>
+      </View>
+    </View>
+  );
+}
+
+const secStyles = StyleSheet.create({
+  row: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    gap:             8,
+    paddingVertical: 6,
+    paddingHorizontal: SPACING.sm,
+    marginBottom:    4,
+    borderLeftWidth: 3,
+    borderRadius:    4,
+  },
+  title: {
+    color:        COLORS.textSecondary,
+    fontSize:     FONTS.sizes.xs,
+    fontWeight:   '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    flex:          1,
+  },
+  badge: {
+    borderRadius:      RADIUS.full,
+    paddingHorizontal: 6,
+    paddingVertical:   2,
+  },
+  badgeText: {
+    fontSize:   FONTS.sizes.xs,
+    fontWeight: '800',
+  },
+});
+
+// ─── Flat list item shape ─────────────────────────────────────────────────────
+
+type ListItem =
+  | { type: 'section'; key: string; title: string; count: number; color: string }
+  | { type: 'member';  key: string; member: ChatMemberInfo; workspaceRole?: 'owner' | 'editor' | 'viewer' };
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props {
-  visible:     boolean;
-  members:     ChatMemberInfo[];
-  onlineCount: number;
-  onClose:     () => void;
+  visible:           boolean;
+  members:           ChatMemberInfo[];
+  onlineCount:       number;
+  onClose:           () => void;
+  /** Part 50.1: Real workspace roles from Supabase, keyed by userId */
+  workspaceMemberRoles?: WorkspaceMemberRoles;
 }
 
-export function ChatMembersSidebar({ visible, members, onlineCount, onClose }: Props) {
+export function ChatMembersSidebar({
+  visible,
+  members,
+  onlineCount,
+  onClose,
+  workspaceMemberRoles,
+}: Props) {
   const insets = useSafeAreaInsets();
 
-  const sorted = useMemo(() => {
-    return [...members].sort((a, b) => {
-      // Online first, then by role weight, then name
-      if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
-      const roleWeight = { owner: 0, editor: 1, viewer: 2 };
-      const rw = roleWeight[a.role] - roleWeight[b.role];
-      if (rw !== 0) return rw;
-      return (a.name || '').localeCompare(b.name || '');
-    });
-  }, [members]);
+  // ── Resolve each member's true role ───────────────────────────────────────
+  const resolveRole = (m: ChatMemberInfo): 'owner' | 'editor' | 'viewer' => {
+    if (workspaceMemberRoles && workspaceMemberRoles[m.userId]) {
+      return workspaceMemberRoles[m.userId];
+    }
+    return m.role;
+  };
+
+  // ── Group and sort members ────────────────────────────────────────────────
+  const { owners, editors, viewers } = useMemo(() => {
+    const o: ChatMemberInfo[] = [];
+    const e: ChatMemberInfo[] = [];
+    const v: ChatMemberInfo[] = [];
+
+    [...members]
+      .sort((a, b) => {
+        // Online first, then alphabetical
+        if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
+        return (a.name || '').localeCompare(b.name || '');
+      })
+      .forEach(m => {
+        const r = resolveRole(m);
+        if (r === 'owner')  o.push(m);
+        else if (r === 'editor') e.push(m);
+        else v.push(m);
+      });
+
+    return { owners: o, editors: e, viewers: v };
+  }, [members, workspaceMemberRoles]);
+
+  // ── Build flat list data ──────────────────────────────────────────────────
+  const listData = useMemo<ListItem[]>(() => {
+    const items: ListItem[] = [];
+
+    // Owner is always exactly one person — no section header needed.
+    // Their gold star RoleBadge already identifies them visually at the top.
+    owners.forEach(m => items.push({ type: 'member', key: `m-${m.userId}`, member: m, workspaceRole: 'owner' }));
+    if (editors.length > 0) {
+      items.push({ type: 'section', key: 'sec-editor', title: 'Editors', count: editors.length, color: COLORS.primary });
+      editors.forEach(m => items.push({ type: 'member', key: `m-${m.userId}`, member: m, workspaceRole: 'editor' }));
+    }
+    if (viewers.length > 0) {
+      items.push({ type: 'section', key: 'sec-viewer', title: 'Viewers', count: viewers.length, color: COLORS.textMuted });
+      viewers.forEach(m => items.push({ type: 'member', key: `m-${m.userId}`, member: m, workspaceRole: 'viewer' }));
+    }
+
+    return items;
+  }, [owners, editors, viewers]);
 
   const offlineCount = members.length - onlineCount;
+
+  const renderItem = ({ item }: { item: ListItem }) => {
+    if (item.type === 'section') {
+      return (
+        <SectionHeader
+          title={item.title}
+          count={item.count}
+          color={item.color}
+        />
+      );
+    }
+    return (
+      <MemberRow
+        member={item.member}
+        workspaceRole={item.workspaceRole}
+      />
+    );
+  };
 
   return (
     <Modal
@@ -213,19 +345,19 @@ export function ChatMembersSidebar({ visible, members, onlineCount, onClose }: P
             <View style={[styles.statDot, { backgroundColor: COLORS.textMuted }]} />
             <Text style={styles.statText}>{offlineCount} Offline</Text>
           </View>
+
         </View>
 
         {/* Divider */}
         <View style={styles.divider} />
 
-        {/* Member list */}
+        {/* Member list — sectioned */}
         <FlatList
-          data={sorted}
-          keyExtractor={m => m.userId}
-          renderItem={({ item }) => <MemberRow member={item} />}
+          data={listData}
+          keyExtractor={item => item.key}
+          renderItem={renderItem}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.list}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
         />
       </Animated.View>
     </Modal>
@@ -298,9 +430,10 @@ const styles = StyleSheet.create({
   },
   statsRow: {
     flexDirection:    'row',
-    gap:              8,
+    gap:              6,
     paddingHorizontal: SPACING.lg,
     paddingBottom:    SPACING.sm,
+    flexWrap:         'wrap',
   },
   statPill: {
     flexDirection:    'row',
@@ -333,20 +466,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingBottom:     SPACING.lg,
   },
-  separator: {
-    height:           1,
-    backgroundColor:  `${COLORS.border}60`,
-    marginHorizontal: SPACING.sm,
-  },
 
   // Member row
   memberRow: {
-    flexDirection:  'row',
-    alignItems:     'center',
-    paddingVertical: SPACING.sm,
+    flexDirection:    'row',
+    alignItems:       'center',
+    paddingVertical:  SPACING.sm,
     paddingHorizontal: SPACING.xs,
-    gap:            10,
-    borderRadius:   RADIUS.lg,
+    gap:              10,
+    borderRadius:     RADIUS.lg,
   },
   avatarWrap: {
     position:   'relative',
@@ -364,14 +492,14 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   onlineDot: {
-    position:    'absolute',
-    bottom:      0,
-    right:       0,
-    width:       11,
-    height:      11,
+    position:     'absolute',
+    bottom:       0,
+    right:        0,
+    width:        11,
+    height:       11,
     borderRadius: 6,
     borderWidth:  2,
-    borderColor: COLORS.backgroundCard,
+    borderColor:  COLORS.backgroundCard,
   },
   memberInfo: {
     flex:    1,
@@ -388,9 +516,9 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   memberRight: {
-    alignItems:  'flex-end',
-    gap:         4,
-    flexShrink:  0,
+    alignItems: 'flex-end',
+    gap:        4,
+    flexShrink: 0,
   },
   roleBadge: {
     flexDirection:    'row',
@@ -402,8 +530,8 @@ const styles = StyleSheet.create({
     borderWidth:      1,
   },
   roleText: {
-    fontSize:   9,
-    fontWeight: '700',
+    fontSize:      9,
+    fontWeight:    '700',
     textTransform: 'uppercase',
   },
   statusText: {

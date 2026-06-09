@@ -16,7 +16,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.deepdive.ai",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries and video meetings.",
+        "NSMicrophoneUsageDescription": "DeepDive AI uses your microphone for voice research queries, voice messages, and video meetings.",
         "NSSpeechRecognitionUsageDescription": "DeepDive AI uses speech recognition to convert your spoken research queries to text.",
         "NSPhotoLibraryUsageDescription": "DeepDive AI needs access to your photos to attach images to chat messages.",
         "NSCameraUsageDescription": "DeepDive AI needs access to your camera for video meetings and profile photos.",
@@ -127,7 +127,14 @@
       [
         "expo-av",
         {
-          "microphonePermission": "DeepDive AI uses your microphone for voice research queries and video meetings."
+          "microphonePermission": "DeepDive AI uses your microphone for voice research queries, voice messages, and video meetings."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "DeepDive AI uses your microphone for voice messages in team chat.",
+          "recordAudioAndroid": true
         }
       ],
       [
@@ -154,7 +161,6 @@
         }
       ],
       "expo-web-browser",
-      "expo-audio",
       "expo-video"
     ],
     "experiments": {

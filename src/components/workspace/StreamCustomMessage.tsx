@@ -1,146 +1,42 @@
 // src/components/workspace/StreamCustomMessage.tsx
 // Part 49 — Custom Message Component for Stream Chat
-// Part 50 FIXES: Removed DocumentPreviewTrigger (Stream renders docs natively)
-// Part 50D FIX — Double video (black screen) removed:
+// Part 50 — Removed DocumentPreviewTrigger (Stream renders docs natively)
+// Part 50 D FIX — Double video removed (Stream v8 renders video via expo-video natively)
+// Part 50.4 FIX — Double audio removed:
 //
-//   ROOT CAUSE: stream-chat-expo v7+ uses expo-video to render video attachments
-//   natively inside MessageSimple. Our custom VideoPlayerBubble was rendering
-//   BELOW MessageSimple as a second player, producing two video tiles per message:
-//     1. Stream's native expo-video thumbnail (with play button) — from MessageSimple
-//     2. Our VideoPlayerBubble (black screen) — from the custom code below
+//   ROOT CAUSE: audioRecordingEnabled on <Channel> makes Stream send voice
+//   messages with type='voiceRecording' and mime_type='audio/aac'. Our previous
+//   code intercepted any attachment whose mime_type started with 'audio/' and
+//   rendered a second AudioPlayerBubble below MessageSimple. Stream's own
+//   FileAttachmentGroup ALSO renders its built-in AudioAttachment for
+//   type === 'audio' and type === 'voiceRecording'. Result: two players.
 //
-//   FIX: Remove VideoPlayerBubble entirely. Stream v8 handles video via expo-video
-//   natively and the result is already good (thumbnail + play → fullscreen).
-//   Our VideoPlayerBubble is now ONLY kept for audio (stream-chat-expo's audio
-//   handler may not render inline waveform/seek controls as richly as ours).
+//   FIX: Remove AudioPlayerBubble and the isAudioMime check entirely.
+//   Stream v8 renders ALL audio (both type='audio' and type='voiceRecording')
+//   natively inside MessageSimple → FileAttachmentGroup → AudioAttachment.
+//   Our custom rendering is not needed and was causing duplication.
 //
-//   BEFORE: intercept video + audio → render MessageSimple + custom players below
-//   AFTER:  intercept audio only   → render MessageSimple (handles video+images+docs)
-//                                     + AudioPlayerBubble below for audio only
+//   StreamCustomMessage now unconditionally delegates to MessageSimple for
+//   all attachment types: text, images, video, audio, voice recordings, docs.
+//   No attachment interception remains.
 
-import React, { memo, useMemo } from 'react';
-import { View, StyleSheet } from 'react-native';
-import {
-  MessageSimple,
-  useMessageContext,
-} from 'stream-chat-expo';
-import type { LocalMessage } from 'stream-chat';
-
-// VideoPlayerBubble intentionally NOT imported — Stream renders video natively
-// via expo-video inside MessageSimple (v7+). Using VideoPlayerBubble caused
-// a double-video: Stream's native tile + our black-screen tile.
-import { AudioPlayerBubble } from './AudioPlayerBubble';
-import type { ChatAttachment } from '../../types/chat';
-import { SPACING } from '../../constants/theme';
-
-// ─── Attachment type classifier ───────────────────────────────────────────────
-
-function isAudioMime(type: string | undefined): boolean {
-  return !!(type?.startsWith('audio/'));
-}
-
-// ─── Map Stream attachment → our ChatAttachment type ─────────────────────────
-
-function toOurAttachment(
-  streamAtt: NonNullable<LocalMessage['attachments']>[number],
-): ChatAttachment {
-  const rawSize = streamAtt.file_size;
-  const sizeNum: number | undefined =
-    typeof rawSize === 'number'
-      ? rawSize
-      : typeof rawSize === 'string'
-        ? parseInt(rawSize, 10) || undefined
-        : undefined;
-
-  const mimeType: string =
-    streamAtt.mime_type ??
-    (streamAtt.type as string | undefined) ??
-    'application/octet-stream';
-
-  return {
-    url:  streamAtt.asset_url ?? streamAtt.image_url ?? streamAtt.thumb_url ?? '',
-    name: streamAtt.title     ?? streamAtt.fallback  ?? 'Attachment',
-    type: mimeType,
-    size: sizeNum,
-  };
-}
+import React, { memo } from 'react';
+import { MessageSimple } from 'stream-chat-expo';
 
 // ─── Custom message component ─────────────────────────────────────────────────
 //
-// Delegation strategy (stream-chat-expo v8):
-//   • MessageSimple (Stream) handles:
-//       - Text content
-//       - Reactions, reply preview, pin badge
-//       - Images → lightbox
-//       - Videos → expo-video inline player (thumbnail + fullscreen)
-//       - Documents → file chip (PDF, Word, Excel, etc.)
-//   • AudioPlayerBubble (ours) handles:
-//       - audio/* attachments only
-//       - Richer inline waveform + seek bar + rate control
-//       - Stream's default audio chip is basic; ours is better UX
+// Full delegation strategy (stream-chat-expo v8, Part 50.4):
+//   MessageSimple handles everything:
+//     • Text content
+//     • Reactions, reply preview, pin badge
+//     • Images → lightbox
+//     • Videos → expo-video inline player
+//     • Audio (type='audio') → AudioAttachment (waveform + seek)
+//     • Voice recordings (type='voiceRecording') → AudioAttachment
+//     • Documents → file chip (PDF, Word, Excel, etc.)
 //
-// Nothing else is intercepted. All other attachment types go straight to Stream.
+// Nothing is intercepted. AudioPlayerBubble removed to prevent double-render.
 
 export const StreamCustomMessage = memo(function StreamCustomMessage() {
-  const { message, isMyMessage } = useMessageContext();
-
-  const attachments = useMemo(
-    () => (message.attachments ?? []) as NonNullable<LocalMessage['attachments']>,
-    [message.attachments],
-  );
-
-  // Only intercept audio — everything else (video, images, docs) → Stream
-  const audioAtts = useMemo(
-    () => attachments.filter(a => isAudioMime(a.mime_type ?? (a.type as string))),
-    [attachments],
-  );
-
-  const hasCustomAtts = audioAtts.length > 0;
-
-  // No audio attachments → delegate entirely to Stream's default renderer
-  if (!hasCustomAtts) {
-    return <MessageSimple />;
-  }
-
-  return (
-    <View style={styles.wrapper}>
-      {/* Stream handles everything: text, reactions, images, video, docs */}
-      <MessageSimple />
-
-      {/* Our AudioPlayerBubble for richer inline audio playback */}
-      <View style={[
-        styles.customAttsContainer,
-        isMyMessage ? styles.customAttsOwn : styles.customAttsOther,
-      ]}>
-        {audioAtts.map((att, i) => (
-          <AudioPlayerBubble
-            key={`audio-${i}`}
-            attachment={toOurAttachment(att)}
-            isOwnMessage={isMyMessage}
-          />
-        ))}
-      </View>
-    </View>
-  );
-});
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const styles = StyleSheet.create({
-  wrapper: {
-    flex: 1,
-  },
-  customAttsContainer: {
-    marginTop:    SPACING.xs,
-    marginBottom: SPACING.xs,
-    gap:          SPACING.sm,
-  },
-  customAttsOwn: {
-    alignItems:   'flex-end',
-    paddingRight: SPACING.md,
-  },
-  customAttsOther: {
-    alignItems:  'flex-start',
-    paddingLeft: SPACING.md,
-  },
+  return <MessageSimple />;
 });
