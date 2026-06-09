@@ -1,74 +1,60 @@
 // app/(app)/workspace-chat.tsx
-// Part 49 — Stream Chat (FINAL DEFINITIVE FIX)
-// Part 50 FIXES:
-//
-//   FIX 1.3 — Attachment picker appearing BEHIND the input / buttons:
-//     Root cause: The AttachmentPicker bottom-sheet is rendered inside
-//     OverlayProvider. Its height is calculated from `topInset` and `bottomInset`.
-//     When these are wrong/missing, the bottom-sheet snaps to height=0 or renders
-//     under the navigation bar. The OverlayProvider in app/_layout.tsx must have
-//     `topInset` set to the top safe area and `bottomInset` to the bottom safe
-//     area. Additionally Channel must receive matching `topInset` and `bottomInset`
-//     so the MessageList shifts up when the picker opens. See app/_layout.tsx changes.
-//
-//     Inside this screen: Channel now receives explicit `topInset` (top bar height
-//     + status bar area) and `bottomInset` (bottom safe area). This makes the picker
-//     open AT the MessageInput and expand upward correctly on both iOS and Android.
-//
-//   FIX 2 — In-app document preview chip (the gray tile):
-//     Removed DocumentPreviewTrigger from StreamCustomMessage. Stream's built-in
-//     renderer already shows a document chip. The gray tile WAS our custom chip
-//     appearing below Stream's chip as a duplicate. Now only video/audio get
-//     custom players; everything else is Stream's native renderer.
-//     See StreamCustomMessage.tsx for the component-level change.
-//     ChatFileFilter kept as-is (it's the Files panel, separate from in-message preview).
-//
-//   FIX iOS ph:// crash — "No suitable URL request handler found for ph://":
-//     This crash occurred because our old ChatAttachmentPicker passed raw ph://
-//     URIs (iOS Photos library handles) to RCTNetworking which can't load them.
-//     Since we removed the custom attachment picker in Part 49 and now rely on
-//     Stream's built-in picker (which uses expo-image-picker / expo-media-library
-//     and resolves ph:// properly), this crash no longer occurs — as long as the
-//     OverlayProvider is set up with correct insets (see FIX 1.3).
-//
-// ═══════════════════════════════════════════════════════════════════
-// CORRECT FINAL STRUCTURE (unchanged from Part 49):
-//
-//   View (root, flex:1)
-//     View (topBarSafeArea, auto height with safe area padding)
-//       TopBarWithPresence
-//     View (chatContainer, flex:1)   ← gives Channel's KAV a height
-//       Chat (client)
-//         Channel (topInset, bottomInset set for picker)
-//           MessageList
-//           MessageInput
-//     ChatFileFilterStream (modal, outside Channel)
-// ═══════════════════════════════════════════════════════════════════
+// Part 49 — Stream Chat
+// Part 50 — Features: custom date separator, files fix, members sidebar,
+//            search modal, android keyboard fix
+// Part 50 UPDATE:
+//   1. Image viewer fixed — skips canOpenURL (unreliable on Android HTTPS),
+//      directly calls Linking.openURL with signed URL. Falls back to
+//      openOrDownloadAttachment if that also fails.
+//   2. Emoji selector REMOVED — MessageInput restored to plain Stream default,
+//      fully compatible with Android keyboard.
+//   3. Search panel is now a full-screen Modal overlay with its own TextInput
+//      that is completely isolated from Stream's MessageInput. The Stream
+//      MessageInput is NOT rendered while search is open so they never conflict.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
 } from 'react';
 import {
-  View, Text, TouchableOpacity, ActivityIndicator,
-  StyleSheet, Platform, StatusBar,
+  View,
+  Text,
+  TouchableOpacity,
+  ActivityIndicator,
+  StyleSheet,
+  Platform,
+  StatusBar,
+  Modal,
+  Pressable,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons }          from '@expo/vector-icons';
-import Animated, { FadeIn }  from 'react-native-reanimated';
+import Animated, {
+  FadeIn,
+  SlideInDown,
+  SlideOutDown,
+  Easing,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import * as ImagePicker      from 'expo-image-picker';
 
-// Stream SDK — NO OverlayProvider here. It lives in app/_layout.tsx.
+// Stream SDK — OverlayProvider lives in app/_layout.tsx
 import {
   Chat,
   Channel,
   MessageList,
   MessageInput,
+  AttachButton,
+  useMessageInputContext,
 } from 'stream-chat-expo';
 
 import { useAuth }               from '../../src/context/AuthContext';
 import { useStreamChat }         from '../../src/hooks/useStreamChat';
 import { StreamCustomMessage }   from '../../src/components/workspace/StreamCustomMessage';
 import { ChatFileFilter }        from '../../src/components/workspace/ChatFileFilter';
+import { ChatDateSeparator }     from '../../src/components/workspace/ChatDateSeparator';
+import { ChatMembersSidebar, ChatMemberInfo } from '../../src/components/workspace/ChatMembersSidebar';
+import { ChatSearchModal }       from '../../src/components/workspace/ChatSearchModal';
 import {
   notifyMention, notifyChatMessage, notifyReply,
 } from '../../src/services/workspaceNotificationService';
@@ -81,7 +67,138 @@ import { ChatMessage } from '../../src/types/chat';
 
 const TOP_BAR_HEIGHT = 56;
 
-// ─── Screen ──────────────────────────────────────────────────────────────────
+// ─── Animated sheet constants ─────────────────────────────────────────────────
+const SHEET_ENTER = SlideInDown.duration(280).easing(Easing.out(Easing.cubic));
+const SHEET_EXIT  = SlideOutDown.duration(220).easing(Easing.in(Easing.quad));
+
+// ─── Attachment Picker Sheet ──────────────────────────────────────────────────
+
+interface AttachPickerSheetProps {
+  visible:  boolean;
+  onClose:  () => void;
+  onCamera: () => void;
+  onPhotos: () => void;
+  onFiles:  () => void;
+}
+
+function AttachPickerSheet({ visible, onClose, onCamera, onPhotos, onFiles }: AttachPickerSheetProps) {
+  const insets = useSafeAreaInsets();
+
+  const options = [
+    { icon: 'camera' as const,        label: 'Camera',       sub: 'Take a photo or video',     color: '#FF6B6B', onPress: onCamera },
+    { icon: 'images' as const,        label: 'Photo Library',sub: 'Choose from your gallery',  color: COLORS.primary, onPress: onPhotos },
+    { icon: 'document-text' as const, label: 'File',         sub: 'PDF, Word, Excel and more', color: '#4ECDC4', onPress: onFiles },
+  ];
+
+  return (
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
+      <Animated.View entering={FadeIn.duration(200)} style={pickerStyles.backdrop}>
+        <Pressable style={StyleSheet.absoluteFillObject} onPress={onClose} />
+      </Animated.View>
+      <Animated.View
+        entering={SHEET_ENTER}
+        exiting={SHEET_EXIT}
+        style={[pickerStyles.sheet, { paddingBottom: Math.max(insets.bottom, 20) }]}
+      >
+        <View style={pickerStyles.handleWrap}><View style={pickerStyles.handle} /></View>
+        <Text style={pickerStyles.title}>Add Attachment</Text>
+        <View style={pickerStyles.optionList}>
+          {options.map((opt, idx) => (
+            <TouchableOpacity
+              key={idx}
+              style={[pickerStyles.optionRow, idx === options.length - 1 && { borderBottomWidth: 0 }]}
+              activeOpacity={0.65}
+              onPress={() => { onClose(); setTimeout(opt.onPress, 200); }}
+            >
+              <View style={[pickerStyles.optionIconWrap, { backgroundColor: `${opt.color}18`, borderColor: `${opt.color}30` }]}>
+                <Ionicons name={opt.icon} size={22} color={opt.color} />
+              </View>
+              <View style={pickerStyles.optionText}>
+                <Text style={pickerStyles.optionLabel}>{opt.label}</Text>
+                <Text style={pickerStyles.optionSub}>{opt.sub}</Text>
+              </View>
+              <View style={pickerStyles.chevronWrap}>
+                <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+              </View>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <TouchableOpacity style={pickerStyles.cancelBtn} onPress={onClose} activeOpacity={0.7}>
+          <Text style={pickerStyles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    </Modal>
+  );
+}
+
+const pickerStyles = StyleSheet.create({
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  sheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: COLORS.backgroundCard,
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopWidth: 1, borderColor: COLORS.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.3, shadowRadius: 24, elevation: 32,
+  },
+  handleWrap:    { alignItems: 'center', paddingTop: 12, paddingBottom: 4 },
+  handle:        { width: 44, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
+  title:         { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center', paddingTop: SPACING.sm, paddingBottom: SPACING.md, letterSpacing: 0.2 },
+  optionList:    { paddingHorizontal: SPACING.xl, paddingBottom: 4 },
+  optionRow:     { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  optionIconWrap:{ width: 48, height: 48, borderRadius: 15, alignItems: 'center', justifyContent: 'center', borderWidth: 1, flexShrink: 0 },
+  optionText:    { flex: 1 },
+  optionLabel:   { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
+  optionSub:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  chevronWrap:   { width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  cancelBtn:     { marginHorizontal: SPACING.xl, marginTop: SPACING.sm, paddingVertical: 14, borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center' },
+  cancelText:    { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' },
+});
+
+// ─── Custom Attach Button ─────────────────────────────────────────────────────
+
+function CustomAttachButton() {
+  const { uploadNewFile, pickFile } = useMessageInputContext() as any;
+  const [showPicker, setShowPicker] = useState(false);
+
+  const handleCamera = useCallback(async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) return;
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'], quality: 0.9 });
+    if (!result.canceled && result.assets.length > 0) {
+      const a = result.assets[0];
+      await uploadNewFile({ uri: a.uri, name: a.fileName ?? `photo_${Date.now()}.jpg`, type: a.mimeType ?? 'image/jpeg', size: a.fileSize });
+    }
+  }, [uploadNewFile]);
+
+  const handlePhotos = useCallback(async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return;
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.9, allowsMultipleSelection: true, selectionLimit: 10 });
+    if (!result.canceled) {
+      for (const a of result.assets) {
+        await uploadNewFile({ uri: a.uri, name: a.fileName ?? `image_${Date.now()}.jpg`, type: a.mimeType ?? 'image/jpeg', size: a.fileSize });
+      }
+    }
+  }, [uploadNewFile]);
+
+  const handleFiles = useCallback(async () => { await pickFile(); }, [pickFile]);
+
+  return (
+    <>
+      <AttachButton handleOnPress={() => setShowPicker(true)} />
+      <AttachPickerSheet
+        visible={showPicker}
+        onClose={() => setShowPicker(false)}
+        onCamera={handleCamera}
+        onPhotos={handlePhotos}
+        onFiles={handleFiles}
+      />
+    </>
+  );
+}
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function WorkspaceChatScreen() {
   const {
@@ -100,8 +217,15 @@ export default function WorkspaceChatScreen() {
     isOwnerOrEditor ? (userRole as 'owner' | 'editor') : null,
   );
 
-  const [showFiles, setShowFiles] = useState(false);
-  const [fileCount, setFileCount] = useState(0);
+  // ── UI State ──────────────────────────────────────────────────────────────
+  const [showFiles,   setShowFiles]   = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
+  const [showSearch,  setShowSearch]  = useState(false);
+  const [fileCount,   setFileCount]   = useState(0);
+  const [targetMsgId, setTargetMsgId] = useState<string | undefined>(undefined);
+  const [members,     setMembers]     = useState<ChatMemberInfo[]>([]);
+  const [onlineCount, setOnlineCount] = useState(0);
+
   const isFocusedRef = useRef(false);
 
   useEffect(() => { prewarmChatSounds().catch(() => {}); }, []);
@@ -117,15 +241,16 @@ export default function WorkspaceChatScreen() {
     }, [workspaceId]),
   );
 
+  // ── Notification listeners ────────────────────────────────────────────────
   useEffect(() => {
     if (!client || !workspaceId || !user?.id) return;
     const handleNewMessage = (event: any) => {
       const msg = event.message;
       if (!msg || msg.user?.id === user.id) return;
       if (isFocusedRef.current) playReceiveSound().catch(() => {});
-      const senderName = (msg.user?.name as string | undefined) ?? 'Someone';
-      const preview    = ((msg.text as string | undefined) ?? '').slice(0, 80);
-      const mentioned: string[] = (msg.mentioned_users ?? []).map((u: any) => u.id as string);
+      const senderName  = (msg.user?.name as string | undefined) ?? 'Someone';
+      const preview     = ((msg.text as string | undefined) ?? '').slice(0, 80);
+      const mentioned   = (msg.mentioned_users ?? []).map((u: any) => u.id as string);
       if (mentioned.includes(user.id)) {
         notifyMention({ workspaceId, workspaceName: workspaceName ?? 'Workspace', mentionerName: senderName, messagePreview: preview }).catch(() => {});
         return;
@@ -148,6 +273,7 @@ export default function WorkspaceChatScreen() {
     return () => unsub.unsubscribe();
   }, [client, user?.id]);
 
+  // ── File count ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!channel) return;
     const countFiles = () => {
@@ -159,14 +285,48 @@ export default function WorkspaceChatScreen() {
     return () => unsub.unsubscribe();
   }, [channel]);
 
+  // ── Members list (Feature 4) ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!channel) return;
+    const buildMembers = () => {
+      const rawMembers  = (channel.state as any).members ?? {};
+      const rawWatchers = (channel.state as any).watchers ?? {};
+      const onlineIds   = new Set(Object.keys(rawWatchers));
+      const list: ChatMemberInfo[] = Object.values(rawMembers).map((m: any) => ({
+        userId:    m.user_id ?? m.user?.id ?? '',
+        name:      m.user?.name ?? '',
+        username:  m.user?.name ?? null,
+        avatarUrl: m.user?.image ?? null,
+        role:      'editor' as ChatMemberInfo['role'],
+        isOnline:  onlineIds.has(m.user_id ?? m.user?.id ?? ''),
+      })).filter((m: ChatMemberInfo) => m.userId);
+      setMembers(list);
+      setOnlineCount(list.filter((m: ChatMemberInfo) => m.isOnline).length);
+    };
+    buildMembers();
+    const s1 = channel.on('user.watching.start', buildMembers);
+    const s2 = channel.on('user.watching.stop',  buildMembers);
+    const s3 = channel.on('member.added',        buildMembers);
+    const s4 = channel.on('member.removed',      buildMembers);
+    return () => { s1.unsubscribe(); s2.unsubscribe(); s3.unsubscribe(); s4.unsubscribe(); };
+  }, [channel]);
+
+  // ── Scroll-to-message + highlight (Features 3 & 5) ───────────────────────
+  // Sets targetedMessage on MessageList → Stream scrolls and highlights.
+  // Clear after 2s so the amber highlight fades.
+  const handleGoToMessage = useCallback((messageId: string) => {
+    setTargetMsgId(messageId);
+    setShowSearch(false);
+    setShowFiles(false);
+    setTimeout(() => setTargetMsgId(undefined), 2000);
+  }, []);
+
   // ── Access guard ──────────────────────────────────────────────────────────
   if (!isOwnerOrEditor) {
     return (
       <View style={[styles.lockRoot, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
         <View style={styles.lockScreen}>
-          <View style={styles.lockIcon}>
-            <Ionicons name="lock-closed" size={40} color={COLORS.textMuted} />
-          </View>
+          <View style={styles.lockIcon}><Ionicons name="lock-closed" size={40} color={COLORS.textMuted} /></View>
           <Text style={styles.lockTitle}>Team Chat</Text>
           <Text style={styles.lockDesc}>
             Chat is only available to owners and editors.{'\n'}
@@ -189,6 +349,8 @@ export default function WorkspaceChatScreen() {
           workspaceName={workspaceName ?? 'Team Chat'}
           onBack={() => router.back()}
           onFiles={() => {}}
+          onSearch={() => {}}
+          onMembers={() => {}}
           fileCount={0}
           onlineCount={0}
           memberCount={0}
@@ -213,90 +375,98 @@ export default function WorkspaceChatScreen() {
     );
   }
 
-  // ── FIX 1.3: Compute correct insets for the Channel's attachment picker ───
-  //
-  // topInset: the distance from the top of the SCREEN to the top of the
-  //   chat area. This tells Stream how high the picker bottom-sheet can expand.
-  //   = safe area top + top bar height
-  //
-  // bottomInset: the distance from the bottom of the channel content to the
-  //   bottom of the SCREEN. This tells Stream how much to shift the MessageList
-  //   when the picker is open.
-  //   = safe area bottom (accounts for home indicator on iPhone, nav bar on Android)
-  //
-  // keyboardVerticalOffset: how much the Channel's KeyboardAvoidingView needs
-  //   to offset on iOS. On Android the window resizes so it's always 0.
   const channelTopInset    = insets.top + TOP_BAR_HEIGHT;
   const channelBottomInset = insets.bottom;
+
+  // Feature 6: Android keyboard fix
+  const ChatWrapper      = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
+  const chatWrapperProps: any = Platform.OS === 'ios'
+    ? { style: styles.chatContainer, behavior: 'padding', keyboardVerticalOffset: channelTopInset }
+    : { style: [styles.chatContainer, { paddingBottom: insets.bottom }] };
 
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
 
-      {/* Top bar sits above the chat area */}
+      {/* Top bar */}
       <View style={[styles.topBarSafeArea, { paddingTop: insets.top }]}>
         <TopBarWithPresence
           workspaceName={workspaceName ?? 'Team Chat'}
           channel={channel}
           onBack={() => router.back()}
           onFiles={() => setShowFiles(true)}
+          onSearch={() => setShowSearch(true)}
+          onMembers={() => setShowMembers(true)}
           fileCount={fileCount}
         />
       </View>
 
-      {/*
-        chatContainer gives Channel's KAV a parent with flex:1 so it can
-        compute its height correctly (see Part 49 comment for full explanation).
-      */}
-      <View style={styles.chatContainer}>
+      <ChatWrapper {...chatWrapperProps}>
         <Chat client={client as any}>
           <Channel
             channel={channel}
-            keyboardVerticalOffset={
-              Platform.OS === 'ios'
-                ? channelTopInset
-                : 0
-            }
+            keyboardVerticalOffset={Platform.OS === 'ios' ? channelTopInset : 0}
             MessageSimple={StreamCustomMessage}
-            // FIX 1.3: Pass topInset and bottomInset so the AttachmentPicker
-            // bottom-sheet knows how high to open and how much to shift the list.
             topInset={channelTopInset}
             bottomInset={channelBottomInset}
+            AttachButton={CustomAttachButton}
+            InlineDateSeparator={ChatDateSeparator}
+            disableKeyboardCompatibleView={Platform.OS === 'android'}
           >
-            {/* Direct children — no View wrapper between Channel and these */}
-            <MessageList />
+            <MessageList targetedMessage={targetMsgId} />
+            {/* Plain MessageInput — no emoji wrapper, fully Android compatible */}
             <MessageInput />
           </Channel>
         </Chat>
-      </View>
+      </ChatWrapper>
 
-      {/* File filter modal — outside Channel */}
+      {/* Files & Media panel */}
       <ChatFileFilterStream
         visible={showFiles}
         channel={channel}
         onClose={() => setShowFiles(false)}
+        onScrollToMessage={handleGoToMessage}
+      />
+
+      {/* Feature 4: Members sidebar */}
+      <ChatMembersSidebar
+        visible={showMembers}
+        members={members}
+        onlineCount={onlineCount}
+        onClose={() => setShowMembers(false)}
+      />
+
+      {/* Feature 5: Search — full-screen Modal, completely isolated from Stream input */}
+      <ChatSearchModal
+        visible={showSearch}
+        channel={channel}
+        onClose={() => setShowSearch(false)}
+        onGoToMessage={handleGoToMessage}
       />
     </View>
   );
 }
 
-// ─── Static top bar ───────────────────────────────────────────────────────────
+// ─── Top bar (static) ─────────────────────────────────────────────────────────
 
 interface TopBarProps {
   workspaceName: string;
-  onBack:      () => void;
-  onFiles:     () => void;
-  fileCount:   number;
-  onlineCount: number;
-  memberCount: number;
+  onBack:        () => void;
+  onFiles:       () => void;
+  onSearch:      () => void;
+  onMembers:     () => void;
+  fileCount:     number;
+  onlineCount:   number;
+  memberCount:   number;
 }
 
-function TopBar({ workspaceName, onBack, onFiles, fileCount, onlineCount, memberCount }: TopBarProps) {
+function TopBar({ workspaceName, onBack, onFiles, onSearch, onMembers, fileCount, onlineCount, memberCount }: TopBarProps) {
   return (
     <Animated.View entering={FadeIn.duration(350)} style={styles.topBar}>
       <TouchableOpacity onPress={onBack} style={styles.backBtn}>
         <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
       </TouchableOpacity>
+
       <View style={styles.topCenter}>
         <View style={styles.titleRow}>
           <View style={styles.chatIcon}>
@@ -310,20 +480,33 @@ function TopBar({ workspaceName, onBack, onFiles, fileCount, onlineCount, member
           {onlineCount > 0 && `${onlineCount} online`}
         </Text>
       </View>
+
       <View style={styles.topActions}>
+        {/* Search icon */}
+        <TouchableOpacity onPress={onSearch} style={styles.iconBtn} activeOpacity={0.7}>
+          <Ionicons name="search-outline" size={17} color={COLORS.textSecondary} />
+        </TouchableOpacity>
+
+        {/* Files icon */}
         <TouchableOpacity
           onPress={onFiles}
           style={[styles.iconBtn, fileCount > 0 && styles.iconBtnFiles]}
           activeOpacity={0.7}
         >
-          <Ionicons
-            name="folder-open-outline"
-            size={17}
-            color={fileCount > 0 ? COLORS.primary : COLORS.textSecondary}
-          />
+          <Ionicons name="folder-open-outline" size={17} color={fileCount > 0 ? COLORS.primary : COLORS.textSecondary} />
           {fileCount > 0 && (
             <View style={styles.badge}>
               <Text style={styles.badgeTxt}>{fileCount > 99 ? '99+' : fileCount}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
+        {/* Members icon */}
+        <TouchableOpacity onPress={onMembers} style={styles.iconBtn} activeOpacity={0.7}>
+          <Ionicons name="people-outline" size={17} color={COLORS.textSecondary} />
+          {onlineCount > 0 && (
+            <View style={[styles.badge, { backgroundColor: COLORS.success }]}>
+              <Text style={styles.badgeTxt}>{onlineCount}</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -334,15 +517,11 @@ function TopBar({ workspaceName, onBack, onFiles, fileCount, onlineCount, member
 
 // ─── Top bar with live presence ───────────────────────────────────────────────
 
-interface TopBarWithPresenceProps {
-  workspaceName: string;
-  channel:       any;
-  onBack:        () => void;
-  onFiles:       () => void;
-  fileCount:     number;
+interface TopBarWithPresenceProps extends Omit<TopBarProps, 'onlineCount' | 'memberCount'> {
+  channel: any;
 }
 
-function TopBarWithPresence({ workspaceName, channel, onBack, onFiles, fileCount }: TopBarWithPresenceProps) {
+function TopBarWithPresence({ channel, ...rest }: TopBarWithPresenceProps) {
   const [watcherCount, setWatcherCount] = useState<number>(
     (channel.state as any).watcher_count ?? 0,
   );
@@ -356,27 +535,19 @@ function TopBarWithPresence({ workspaceName, channel, onBack, onFiles, fileCount
     const s2 = channel.on('user.watching.stop',  update);
     return () => { s1.unsubscribe(); s2.unsubscribe(); };
   }, [channel]);
-  return (
-    <TopBar
-      workspaceName={workspaceName}
-      onBack={onBack}
-      onFiles={onFiles}
-      fileCount={fileCount}
-      onlineCount={watcherCount}
-      memberCount={memberCount}
-    />
-  );
+  return <TopBar {...rest} onlineCount={watcherCount} memberCount={memberCount} />;
 }
 
 // ─── ChatFileFilter adapter ───────────────────────────────────────────────────
 
 interface ChatFileFilterStreamProps {
-  visible:  boolean;
-  channel:  any;
-  onClose:  () => void;
+  visible:           boolean;
+  channel:           any;
+  onClose:           () => void;
+  onScrollToMessage: (messageId: string) => void;
 }
 
-function ChatFileFilterStream({ visible, channel, onClose }: ChatFileFilterStreamProps) {
+function ChatFileFilterStream({ visible, channel, onClose, onScrollToMessage }: ChatFileFilterStreamProps) {
   const messages = useMemo<ChatMessage[]>(() => {
     if (!channel?.state?.messages) return [];
     return (Object.values((channel.state as any).messages) as any[])
@@ -420,7 +591,7 @@ function ChatFileFilterStream({ visible, channel, onClose }: ChatFileFilterStrea
       visible={visible}
       messages={messages}
       onClose={onClose}
-      onScrollToMessage={() => onClose()}
+      onScrollToMessage={onScrollToMessage}
     />
   );
 }
@@ -428,120 +599,55 @@ function ChatFileFilterStream({ visible, channel, onClose }: ChatFileFilterStrea
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root: {
-    flex:            1,
-    backgroundColor: COLORS.background,
-  },
-  lockRoot: {
-    flex:            1,
-    backgroundColor: COLORS.background,
-  },
-
-  topBarSafeArea: {
-    backgroundColor:   COLORS.background,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
+  root:            { flex: 1, backgroundColor: COLORS.background },
+  lockRoot:        { flex: 1, backgroundColor: COLORS.background },
+  topBarSafeArea:  { backgroundColor: COLORS.background, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   topBar: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    paddingHorizontal: SPACING.md,
-    paddingVertical:   SPACING.sm,
-    gap:               10,
-    height:            TOP_BAR_HEIGHT,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+    gap: 10, height: TOP_BAR_HEIGHT,
   },
-
-  // flex:1 gives Channel's KAV a parent with an explicit, computed height.
-  chatContainer: {
-    flex: 1,
-  },
-
+  chatContainer:   { flex: 1 },
   backBtn: {
-    width:           36,
-    height:          36,
-    borderRadius:    11,
+    width: 36, height: 36, borderRadius: 11,
     backgroundColor: COLORS.backgroundCard,
-    alignItems:      'center',
-    justifyContent:  'center',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
-    flexShrink:      0,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
   },
   topCenter:  { flex: 1 },
   titleRow:   { flexDirection: 'row', alignItems: 'center', gap: 7 },
   chatIcon: {
-    width:           26,
-    height:          26,
-    borderRadius:    8,
+    width: 26, height: 26, borderRadius: 8,
     backgroundColor: `${COLORS.primary}18`,
-    alignItems:      'center',
-    justifyContent:  'center',
-    flexShrink:      0,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
   },
-  topTitle: {
-    color:      COLORS.textPrimary,
-    fontSize:   FONTS.sizes.base,
-    fontWeight: '800',
-    flex:       1,
-  },
-  topSub: {
-    color:       COLORS.textMuted,
-    fontSize:    FONTS.sizes.xs,
-    marginTop:   1,
-    paddingLeft: 33,
-  },
+  topTitle:   { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', flex: 1 },
+  topSub:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1, paddingLeft: 33 },
   topActions: { flexDirection: 'row', gap: 5, alignItems: 'center' },
   iconBtn: {
-    width:           34,
-    height:          34,
-    borderRadius:    10,
+    width: 34, height: 34, borderRadius: 10,
     backgroundColor: COLORS.backgroundCard,
-    alignItems:      'center',
-    justifyContent:  'center',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: COLORS.border,
   },
   iconBtnFiles: { borderColor: `${COLORS.primary}35` },
   badge: {
-    position:          'absolute',
-    top:               -4,
-    right:             -4,
-    backgroundColor:   COLORS.primary,
-    borderRadius:      8,
-    minWidth:          15,
-    height:            15,
-    alignItems:        'center',
-    justifyContent:    'center',
-    paddingHorizontal: 2,
-    borderWidth:       1.5,
-    borderColor:       COLORS.background,
+    position: 'absolute', top: -4, right: -4,
+    backgroundColor: COLORS.primary,
+    borderRadius: 8, minWidth: 15, height: 15,
+    alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 2, borderWidth: 1.5, borderColor: COLORS.background,
   },
-  badgeTxt: { color: '#FFF', fontSize: 8, fontWeight: '800' },
-
-  lockScreen: {
-    flex:              1,
-    alignItems:        'center',
-    justifyContent:    'center',
-    paddingHorizontal: SPACING.xl,
-    gap:               16,
-  },
-  lockIcon: {
-    width:           80,
-    height:          80,
-    borderRadius:    24,
-    backgroundColor: `${COLORS.textMuted}15`,
-    alignItems:      'center',
-    justifyContent:  'center',
-    marginBottom:    SPACING.sm,
-  },
+  badgeTxt:        { color: '#FFF', fontSize: 8, fontWeight: '800' },
+  lockScreen:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, gap: 16 },
+  lockIcon:        { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.textMuted}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.sm },
   lockTitle:       { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
   lockDesc:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, textAlign: 'center', lineHeight: 24, maxWidth: 300 },
   lockBackBtn:     { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: 13, marginTop: SPACING.sm },
   lockBackBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
-
-  loadWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
-  loadTxt:  { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
-  errTxt:   { color: COLORS.textSecondary, textAlign: 'center', fontSize: FONTS.sizes.sm, maxWidth: 280 },
-  retryBtn: { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: SPACING.sm },
-  retryTxt: { color: '#FFF', fontWeight: '700' },
+  loadWrap:        { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
+  loadTxt:         { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+  errTxt:          { color: COLORS.textSecondary, textAlign: 'center', fontSize: FONTS.sizes.sm, maxWidth: 280 },
+  retryBtn:        { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.xl, paddingVertical: SPACING.sm },
+  retryTxt:        { color: '#FFF', fontWeight: '700' },
 });

@@ -41,7 +41,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.deepdive.ai",
-      "softwareKeyboardLayoutMode": "pan",
+      "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.VIBRATE",

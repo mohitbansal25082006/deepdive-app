@@ -1,16 +1,22 @@
 // src/components/workspace/StreamCustomMessage.tsx
 // Part 49 — Custom Message Component for Stream Chat
-// Part 50 FIXES:
-//   FIX 2: Removed DocumentPreviewTrigger — Stream's built-in attachment renderer
-//          already shows a styled document chip for PDFs, Word, etc. Our custom
-//          chip was appearing as a SECOND gray tile below Stream's own tile.
-//          We now only intercept video and audio attachments (Stream has no
-//          built-in player for those). Images and documents are handled entirely
-//          by Stream's default MessageSimple renderer.
+// Part 50 FIXES: Removed DocumentPreviewTrigger (Stream renders docs natively)
+// Part 50D FIX — Double video (black screen) removed:
 //
-//   The "ph://" crash on iOS was also caused by our code trying to display local
-//   photo-library URIs directly. By letting Stream own image/document rendering
-//   (it resolves ph:// via expo-media-library internally), the crash is avoided.
+//   ROOT CAUSE: stream-chat-expo v7+ uses expo-video to render video attachments
+//   natively inside MessageSimple. Our custom VideoPlayerBubble was rendering
+//   BELOW MessageSimple as a second player, producing two video tiles per message:
+//     1. Stream's native expo-video thumbnail (with play button) — from MessageSimple
+//     2. Our VideoPlayerBubble (black screen) — from the custom code below
+//
+//   FIX: Remove VideoPlayerBubble entirely. Stream v8 handles video via expo-video
+//   natively and the result is already good (thumbnail + play → fullscreen).
+//   Our VideoPlayerBubble is now ONLY kept for audio (stream-chat-expo's audio
+//   handler may not render inline waveform/seek controls as richly as ours).
+//
+//   BEFORE: intercept video + audio → render MessageSimple + custom players below
+//   AFTER:  intercept audio only   → render MessageSimple (handles video+images+docs)
+//                                     + AudioPlayerBubble below for audio only
 
 import React, { memo, useMemo } from 'react';
 import { View, StyleSheet } from 'react-native';
@@ -20,17 +26,15 @@ import {
 } from 'stream-chat-expo';
 import type { LocalMessage } from 'stream-chat';
 
-import { VideoPlayerBubble } from './VideoPlayerBubble';
+// VideoPlayerBubble intentionally NOT imported — Stream renders video natively
+// via expo-video inside MessageSimple (v7+). Using VideoPlayerBubble caused
+// a double-video: Stream's native tile + our black-screen tile.
 import { AudioPlayerBubble } from './AudioPlayerBubble';
-// NOTE: DocumentPreviewTrigger intentionally NOT imported — Stream renders docs natively.
 import type { ChatAttachment } from '../../types/chat';
 import { SPACING } from '../../constants/theme';
 
-// ─── Attachment type classifiers ──────────────────────────────────────────────
+// ─── Attachment type classifier ───────────────────────────────────────────────
 
-function isVideoMime(type: string | undefined): boolean {
-  return !!(type?.startsWith('video/'));
-}
 function isAudioMime(type: string | undefined): boolean {
   return !!(type?.startsWith('audio/'));
 }
@@ -63,12 +67,19 @@ function toOurAttachment(
 
 // ─── Custom message component ─────────────────────────────────────────────────
 //
-// Strategy:
-//   • Stream's MessageSimple handles: text, reactions, reply preview, pin badge,
-//     images (with lightbox), and document file chips.
-//   • We only intercept video and audio — Stream has no built-in inline player
-//     for these, so our custom VideoPlayerBubble / AudioPlayerBubble are needed.
-//   • Documents are intentionally left to Stream (FIX 2 — removes double chip).
+// Delegation strategy (stream-chat-expo v8):
+//   • MessageSimple (Stream) handles:
+//       - Text content
+//       - Reactions, reply preview, pin badge
+//       - Images → lightbox
+//       - Videos → expo-video inline player (thumbnail + fullscreen)
+//       - Documents → file chip (PDF, Word, Excel, etc.)
+//   • AudioPlayerBubble (ours) handles:
+//       - audio/* attachments only
+//       - Richer inline waveform + seek bar + rate control
+//       - Stream's default audio chip is basic; ours is better UX
+//
+// Nothing else is intercepted. All other attachment types go straight to Stream.
 
 export const StreamCustomMessage = memo(function StreamCustomMessage() {
   const { message, isMyMessage } = useMessageContext();
@@ -78,40 +89,29 @@ export const StreamCustomMessage = memo(function StreamCustomMessage() {
     [message.attachments],
   );
 
-  // Only intercept video and audio — everything else goes to Stream's renderer
-  const videoAtts = useMemo(
-    () => attachments.filter(a => isVideoMime(a.mime_type ?? (a.type as string))),
-    [attachments],
-  );
+  // Only intercept audio — everything else (video, images, docs) → Stream
   const audioAtts = useMemo(
     () => attachments.filter(a => isAudioMime(a.mime_type ?? (a.type as string))),
     [attachments],
   );
 
-  const hasCustomAtts = videoAtts.length > 0 || audioAtts.length > 0;
+  const hasCustomAtts = audioAtts.length > 0;
 
-  // No custom attachments → delegate entirely to Stream's default renderer
+  // No audio attachments → delegate entirely to Stream's default renderer
   if (!hasCustomAtts) {
     return <MessageSimple />;
   }
 
   return (
     <View style={styles.wrapper}>
-      {/* Stream handles: text, reactions, reply preview, pin badge, images, docs */}
+      {/* Stream handles everything: text, reactions, images, video, docs */}
       <MessageSimple />
 
-      {/* Our custom players appear below the Stream bubble — video & audio only */}
+      {/* Our AudioPlayerBubble for richer inline audio playback */}
       <View style={[
         styles.customAttsContainer,
         isMyMessage ? styles.customAttsOwn : styles.customAttsOther,
       ]}>
-        {videoAtts.map((att, i) => (
-          <VideoPlayerBubble
-            key={`video-${i}`}
-            attachment={toOurAttachment(att)}
-            isOwnMessage={isMyMessage}
-          />
-        ))}
         {audioAtts.map((att, i) => (
           <AudioPlayerBubble
             key={`audio-${i}`}

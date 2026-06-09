@@ -3,7 +3,12 @@
 // Part 47 — DUAL ACTION: tapping a file card selects it and shows an action bar
 //            with two buttons: "Open File" (direct preview/download) and
 //            "Go to Message" (scroll + highlight the chat message).
-//            Press another card to change selection, or X to deselect.
+// Part 50 — FIXED:
+//   • Image preview now works: tapping "Open File" on an image gets a signed URL
+//     then opens it via Linking.openURL so the native image viewer launches.
+//   • Go to Message now works: the callback is properly wired through workspace-chat.tsx
+//     to the MessageList targetedMessage prop which causes Stream to scroll + highlight.
+//   • When the panel closes after "Go to Message" the highlight appears immediately.
 
 import React, {
   useState,
@@ -24,6 +29,7 @@ import {
   Dimensions,
   ScrollView,
   Alert,
+  Linking,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -79,16 +85,43 @@ function matchesFilter(mime: string, filter: ChatFileFilterType): boolean {
 
 function entryKey(e: FileEntry) { return `${e.messageId}:${e.attachment.url}`; }
 
-// ─── Image thumbnail (needs signed URL) ──────────────────────────────────────
+// ─── Image thumbnail ──────────────────────────────────────────────────────────
+// Stream CDN images (stream-io-cdn.com, stream-io-usw.com, etc.) are already
+// public HTTPS URLs — they do NOT need signed URLs. Calling getSignedUrl on
+// them returns null (Supabase signing rejects non-Supabase URLs), causing the
+// permanent spinner. We only call getSignedUrl for Supabase Storage URLs.
+
+function isSupabaseStorageUrl(url: string): boolean {
+  // Supabase Storage URLs contain /storage/v1/object/ in the path
+  return url.includes('/storage/v1/object/');
+}
 
 function ImageThumb({ url }: { url: string }) {
-  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [displayUrl, setDisplayUrl] = useState<string | null>(
+    // If it's already a public HTTP URL (Stream CDN, etc.), use it immediately
+    isSupabaseStorageUrl(url) ? null : url,
+  );
+  const [hasError,    setHasError]    = useState(false);
 
   React.useEffect(() => {
-    getSignedUrl(url).then(s => setSignedUrl(s));
+    if (!isSupabaseStorageUrl(url)) {
+      // Public URL — use directly, no signing needed
+      setDisplayUrl(url);
+      return;
+    }
+    // Supabase private URL — needs a signed URL
+    setDisplayUrl(null);
+    getSignedUrl(url).then(signed => {
+      if (signed) {
+        setDisplayUrl(signed);
+      } else {
+        // Signing failed — try the raw URL as a last resort
+        setDisplayUrl(url);
+      }
+    });
   }, [url]);
 
-  if (!signedUrl) {
+  if (!displayUrl) {
     return (
       <View style={styles.thumbPlaceholder}>
         <ActivityIndicator size="small" color={COLORS.primary} />
@@ -96,7 +129,22 @@ function ImageThumb({ url }: { url: string }) {
     );
   }
 
-  return <Image source={{ uri: signedUrl }} style={styles.imageThumb} resizeMode="cover" />;
+  if (hasError) {
+    return (
+      <View style={styles.thumbPlaceholder}>
+        <Ionicons name="image-outline" size={20} color={COLORS.textMuted} />
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: displayUrl }}
+      style={styles.imageThumb}
+      resizeMode="cover"
+      onError={() => setHasError(true)}
+    />
+  );
 }
 
 // ─── File entry card ──────────────────────────────────────────────────────────
@@ -137,11 +185,7 @@ function FileCard({ entry, isSelected, onPress }: FileCardProps) {
             <Ionicons
               name={icon}
               size={22}
-              color={
-                isVid ? COLORS.info
-                : attachment.type.startsWith('audio/') ? COLORS.warning
-                : COLORS.primary
-              }
+              color={isVid ? COLORS.info : attachment.type.startsWith('audio/') ? COLORS.warning : COLORS.primary}
             />
           </View>
         )}
@@ -149,9 +193,7 @@ function FileCard({ entry, isSelected, onPress }: FileCardProps) {
 
       {/* Meta */}
       <View style={styles.cardMeta}>
-        <Text style={styles.cardName} numberOfLines={2}>
-          {attachment.name || 'Attachment'}
-        </Text>
+        <Text style={styles.cardName} numberOfLines={2}>{attachment.name || 'Attachment'}</Text>
         <View style={styles.cardSubRow}>
           {!!attachment.size && <Text style={styles.cardSize}>{formatFileSize(attachment.size)}</Text>}
           {!!attachment.size && <Text style={styles.cardDot}>·</Text>}
@@ -180,6 +222,11 @@ interface Props {
   visible:           boolean;
   messages:          ChatMessage[];
   onClose:           () => void;
+  /**
+   * Part 50 FIX: This callback now properly wires to the MessageList
+   * targetedMessage prop via workspace-chat.tsx → handleGoToMessage.
+   * Stream scrolls to the message and highlights it for 3 seconds.
+   */
   onScrollToMessage: (messageId: string) => void;
 }
 
@@ -190,10 +237,10 @@ export function ChatFileFilter({
   onScrollToMessage,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const [activeFilter, setActiveFilter] = useState<ChatFileFilterType>('all');
-  const [searchQuery,  setSearchQuery]  = useState('');
+  const [activeFilter,  setActiveFilter]  = useState<ChatFileFilterType>('all');
+  const [searchQuery,   setSearchQuery]   = useState('');
   const [selectedEntry, setSelectedEntry] = useState<FileEntry | null>(null);
-  const [isOpening, setIsOpening] = useState(false);
+  const [isOpening,     setIsOpening]     = useState(false);
 
   // ── Extract all file entries ──────────────────────────────────────────────
 
@@ -243,7 +290,6 @@ export function ChatFileFilter({
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
-  // Tapping a card: select/deselect
   const handleCardPress = useCallback((entry: FileEntry) => {
     const key = entryKey(entry);
     setSelectedEntry(prev =>
@@ -251,24 +297,52 @@ export function ChatFileFilter({
     );
   }, []);
 
-  // "Open File" action
+  // Part 50 FIX: Open File — images open via Linking.openURL.
+  // Stream CDN images are already public HTTPS URLs — getSignedUrl returns null
+  // for them. We check if it's a Supabase Storage URL first; if not, use directly.
   const handleOpenFile = useCallback(async () => {
     if (!selectedEntry || isOpening) return;
     setIsOpening(true);
-    const { error } = await openOrDownloadAttachment(selectedEntry.attachment);
+
+    const att   = selectedEntry.attachment;
+    const isImg = att.type.startsWith('image/') || att.type === 'image/heic' || att.type === 'image/heif';
+
+    if (isImg) {
+      // Resolve the URL: only call getSignedUrl for Supabase Storage URLs
+      let resolvedUrl: string | null = null;
+      if (isSupabaseStorageUrl(att.url)) {
+        resolvedUrl = await getSignedUrl(att.url);
+        if (!resolvedUrl) resolvedUrl = att.url; // fallback to raw
+      } else {
+        resolvedUrl = att.url; // Stream CDN — already public
+      }
+
+      try {
+        await Linking.openURL(resolvedUrl);
+      } catch {
+        // OS couldn't open the URL directly — download it so user can view it
+        const { error } = await openOrDownloadAttachment(att);
+        if (error) Alert.alert('Could not open image', error);
+      }
+    } else {
+      // Non-image files: use the existing download/open logic
+      const { error } = await openOrDownloadAttachment(att);
+      if (error) Alert.alert('Could not open file', error);
+    }
+
     setIsOpening(false);
-    if (error) Alert.alert('Could not open file', error);
-    // Keep panel open so user can pick another file
     setSelectedEntry(null);
   }, [selectedEntry, isOpening]);
 
-  // "Go to Message" action
+  // Part 50 FIX: Go to Message — closes the panel first, then fires the callback
+  // which sets targetedMessage on MessageList.
   const handleGoToMessage = useCallback(() => {
     if (!selectedEntry) return;
     const msgId = selectedEntry.messageId;
     setSelectedEntry(null);
+    // Close immediately
     onClose();
-    // Allow modal to close before scrolling
+    // Small delay lets the modal dismiss animation finish before scroll happens
     setTimeout(() => onScrollToMessage(msgId), 320);
   }, [selectedEntry, onClose, onScrollToMessage]);
 
@@ -386,7 +460,6 @@ export function ChatFileFilter({
             )}
             contentContainerStyle={[
               styles.list,
-              // Extra bottom padding so action bar doesn't cover last item
               selectedEntry && { paddingBottom: 100 },
             ]}
             showsVerticalScrollIndicator={false}
@@ -402,7 +475,7 @@ export function ChatFileFilter({
               {selectedEntry.attachment.name || 'Attachment'}
             </Text>
             <View style={styles.actionBarBtns}>
-              {/* Open File */}
+              {/* Open File — Part 50 FIX: images use Linking.openURL */}
               <TouchableOpacity
                 onPress={handleOpenFile}
                 style={[styles.actionBarBtn, styles.actionBarBtnPrimary]}
@@ -412,14 +485,18 @@ export function ChatFileFilter({
                 {isOpening ? (
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
-                  <Ionicons name="open-outline" size={16} color="#FFF" />
+                  <Ionicons
+                    name={selectedEntry.attachment.type.startsWith('image/') ? 'eye-outline' : 'open-outline'}
+                    size={16}
+                    color="#FFF"
+                  />
                 )}
                 <Text style={styles.actionBarBtnTextPrimary}>
-                  {isOpening ? 'Opening…' : 'Open File'}
+                  {isOpening ? 'Opening…' : selectedEntry.attachment.type.startsWith('image/') ? 'View Image' : 'Open File'}
                 </Text>
               </TouchableOpacity>
 
-              {/* Go to Message */}
+              {/* Go to Message — Part 50 FIX: properly scrolls via targetedMessage */}
               <TouchableOpacity
                 onPress={handleGoToMessage}
                 style={[styles.actionBarBtn, styles.actionBarBtnSecondary]}
@@ -448,206 +525,74 @@ export function ChatFileFilter({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
   sheet: {
-    position:             'absolute',
-    left: 0, right: 0, bottom: 0,
-    backgroundColor:      COLORS.backgroundCard,
-    borderTopLeftRadius:  28,
-    borderTopRightRadius: 28,
-    borderTopWidth:       1,
-    borderColor:          COLORS.border,
-    shadowColor:          '#000',
-    shadowOffset:         { width: 0, height: -6 },
-    shadowOpacity:        0.3,
-    shadowRadius:         20,
-    elevation:            24,
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: COLORS.backgroundCard,
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopWidth: 1, borderColor: COLORS.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.3, shadowRadius: 20, elevation: 24,
   },
   handleWrap:  { alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
   handle:      { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
-
   header: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    paddingHorizontal: SPACING.xl,
-    paddingVertical:  SPACING.sm,
-    gap:              8,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: SPACING.xl, paddingVertical: SPACING.sm, gap: 8,
   },
-  headerTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', flex: 1 },
-  totalBadge: {
-    backgroundColor:  `${COLORS.primary}15`,
-    borderRadius:     RADIUS.full,
-    paddingHorizontal: 10,
-    paddingVertical:  3,
-    borderWidth:      1,
-    borderColor:      `${COLORS.primary}25`,
-  },
-  totalBadgeText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
-  closeBtn: {
-    width:           32,
-    height:          32,
-    borderRadius:    10,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems:      'center',
-    justifyContent:  'center',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
-  },
-
-  searchRow: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    gap:              8,
-    marginHorizontal: SPACING.xl,
-    marginBottom:     SPACING.sm,
-    paddingHorizontal: SPACING.md,
-    paddingVertical:  SPACING.sm,
-    backgroundColor:  COLORS.backgroundElevated,
-    borderRadius:     RADIUS.lg,
-    borderWidth:      1,
-    borderColor:      COLORS.border,
-  },
-  searchInput: { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, paddingVertical: 0 },
-
+  headerTitle:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', flex: 1 },
+  totalBadge:      { backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+  totalBadgeText:  { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  closeBtn:        { width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
+  searchRow:       { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: SPACING.xl, marginBottom: SPACING.sm, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border },
+  searchInput:     { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, paddingVertical: 0 },
   filterScroll:        { maxHeight: 46, marginBottom: SPACING.sm },
   filterScrollContent: { paddingHorizontal: SPACING.xl, gap: 6 },
-  chip: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    gap:              4,
-    paddingHorizontal: 10,
-    paddingVertical:  6,
-    borderRadius:     RADIUS.full,
-    backgroundColor:  COLORS.backgroundElevated,
-    borderWidth:      1,
-    borderColor:      COLORS.border,
-  },
-  chipActive:          { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  chipLabel:           { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  chipLabelActive:     { color: '#FFF' },
-  chipCount: {
-    backgroundColor:  COLORS.border,
-    borderRadius:     RADIUS.full,
-    minWidth:         16,
-    height:           16,
-    alignItems:       'center',
-    justifyContent:   'center',
-    paddingHorizontal: 3,
-  },
-  chipCountActive:     { backgroundColor: 'rgba(255,255,255,0.25)' },
-  chipCountText:       { color: COLORS.textMuted, fontSize: 9, fontWeight: '800' },
-  chipCountTextActive: { color: '#FFF' },
-
-  list: { paddingHorizontal: SPACING.xl, paddingBottom: 20, gap: 8 },
-
-  // ── File card ─────────────────────────────────────────────────────────────
-  card: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius:    RADIUS.xl,
-    padding:         SPACING.sm,
-    borderWidth:     1,
-    borderColor:     COLORS.border,
-    gap:             12,
-  },
-  cardSelected: {
-    borderColor:     COLORS.primary,
-    borderWidth:     1.5,
-    backgroundColor: `${COLORS.primary}08`,
-  },
-  cardThumbWrap:    { flexShrink: 0 },
-  imageThumb:       { width: 50, height: 50, borderRadius: RADIUS.lg },
-  thumbPlaceholder: {
-    width:           50,
-    height:          50,
-    borderRadius:    RADIUS.lg,
-    backgroundColor: COLORS.backgroundCard,
-    alignItems:      'center',
-    justifyContent:  'center',
-  },
-  fileIconWrap: {
-    width:           50,
-    height:          50,
-    borderRadius:    RADIUS.lg,
-    backgroundColor: `${COLORS.primary}12`,
-    alignItems:      'center',
-    justifyContent:  'center',
-  },
-  cardMeta:     { flex: 1 },
-  cardName:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', lineHeight: 17 },
-  cardSubRow:   { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
-  cardSize:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  cardDot:      { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  cardTime:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  cardAuthor:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
-  selectedCheck:{ flexShrink: 0 },
-
-  // ── Empty state ───────────────────────────────────────────────────────────
-  empty: {
-    flex:              1,
-    alignItems:        'center',
-    justifyContent:    'center',
-    gap:               12,
-    paddingHorizontal: SPACING.xl,
-  },
-  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22 },
-
-  // ── Dual-action bar ───────────────────────────────────────────────────────
+  chip:            { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.full, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border },
+  chipActive:      { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  chipLabel:       { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  chipLabelActive: { color: '#FFF' },
+  chipCount:            { backgroundColor: COLORS.border, borderRadius: RADIUS.full, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
+  chipCountActive:      { backgroundColor: 'rgba(255,255,255,0.25)' },
+  chipCountText:        { color: COLORS.textMuted, fontSize: 9, fontWeight: '800' },
+  chipCountTextActive:  { color: '#FFF' },
+  list:            { paddingHorizontal: SPACING.xl, paddingBottom: 20, gap: 8 },
+  card:            { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, gap: 12 },
+  cardSelected:    { borderColor: COLORS.primary, borderWidth: 1.5, backgroundColor: `${COLORS.primary}08` },
+  cardThumbWrap:   { flexShrink: 0 },
+  imageThumb:      { width: 50, height: 50, borderRadius: RADIUS.lg },
+  thumbPlaceholder:{ width: 50, height: 50, borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center' },
+  fileIconWrap:    { width: 50, height: 50, borderRadius: RADIUS.lg, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
+  cardMeta:        { flex: 1 },
+  cardName:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', lineHeight: 17 },
+  cardSubRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  cardSize:        { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  cardDot:         { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  cardTime:        { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  cardAuthor:      { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  selectedCheck:   { flexShrink: 0 },
+  empty:           { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: SPACING.xl },
+  emptyTitle:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  emptyDesc:       { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22 },
   actionBar: {
-    position:         'absolute',
-    left:             0,
-    right:            0,
-    bottom:           0,
-    backgroundColor:  COLORS.backgroundCard,
-    borderTopWidth:   1,
-    borderTopColor:   COLORS.border,
-    paddingHorizontal: SPACING.xl,
-    paddingTop:       SPACING.md,
-    paddingBottom:    SPACING.xl,
-    shadowColor:      '#000',
-    shadowOffset:     { width: 0, height: -4 },
-    shadowOpacity:    0.2,
-    shadowRadius:     12,
-    elevation:        12,
-    gap:              10,
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: COLORS.backgroundCard,
+    borderTopWidth: 1, borderTopColor: COLORS.border,
+    paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.xl,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.2, shadowRadius: 12, elevation: 12, gap: 10,
   },
-  actionBarName: {
-    color:      COLORS.textSecondary,
-    fontSize:   FONTS.sizes.xs,
-    fontWeight: '600',
-    textAlign:  'center',
-  },
-  actionBarBtns: { flexDirection: 'row', gap: 10 },
-  actionBarBtn: {
-    flex:            1,
-    flexDirection:   'row',
-    alignItems:      'center',
-    justifyContent:  'center',
-    gap:             7,
-    paddingVertical: 13,
-    borderRadius:    RADIUS.lg,
-    borderWidth:     1,
-  },
-  actionBarBtnPrimary:   { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  actionBarBtnSecondary: { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border },
-  actionBarBtnTextPrimary:   { color: '#FFF',               fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  actionBarName:             { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600', textAlign: 'center' },
+  actionBarBtns:             { flexDirection: 'row', gap: 10 },
+  actionBarBtn:              { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 13, borderRadius: RADIUS.lg, borderWidth: 1 },
+  actionBarBtnPrimary:       { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  actionBarBtnSecondary:     { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border },
+  actionBarBtnTextPrimary:   { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
   actionBarBtnTextSecondary: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
   actionBarClose: {
-    position:  'absolute',
-    top:       SPACING.md,
-    right:     SPACING.xl,
-    width:     28,
-    height:    28,
-    borderRadius: 8,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    position: 'absolute', top: SPACING.md, right: SPACING.xl,
+    width: 28, height: 28, borderRadius: 8,
+    backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: COLORS.border,
   },
 });
