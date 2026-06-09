@@ -9,12 +9,17 @@
 //   • Go to Message now works: the callback is properly wired through workspace-chat.tsx
 //     to the MessageList targetedMessage prop which causes Stream to scroll + highlight.
 //   • When the panel closes after "Go to Message" the highlight appears immediately.
+// Part 50.2 — GIF support:
+//   • GIFs (mime_type image/gif) recognised as a distinct sub-type of images.
+//   • File cards show a purple "GIF" badge over the thumbnail.
+//   • Action bar button label changes to "Open GIF" instead of "View Image".
+//   • GIFs appear in both "All" and "Images" filter tabs (correct behaviour).
+//   • Display name defaults to "<title>.gif" when name is empty (GIPHY sends no name).
 
 import React, {
   useState,
   useMemo,
   useCallback,
-  useRef,
 } from 'react';
 import {
   View,
@@ -62,6 +67,24 @@ interface FileEntry {
   authorName: string | null;
 }
 
+// ─── GIF helpers ──────────────────────────────────────────────────────────────
+
+/** Returns true when the attachment is an animated GIF */
+function isGifMime(mime: string): boolean {
+  return mime === 'image/gif';
+}
+
+/**
+ * Best display name for a GIF attachment.
+ * GIPHY sends messages with asset_url set and title as the search term but no
+ * filename, so we fall back to "<title>.gif".
+ */
+function gifDisplayName(att: ChatAttachment): string {
+  if (att.name && att.name.trim().length > 0) return att.name;
+  if ((att as any).title && (att as any).title.trim().length > 0) return `${(att as any).title}.gif`;
+  return 'animated.gif';
+}
+
 // ─── Filter config ────────────────────────────────────────────────────────────
 
 const FILTERS: { type: ChatFileFilterType; label: string; icon: string }[] = [
@@ -75,6 +98,7 @@ const FILTERS: { type: ChatFileFilterType; label: string; icon: string }[] = [
 function matchesFilter(mime: string, filter: ChatFileFilterType): boolean {
   switch (filter) {
     case 'all':       return true;
+    // GIFs (image/gif) are images — they show under the Images tab too
     case 'images':    return mime.startsWith('image/');
     case 'videos':    return mime.startsWith('video/');
     case 'audio':     return mime.startsWith('audio/');
@@ -85,39 +109,28 @@ function matchesFilter(mime: string, filter: ChatFileFilterType): boolean {
 
 function entryKey(e: FileEntry) { return `${e.messageId}:${e.attachment.url}`; }
 
-// ─── Image thumbnail ──────────────────────────────────────────────────────────
-// Stream CDN images (stream-io-cdn.com, stream-io-usw.com, etc.) are already
-// public HTTPS URLs — they do NOT need signed URLs. Calling getSignedUrl on
-// them returns null (Supabase signing rejects non-Supabase URLs), causing the
-// permanent spinner. We only call getSignedUrl for Supabase Storage URLs.
+// ─── Supabase URL check ───────────────────────────────────────────────────────
 
 function isSupabaseStorageUrl(url: string): boolean {
-  // Supabase Storage URLs contain /storage/v1/object/ in the path
   return url.includes('/storage/v1/object/');
 }
 
-function ImageThumb({ url }: { url: string }) {
+// ─── Image / GIF thumbnail ────────────────────────────────────────────────────
+
+function ImageThumb({ url, isGif }: { url: string; isGif: boolean }) {
   const [displayUrl, setDisplayUrl] = useState<string | null>(
-    // If it's already a public HTTP URL (Stream CDN, etc.), use it immediately
     isSupabaseStorageUrl(url) ? null : url,
   );
-  const [hasError,    setHasError]    = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   React.useEffect(() => {
     if (!isSupabaseStorageUrl(url)) {
-      // Public URL — use directly, no signing needed
       setDisplayUrl(url);
       return;
     }
-    // Supabase private URL — needs a signed URL
     setDisplayUrl(null);
     getSignedUrl(url).then(signed => {
-      if (signed) {
-        setDisplayUrl(signed);
-      } else {
-        // Signing failed — try the raw URL as a last resort
-        setDisplayUrl(url);
-      }
+      setDisplayUrl(signed ?? url);
     });
   }, [url]);
 
@@ -138,12 +151,20 @@ function ImageThumb({ url }: { url: string }) {
   }
 
   return (
-    <Image
-      source={{ uri: displayUrl }}
-      style={styles.imageThumb}
-      resizeMode="cover"
-      onError={() => setHasError(true)}
-    />
+    <View style={styles.thumbContainer}>
+      <Image
+        source={{ uri: displayUrl }}
+        style={styles.imageThumb}
+        resizeMode="cover"
+        onError={() => setHasError(true)}
+      />
+      {/* Part 50.2 — GIF badge overlaid on thumbnail */}
+      {isGif && (
+        <View style={styles.gifBadge}>
+          <Text style={styles.gifBadgeText}>GIF</Text>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -158,8 +179,12 @@ interface FileCardProps {
 function FileCard({ entry, isSelected, onPress }: FileCardProps) {
   const { attachment, sentAt, authorName } = entry;
   const isImg = isImageMime(attachment.type);
+  const isGif = isGifMime(attachment.type);
   const isVid = isVideoMime(attachment.type);
   const icon  = getFileIcon(attachment.type) as any;
+
+  // Part 50.2 — use GIF-aware display name
+  const displayName = isGif ? gifDisplayName(attachment) : (attachment.name || 'Attachment');
 
   const timeLabel = new Date(sentAt).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric',
@@ -175,7 +200,7 @@ function FileCard({ entry, isSelected, onPress }: FileCardProps) {
       {/* Thumbnail / icon */}
       <View style={styles.cardThumbWrap}>
         {isImg ? (
-          <ImageThumb url={attachment.url} />
+          <ImageThumb url={attachment.url} isGif={isGif} />
         ) : (
           <View style={[
             styles.fileIconWrap,
@@ -193,10 +218,15 @@ function FileCard({ entry, isSelected, onPress }: FileCardProps) {
 
       {/* Meta */}
       <View style={styles.cardMeta}>
-        <Text style={styles.cardName} numberOfLines={2}>{attachment.name || 'Attachment'}</Text>
+        <Text style={styles.cardName} numberOfLines={2}>{displayName}</Text>
         <View style={styles.cardSubRow}>
-          {!!attachment.size && <Text style={styles.cardSize}>{formatFileSize(attachment.size)}</Text>}
-          {!!attachment.size && <Text style={styles.cardDot}>·</Text>}
+          {/* Part 50.2 — show "Animated GIF" type label instead of size (GIFs from GIPHY have no size) */}
+          {isGif ? (
+            <Text style={[styles.cardSize, { color: '#9B59B6' }]}>Animated GIF</Text>
+          ) : (
+            !!attachment.size && <Text style={styles.cardSize}>{formatFileSize(attachment.size)}</Text>
+          )}
+          {(isGif || !!attachment.size) && <Text style={styles.cardDot}>·</Text>}
           <Text style={styles.cardTime}>{timeLabel}</Text>
         </View>
         {authorName && (
@@ -216,17 +246,26 @@ function FileCard({ entry, isSelected, onPress }: FileCardProps) {
   );
 }
 
+// ─── Action bar label helper ──────────────────────────────────────────────────
+
+/**
+ * Part 50.2 — returns the correct "open" button label + icon for the selected file.
+ *   image/gif  → "Open GIF"   + gif icon
+ *   image/*    → "View Image" + eye icon
+ *   everything → "Open File"  + open icon
+ */
+function openButtonMeta(att: ChatAttachment): { label: string; icon: string } {
+  if (isGifMime(att.type))       return { label: 'Open GIF',   icon: 'play-circle-outline' };
+  if (att.type.startsWith('image/')) return { label: 'View Image', icon: 'eye-outline' };
+  return { label: 'Open File', icon: 'open-outline' };
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props {
   visible:           boolean;
   messages:          ChatMessage[];
   onClose:           () => void;
-  /**
-   * Part 50 FIX: This callback now properly wires to the MessageList
-   * targetedMessage prop via workspace-chat.tsx → handleGoToMessage.
-   * Stream scrolls to the message and highlights it for 3 seconds.
-   */
   onScrollToMessage: (messageId: string) => void;
 }
 
@@ -269,7 +308,11 @@ export function ChatFileFilter({
     let result = allFiles.filter(e => matchesFilter(e.attachment.type, activeFilter));
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
-      result = result.filter(e => (e.attachment.name ?? '').toLowerCase().includes(q));
+      result = result.filter(e => {
+        const isGif = isGifMime(e.attachment.type);
+        const name  = isGif ? gifDisplayName(e.attachment) : (e.attachment.name ?? '');
+        return name.toLowerCase().includes(q);
+      });
     }
     return result;
   }, [allFiles, activeFilter, searchQuery]);
@@ -278,6 +321,7 @@ export function ChatFileFilter({
 
   const counts = useMemo<Record<ChatFileFilterType, number>>(() => ({
     all:       allFiles.length,
+    // GIFs are image/* so they count toward Images tab naturally
     images:    allFiles.filter(e => e.attachment.type.startsWith('image/')).length,
     videos:    allFiles.filter(e => e.attachment.type.startsWith('video/')).length,
     audio:     allFiles.filter(e => e.attachment.type.startsWith('audio/')).length,
@@ -292,40 +336,33 @@ export function ChatFileFilter({
 
   const handleCardPress = useCallback((entry: FileEntry) => {
     const key = entryKey(entry);
-    setSelectedEntry(prev =>
-      prev && entryKey(prev) === key ? null : entry
-    );
+    setSelectedEntry(prev => prev && entryKey(prev) === key ? null : entry);
   }, []);
 
-  // Part 50 FIX: Open File — images open via Linking.openURL.
-  // Stream CDN images are already public HTTPS URLs — getSignedUrl returns null
-  // for them. We check if it's a Supabase Storage URL first; if not, use directly.
   const handleOpenFile = useCallback(async () => {
     if (!selectedEntry || isOpening) return;
     setIsOpening(true);
 
-    const att   = selectedEntry.attachment;
-    const isImg = att.type.startsWith('image/') || att.type === 'image/heic' || att.type === 'image/heif';
+    const att = selectedEntry.attachment;
+    const isImg = att.type.startsWith('image/');
 
     if (isImg) {
-      // Resolve the URL: only call getSignedUrl for Supabase Storage URLs
+      // For both GIFs and regular images — resolve URL then open natively
       let resolvedUrl: string | null = null;
       if (isSupabaseStorageUrl(att.url)) {
         resolvedUrl = await getSignedUrl(att.url);
-        if (!resolvedUrl) resolvedUrl = att.url; // fallback to raw
+        if (!resolvedUrl) resolvedUrl = att.url;
       } else {
-        resolvedUrl = att.url; // Stream CDN — already public
+        resolvedUrl = att.url; // Stream CDN / GIPHY — already public
       }
 
       try {
         await Linking.openURL(resolvedUrl);
       } catch {
-        // OS couldn't open the URL directly — download it so user can view it
         const { error } = await openOrDownloadAttachment(att);
-        if (error) Alert.alert('Could not open image', error);
+        if (error) Alert.alert('Could not open', error);
       }
     } else {
-      // Non-image files: use the existing download/open logic
       const { error } = await openOrDownloadAttachment(att);
       if (error) Alert.alert('Could not open file', error);
     }
@@ -334,15 +371,11 @@ export function ChatFileFilter({
     setSelectedEntry(null);
   }, [selectedEntry, isOpening]);
 
-  // Part 50 FIX: Go to Message — closes the panel first, then fires the callback
-  // which sets targetedMessage on MessageList.
   const handleGoToMessage = useCallback(() => {
     if (!selectedEntry) return;
     const msgId = selectedEntry.messageId;
     setSelectedEntry(null);
-    // Close immediately
     onClose();
-    // Small delay lets the modal dismiss animation finish before scroll happens
     setTimeout(() => onScrollToMessage(msgId), 320);
   }, [selectedEntry, onClose, onScrollToMessage]);
 
@@ -354,6 +387,9 @@ export function ChatFileFilter({
   }, [onClose]);
 
   // ─────────────────────────────────────────────────────────────────────────
+
+  // Part 50.2 — pre-compute open button meta for selected entry
+  const openMeta = selectedEntry ? openButtonMeta(selectedEntry.attachment) : null;
 
   return (
     <Modal
@@ -460,7 +496,7 @@ export function ChatFileFilter({
             )}
             contentContainerStyle={[
               styles.list,
-              selectedEntry && { paddingBottom: 100 },
+              selectedEntry && { paddingBottom: 110 },
             ]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
@@ -468,14 +504,17 @@ export function ChatFileFilter({
         )}
 
         {/* ── Dual-action bar (appears when a file is selected) ── */}
-        {selectedEntry && (
+        {selectedEntry && openMeta && (
           <Animated.View entering={FadeIn.duration(180)} style={styles.actionBar}>
-            {/* File name */}
+            {/* File name — Part 50.2: uses GIF-aware display name */}
             <Text style={styles.actionBarName} numberOfLines={1}>
-              {selectedEntry.attachment.name || 'Attachment'}
+              {isGifMime(selectedEntry.attachment.type)
+                ? gifDisplayName(selectedEntry.attachment)
+                : (selectedEntry.attachment.name || 'Attachment')}
             </Text>
+
             <View style={styles.actionBarBtns}>
-              {/* Open File — Part 50 FIX: images use Linking.openURL */}
+              {/* Part 50.2 — button label is "Open GIF" / "View Image" / "Open File" */}
               <TouchableOpacity
                 onPress={handleOpenFile}
                 style={[styles.actionBarBtn, styles.actionBarBtnPrimary]}
@@ -485,18 +524,14 @@ export function ChatFileFilter({
                 {isOpening ? (
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
-                  <Ionicons
-                    name={selectedEntry.attachment.type.startsWith('image/') ? 'eye-outline' : 'open-outline'}
-                    size={16}
-                    color="#FFF"
-                  />
+                  <Ionicons name={openMeta.icon as any} size={16} color="#FFF" />
                 )}
                 <Text style={styles.actionBarBtnTextPrimary}>
-                  {isOpening ? 'Opening…' : selectedEntry.attachment.type.startsWith('image/') ? 'View Image' : 'Open File'}
+                  {isOpening ? 'Opening…' : openMeta.label}
                 </Text>
               </TouchableOpacity>
 
-              {/* Go to Message — Part 50 FIX: properly scrolls via targetedMessage */}
+              {/* Go to Message */}
               <TouchableOpacity
                 onPress={handleGoToMessage}
                 style={[styles.actionBarBtn, styles.actionBarBtnSecondary]}
@@ -560,9 +595,27 @@ const styles = StyleSheet.create({
   card:            { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, gap: 12 },
   cardSelected:    { borderColor: COLORS.primary, borderWidth: 1.5, backgroundColor: `${COLORS.primary}08` },
   cardThumbWrap:   { flexShrink: 0 },
+  // Part 50.2 — wrapper needed so the GIF badge can be absolutely positioned
+  thumbContainer:  { width: 50, height: 50, position: 'relative' },
   imageThumb:      { width: 50, height: 50, borderRadius: RADIUS.lg },
   thumbPlaceholder:{ width: 50, height: 50, borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center' },
   fileIconWrap:    { width: 50, height: 50, borderRadius: RADIUS.lg, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
+  // Part 50.2 — purple GIF badge overlaid on the bottom-right of the thumbnail
+  gifBadge: {
+    position:        'absolute',
+    bottom:          3,
+    right:           3,
+    backgroundColor: '#7B2FBE',
+    borderRadius:    4,
+    paddingHorizontal: 4,
+    paddingVertical:   1,
+  },
+  gifBadgeText: {
+    color:      '#FFFFFF',
+    fontSize:   8,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
   cardMeta:        { flex: 1 },
   cardName:        { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', lineHeight: 17 },
   cardSubRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },

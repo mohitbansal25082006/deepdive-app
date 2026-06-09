@@ -1,11 +1,9 @@
 // app/(app)/workspace-chat.tsx
 // Part 49 — Stream Chat
 // Part 50 — Custom date separator, files fix, members sidebar, search modal, android keyboard fix
-// Part 50.3 — Voice recording: switched to Stream built-in audioRecordingEnabled.
-
-
-
-
+// Part 50.1 — Poll creator, voice recording built-in, members sidebar role fix
+// Part 50.2 — GIF picker (GIPHY API) with full dark-themed UI + "GIF" button in attach sheet
+//             FIX: removed `giphy: true` field from sendMessage attachment (invalid type)
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -54,8 +52,10 @@ import {
   WorkspaceMemberRoles,
 } from '../../src/components/workspace/ChatMembersSidebar';
 import { ChatSearchModal }       from '../../src/components/workspace/ChatSearchModal';
-// Part 50.1 new components
+// Part 50.1
 import { ChatPollCreator }       from '../../src/components/workspace/ChatPollCreator';
+// Part 50.2
+import { ChatGifPicker }         from '../../src/components/workspace/ChatGifPicker';
 import {
   notifyMention, notifyChatMessage, notifyReply,
 } from '../../src/services/workspaceNotificationService';
@@ -81,39 +81,47 @@ interface AttachPickerSheetProps {
   onCamera:  () => void;
   onPhotos:  () => void;
   onFiles:   () => void;
-  /** Part 50.1 — opens poll creator */
   onPoll:    () => void;
+  /** Part 50.2 — opens GIF picker */
+  onGif:     () => void;
 }
 
 function AttachPickerSheet({
-  visible, onClose, onCamera, onPhotos, onFiles, onPoll,
+  visible, onClose, onCamera, onPhotos, onFiles, onPoll, onGif,
 }: AttachPickerSheetProps) {
   const insets = useSafeAreaInsets();
 
   const options = [
     {
-      icon:    'bar-chart'      as const,
+      icon:    'images-outline'    as const,
+      label:   'GIF',
+      sub:     'Search & send from GIPHY',
+      color:   '#FF6B9D',
+      onPress: onGif,
+    },
+    {
+      icon:    'bar-chart'         as const,
       label:   'Poll',
       sub:     'Ask your team a question',
       color:   '#9B59B6',
       onPress: onPoll,
     },
     {
-      icon:    'camera'         as const,
+      icon:    'camera'            as const,
       label:   'Camera',
       sub:     'Take a photo or video',
       color:   '#FF6B6B',
       onPress: onCamera,
     },
     {
-      icon:    'images'         as const,
+      icon:    'images'            as const,
       label:   'Photo Library',
       sub:     'Choose from your gallery',
       color:   COLORS.primary,
       onPress: onPhotos,
     },
     {
-      icon:    'document-text'  as const,
+      icon:    'document-text'     as const,
       label:   'File',
       sub:     'PDF, Word, Excel and more',
       color:   '#4ECDC4',
@@ -145,7 +153,10 @@ function AttachPickerSheet({
           {options.map((opt, idx) => (
             <TouchableOpacity
               key={idx}
-              style={[pickerStyles.optionRow, idx === options.length - 1 && { borderBottomWidth: 0 }]}
+              style={[
+                pickerStyles.optionRow,
+                idx === options.length - 1 && { borderBottomWidth: 0 },
+              ]}
               activeOpacity={0.65}
               onPress={() => { onClose(); setTimeout(opt.onPress, 200); }}
             >
@@ -220,13 +231,14 @@ const pickerStyles = StyleSheet.create({
 });
 
 
-// ─── Custom Attach Button (Part 50.1 — adds poll option) ──────────────────────
+// ─── Custom Attach Button (Part 50.1 + 50.2) ─────────────────────────────────
 
 interface CustomAttachButtonInnerProps {
   onPollPress: () => void;
+  onGifPress:  () => void;
 }
 
-function CustomAttachButtonInner({ onPollPress }: CustomAttachButtonInnerProps) {
+function CustomAttachButtonInner({ onPollPress, onGifPress }: CustomAttachButtonInnerProps) {
   const { uploadNewFile, pickFile } = useMessageInputContext() as any;
   const [showPicker, setShowPicker] = useState(false);
 
@@ -281,18 +293,14 @@ function CustomAttachButtonInner({ onPollPress }: CustomAttachButtonInnerProps) 
         onPhotos={handlePhotos}
         onFiles={handleFiles}
         onPoll={onPollPress}
+        onGif={onGifPress}
       />
     </>
   );
 }
 
 
-
-// ─── Custom sticky date header ───────────────────────────────────────────────
-// Replaces Stream's default DateHeader used by StickyHeader (position:absolute,
-// top:0 overlay). The default uses backgroundColor: overlay (#rgba 0,0,0,0.75)
-// with white text — almost invisible on dark backgrounds.
-// Our version uses a high-contrast primary-tinted pill with solid white text.
+// ─── Custom sticky date header ────────────────────────────────────────────────
 
 function CustomDateHeader({ dateString }: { dateString?: string | number }) {
   if (!dateString) return null;
@@ -356,12 +364,13 @@ export default function WorkspaceChatScreen() {
   const [showMembers,     setShowMembers]     = useState(false);
   const [showSearch,      setShowSearch]      = useState(false);
   const [showPollCreator, setShowPollCreator] = useState(false);
+  // Part 50.2
+  const [showGifPicker,   setShowGifPicker]   = useState(false);
   const [fileCount,       setFileCount]       = useState(0);
   const [targetMsgId,     setTargetMsgId]     = useState<string | undefined>(undefined);
   const [streamMembers,   setStreamMembers]   = useState<ChatMemberInfo[]>([]);
   const [onlineCount,     setOnlineCount]     = useState(0);
 
-  // Part 50.1 — Real workspace roles from Supabase
   const [workspaceMemberRoles, setWorkspaceMemberRoles] = useState<WorkspaceMemberRoles>({});
 
   const isFocusedRef = useRef(false);
@@ -379,9 +388,7 @@ export default function WorkspaceChatScreen() {
     }, [workspaceId]),
   );
 
-  // ── Part 50.4 FIX: Fetch workspace member roles from Supabase ───────────────
-  // Keep a ref that is always in sync with state so buildMembers (which closes
-  // over nothing) can read the latest roles without needing to be recreated.
+  // ── Fetch workspace member roles from Supabase ────────────────────────────
   const workspaceMemberRolesRef = useRef<WorkspaceMemberRoles>({});
 
   useEffect(() => {
@@ -391,28 +398,20 @@ export default function WorkspaceChatScreen() {
   useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
-
     const fetchRoles = async () => {
       try {
         const { data, error: err } = await supabase
           .from('workspace_members')
           .select('user_id, role')
           .eq('workspace_id', workspaceId);
-
         if (err || !data || cancelled) return;
-
         const roleMap: WorkspaceMemberRoles = {};
         data.forEach((row: any) => {
-          if (row.user_id) {
-            roleMap[row.user_id] = row.role as 'owner' | 'editor' | 'viewer';
-          }
+          if (row.user_id) roleMap[row.user_id] = row.role as 'owner' | 'editor' | 'viewer';
         });
         setWorkspaceMemberRoles(roleMap);
-      } catch {
-        // Non-fatal — sidebar shows 'editor' fallback
-      }
+      } catch { /* non-fatal */ }
     };
-
     fetchRoles();
     return () => { cancelled = true; };
   }, [workspaceId]);
@@ -428,30 +427,14 @@ export default function WorkspaceChatScreen() {
       const preview     = ((msg.text as string | undefined) ?? '').slice(0, 80);
       const mentioned   = (msg.mentioned_users ?? []).map((u: any) => u.id as string);
       if (mentioned.includes(user.id)) {
-        notifyMention({
-          workspaceId,
-          workspaceName: workspaceName ?? 'Workspace',
-          mentionerName: senderName,
-          messagePreview: preview,
-        }).catch(() => {});
+        notifyMention({ workspaceId, workspaceName: workspaceName ?? 'Workspace', mentionerName: senderName, messagePreview: preview }).catch(() => {});
         return;
       }
       if ((msg.quoted_message as any)?.user?.id === user.id) {
-        notifyReply({
-          workspaceId,
-          workspaceName: workspaceName ?? 'Workspace',
-          replierName:   senderName,
-          replyPreview:  preview,
-          messageId:     msg.id,
-        }).catch(() => {});
+        notifyReply({ workspaceId, workspaceName: workspaceName ?? 'Workspace', replierName: senderName, replyPreview: preview, messageId: msg.id }).catch(() => {});
         return;
       }
-      notifyChatMessage({
-        workspaceId,
-        workspaceName: workspaceName ?? 'Workspace',
-        senderName,
-        messagePreview: preview,
-      }).catch(() => {});
+      notifyChatMessage({ workspaceId, workspaceName: workspaceName ?? 'Workspace', senderName, messagePreview: preview }).catch(() => {});
     };
     const unsub = client.on('message.new', handleNewMessage);
     return () => unsub.unsubscribe();
@@ -478,52 +461,38 @@ export default function WorkspaceChatScreen() {
   }, [channel]);
 
   // ── Members list ──────────────────────────────────────────────────────────
-  // Part 50.4 FIX: buildMembers reads roles from workspaceMemberRolesRef so it
-  // always has the latest Supabase roles even after the async fetch completes.
-  // Also re-runs whenever workspaceMemberRoles changes (via the extra dep effect).
   const buildMembersRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!channel) return;
-
     const buildMembers = () => {
       const rawMembers  = (channel.state as any).members  ?? {};
       const rawWatchers = (channel.state as any).watchers ?? {};
       const onlineIds   = new Set(Object.keys(rawWatchers));
       const rolesNow    = workspaceMemberRolesRef.current;
-
       const list: ChatMemberInfo[] = Object.values(rawMembers).map((m: any) => {
         const uid = m.user_id ?? m.user?.id ?? '';
-        // Use Supabase role if available, otherwise fall back to 'editor'
-        const supabaseRole = rolesNow[uid] as ChatMemberInfo['role'] | undefined;
         return {
           userId:    uid,
           name:      m.user?.name  ?? '',
           username:  m.user?.name  ?? null,
           avatarUrl: m.user?.image ?? null,
-          role:      supabaseRole ?? 'editor',
+          role:      (rolesNow[uid] as ChatMemberInfo['role']) ?? 'editor',
           isOnline:  onlineIds.has(uid),
         };
       }).filter((m: ChatMemberInfo) => m.userId);
-
       setStreamMembers(list);
       setOnlineCount(list.filter((m: ChatMemberInfo) => m.isOnline).length);
     };
-
     buildMembersRef.current = buildMembers;
     buildMembers();
     const s1 = channel.on('user.watching.start', buildMembers);
     const s2 = channel.on('user.watching.stop',  buildMembers);
     const s3 = channel.on('member.added',        buildMembers);
     const s4 = channel.on('member.removed',      buildMembers);
-    return () => {
-      s1.unsubscribe(); s2.unsubscribe();
-      s3.unsubscribe(); s4.unsubscribe();
-    };
+    return () => { s1.unsubscribe(); s2.unsubscribe(); s3.unsubscribe(); s4.unsubscribe(); };
   }, [channel]);
 
-  // Re-run buildMembers whenever Supabase roles arrive/update so the sidebar
-  // immediately shows the correct owner/editor/viewer badges.
   useEffect(() => {
     if (buildMembersRef.current) buildMembersRef.current();
   }, [workspaceMemberRoles]);
@@ -535,6 +504,31 @@ export default function WorkspaceChatScreen() {
     setShowFiles(false);
     setTimeout(() => setTargetMsgId(undefined), 2000);
   }, []);
+
+  // ── Part 50.2: Send GIF via Stream channel ────────────────────────────────
+  // GIF is sent as a plain `image` attachment. Stream's Gallery component
+  // renders it as a tappable thumbnail with its built-in fullscreen lightbox.
+  // NOTE: Do NOT add a `giphy` field — that expects a GiphyData object and
+  // is only relevant for the built-in /giphy slash command flow.
+  const handleGifSelect = useCallback(async (gifUrl: string, title: string) => {
+    if (!channel) return;
+    try {
+      await (channel as any).sendMessage({
+        text:        '',
+        attachments: [
+          {
+            type:      'image',
+            image_url: gifUrl,
+            asset_url: gifUrl,
+            title:     title || 'GIF',
+            mime_type: 'image/gif',
+          },
+        ],
+      });
+    } catch (e) {
+      console.warn('[ChatGifPicker] Failed to send GIF:', e);
+    }
+  }, [channel]);
 
   // ── Access guard ──────────────────────────────────────────────────────────
   if (!isOwnerOrEditor) {
@@ -625,23 +619,18 @@ export default function WorkspaceChatScreen() {
             MessageSimple={StreamCustomMessage}
             topInset={channelTopInset}
             bottomInset={channelBottomInset}
-            // AttachButton includes Poll option (Part 50.1)
             AttachButton={() => (
-              <CustomAttachButtonInner onPollPress={() => setShowPollCreator(true)} />
+              <CustomAttachButtonInner
+                onPollPress={() => setShowPollCreator(true)}
+                onGifPress={() => setShowGifPicker(true)}
+              />
             )}
-            // InlineDateSeparator: custom chip between messages (scrolls with list)
             InlineDateSeparator={ChatDateSeparator}
-            // Part 50.4 FIX: DateHeader overrides the sticky overlay date chip
-            // (position:absolute, top:0). Default uses overlay bg (#rgba 0,0,0)
-            // which is nearly invisible on dark. CustomDateHeader uses a
-            // primary-tinted pill with solid white text — clearly visible.
             DateHeader={CustomDateHeader}
             disableKeyboardCompatibleView={Platform.OS === 'android'}
-            // Part 50.3: Stream built-in voice recording via expo-av.
             audioRecordingEnabled
           >
             <MessageList targetedMessage={targetMsgId} />
-            {/* Plain MessageInput — Stream injects AttachButton + mic via Channel context */}
             <MessageInput />
           </Channel>
         </Chat>
@@ -655,7 +644,6 @@ export default function WorkspaceChatScreen() {
         onScrollToMessage={handleGoToMessage}
       />
 
-      {/* Part 50.1 FIX: Pass real workspace roles to sidebar */}
       <ChatMembersSidebar
         visible={showMembers}
         members={streamMembers}
@@ -664,7 +652,6 @@ export default function WorkspaceChatScreen() {
         workspaceMemberRoles={workspaceMemberRoles}
       />
 
-      {/* Search modal */}
       <ChatSearchModal
         visible={showSearch}
         channel={channel}
@@ -672,7 +659,6 @@ export default function WorkspaceChatScreen() {
         onGoToMessage={handleGoToMessage}
       />
 
-      {/* Part 50.1: Poll creator modal */}
       {client && channel && (
         <ChatPollCreator
           visible={showPollCreator}
@@ -681,6 +667,14 @@ export default function WorkspaceChatScreen() {
           channel={channel}
         />
       )}
+
+      {/* Part 50.2 — GIF Picker */}
+      <ChatGifPicker
+        visible={showGifPicker}
+        onClose={() => setShowGifPicker(false)}
+        onSelect={handleGifSelect}
+        giphyApiKey={process.env.EXPO_PUBLIC_GIPHY_API_KEY ?? ''}
+      />
     </View>
   );
 }
@@ -708,7 +702,6 @@ function TopBar({
       <TouchableOpacity onPress={onBack} style={styles.backBtn}>
         <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
       </TouchableOpacity>
-
       <View style={styles.topCenter}>
         <View style={styles.titleRow}>
           <View style={styles.chatIcon}>
@@ -722,12 +715,10 @@ function TopBar({
           {onlineCount > 0 && `${onlineCount} online`}
         </Text>
       </View>
-
       <View style={styles.topActions}>
         <TouchableOpacity onPress={onSearch} style={styles.iconBtn} activeOpacity={0.7}>
           <Ionicons name="search-outline" size={17} color={COLORS.textSecondary} />
         </TouchableOpacity>
-
         <TouchableOpacity
           onPress={onFiles}
           style={[styles.iconBtn, fileCount > 0 && styles.iconBtnFiles]}
@@ -744,7 +735,6 @@ function TopBar({
             </View>
           )}
         </TouchableOpacity>
-
         <TouchableOpacity onPress={onMembers} style={styles.iconBtn} activeOpacity={0.7}>
           <Ionicons name="people-outline" size={17} color={COLORS.textSecondary} />
           {onlineCount > 0 && (
@@ -790,9 +780,7 @@ interface ChatFileFilterStreamProps {
   onScrollToMessage: (messageId: string) => void;
 }
 
-function ChatFileFilterStream({
-  visible, channel, onClose, onScrollToMessage,
-}: ChatFileFilterStreamProps) {
+function ChatFileFilterStream({ visible, channel, onClose, onScrollToMessage }: ChatFileFilterStreamProps) {
   const messages = useMemo<ChatMessage[]>(() => {
     if (!channel?.state?.messages) return [];
     return (Object.values((channel.state as any).messages) as any[])
