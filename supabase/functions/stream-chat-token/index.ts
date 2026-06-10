@@ -1,36 +1,9 @@
 // supabase/functions/stream-chat-token/index.ts
 // Part 49 — Stream Chat Token Generator
 // Part 50 FIX — ReadChannel error (code 17) for non-creator workspace members:
-//
-// ROOT CAUSE:
-//   Stream's `messaging` channel type uses the default permission policy:
-//     "Channel Members" → allows [ReadChannel, CreateMessage] for `channel_member` role
-//     "Discard all"     → denies everything else for `user` role
-//
-//   When the FIRST user (owner) calls getOrCreateWorkspaceChannel on the client:
-//     1. channel.watch() creates the channel
-//     2. channel.addMembers([userId]) adds them as a `channel_member`
-//   This works because creating the channel automatically makes them a member.
-//
-//   When a SECOND user (another editor/owner) calls channel.watch() client-side:
-//     They are NOT yet a member (only the creator is). They have role `user`,
-//     which has no ReadChannel permission → error code 17.
-//
-// FIX:
-//   Add the user as a channel member SERVER-SIDE (using the Stream server client
-//   which bypasses all permission checks) INSIDE this Edge Function, BEFORE
-//   returning the token. By the time the client calls channel.watch(), the user
-//   is already a `channel_member` and ReadChannel is granted.
-//
-//   We add the user to ALL workspace channels they are a member of in Supabase,
-//   so they can watch any of their workspace chats immediately.
-//
-// Deploy:
-//   supabase functions deploy stream-chat-token --no-verify-jwt
-//
-// Secrets required (unchanged):
-//   supabase secrets set STREAM_API_KEY=your_stream_api_key
-//   supabase secrets set STREAM_API_SECRET=your_stream_api_secret
+//   Server-side addMembers() to all workspace channels before token return.
+// Part 50.3 — Upsert the "deepdive-bot" user in Stream so it always exists
+//   and can post messages as a bot in any channel.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { StreamChat }   from 'npm:stream-chat@8';
@@ -110,21 +83,29 @@ Deno.serve(async (req: Request) => {
       supabaseId: user.id,
     });
 
-    // ── 5. FIX: Add this user as a member to all their workspace channels ──
-    //
+    // ── 5. Part 50.3: Upsert the @DeepDive bot user ────────────────────────
+    // This ensures the bot user always exists in Stream so it can send messages.
+    // We upsert on every token call (idempotent). The bot never connects as a
+    // real user — it only sends server-side messages via the secret client.
+    try {
+      await serverClient.upsertUser({
+        id:   'deepdive-bot',
+        name: 'DeepDive AI',
+        image: 'https://img.icons8.com/fluency/96/artificial-intelligence.png',
+        role: 'user',
+        // Custom field to mark this as a bot (renders differently in future UI)
+        is_bot: true,
+      } as any);
+    } catch (botUpsertErr) {
+      // Non-fatal — token generation continues
+      console.warn('[stream-chat-token] bot upsert error (non-fatal):', botUpsertErr);
+    }
+
+    // ── 6. Add user as member to all their workspace channels ──────────────
     // Fetch all workspaces this user belongs to from Supabase.
     // Then call serverClient.channel(...).addMembers([userId]) for each one.
-    // The server client bypasses Stream permissions entirely, so this always
-    // succeeds regardless of whether the channel exists yet or not.
-    //
-    // Stream's addMembers is idempotent — calling it multiple times for the
-    // same user in the same channel is safe and has no side effects.
-    //
-    // We use Promise.allSettled so a single failing channel doesn't block the
-    // token from being returned. Non-existent channels will be created when
-    // the first user opens the chat; for now we just ensure the membership
-    // is pre-seeded for channels that DO exist.
-
+    // The server client bypasses Stream permissions entirely.
+    // Stream's addMembers is idempotent — safe to call multiple times.
     try {
       const { data: memberRows } = await supabase
         .from('workspace_members')
@@ -136,19 +117,14 @@ Deno.serve(async (req: Request) => {
         const addMemberPromises = memberRows.map(async (row: { workspace_id: string }) => {
           try {
             const channelId = getWorkspaceChannelId(row.workspace_id);
-            // channel() without watch() — server-side, no connection needed
             const ch = serverClient.channel('messaging', channelId, {
               name:        `Workspace ${row.workspace_id}`,
               workspaceId: row.workspace_id,
-              created_by_id: streamUserId, // required when creating via server
+              created_by_id: streamUserId,
             });
-            // addMembers is the key fix: makes user a `channel_member` so
-            // ReadChannel permission is granted when they watch() client-side.
             await ch.addMembers([{ user_id: streamUserId }]);
           } catch (chErr) {
-            // Non-fatal: channel may not exist yet (first user hasn't opened it).
-            // The first user to open a chat creates the channel + adds themselves.
-            // This pre-seeding is best-effort.
+            // Non-fatal: channel may not exist yet.
             console.warn(`[stream-chat-token] addMembers skip for workspace ${row.workspace_id}:`, chErr);
           }
         });
@@ -160,7 +136,7 @@ Deno.serve(async (req: Request) => {
       console.warn('[stream-chat-token] membership pre-seed error (non-fatal):', memberErr);
     }
 
-    // ── 6. Generate short-lived token (24h expiry) ──────────────────────────
+    // ── 7. Generate short-lived token (24h expiry) ──────────────────────────
     const issuedAt  = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + 60 * 60 * 24; // 24 hours
     const token     = serverClient.createToken(streamUserId, expiresAt, issuedAt);

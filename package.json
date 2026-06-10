@@ -83,6 +83,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
+    "supabase": "^2.105.0",
     "typescript": "~5.9.2"
   },
   "private": true

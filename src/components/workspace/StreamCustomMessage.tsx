@@ -1,42 +1,31 @@
 // src/components/workspace/StreamCustomMessage.tsx
 // Part 49 — Custom Message Component for Stream Chat
-// Part 50 — Removed DocumentPreviewTrigger (Stream renders docs natively)
-// Part 50 D FIX — Double video removed (Stream v8 renders video via expo-video natively)
-// Part 50.4 FIX — Double audio removed:
+// Part 50.3 — Originally handled sticker rendering here
+// Part 50.X FINAL FIX — Sticker rendering moved OUT of this component.
 //
-//   ROOT CAUSE: audioRecordingEnabled on <Channel> makes Stream send voice
-//   messages with type='voiceRecording' and mime_type='audio/aac'. Our previous
-//   code intercepted any attachment whose mime_type started with 'audio/' and
-//   rendered a second AudioPlayerBubble below MessageSimple. Stream's own
-//   FileAttachmentGroup ALSO renders its built-in AudioAttachment for
-//   type === 'audio' and type === 'voiceRecording'. Result: two players.
+// ROOT CAUSE of all sticker action failures (reactions, delete, pin, markUnread):
+//   We were intercepting sticker messages and returning a custom View/Pressable
+//   INSTEAD of <MessageSimple />. This bypassed Stream's entire message wrapper
+//   system (Message HOC → MessageWrapper → MessageSimple) which is responsible
+//   for ALL gesture handling, overlay triggering, and action execution.
+//   No amount of manual onLongPress/showMessageOverlay/contextMenuAnchorRef
+//   wiring can fully replicate what Stream's internal system does.
 //
-//   FIX: Remove AudioPlayerBubble and the isAudioMime check entirely.
-//   Stream v8 renders ALL audio (both type='audio' and type='voiceRecording')
-//   natively inside MessageSimple → FileAttachmentGroup → AudioAttachment.
-//   Our custom rendering is not needed and was causing duplication.
+// CORRECT ARCHITECTURE:
+//   - StreamCustomMessage always returns <MessageSimple /> for ALL messages.
+//   - Sticker visual customization is done via the Attachment prop on <Channel>,
+//     which lets us render a transparent sticker image INSIDE Stream's message
+//     bubble system. Stream's full gesture/overlay stack remains intact.
+//   - The Attachment component is defined in workspace-chat.tsx and passed to
+//     <Channel Attachment={CustomAttachment} />.
 //
-//   StreamCustomMessage now unconditionally delegates to MessageSimple for
-//   all attachment types: text, images, video, audio, voice recordings, docs.
-//   No attachment interception remains.
+// This file is now minimal — just delegates everything to MessageSimple.
 
 import React, { memo } from 'react';
 import { MessageSimple } from 'stream-chat-expo';
 
-// ─── Custom message component ─────────────────────────────────────────────────
-//
-// Full delegation strategy (stream-chat-expo v8, Part 50.4):
-//   MessageSimple handles everything:
-//     • Text content
-//     • Reactions, reply preview, pin badge
-//     • Images → lightbox
-//     • Videos → expo-video inline player
-//     • Audio (type='audio') → AudioAttachment (waveform + seek)
-//     • Voice recordings (type='voiceRecording') → AudioAttachment
-//     • Documents → file chip (PDF, Word, Excel, etc.)
-//
-// Nothing is intercepted. AudioPlayerBubble removed to prevent double-render.
-
 export const StreamCustomMessage = memo(function StreamCustomMessage() {
+  // Full delegation — Stream handles all gestures, overlay, reactions, delete.
+  // Sticker appearance is customised via the Attachment prop on <Channel>.
   return <MessageSimple />;
 });
