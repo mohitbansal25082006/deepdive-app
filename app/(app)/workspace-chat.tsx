@@ -4,10 +4,25 @@
 // Part 50.1 — Poll creator, voice recording, members sidebar role fix
 // Part 50.2 — GIF picker
 // Part 50.3 — Custom reactions, AI bot, sticker fix, thread removed
-// Part 50.4 — GIF auto-sizing, reaction visibility fix
-// Part 50.X FINAL FIX — Sticker rendering via Attachment prop on Channel.
-//   All sticker actions (reactions, delete, pin, markUnread) now work because
-//   MessageSimple handles ALL gestures natively. We only customise the visual.
+// Part 50.4 — Bot scoped to workspace reports (bot file), GIF dimension fix
+// Part 50.4 FIX — Removed Gallery={SingleImageGallery} that broke images/videos
+//
+// BUG INTRODUCED IN PART 50.4:
+//   We passed Gallery={SingleImageGallery} to <Channel>. Stream's built-in
+//   Gallery component handles BOTH image and video attachments via the `images`
+//   and `videos` props it receives. Our custom component only read `images`,
+//   so every video attachment rendered as nothing (blank). Also, our component
+//   didn't wire up Stream's setSelectedMessage/setOverlay context functions,
+//   so tapping images to open the fullscreen lightbox was broken.
+//
+// FIX:
+//   Remove the Gallery prop entirely — let Stream use its built-in Gallery.
+//   Image sizing is handled by streamChatTheme.ts (aspectRatio on imageContainer).
+//   Stream will override the default aspectRatio with original_width/height
+//   from attachment metadata once available, making the image size correct.
+//
+//   The only CustomAttachment we keep is for stickers (type:'sticker') which
+//   is a custom type that Stream doesn't know how to render.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -78,16 +93,16 @@ const TOP_BAR_HEIGHT = 56;
 // ─── Part 50.3: Custom Reaction Set (10 reactions) ────────────────────────────
 
 const CUSTOM_REACTIONS: ReactionData[] = [
-  { type: 'thumbsup',  Icon: () => <Text style={reactionStyles.emoji}>👍</Text> },
-  { type: 'love',      Icon: () => <Text style={reactionStyles.emoji}>❤️</Text> },
-  { type: 'haha',      Icon: () => <Text style={reactionStyles.emoji}>😂</Text> },
-  { type: 'wow',       Icon: () => <Text style={reactionStyles.emoji}>😮</Text> },
-  { type: 'sad',       Icon: () => <Text style={reactionStyles.emoji}>😢</Text> },
-  { type: 'fire',      Icon: () => <Text style={reactionStyles.emoji}>🔥</Text> },
-  { type: 'party',     Icon: () => <Text style={reactionStyles.emoji}>🎉</Text> },
-  { type: 'idea',      Icon: () => <Text style={reactionStyles.emoji}>💡</Text> },
-  { type: 'eyes',      Icon: () => <Text style={reactionStyles.emoji}>👀</Text> },
-  { type: 'check',     Icon: () => <Text style={reactionStyles.emoji}>✅</Text> },
+  { type: 'thumbsup', Icon: () => <Text style={reactionStyles.emoji}>👍</Text> },
+  { type: 'love',     Icon: () => <Text style={reactionStyles.emoji}>❤️</Text> },
+  { type: 'haha',     Icon: () => <Text style={reactionStyles.emoji}>😂</Text> },
+  { type: 'wow',      Icon: () => <Text style={reactionStyles.emoji}>😮</Text> },
+  { type: 'sad',      Icon: () => <Text style={reactionStyles.emoji}>😢</Text> },
+  { type: 'fire',     Icon: () => <Text style={reactionStyles.emoji}>🔥</Text> },
+  { type: 'party',    Icon: () => <Text style={reactionStyles.emoji}>🎉</Text> },
+  { type: 'idea',     Icon: () => <Text style={reactionStyles.emoji}>💡</Text> },
+  { type: 'eyes',     Icon: () => <Text style={reactionStyles.emoji}>👀</Text> },
+  { type: 'check',    Icon: () => <Text style={reactionStyles.emoji}>✅</Text> },
 ];
 
 const reactionStyles = StyleSheet.create({
@@ -96,44 +111,24 @@ const reactionStyles = StyleSheet.create({
 
 // ─── messageActions filter ───────────────────────────────────────────────────
 // Removes 'threadReply' for all messages.
-// Removes 'editMessage' for any message that has attachments.
-//
-// ROOT CAUSE of "setState during render" crash:
-//   Stream's _MessageComposer#set__editedMessage() is called inside a useMemo
-//   hook during the render phase of useCreateMessageComposer. This violates
-//   React's rule that setState must not be called during rendering.
-//   The crash fires whenever the user taps "Edit" on any message that contains
-//   an attachment (image, GIF, sticker, file, audio — any type).
-//   It was previously seen on GIF/sticker messages and is now confirmed on
-//   image messages too (SendButton variant in the stack trace).
-//
-// FIX: Disable editMessage for all messages with attachments.
-//   Plain text messages (no attachments) can still be edited normally.
-//   Delete, react, pin, markUnread all still work for attachment messages.
+// Removes 'editMessage' for any message that has attachments (Stream SDK crash).
 
 const MESSAGE_ACTIONS_NO_THREAD = (params: any) => {
-  const actions = defaultMessageActions(params);
-  const message = params?.message as any;
+  const actions        = defaultMessageActions(params);
+  const message        = params?.message as any;
   const hasAttachments = ((message?.attachments ?? []) as any[]).length > 0;
 
   return actions.filter((action: any) => {
-    // Never show Thread Reply
     if (action?.actionType === 'threadReply') return false;
-    // Editing attachment messages crashes Stream's MessageComposer (SDK bug)
     if (hasAttachments && action?.actionType === 'editMessage') return false;
     return true;
   });
 };
 
 // ─── Part 50.X: Sticker Attachment Component ─────────────────────────────────
-// Renders inside Stream's MessageSimple bubble system — all gesture handling,
-// overlay, reactions, delete, pin, markUnread work natively via MessageSimple.
-//
-// Stream's Attachment component receives each attachment object and a `type`
-// prop. We intercept type === 'sticker' and render a transparent image.
-// All other types fall through to Stream's default Attachment rendering.
-//
-// This is passed as <Channel Attachment={CustomAttachment} />.
+// Renders stickers (custom type:'sticker') transparently inside Stream's
+// MessageSimple bubble. All gesture handling stays with MessageSimple.
+// Passed as Attachment prop on <Channel>.
 
 const STICKER_SIZE = 160;
 
@@ -147,7 +142,6 @@ function StickerAttachment({ attachment }: { attachment: any }) {
       style={{
         width:           STICKER_SIZE,
         height:          STICKER_SIZE,
-        // No background — sticker renders transparently inside the bubble
         backgroundColor: 'transparent',
       }}
       resizeMode="contain"
@@ -156,14 +150,16 @@ function StickerAttachment({ attachment }: { attachment: any }) {
 }
 
 // CustomAttachment: passed to <Channel Attachment={...} />
-// Stream calls this for each attachment. We handle 'sticker', pass rest to default.
+// ONLY intercepts type:'sticker'. Everything else — images, GIFs, videos,
+// files, audio — goes to Stream's default Attachment renderer unchanged.
+// This is critical: Stream's default Attachment handles video thumbnails,
+// file chips, audio players, etc. We must not break those.
 function CustomAttachment(props: any) {
-  // Stream v8 passes props.attachment (singular) for each attachment item
   const att = props.attachment ?? props;
   if (att?.type === 'sticker') {
     return <StickerAttachment attachment={att} />;
   }
-  // For all other types, use Stream's default Attachment component
+  // Pass everything else to Stream's default Attachment
   const { Attachment: DefaultAttachment } = require('stream-chat-expo');
   if (DefaultAttachment) {
     return <DefaultAttachment {...props} />;
@@ -193,11 +189,11 @@ function AttachPickerSheet({
   const insets = useSafeAreaInsets();
 
   const options = [
-    { icon: 'images-outline' as const, label: 'GIF & Stickers', sub: 'Search & send from GIPHY',      color: '#FF6B9D', onPress: onGif    },
-    { icon: 'bar-chart'      as const, label: 'Poll',           sub: 'Ask your team a question',       color: '#9B59B6', onPress: onPoll   },
-    { icon: 'camera'         as const, label: 'Camera',         sub: 'Take a photo or video',          color: '#FF6B6B', onPress: onCamera },
-    { icon: 'images'         as const, label: 'Photo Library',  sub: 'Choose from your gallery',       color: COLORS.primary, onPress: onPhotos },
-    { icon: 'document-text'  as const, label: 'File',           sub: 'PDF, Word, Excel and more',      color: '#4ECDC4', onPress: onFiles  },
+    { icon: 'images-outline' as const, label: 'GIF & Stickers', sub: 'Search & send from GIPHY',    color: '#FF6B9D', onPress: onGif    },
+    { icon: 'bar-chart'      as const, label: 'Poll',           sub: 'Ask your team a question',     color: '#9B59B6', onPress: onPoll   },
+    { icon: 'camera'         as const, label: 'Camera',         sub: 'Take a photo or video',        color: '#FF6B6B', onPress: onCamera },
+    { icon: 'images'         as const, label: 'Photo Library',  sub: 'Choose from your gallery',     color: COLORS.primary, onPress: onPhotos },
+    { icon: 'document-text'  as const, label: 'File',           sub: 'PDF, Word, Excel and more',    color: '#4ECDC4', onPress: onFiles  },
   ];
 
   return (
@@ -438,9 +434,7 @@ export default function WorkspaceChatScreen() {
     if (!channel) return;
     const countFiles = () => {
       const msgs = Object.values((channel.state as any).messages as Record<string, any>);
-      // Exclude: deleted messages, GIFs (image/gif), stickers — not real file attachments.
       setFileCount(msgs.reduce((n: number, m: any) => {
-        // Skip deleted messages — they have no attachments worth counting
         if (m.deleted_at || m.type === 'deleted') return n;
         const atts = (m.attachments ?? []) as any[];
         const realFiles = atts.filter((a: any) =>
@@ -452,17 +446,11 @@ export default function WorkspaceChatScreen() {
       }, 0));
     };
     countFiles();
-    // Listen to all events that change attachment count:
-    // message.new    → new file sent
-    // message.deleted → file message deleted (count goes down)
-    // message.updated → message edited (attachments may change)
     const u1 = channel.on('message.new',     countFiles);
     const u2 = channel.on('message.deleted', countFiles);
     const u3 = channel.on('message.updated', countFiles);
     return () => { u1.unsubscribe(); u2.unsubscribe(); u3.unsubscribe(); };
   }, [channel]);
-
-
 
   const buildMembersRef = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -506,9 +494,9 @@ export default function WorkspaceChatScreen() {
     setTimeout(() => setTargetMsgId(undefined), 2000);
   }, []);
 
-  // ── Part 50.3 FIX 3: GIF vs Sticker send ─────────────────────────────────
-  // GIFs → type:'image'  (renders in Stream Gallery with bubble — correct)
-  // Stickers → type:'sticker' (intercepted by StreamCustomMessage, no bubble)
+  // ── GIF vs Sticker send ───────────────────────────────────────────────────
+  // GIFs: include original_width/original_height for correct aspect ratio.
+  // Stickers: custom type:'sticker' intercepted by CustomAttachment.
   const handleGifSelect = useCallback(async (
     gifUrl:    string,
     title:     string,
@@ -517,32 +505,29 @@ export default function WorkspaceChatScreen() {
     if (!channel) return;
     try {
       if (isSticker) {
-        // Sticker: custom type so StreamCustomMessage can intercept it
         await (channel as any).sendMessage({
           text:        '',
           attachments: [{
-            type:      'sticker',      // custom — NOT 'image'
+            type:      'sticker',
             image_url: gifUrl,
             asset_url: gifUrl,
             title:     title || 'Sticker',
           }],
         });
       } else {
-        // GIF: standard image type — renders in Stream Gallery bubble.
-        // Include original_width/original_height so Stream's Gallery can
-        // compute the correct aspect ratio and show the full GIF without
-        // cropping tall/short GIFs. We fetch dimensions from the GIPHY URL.
+        // Resolve GIF dimensions before sending so Stream's Gallery can
+        // immediately show the correct aspect ratio on the receiver's side
         let gifWidth: number | undefined;
         let gifHeight: number | undefined;
         try {
           await new Promise<void>((resolve) => {
-            (require('react-native') as any).Image.getSize(
+            Image.getSize(
               gifUrl,
               (w: number, h: number) => { gifWidth = w; gifHeight = h; resolve(); },
-              () => resolve(), // ignore errors — send without dimensions
+              () => resolve(),
             );
           });
-        } catch { /* non-fatal */ }
+        } catch { /* non-fatal — send without dimensions */ }
 
         await (channel as any).sendMessage({
           text:        '',
@@ -635,14 +620,10 @@ export default function WorkspaceChatScreen() {
             bottomInset={channelBottomInset}
             supportedReactions={CUSTOM_REACTIONS}
             reactionListPosition="bottom"
-            // Part 50.4: GIF auto-sizing — no fixed height on gallery imageContainer
-            // so tall/short GIFs render at their natural aspect ratio (not cropped).
-            // Part 50.5: GIF sizing handled via original_width/original_height
-            // in the attachment object sent with each GIF. Stream's Gallery
-            // component uses those fields to compute the correct aspect ratio,
-            // so tall/short GIFs display at their natural size without cropping.
-            // Part 50.3: Remove Thread Reply from message actions
             messageActions={MESSAGE_ACTIONS_NO_THREAD}
+            // NOTE: No Gallery prop here — Stream's built-in Gallery handles
+            // both image AND video attachments. Replacing it breaks videos.
+            // Image sizing is controlled via streamChatTheme.ts (aspectRatio).
             Attachment={CustomAttachment}
             AttachButton={() => (
               <CustomAttachButtonInner
@@ -655,12 +636,6 @@ export default function WorkspaceChatScreen() {
             disableKeyboardCompatibleView={Platform.OS === 'android'}
             audioRecordingEnabled
           >
-            {/*
-              Part 50.3 FIX 1: No onThreadSelect prop on MessageList.
-              Not providing onThreadSelect means tapping "Thread Reply" action
-              (which we've already removed from messageActions) does nothing.
-              No Thread component is rendered anywhere in this screen.
-            */}
             <MessageList targetedMessage={targetMsgId} />
             <MessageInput />
           </Channel>
@@ -698,7 +673,6 @@ export default function WorkspaceChatScreen() {
         />
       )}
 
-      {/* Part 50.2/50.3 — GIF & Sticker Picker */}
       <ChatGifPicker
         visible={showGifPicker}
         onClose={() => setShowGifPicker(false)}

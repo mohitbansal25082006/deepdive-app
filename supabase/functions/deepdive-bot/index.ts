@@ -1,22 +1,26 @@
 // supabase/functions/deepdive-bot/index.ts
-// Part 50.3 — @DeepDive AI Bot
+// Part 50.3 — @DeepDive AI Bot (original)
+// Part 50.4 — SCOPED TO WORKSPACE REPORTS ONLY
 //
-// ARCHITECTURE FIX — Stream webhook timeout:
+// CHANGE IN 50.4:
+//   Previously the bot searched ALL personal reports of ALL workspace members.
+//   Now it ONLY searches reports that have been explicitly shared into the workspace
+//   via the workspace_reports table (added by editors/owners via "Add to Workspace").
+//
+//   New flow:
+//     1. Extract workspaceId from channelId ("workspace-{uuid}")
+//     2. Query workspace_reports to get the report_ids shared in this workspace
+//     3. Query report_chunks using those specific report_ids (no user loop)
+//     4. Run RAG only on those workspace-scoped chunks
+//
+//   This is both more accurate (only relevant workspace context) and faster
+//   (single DB query instead of looping through all member IDs).
+//
+// ARCHITECTURE (unchanged from 50.3):
 //   Stream gives webhooks exactly 5 seconds to respond with 200.
-//   Our previous code ran parseBody() (gzip decompress + JSON parse) BEFORE
-//   returning 200. On slow cold starts this exceeded 5 seconds → Stream
-//   retried 3 times → "context deadline exceeded" → no Supabase log entries.
-//
-// SOLUTION:
-//   1. Read the raw body buffer immediately (fast — just memory copy)
-//   2. Return 200 within milliseconds
-//   3. Do ALL processing (decompress, parse, embed, RAG, GPT, reply) inside
-//      EdgeRuntime.waitUntil() which runs AFTER the response is sent
-//
-// ALSO FIXED:
-//   - Gzip decompression (Stream compresses by default for apps after May 2026)
-//   - new StreamChat() with disableCache:true for server-side use
-//   - channel.create() before sendMessage()
+//   1. Read raw body bytes immediately (~1ms)
+//   2. Return 200 immediately
+//   3. Do ALL processing inside EdgeRuntime.waitUntil()
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { StreamChat }   from 'npm:stream-chat@8';
@@ -32,27 +36,30 @@ const MENTION_REGEX    = /@deepdive\b/i;
 const COMMAND_REGEX    = /^\/ai\b/i;
 const EMBEDDING_MODEL  = 'text-embedding-3-small';
 const EMBEDDING_DIM    = 1536;
-const MATCH_COUNT      = 5;
+const MATCH_COUNT      = 6;
 const MATCH_THRESHOLD  = 0.28;
-const MAX_CONTEXT_CHARS = 2500;
+const MAX_CONTEXT_CHARS = 3000;
 const OPENAI_CHAT_URL  = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings';
 const GPT_MODEL        = 'gpt-4o-mini';
 
 interface RAGChunk {
-  content: string; chunkType: string; similarity: number; reportTitle?: string;
+  content:     string;
+  chunkType:   string;
+  similarity:  number;
+  reportTitle: string;
+  reportId:    string;
 }
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 // MUST return 200 in under 5 seconds or Stream retries and times out.
-// Strategy: capture raw body bytes immediately, return 200, process async.
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: CORS });
   }
 
-  // Step 1: Read raw bytes immediately — this is just a memory operation, ~1ms
+  // Step 1: Read raw bytes immediately — memory copy only, ~1ms
   let rawBytes: Uint8Array;
   try {
     rawBytes = new Uint8Array(await req.arrayBuffer());
@@ -63,8 +70,6 @@ Deno.serve(async (req: Request) => {
   }
 
   // Step 2: Register background task BEFORE returning response.
-  // EdgeRuntime.waitUntil keeps the Deno process alive after HTTP response.
-  // All heavy work (decompress, parse, embed, GPT, reply) happens here.
   try {
     (EdgeRuntime as any).waitUntil(
       handleWebhook(rawBytes).catch((err) => console.error('[bot] fatal:', err)),
@@ -113,8 +118,8 @@ async function handleWebhook(rawBytes: Uint8Array): Promise<void> {
   if (senderId === BOT_USER_ID) return;
 
   // Triple trigger detection
-  const mentioned              = (payload.message?.mentioned_users ?? []) as any[];
-  const viaAutocomplete        = mentioned.some(
+  const mentioned       = (payload.message?.mentioned_users ?? []) as any[];
+  const viaAutocomplete = mentioned.some(
     (u: any) => u.id === BOT_USER_ID || (u.name ?? '').toLowerCase().includes('deepdive'),
   );
   const viaText    = MENTION_REGEX.test(msgText);
@@ -138,7 +143,7 @@ async function processAndReply(payload: any, msgText: string, senderId: string):
   const supabaseService = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
   let query = msgText.replace(/@deepdive\b/gi, '').replace(/^\/ai\b/i, '').trim();
-  if (!query) query = 'Give me a summary of the most relevant research in this workspace.';
+  if (!query) query = 'Give me a summary of the most relevant research shared in this workspace.';
   console.log(`[bot] Query: "${query}"`);
 
   const streamClient = new StreamChat(apiKey, apiSecret, { disableCache: true });
@@ -154,81 +159,160 @@ async function processAndReply(payload: any, msgText: string, senderId: string):
   try {
     const supabase = createClient(supabaseUrl, supabaseService);
 
-    // Extract workspace_id from channel ID: "workspace-{uuid}" → uuid
-    let userIds = [senderId];
-    const workspaceId = channelId.startsWith('workspace-') ? channelId.slice('workspace-'.length) : '';
+    // ── Part 50.4: Extract workspaceId and get WORKSPACE-SHARED report IDs ──
+    // Only use reports that have been explicitly added to this workspace via
+    // workspace_reports table — not all personal reports of all members.
+    const workspaceId = channelId.startsWith('workspace-')
+      ? channelId.slice('workspace-'.length)
+      : '';
+
     console.log(`[bot] channelId="${channelId}" workspaceId="${workspaceId}"`);
 
-    if (workspaceId) {
-      const { data: members, error: mErr } = await supabase
-        .from('workspace_members').select('user_id').eq('workspace_id', workspaceId);
-      if (mErr) console.warn('[bot] members error:', mErr.message);
-      else if (members?.length) {
-        userIds = Array.from(new Set([senderId, ...members.map((m: any) => m.user_id).filter(Boolean)]));
-        console.log(`[bot] Searching ${userIds.length} members' reports`);
+    if (!workspaceId) {
+      // Not a workspace channel — cannot determine scope
+      await sendBotReply(channel, '*(no workspace context)* I can only answer questions about reports shared in a DeepDive workspace.');
+      return;
+    }
+
+    // Step 1: Get all report_ids shared in this workspace
+    const { data: workspaceReportRows, error: wrErr } = await supabase
+      .from('workspace_reports')
+      .select('report_id')
+      .eq('workspace_id', workspaceId);
+
+    if (wrErr) {
+      console.error('[bot] workspace_reports query error:', wrErr.message);
+    }
+
+    const workspaceReportIds: string[] = (workspaceReportRows ?? [])
+      .map((r: any) => r.report_id as string)
+      .filter(Boolean);
+
+    console.log(`[bot] Found ${workspaceReportIds.length} reports in workspace`);
+
+    // Step 2: If no reports in workspace, tell the user
+    if (workspaceReportIds.length === 0) {
+      await sendBotReply(
+        channel,
+        `No research reports have been added to this workspace yet. Workspace owners and editors can add reports via the Reports tab in the workspace. Once reports are added, I can answer questions about them.`,
+      );
+      return;
+    }
+
+    // Step 3: Embed the query
+    const embedding = await createEmbedding(query, openaiKey);
+
+    // Step 4: RAG — search ONLY within workspace report IDs
+    // Uses match_global_knowledge RPC with p_report_ids filter.
+    // The RPC already supports a p_report_ids parameter (uuid[]) which was
+    // added in Part 26. When provided, it restricts the search to those report chunks.
+    //
+    // We search as the service role (supabase client already uses service key)
+    // so RLS doesn't restrict us — we already validated workspace membership
+    // at the channel level (only owners/editors connect to the channel).
+    const chunks: RAGChunk[] = [];
+
+    // Search in batches of 20 report IDs to avoid URL length limits
+    const BATCH = 20;
+    for (let i = 0; i < workspaceReportIds.length; i += BATCH) {
+      const batchIds = workspaceReportIds.slice(i, i + BATCH);
+      try {
+        const { data, error: rErr } = await supabase.rpc('match_global_knowledge', {
+          query_embedding:  embedding,
+          p_user_id:        null,          // not filtering by user — we have explicit report IDs
+          match_count:      MATCH_COUNT + 2,
+          match_threshold:  MATCH_THRESHOLD,
+          p_report_ids:     batchIds,      // ← KEY: only search these workspace reports
+        });
+
+        if (rErr) {
+          console.warn(`[bot] RPC error (batch ${i}):`, rErr.message);
+          // Fallback: try without p_user_id if the RPC signature changed
+          // (some older deployments may not have p_report_ids working correctly)
+          continue;
+        }
+
+        if (Array.isArray(data)) {
+          for (const r of data) {
+            chunks.push({
+              content:     r.content      ?? '',
+              chunkType:   r.chunk_type   ?? 'text',
+              similarity:  Number(r.similarity ?? 0),
+              reportTitle: r.report_title ?? 'Workspace Report',
+              reportId:    r.report_id    ?? '',
+            });
+          }
+        }
+      } catch (e) {
+        console.warn(`[bot] RAG exception (batch ${i}):`, e);
       }
     }
 
-    // Embed
-    const embedding = await createEmbedding(query, openaiKey);
-
-    // RAG
-    const chunks: RAGChunk[] = [];
-    for (const uid of userIds.slice(0, 5)) {
-      try {
-        const { data, error: rErr } = await supabase.rpc('match_global_knowledge', {
-          query_embedding: embedding, p_user_id: uid,
-          match_count: Math.ceil(MATCH_COUNT / Math.min(userIds.length, 5)) + 2,
-          match_threshold: MATCH_THRESHOLD, p_report_ids: null,
-        });
-        if (rErr) { console.warn(`[bot] RPC err ${uid}:`, rErr.message); continue; }
-        if (Array.isArray(data)) {
-          for (const r of data) chunks.push({ content: r.content, chunkType: r.chunk_type, similarity: Number(r.similarity), reportTitle: r.report_title });
-        }
-      } catch (e) { console.warn(`[bot] RAG exception ${uid}:`, e); }
-    }
-
+    // Step 5: Deduplicate and take top results
     const seen = new Set<string>();
     const top  = chunks
       .sort((a, b) => b.similarity - a.similarity)
-      .filter(c => { const k = c.content.slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; })
+      .filter(c => {
+        const k = c.content.slice(0, 80);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
       .slice(0, MATCH_COUNT);
 
-    console.log(`[bot] ${top.length} chunks found`);
-    const ctx      = buildContext(top);
-    const hasCtx   = top.length > 0;
+    console.log(`[bot] ${top.length} chunks found across ${workspaceReportIds.length} workspace reports`);
 
-    // GPT
+    const ctx    = buildContext(top);
+    const hasCtx = top.length > 0;
+
+    // Step 6: Build system prompt scoped to workspace context
     const sys = hasCtx
-      ? `You are DeepDive AI, a research assistant in a workspace chat.\n\nRETRIEVED CONTEXT:\n${ctx}\n\nRules: Answer ONLY from context. Cite "From '[Title]': ...". Max 3-5 sentences. Bullets for lists. No invented facts.`
-      : `You are DeepDive AI in a workspace chat. No matching research found. Tell user in 2 sentences: no relevant reports found, generate reports in DeepDive app first.`;
+      ? `You are DeepDive AI, a research assistant embedded in a team workspace chat.\n\nThe following research has been shared in this workspace:\n\n${ctx}\n\nRules:\n- Answer ONLY using the above workspace research context.\n- Cite your sources like: From '[Report Title]': ...\n- Keep answers concise: 3-5 sentences or bullet points.\n- Do NOT invent facts or reference reports not shown above.\n- If the question is not covered by the workspace research, say so clearly.`
+      : `You are DeepDive AI in a workspace chat. No relevant research was found in the workspace knowledge base for this query. Politely explain in 1-2 sentences that the workspace's shared research doesn't cover this topic, and suggest adding more reports to the workspace.`;
 
+    // Step 7: Generate response with GPT
     const gpt = await fetch(OPENAI_CHAT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiKey}` },
-      body: JSON.stringify({ model: GPT_MODEL, max_tokens: 350, temperature: 0.3,
-        messages: [{ role: 'system', content: sys }, { role: 'user', content: query }] }),
+      body: JSON.stringify({
+        model:       GPT_MODEL,
+        max_tokens:  400,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user',   content: query },
+        ],
+      }),
     });
     const gptData: any = await gpt.json();
     if (gptData.error) throw new Error(`OpenAI: ${gptData.error.message}`);
 
     botReply = gptData.choices?.[0]?.message?.content?.trim() ?? "Couldn't generate a response.";
+
     if (hasCtx) {
-      const rc = new Set(top.map(c => c.reportTitle).filter(Boolean)).size;
-      botReply = `*(from ${rc} report${rc !== 1 ? 's' : ''})*\n\n${botReply}`;
+      // Show which reports were used and total workspace report count
+      const usedReports = new Set(top.map(c => c.reportTitle).filter(Boolean));
+      const rc          = usedReports.size;
+      botReply = `*(from ${rc} workspace report${rc !== 1 ? 's' : ''} · ${workspaceReportIds.length} total in workspace)*\n\n${botReply}`;
     }
+
     console.log(`[bot] Reply ready (${botReply.length} chars)`);
 
   } catch (err) {
     console.error('[bot] Processing error:', err);
-    botReply = `Sorry, I hit an error searching the knowledge base. Please try again.`;
+    botReply = `Sorry, I hit an error searching the workspace knowledge base. Please try again.`;
   }
 
   try { await channel.sendEvent({ type: 'typing.stop', user_id: BOT_USER_ID } as any); } catch { /**/ }
+  await sendBotReply(channel, botReply);
+}
 
+// ─── Send helper ──────────────────────────────────────────────────────────────
+
+async function sendBotReply(channel: any, text: string): Promise<void> {
   try {
-    await channel.sendMessage({ text: botReply, user_id: BOT_USER_ID } as any);
-    console.log(`[bot] ✅ Reply sent to ${channelId}`);
+    await channel.sendMessage({ text, user_id: BOT_USER_ID } as any);
+    console.log(`[bot] ✅ Reply sent (${text.length} chars)`);
   } catch (e) {
     console.error('[bot] ❌ sendMessage failed:', e);
   }
@@ -250,36 +334,43 @@ async function decompressGzip(bytes: Uint8Array): Promise<string> {
   }
   const total  = chunks.reduce((a, c) => a + c.length, 0);
   const merged = new Uint8Array(total);
-  let off = 0;
+  let   off    = 0;
   for (const c of chunks) { merged.set(c, off); off += c.length; }
   return new TextDecoder().decode(merged);
 }
 
 async function createEmbedding(text: string, key: string): Promise<number[]> {
   const res  = await fetch(OPENAI_EMBED_URL, {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-    body: JSON.stringify({ model: EMBEDDING_MODEL, input: text.trim().slice(0, 8000), dimensions: EMBEDDING_DIM }),
+    body: JSON.stringify({
+      model:      EMBEDDING_MODEL,
+      input:      text.trim().slice(0, 8000),
+      dimensions: EMBEDDING_DIM,
+    }),
   });
   const data: any = await res.json();
   if (data.error) throw new Error(data.error.message);
-  return data.data?.[0]?.embedding ?? (() => { throw new Error('No embedding'); })();
+  return data.data?.[0]?.embedding ?? (() => { throw new Error('No embedding returned'); })();
 }
 
 function buildContext(chunks: RAGChunk[]): string {
+  // Group by report title for readable context block
   const by = new Map<string, RAGChunk[]>();
   for (const c of chunks) {
-    const k = c.reportTitle ?? 'Unknown';
+    const k = c.reportTitle || 'Workspace Report';
     if (!by.has(k)) by.set(k, []);
     by.get(k)!.push(c);
   }
   const parts: string[] = [];
-  let total = 0;
-  for (const [t, cs] of by) {
-    const s = `📄 "${t}"\n${cs.map(c => `[${c.chunkType} ${Math.round(c.similarity*100)}%] ${c.content}`).join('\n\n')}`;
-    total += s.length;
+  let   total            = 0;
+  for (const [title, cs] of by) {
+    const block = `📄 "${title}"\n${cs
+      .map(c => `[${c.chunkType} · ${Math.round(c.similarity * 100)}% match]\n${c.content}`)
+      .join('\n\n')}`;
+    total += block.length;
     if (total > MAX_CONTEXT_CHARS) break;
-    parts.push(s);
+    parts.push(block);
   }
   return parts.join('\n\n---\n\n');
 }

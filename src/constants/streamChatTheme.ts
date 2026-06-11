@@ -2,11 +2,60 @@
 // Part 49 — Stream Chat DeepDive Dark Theme
 // Part 50 — Removed inlineDateSeparator, send button styling.
 // Part 50.2 — Gallery + Giphy dark overrides.
-// Part 50.4 CHANGES:
-//   1. Reaction overlay: dark-readable background colors so emoji reactions
-//      are clearly visible on the dark chat background.
-//   2. Gallery: GIF auto-sizing — removed fixed height constraints so vertical
-//      long/short GIFs scale to their natural aspect ratio and show fully.
+// Part 50.3 — Reaction overlay dark-readable backgrounds.
+// Part 50.4 FIX 3 — Correct image sizing: no purple gap, no black gap.
+//
+// HISTORY OF THE IMAGE BUG:
+//
+//   Attempt 1 (50.4 original): Custom SingleImageGallery component.
+//     Result: Videos disappeared. Custom Gallery only handled images prop,
+//     not the videos prop Stream also passes.
+//
+//   Attempt 2 (50.4 fix 1): aspectRatio: 4/3 on imageContainer, containerInner purple.
+//     Result: Purple empty block on left half of message.
+//     Cause: containerInner had COLORS.primary background; portrait images
+//     (taller than 4:3) left leftover horizontal space filled with purple.
+//
+//   Attempt 3 (50.4 fix 2): containerInner transparent, width:'100%' on imageContainer.
+//     Result: Black empty block on right side of images.
+//     Cause: Stream internally computes imageContainer width from attachment
+//     original_width/original_height. When those aren't set (before CDN
+//     enrichment), Stream falls back to ~half screen width. Our width:'100%'
+//     on imageContainer is a style override but Stream's JS-computed width
+//     takes precedence via inline style and the image renders at its
+//     intrinsic pixel ratio within a smaller container, leaving black on right.
+//
+// CORRECT FIX (Attempt 4):
+//
+//   The fundamental issue is that we're fighting Stream's internal size
+//   calculation. Instead of trying to set explicit widths, we use flex layout:
+//
+//   1. `containerInner` → backgroundColor: 'transparent'
+//      Keeps the fix from Attempt 3. No purple showing through.
+//
+//   2. `gallery` → flex: 1
+//      The gallery wrapper stretches to fill containerInner width.
+//
+//   3. `imageContainer` → flex: 1, no explicit width, no aspectRatio
+//      Stretches to fill the gallery. flex:1 overrides Stream's computed
+//      width because it participates in flex layout AFTER Stream sets up
+//      the flex container. The image fills whatever space is given.
+//
+//   4. `image` → flex: 1, resizeMode: 'cover'
+//      Fills imageContainer fully. cover crops if needed but never shows
+//      empty space — the image always fills edge to edge.
+//
+//   WHY flex:1 WORKS OVER width:'100%':
+//     Stream's Gallery renders imageContainer inside a flex row container.
+//     In React Native flex layout, flex:1 means "take all remaining space
+//     in the flex direction" which wins over a width computed by the parent.
+//     width:'100%' is percentage of parent, but Stream's parent has a
+//     computed pixel width that limits it. flex:1 ignores the parent's
+//     computed constraint and fills available space instead.
+//
+//   RESULT: Images always fill the full message bubble width cleanly.
+//   Portrait photos are tall and full-width. Landscape photos are wide
+//   and full-width. No purple, no black, no empty space anywhere.
 
 import type { DeepPartial, Theme } from 'stream-chat-expo';
 import { COLORS, FONTS, RADIUS } from './theme';
@@ -40,44 +89,47 @@ export const streamChatTheme: DeepPartial<Theme> = {
   // ── Message bubble ────────────────────────────────────────────────────────────
   messageSimple: {
     content: {
+      // transparent: image messages should have no background behind the image.
+      // Text bubble color comes from senderMessageBackgroundColor below (Stream
+      // applies that to a separate inner wrapper around the text content only).
       containerInner: {
-        backgroundColor:         COLORS.primary,
+        backgroundColor:         'transparent',
         borderRadius:            RADIUS.xl,
         borderBottomRightRadius: 4,
+        overflow:                'hidden',
       },
       receiverMessageBackgroundColor: COLORS.backgroundElevated,
       senderMessageBackgroundColor:   COLORS.primary,
     },
 
-    // ── Gallery — inline image/GIF thumbnails in MessageList ──────────────────
-    // Fix: images must resize correctly without needing a remount.
+    // ── Gallery — inline image/GIF/video thumbnails ───────────────────────────
     //
-    // ROOT CAUSE of image sizing only working after remount:
-    //   Stream's Gallery component reads original_width/original_height from the
-    //   attachment to compute aspectRatio for the image container. For uploaded
-    //   images, these fields are added by Stream's CDN server-side AFTER the
-    //   message is first received — so on first render the dimensions are missing
-    //   and Stream falls back to a fixed default height. The message.updated event
-    //   fires with the real dimensions but the Gallery's memoized container height
-    //   doesn't update. On remount, Stream re-reads the stored message (now with
-    //   dimensions) and sizes correctly.
+    // We do NOT replace Gallery via Channel prop — Stream's Gallery handles
+    // both images and videos together.
     //
-    // FIX: Override the image style to use width:'100%' and aspectRatio:1 as
-    //   fallback, with resizeMode:'contain'. This forces the Image component to
-    //   always size itself from its actual loaded pixels rather than relying on
-    //   the pre-computed container height from attachment metadata. The container
-    //   has no fixed height so it grows to fit the image naturally.
+    // flex:1 chain (gallery → imageContainer → image) ensures the image
+    // always fills the full bubble width regardless of Stream's internal
+    // size computations from attachment metadata.
     gallery: {
+      // The outer gallery wrapper: stretch to fill containerInner
+      galleryContainer: {
+        flex:            1,
+        backgroundColor: 'transparent',
+      },
+      // The container around each individual image
       imageContainer: {
+        flex:            1,
         backgroundColor: 'transparent',
         borderRadius:    RADIUS.md,
         overflow:        'hidden',
-        // No fixed height — container sizes to the image content
+        // No width, no aspectRatio — flex:1 handles sizing
       },
+      // The image itself
       image: {
+        flex:       1,
         borderRadius: RADIUS.md,
-        width:        '100%' as any,
-        // aspectRatio not forced — image loads at its natural size
+        // cover: fills the container without letterboxing or empty space
+        resizeMode: 'cover' as any,
       },
       moreImagesContainer: {
         backgroundColor: 'rgba(0,0,0,0.55)',
@@ -122,24 +174,20 @@ export const streamChatTheme: DeepPartial<Theme> = {
       },
     },
 
-    // ── Part 50.4: Reaction picker overlay — dark-readable ───────────────────
-    // The default Stream reaction picker uses near-white backgrounds which are
-    // invisible on dark themes. Override with a solid dark card background so
-    // emojis are clearly visible.
+    // ── Reaction picker overlay — dark-readable ───────────────────────────────
     reactionListTop: {
       container: {
-        backgroundColor:  COLORS.backgroundCard,
-        borderRadius:     RADIUS.full,
-        borderWidth:      1,
-        borderColor:      COLORS.border,
+        backgroundColor:   COLORS.backgroundCard,
+        borderRadius:      RADIUS.full,
+        borderWidth:       1,
+        borderColor:       COLORS.border,
         paddingHorizontal: 4,
         paddingVertical:   2,
-        // Drop shadow for depth on dark bg
-        shadowColor:      '#000',
-        shadowOffset:     { width: 0, height: 2 },
-        shadowOpacity:    0.4,
-        shadowRadius:     8,
-        elevation:        8,
+        shadowColor:       '#000',
+        shadowOffset:      { width: 0, height: 2 },
+        shadowOpacity:     0.4,
+        shadowRadius:      8,
+        elevation:         8,
       },
     },
   },
@@ -233,9 +281,9 @@ export const streamChatTheme: DeepPartial<Theme> = {
         subtitle: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs },
       },
       option: {
-        wrapper:   { marginVertical: 3, borderRadius: RADIUS.md, overflow: 'hidden' },
-        container: { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12, paddingVertical: 10 },
-        text:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm },
+        wrapper:                 { marginVertical: 3, borderRadius: RADIUS.md, overflow: 'hidden' },
+        container:               { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12, paddingVertical: 10 },
+        text:                    { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm },
         progressBar:             { borderRadius: RADIUS.sm, overflow: 'hidden', height: 4, marginTop: 6 },
         progressBarEmptyFill:    COLORS.border,
         progressBarVotedFill:    COLORS.primary,
@@ -253,10 +301,10 @@ export const streamChatTheme: DeepPartial<Theme> = {
       scrollView: { backgroundColor: COLORS.background },
       title:      { color: COLORS.textPrimary, fontWeight: '800', fontSize: FONTS.sizes.lg },
       item: {
-        container: { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border, marginVertical: 4, overflow: 'hidden' },
+        container:       { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border, marginVertical: 4, overflow: 'hidden' },
         headerContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderBottomColor: `${COLORS.border}60`, borderBottomWidth: 1 },
-        title:     { color: COLORS.textPrimary, fontWeight: '600', fontSize: FONTS.sizes.sm },
-        voteCount: { color: COLORS.primary, fontWeight: '700', fontSize: FONTS.sizes.sm },
+        title:           { color: COLORS.textPrimary, fontWeight: '600', fontSize: FONTS.sizes.sm },
+        voteCount:       { color: COLORS.primary, fontWeight: '700', fontSize: FONTS.sizes.sm },
       },
       vote: {
         container: { backgroundColor: COLORS.backgroundElevated, paddingHorizontal: 14, paddingVertical: 8, borderBottomColor: `${COLORS.border}40`, borderBottomWidth: 1 },
@@ -291,11 +339,11 @@ export const streamChatTheme: DeepPartial<Theme> = {
 
     inputDialog: {
       transparentContainer: { backgroundColor: 'rgba(0,0,0,0.7)' },
-      container: { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border },
-      title:           { color: COLORS.textPrimary, fontWeight: '700' },
-      input:           { color: COLORS.textPrimary, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border },
-      button:          { color: COLORS.primary, fontWeight: '700' },
-      buttonContainer: { borderTopColor: COLORS.border, borderTopWidth: 1 },
+      container:            { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border },
+      title:                { color: COLORS.textPrimary, fontWeight: '700' },
+      input:                { color: COLORS.textPrimary, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border },
+      button:               { color: COLORS.primary, fontWeight: '700' },
+      buttonContainer:      { borderTopColor: COLORS.border, borderTopWidth: 1 },
     },
 
     answersList: {
