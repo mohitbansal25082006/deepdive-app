@@ -6,23 +6,47 @@
 // Part 50.3 — Custom reactions, AI bot, sticker fix, thread removed
 // Part 50.4 — Bot scoped to workspace reports (bot file), GIF dimension fix
 // Part 50.4 FIX — Removed Gallery={SingleImageGallery} that broke images/videos
+// Part 50.6 — IMAGE/VIDEO BUBBLE RESIZING FIX (staging preserved)
 //
-// BUG INTRODUCED IN PART 50.4:
-//   We passed Gallery={SingleImageGallery} to <Channel>. Stream's built-in
-//   Gallery component handles BOTH image and video attachments via the `images`
-//   and `videos` props it receives. Our custom component only read `images`,
-//   so every video attachment rendered as nothing (blank). Also, our component
-//   didn't wire up Stream's setSelectedMessage/setOverlay context functions,
-//   so tapping images to open the fullscreen lightbox was broken.
+// ─── THE BUG ─────────────────────────────────────────────────────────────────
+//   Sent images only sized correctly AFTER leaving the chat and re-entering,
+//   and sent videos never sized correctly at all. GIFs always sized correctly.
 //
-// FIX:
-//   Remove the Gallery prop entirely — let Stream use its built-in Gallery.
-//   Image sizing is handled by streamChatTheme.ts (aspectRatio on imageContainer).
-//   Stream will override the default aspectRatio with original_width/height
-//   from attachment metadata once available, making the image size correct.
+//   ROOT CAUSE:
+//     Images/videos were attached via `uploadNewFile({ uri, name, type, size })`
+//     — note it NEVER passed the asset's pixel `width`/`height`. Stream's RN
+//     Gallery sizes the message bubble (both width AND height) from the
+//     attachment's `original_width`/`original_height`. Without them, the
+//     OPTIMISTIC local message renders at a wrong/default size. Stream's server
+//     later re-enriches IMAGE attachments with dimensions, so on a fresh channel
+//     fetch (leaving + returning) images finally size correctly — exactly the
+//     reported symptom. Videos are NOT re-enriched server-side, so they never
+//     size to the content.
 //
-//   The only CustomAttachment we keep is for stickers (type:'sticker') which
-//   is a custom type that Stream doesn't know how to render.
+//     GIFs avoided this because `handleGifSelect` builds the attachment by hand
+//     WITH `original_width`/`original_height` and sends via channel.sendMessage,
+//     so the aspect ratio is known on the very first render.
+//
+// ─── THE FIX (keeps the message-box staging UX so you can add a caption) ──────
+//   We still stage media in the composer via `uploadNewFile` (image/video shows
+//   a preview, you can attach text, then send together). We guarantee the
+//   dimensions reach the attachment TWO ways:
+//
+//     1. Pass `width`/`height` to `uploadNewFile`. Stream stores these in the
+//        attachment's local metadata and maps them to
+//        `original_width`/`original_height` on the optimistic + sent attachment.
+//        This is what makes the bubble correct immediately (incl. the receiver).
+//
+//     2. `doSendMessageRequest` safety net. Right before the message is sent,
+//        we fill `original_width`/`original_height` on any image/video
+//        attachment still missing them, using dimensions captured at pick-time
+//        (matched by file name, with a single-item fallback). This covers any
+//        case where the SDK's local-metadata path doesn't populate video dims.
+//
+//   The gallery theme (streamChatTheme.ts) is intentionally UNCHANGED. GIFs
+//   already render correctly through the same Gallery + theme, proving the theme
+//   is right *when dimensions are present* — the dimensions were the only
+//   missing piece. Documents/audio still use the normal staging flow untouched.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -89,6 +113,10 @@ import { ChatMessage } from '../../src/types/chat';
 import { supabase } from '../../src/lib/supabase';
 
 const TOP_BAR_HEIGHT = 56;
+
+// ─── Part 50.6: Media dimension registry type ─────────────────────────────────
+// Captured at pick-time and consumed by doSendMessageRequest as a safety net.
+type MediaDims = { width: number; height: number; kind: 'image' | 'video' };
 
 // ─── Part 50.3: Custom Reaction Set (10 reactions) ────────────────────────────
 
@@ -265,31 +293,83 @@ const pickerStyles = StyleSheet.create({
 });
 
 // ─── Custom Attach Button ─────────────────────────────────────────────────────
+//
+// Part 50.6: camera & photo-library media stage in the composer (so a caption
+// can be added) via uploadNewFile, but now we PASS width/height so the resulting
+// attachment carries original_width/original_height. We also register the dims
+// (keyed by file name) so doSendMessageRequest can backfill them as a safety net.
+// Documents still use pickFile (no aspect-ratio concern).
 
-function CustomAttachButtonInner({ onPollPress, onGifPress }: { onPollPress: () => void; onGifPress: () => void }) {
+function CustomAttachButtonInner({
+  onPollPress,
+  onGifPress,
+  registerMediaDims,
+}: {
+  onPollPress:       () => void;
+  onGifPress:        () => void;
+  registerMediaDims: (name: string, dims: MediaDims) => void;
+}) {
   const { uploadNewFile, pickFile } = useMessageInputContext() as any;
   const [showPicker, setShowPicker] = useState(false);
+
+  const stageAsset = useCallback(async (a: any, idx: number) => {
+    const isVideo =
+      a?.type === 'video' ||
+      (typeof a?.mimeType === 'string' && a.mimeType.startsWith('video/'));
+
+    const name = a.fileName ?? (isVideo
+      ? `video_${Date.now()}_${idx}.mp4`
+      : `image_${Date.now()}_${idx}.jpg`);
+    const type = a.mimeType ?? (isVideo ? 'video/mp4' : 'image/jpeg');
+
+    if (typeof a.width === 'number' && typeof a.height === 'number') {
+      registerMediaDims(name, {
+        width:  a.width,
+        height: a.height,
+        kind:   isVideo ? 'video' : 'image',
+      });
+    }
+
+    // Pass height/width so Stream stores them in the attachment's local metadata
+    // → original_width/original_height on the optimistic + sent attachment, so
+    // the bubble resizes to content immediately.
+    await uploadNewFile({
+      uri:    a.uri,
+      name,
+      type,
+      size:   a.fileSize,
+      height: a.height,
+      width:  a.width,
+    });
+  }, [uploadNewFile, registerMediaDims]);
 
   const handleCamera = useCallback(async () => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) return;
-    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'], quality: 0.9 });
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images', 'videos'],
+      quality:    0.9,
+    });
     if (!result.canceled && result.assets.length > 0) {
-      const a = result.assets[0];
-      await uploadNewFile({ uri: a.uri, name: a.fileName ?? `photo_${Date.now()}.jpg`, type: a.mimeType ?? 'image/jpeg', size: a.fileSize });
+      await stageAsset(result.assets[0], 0);
     }
-  }, [uploadNewFile]);
+  }, [stageAsset]);
 
   const handlePhotos = useCallback(async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.9, allowsMultipleSelection: true, selectionLimit: 10 });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes:              ['images', 'videos'],
+      quality:                 0.9,
+      allowsMultipleSelection: true,
+      selectionLimit:          10,
+    });
     if (!result.canceled) {
-      for (const a of result.assets) {
-        await uploadNewFile({ uri: a.uri, name: a.fileName ?? `image_${Date.now()}.jpg`, type: a.mimeType ?? 'image/jpeg', size: a.fileSize });
+      for (let i = 0; i < result.assets.length; i++) {
+        await stageAsset(result.assets[i], i);
       }
     }
-  }, [uploadNewFile]);
+  }, [stageAsset]);
 
   const handleFiles = useCallback(async () => { await pickFile(); }, [pickFile]);
 
@@ -365,6 +445,62 @@ export default function WorkspaceChatScreen() {
   const [workspaceMemberRoles, setWorkspaceMemberRoles] = useState<WorkspaceMemberRoles>({});
 
   const isFocusedRef = useRef(false);
+
+  // ── Part 50.6: pick-time media dimensions registry (filename → dims) ────────
+  const mediaDimsRef = useRef<Map<string, MediaDims>>(new Map());
+
+  const registerMediaDims = useCallback((name: string, dims: MediaDims) => {
+    const map = mediaDimsRef.current;
+    map.set(name, dims);
+    // Keep the map small — prune the oldest entry once it grows past 40.
+    if (map.size > 40) {
+      const firstKey = map.keys().next().value;
+      if (firstKey !== undefined) map.delete(firstKey);
+    }
+  }, []);
+
+  // doSendMessageRequest runs after the composer uploads but before send. We
+  // backfill original_width/original_height on any image/video attachment that
+  // is still missing them, so the bubble sizes to content on first render.
+  const doSendMessageRequest = useCallback(async (_channelId: any, messageObject: any) => {
+    try {
+      const atts: any[] = Array.isArray(messageObject?.attachments) ? messageObject.attachments : [];
+      const map = mediaDimsRef.current;
+
+      const missingMedia = atts.filter(
+        (a) => (a?.type === 'image' || a?.type === 'video') &&
+               !(typeof a.original_width === 'number' && typeof a.original_height === 'number'),
+      );
+
+      for (const att of atts) {
+        if (att?.type !== 'image' && att?.type !== 'video') continue;
+        const hasDims = typeof att.original_width === 'number' && typeof att.original_height === 'number';
+        if (hasDims) continue;
+
+        // 1) Match by the file name we assigned at pick time.
+        const key  = (att.fallback ?? att.title ?? att.name ?? '') as string;
+        let   dims = key ? map.get(key) : undefined;
+        let   usedKey: string | undefined = dims ? key : undefined;
+
+        // 2) Single-item fallback: exactly one media attachment is missing dims
+        //    and exactly one stored entry of the same kind exists — use it.
+        if (!dims && missingMedia.length === 1) {
+          for (const [k, v] of map.entries()) {
+            if (v.kind === att.type) { dims = v; usedKey = k; break; }
+          }
+        }
+
+        if (dims?.width && dims?.height) {
+          att.original_width  = dims.width;
+          att.original_height = dims.height;
+          if (usedKey) map.delete(usedKey);
+        }
+      }
+    } catch (e) {
+      console.warn('[doSendMessageRequest] dimension enrich failed:', e);
+    }
+    return (channel as any).sendMessage(messageObject);
+  }, [channel]);
 
   useEffect(() => { prewarmChatSounds().catch(() => {}); }, []);
 
@@ -621,14 +757,20 @@ export default function WorkspaceChatScreen() {
             supportedReactions={CUSTOM_REACTIONS}
             reactionListPosition="bottom"
             messageActions={MESSAGE_ACTIONS_NO_THREAD}
+            // Part 50.6: backfill image/video dimensions just before send so the
+            // bubble resizes to content on first render (kept on top of passing
+            // width/height to uploadNewFile, which handles the optimistic case).
+            doSendMessageRequest={doSendMessageRequest}
             // NOTE: No Gallery prop here — Stream's built-in Gallery handles
             // both image AND video attachments. Replacing it breaks videos.
-            // Image sizing is controlled via streamChatTheme.ts (aspectRatio).
+            // Image/video sizing works because we now supply original_width/
+            // original_height. Theme (streamChatTheme.ts) unchanged.
             Attachment={CustomAttachment}
             AttachButton={() => (
               <CustomAttachButtonInner
                 onPollPress={() => setShowPollCreator(true)}
                 onGifPress={() => setShowGifPicker(true)}
+                registerMediaDims={registerMediaDims}
               />
             )}
             InlineDateSeparator={ChatDateSeparator}
