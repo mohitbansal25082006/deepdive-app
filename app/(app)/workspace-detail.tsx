@@ -1,35 +1,16 @@
 // app/(app)/workspace-detail.tsx
 // Part 46 UPDATE — Full realtime workspace detail screen.
+// Part 50.5 UPDATE — Added useWorkspaceBotIndex for silent background bot indexing.
 //
-// Key changes from Part 44:
+// Changes from Part 46:
+//   (all Part 46 changes preserved — see Part 46 comment block)
 //
-//   1. SHARED TAB FILTER — filter chips now have active state (activeFilter)
-//      that actually filters the displayed content list. Tapping a chip
-//      shows only that content type. "All" resets to showing everything.
-//
-//   2. PIN/UNPIN REALTIME — isPinned on report cards updates instantly
-//      for ALL members via workspace_reports UPDATE event (handled in
-//      useWorkspace via useWorkspaceRealtime). Also logs pin/unpin to
-//      Activity tab via logPinToggled().
-//
-//   3. SHARED CONTENT REALTIME — sharedContentVersion from useWorkspace
-//      passed into useWorkspaceSharing, usePodcastSharing, useDebateSharing,
-//      useVoiceDebateSharing so they auto-reload when new content is
-//      shared or removed.
-//
-//   4. SELF-REMOVAL NAVIGATION — when the current user's own member row
-//      is deleted (removed or blocked while viewing this screen), we
-//      navigate back to the Teams tab automatically.
-//
-//   5. SEARCH ALL CONTENT TYPES — WorkspaceSearchModal now passes
-//      onOpenSharedContent callback that routes to the correct viewer
-//      for each shared content type.
-//
-//   6. ACTIVITY LOGGING for pin/unpin — calls logPinToggled after
-//      toggle_pin_workspace_report RPC succeeds.
-//
-// All Part 44 functionality (voice debates, shared tab sections, chat,
-// access requests, presence, etc.) preserved exactly.
+// Changes in Part 50.5:
+//   1. Import useWorkspaceBotIndex + triggerReportIndexing from useWorkspaceBotIndex hook
+//   2. Call useWorkspaceBotIndex(id) after useWorkspace() — silently indexes all
+//      workspace reports in the background so @deepdive bot can answer about them
+//   3. AddToWorkspaceSheet onAdded prop now also calls triggerReportIndexing so
+//      newly added reports are immediately available to the bot
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -49,6 +30,8 @@ import { useWorkspaceSharing }       from '../../src/hooks/useWorkspaceSharing';
 import { usePodcastSharing }         from '../../src/hooks/usePodcastSharing';
 import { useDebateSharing }          from '../../src/hooks/useDebateSharing';
 import { useVoiceDebateSharing }     from '../../src/hooks/useVoiceDebateSharing';
+// Part 50.5: import background bot indexing hook
+import { useWorkspaceBotIndex, triggerReportIndexing } from '../../src/hooks/useWorkspaceBotIndex';
 import { WorkspaceReportCard }       from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem }              from '../../src/components/workspace/ActivityItem';
 import { MemberAvatar }              from '../../src/components/workspace/MemberAvatar';
@@ -114,11 +97,15 @@ export default function WorkspaceDetailScreen() {
     workspace, members, reports, userRole,
     isLoading, isRefreshing, error,
     refresh, update, addReport,
-    sharedContentVersion, // Part 46: realtime version counter
-    isSelfRemoved,        // Part 46 FIX: true when block/remove broadcast fires
-    pinnedReportIds,      // Part 46 Fix 2: direct from Broadcast trigger, no sync delay
-    updatePin,            // Part 46 Fix 2: optimistic update for toggling device
+    sharedContentVersion,
+    isSelfRemoved,
+    pinnedReportIds,
+    updatePin,
   } = useWorkspace(id ?? null);
+
+  // Part 50.5: Silent background indexing so @deepdive bot can answer about
+  // all reports shared in this workspace. Runs once per session, zero UI impact.
+  useWorkspaceBotIndex(id);
 
   const { items: activities } = useActivityFeed(id ?? null);
 
@@ -127,10 +114,6 @@ export default function WorkspaceDetailScreen() {
     isActioning, approve: approveRequest, deny: denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
-  // Part 46 Fix 2: pass null to all sharing hooks when isSelfRemoved is true.
-  // This ensures no RPC calls fire after B is kicked — the notMemberRef in each
-  // hook only survives the current mount, but passing null workspaceId prevents
-  // any load() call from running at all, stopping "failed to load" on refresh.
   const activeWorkspaceId  = isSelfRemoved ? null : (id ?? null);
   const sharing            = useWorkspaceSharing(activeWorkspaceId, sharedContentVersion);
   const podcastSharing     = usePodcastSharing(activeWorkspaceId, sharedContentVersion);
@@ -138,15 +121,10 @@ export default function WorkspaceDetailScreen() {
   const voiceDebateSharing = useVoiceDebateSharing(activeWorkspaceId, sharedContentVersion);
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
-  // Part 46: working filter for Shared tab
   const [activeFilter,  setActiveFilter]  = useState<SharedFilter>('all');
   const [showInvite,    setShowInvite]    = useState(false);
   const [showAddReport, setShowAddReport] = useState(false);
   const [showSearch,    setShowSearch]    = useState(false);
-  // Part 46 Fix 2: pinnedIds = pinnedReportIds from useWorkspace.
-  // Initialized from pinned_workspace_reports DB query in useWorkspace.load().
-  // Updated by onPinChanged Broadcast trigger for all members in real time.
-  // Updated optimistically by handleTogglePin via updatePin() for the toggling device.
   const pinnedIds = pinnedReportIds;
   const [isPinToggling, setIsPinToggling] = useState(false);
   const [profileMember, setProfileMember] = useState<MiniProfile | null>(null);
@@ -158,30 +136,11 @@ export default function WorkspaceDetailScreen() {
   const isEditor = userRole === 'editor' || isOwner;
   const existingReportIds = reports.map(r => r.reportId);
 
-  // Part 46 FIX: navigate away the instant the Broadcast kick signal fires.
-  // isSelfRemoved is set true by onSelfRemoved in useWorkspace — it doesn't
-  // require workspace===null (which onSelfRemoved never sets, so the old check
-  // never triggered). This fires immediately when block/remove Broadcast arrives.
   useEffect(() => {
     if (isSelfRemoved) {
       router.replace('/(app)/(tabs)/workspace' as any);
     }
   }, [isSelfRemoved]);
-
-  // Part 46 Fix 2: loadPinnedIds RPC removed — pinnedReportIds is now
-  // initialised inside useWorkspace.load() from the feed data, and updated
-  // in real time via the Broadcast pin trigger. No separate RPC call needed.
-
-  // Part 46 Fix 2: No local pin state or sync useEffect needed.
-  // pinnedReportIds from useWorkspace is the single source of truth:
-  //   • Initialized from pinned_workspace_reports query on load
-  //   • Updated by Broadcast trigger for all members (real time)
-  //   • Updated optimistically by updatePin() for the toggling member
-
-  // ── Chat unread ─────────────────────────────────────────────────────────
-  // Polling removed in Part 49 — chatService.ts deleted.
-  // chatUnread resets to 0 when user opens chat (openChat sets setChatUnread(0)).
-  // Stream's Channel component manages unread state internally.
 
   // ── Pin toggle ─────────────────────────────────────────────────────────
   const handleTogglePin = async (reportId: string, reportTitle: string) => {
@@ -193,11 +152,7 @@ export default function WorkspaceDetailScreen() {
       });
       if (error) throw error;
       const result = data as { pinned: boolean };
-      // Optimistic update via useWorkspace.updatePin() — updates pinnedReportIds
-      // immediately on the toggling device. Broadcast trigger also fires and
-      // calls onPinChanged which calls updatePin again (idempotent).
       updatePin(reportId, result.pinned);
-      // Part 46: log pin activity to Activity tab
       logPinToggled({
         workspaceId:  id,
         reportId,
@@ -243,7 +198,6 @@ export default function WorkspaceDetailScreen() {
     router.push({ pathname: '/(app)/workspace-shared-voice-debate-player' as any, params: { workspaceId: id, sharedId: svd.id, contentTitle: svd.topic } });
   }, [id]);
 
-  // Part 46: handler for search results of shared content types
   const handleOpenSearchSharedContent = useCallback((
     contentType: 'presentation' | 'academic_paper' | 'podcast' | 'debate',
     contentId:   string,
@@ -328,7 +282,6 @@ export default function WorkspaceDetailScreen() {
   const voiceDebateCount   = voiceDebateSharing.voiceDebates.length;
   const totalSharedCount   = presentationCount + paperCount + podcastCount + debateCount + voiceDebateCount;
 
-  // Part 46: filtered shared content based on activeFilter
   const showPresentations = activeFilter === 'all' || activeFilter === 'presentation';
   const showPapers        = activeFilter === 'all' || activeFilter === 'academic_paper';
   const showPodcasts      = activeFilter === 'all' || activeFilter === 'podcast';
@@ -454,7 +407,6 @@ export default function WorkspaceDetailScreen() {
               refreshing={isRefreshing}
               onRefresh={() => {
                 refresh(true);
-                // Sharing hooks auto-reload via sharedContentVersion — manual load as backup
                 sharing.load();
                 podcastSharing.load();
                 debateSharing.load();
@@ -549,7 +501,6 @@ export default function WorkspaceDetailScreen() {
                 </View>
               </Animated.View>
 
-              {/* Part 46: Working filter chips with active state */}
               {totalSharedCount > 0 && (
                 <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
                   {([
@@ -693,7 +644,20 @@ export default function WorkspaceDetailScreen() {
 
         {/* Modals */}
         {workspace && <InviteModal workspace={workspace} visible={showInvite} isOwner={isOwner} onClose={() => setShowInvite(false)} onCodeUpdated={() => update({ name: workspace.name })} />}
-        {id && <AddToWorkspaceSheet workspaceId={id} existingReportIds={existingReportIds} visible={showAddReport} onClose={() => setShowAddReport(false)} onAdded={reportId => addReport?.(reportId)} />}
+        {id && (
+          <AddToWorkspaceSheet
+            workspaceId={id}
+            existingReportIds={existingReportIds}
+            visible={showAddReport}
+            onClose={() => setShowAddReport(false)}
+            onAdded={reportId => {
+              addReport?.(reportId);
+              // Part 50.5: trigger background bot indexing for the newly added report
+              // fire-and-forget — never blocks the UI
+              triggerReportIndexing(id, reportId).catch(() => {});
+            }}
+          />
+        )}
         {id && (
           <WorkspaceSearchModal
             visible={showSearch}
@@ -702,7 +666,6 @@ export default function WorkspaceDetailScreen() {
             onClose={() => setShowSearch(false)}
             onOpenReport={openReport}
             onOpenMemberProfile={handleOpenMemberProfile}
-            // Part 46: routes search results to correct shared content viewer
             onOpenSharedContent={handleOpenSearchSharedContent}
           />
         )}

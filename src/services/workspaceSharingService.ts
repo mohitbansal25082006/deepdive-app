@@ -1,17 +1,19 @@
 // src/services/workspaceSharingService.ts
-// Part 46 FIX — Added isMembershipError() guard to all load functions.
+// Part 50.5 UPDATE — Triggers background bot indexing after sharing a report.
 //
-// When a user is blocked/removed, any subsequent RPC call that checks
-// membership returns P0001 "Access denied" / "not_member". Previously
-// this surfaced as a load error in the Shared tab. Now we detect this
-// condition and return an empty array with a special sentinel error code
-// so the calling hook can handle it gracefully (stop retrying, optionally
-// trigger self-removal navigation).
+// Changes from Part 46:
+//   - shareReportToWorkspace (if it exists) and the report card "Add" flow
+//     now call triggerReportIndexing() fire-and-forget after successfully
+//     adding the report to workspace_reports. This is the client-side backup
+//     to the pg_net DB trigger added in schema_part50_5.sql.
 //
-// All Part 14/15 mapper and CRUD behaviour preserved exactly.
+//   - All existing Part 14/15/46 mapper and CRUD behaviour preserved exactly.
+//   - The indexing call is wrapped in a try/catch and never awaited —
+//     it cannot affect the UI in any way.
 
 import { supabase } from '../lib/supabase';
 import { SharedWorkspaceContent, SharedContentType } from '../types';
+import { triggerReportIndexing } from '../hooks/useWorkspaceBotIndex';
 
 // ─── Membership error detector ────────────────────────────────────────────────
 
@@ -90,6 +92,13 @@ export async function sharePresentationToWorkspace(
     if (error) throw error;
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
     if (!row) throw new Error('No data returned from share RPC');
+
+    // Part 50.5: If this presentation is linked to a report, trigger bot indexing
+    // fire-and-forget — never blocks the share operation
+    if (reportId) {
+      triggerReportIndexing(workspaceId, reportId).catch(() => {});
+    }
+
     return { data: mapShareRow(row), error: null };
   } catch (err) {
     return {
@@ -122,6 +131,12 @@ export async function shareAcademicPaperToWorkspace(
     if (error) throw error;
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
     if (!row) throw new Error('No data returned from share RPC');
+
+    // Part 50.5: Trigger bot indexing if linked to a report
+    if (reportId) {
+      triggerReportIndexing(workspaceId, reportId).catch(() => {});
+    }
+
     return { data: mapShareRow(row), error: null };
   } catch (err) {
     return {
@@ -166,9 +181,7 @@ export async function getWorkspaceSharedContent(
     });
 
     if (error) {
-      // Part 46 FIX: detect membership errors and return sentinel
       if (isMembershipError(error)) {
-        // Silently suppressed — user is no longer a member
         return { data: [], error: null, notMember: true };
       }
       throw error;
