@@ -3,6 +3,7 @@
 // Part 49 UPDATE — No structural changes; workspace-chat screen now powered by
 //                  Stream Chat but uses the same route name and params as before.
 //                  All other screens preserved exactly from Part 44.
+// Part 50.6 UPDATE — Registers workspace-ai-chat (personal "Ask DeepDive AI") route.
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
@@ -198,6 +199,12 @@ function AppLayoutInner() {
             workspace-detail.tsx does not need any changes.
           */}
           <Stack.Screen name="workspace-chat"                  options={{ animation: 'slide_from_right' }} />
+
+          {/*
+            Part 50.6: workspace-ai-chat — personal "Ask DeepDive AI" screen.
+            Opened from the Team Chat top bar (sparkles button). Params: id, name, role.
+          */}
+          <Stack.Screen name="workspace-ai-chat"               options={{ animation: 'slide_from_right' }} />
 
           {/* Part 44: Workspace Shared Voice Debate Player */}
           <Stack.Screen name="workspace-shared-voice-debate-player" options={{ animation: 'slide_from_right' }} />

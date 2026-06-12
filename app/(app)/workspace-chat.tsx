@@ -6,47 +6,29 @@
 // Part 50.3 — Custom reactions, AI bot, sticker fix, thread removed
 // Part 50.4 — Bot scoped to workspace reports (bot file), GIF dimension fix
 // Part 50.4 FIX — Removed Gallery={SingleImageGallery} that broke images/videos
-// Part 50.6 — IMAGE/VIDEO BUBBLE RESIZING FIX (staging preserved)
+// Part 50.6 — (a) image/video bubble resize fix (staging preserved)
+//             (b) "Sending…" chip for GIFs & stickers
+//             (c) AI sparkles button (left of search) → personal Ask DeepDive AI
 //
-// ─── THE BUG ─────────────────────────────────────────────────────────────────
-//   Sent images only sized correctly AFTER leaving the chat and re-entering,
-//   and sent videos never sized correctly at all. GIFs always sized correctly.
+// ─── (a) IMAGE/VIDEO BUBBLE RESIZE FIX ───────────────────────────────────────
+//   Images only sized correctly after leaving + re-entering the chat, and videos
+//   never sized at all, because `uploadNewFile({uri,name,type,size})` never
+//   passed the asset's pixel width/height → the attachment had no
+//   original_width/original_height, which is what Stream's Gallery uses to size
+//   the bubble. GIFs always worked because handleGifSelect sends them with those
+//   fields. FIX: keep the message-box staging UX (so a caption can be added) but
+//     1) pass width/height to uploadNewFile (→ original_width/original_height),
+//     2) backfill any still-missing dims in doSendMessageRequest as a safety net.
+//   The gallery theme (streamChatTheme.ts) is intentionally unchanged.
 //
-//   ROOT CAUSE:
-//     Images/videos were attached via `uploadNewFile({ uri, name, type, size })`
-//     — note it NEVER passed the asset's pixel `width`/`height`. Stream's RN
-//     Gallery sizes the message bubble (both width AND height) from the
-//     attachment's `original_width`/`original_height`. Without them, the
-//     OPTIMISTIC local message renders at a wrong/default size. Stream's server
-//     later re-enriches IMAGE attachments with dimensions, so on a fresh channel
-//     fetch (leaving + returning) images finally size correctly — exactly the
-//     reported symptom. Videos are NOT re-enriched server-side, so they never
-//     size to the content.
+// ─── (b) SENDING CHIP FOR GIFS & STICKERS ────────────────────────────────────
+//   GIFs/stickers still send instantly (no staging), but now show a small
+//   "Sending GIF…" / "Sending sticker…" chip while channel.sendMessage runs.
 //
-//     GIFs avoided this because `handleGifSelect` builds the attachment by hand
-//     WITH `original_width`/`original_height` and sends via channel.sendMessage,
-//     so the aspect ratio is known on the very first render.
-//
-// ─── THE FIX (keeps the message-box staging UX so you can add a caption) ──────
-//   We still stage media in the composer via `uploadNewFile` (image/video shows
-//   a preview, you can attach text, then send together). We guarantee the
-//   dimensions reach the attachment TWO ways:
-//
-//     1. Pass `width`/`height` to `uploadNewFile`. Stream stores these in the
-//        attachment's local metadata and maps them to
-//        `original_width`/`original_height` on the optimistic + sent attachment.
-//        This is what makes the bubble correct immediately (incl. the receiver).
-//
-//     2. `doSendMessageRequest` safety net. Right before the message is sent,
-//        we fill `original_width`/`original_height` on any image/video
-//        attachment still missing them, using dimensions captured at pick-time
-//        (matched by file name, with a single-item fallback). This covers any
-//        case where the SDK's local-metadata path doesn't populate video dims.
-//
-//   The gallery theme (streamChatTheme.ts) is intentionally UNCHANGED. GIFs
-//   already render correctly through the same Gallery + theme, proving the theme
-//   is right *when dimensions are present* — the dimensions were the only
-//   missing piece. Documents/audio still use the normal staging flow untouched.
+// ─── (c) PERSONAL AI CHAT ENTRY ──────────────────────────────────────────────
+//   A sparkles button to the LEFT of the search icon opens workspace-ai-chat —
+//   a private screen where the member talks to the same AI as the @deepdive bot
+//   without needing the @deepdive / /ai trigger.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -115,7 +97,6 @@ import { supabase } from '../../src/lib/supabase';
 const TOP_BAR_HEIGHT = 56;
 
 // ─── Part 50.6: Media dimension registry type ─────────────────────────────────
-// Captured at pick-time and consumed by doSendMessageRequest as a safety net.
 type MediaDims = { width: number; height: number; kind: 'image' | 'video' };
 
 // ─── Part 50.3: Custom Reaction Set (10 reactions) ────────────────────────────
@@ -154,9 +135,6 @@ const MESSAGE_ACTIONS_NO_THREAD = (params: any) => {
 };
 
 // ─── Part 50.X: Sticker Attachment Component ─────────────────────────────────
-// Renders stickers (custom type:'sticker') transparently inside Stream's
-// MessageSimple bubble. All gesture handling stays with MessageSimple.
-// Passed as Attachment prop on <Channel>.
 
 const STICKER_SIZE = 160;
 
@@ -177,17 +155,11 @@ function StickerAttachment({ attachment }: { attachment: any }) {
   );
 }
 
-// CustomAttachment: passed to <Channel Attachment={...} />
-// ONLY intercepts type:'sticker'. Everything else — images, GIFs, videos,
-// files, audio — goes to Stream's default Attachment renderer unchanged.
-// This is critical: Stream's default Attachment handles video thumbnails,
-// file chips, audio players, etc. We must not break those.
 function CustomAttachment(props: any) {
   const att = props.attachment ?? props;
   if (att?.type === 'sticker') {
     return <StickerAttachment attachment={att} />;
   }
-  // Pass everything else to Stream's default Attachment
   const { Attachment: DefaultAttachment } = require('stream-chat-expo');
   if (DefaultAttachment) {
     return <DefaultAttachment {...props} />;
@@ -294,11 +266,10 @@ const pickerStyles = StyleSheet.create({
 
 // ─── Custom Attach Button ─────────────────────────────────────────────────────
 //
-// Part 50.6: camera & photo-library media stage in the composer (so a caption
-// can be added) via uploadNewFile, but now we PASS width/height so the resulting
-// attachment carries original_width/original_height. We also register the dims
-// (keyed by file name) so doSendMessageRequest can backfill them as a safety net.
-// Documents still use pickFile (no aspect-ratio concern).
+// Part 50.6: camera & photo-library media stage in the composer (so a caption can
+// be added) via uploadNewFile, but we PASS width/height so the attachment carries
+// original_width/original_height. We also register the dims (by file name) so
+// doSendMessageRequest can backfill them as a safety net. Documents use pickFile.
 
 function CustomAttachButtonInner({
   onPollPress,
@@ -330,9 +301,6 @@ function CustomAttachButtonInner({
       });
     }
 
-    // Pass height/width so Stream stores them in the attachment's local metadata
-    // → original_width/original_height on the optimistic + sent attachment, so
-    // the bubble resizes to content immediately.
     await uploadNewFile({
       uri:    a.uri,
       name,
@@ -444,24 +412,24 @@ export default function WorkspaceChatScreen() {
   const [onlineCount,     setOnlineCount]     = useState(0);
   const [workspaceMemberRoles, setWorkspaceMemberRoles] = useState<WorkspaceMemberRoles>({});
 
+  // Part 50.6 (b): GIF/sticker "Sending…" chip state
+  const [sendingMedia,      setSendingMedia]      = useState(false);
+  const [sendingMediaLabel, setSendingMediaLabel] = useState('');
+
   const isFocusedRef = useRef(false);
 
-  // ── Part 50.6: pick-time media dimensions registry (filename → dims) ────────
+  // ── Part 50.6 (a): pick-time media dimensions registry (filename → dims) ────
   const mediaDimsRef = useRef<Map<string, MediaDims>>(new Map());
 
   const registerMediaDims = useCallback((name: string, dims: MediaDims) => {
     const map = mediaDimsRef.current;
     map.set(name, dims);
-    // Keep the map small — prune the oldest entry once it grows past 40.
     if (map.size > 40) {
       const firstKey = map.keys().next().value;
       if (firstKey !== undefined) map.delete(firstKey);
     }
   }, []);
 
-  // doSendMessageRequest runs after the composer uploads but before send. We
-  // backfill original_width/original_height on any image/video attachment that
-  // is still missing them, so the bubble sizes to content on first render.
   const doSendMessageRequest = useCallback(async (_channelId: any, messageObject: any) => {
     try {
       const atts: any[] = Array.isArray(messageObject?.attachments) ? messageObject.attachments : [];
@@ -477,13 +445,10 @@ export default function WorkspaceChatScreen() {
         const hasDims = typeof att.original_width === 'number' && typeof att.original_height === 'number';
         if (hasDims) continue;
 
-        // 1) Match by the file name we assigned at pick time.
         const key  = (att.fallback ?? att.title ?? att.name ?? '') as string;
         let   dims = key ? map.get(key) : undefined;
         let   usedKey: string | undefined = dims ? key : undefined;
 
-        // 2) Single-item fallback: exactly one media attachment is missing dims
-        //    and exactly one stored entry of the same kind exists — use it.
         if (!dims && missingMedia.length === 1) {
           for (const [k, v] of map.entries()) {
             if (v.kind === att.type) { dims = v; usedKey = k; break; }
@@ -630,15 +595,27 @@ export default function WorkspaceChatScreen() {
     setTimeout(() => setTargetMsgId(undefined), 2000);
   }, []);
 
-  // ── GIF vs Sticker send ───────────────────────────────────────────────────
-  // GIFs: include original_width/original_height for correct aspect ratio.
-  // Stickers: custom type:'sticker' intercepted by CustomAttachment.
+  // ── Part 50.6 (c): open the personal AI chat screen ─────────────────────────
+  const handleOpenAI = useCallback(() => {
+    router.push({
+      pathname: '/(app)/workspace-ai-chat',
+      params: {
+        id:   workspaceId ?? '',
+        name: workspaceName ?? 'Workspace',
+        role: userRole ?? 'editor',
+      },
+    } as any);
+  }, [workspaceId, workspaceName, userRole]);
+
+  // ── GIF vs Sticker send (Part 50.6 (b): now shows a sending chip) ───────────
   const handleGifSelect = useCallback(async (
     gifUrl:    string,
     title:     string,
     isSticker: boolean,
   ) => {
     if (!channel) return;
+    setSendingMedia(true);
+    setSendingMediaLabel(isSticker ? 'Sending sticker…' : 'Sending GIF…');
     try {
       if (isSticker) {
         await (channel as any).sendMessage({
@@ -680,6 +657,9 @@ export default function WorkspaceChatScreen() {
       }
     } catch (e) {
       console.warn('[ChatGifPicker] Failed to send:', e);
+    } finally {
+      setSendingMedia(false);
+      setSendingMediaLabel('');
     }
   }, [channel]);
 
@@ -703,7 +683,7 @@ export default function WorkspaceChatScreen() {
   if (!isReady || !channel || !client) {
     return (
       <View style={[styles.root, { paddingTop: insets.top }]}>
-        <TopBar workspaceName={workspaceName ?? 'Team Chat'} onBack={() => router.back()} onFiles={() => {}} onSearch={() => {}} onMembers={() => {}} fileCount={0} onlineCount={0} memberCount={0} />
+        <TopBar workspaceName={workspaceName ?? 'Team Chat'} onBack={() => router.back()} onAI={() => {}} onFiles={() => {}} onSearch={() => {}} onMembers={() => {}} fileCount={0} onlineCount={0} memberCount={0} />
         <View style={styles.loadWrap}>
           {error ? (
             <>
@@ -739,6 +719,7 @@ export default function WorkspaceChatScreen() {
           workspaceName={workspaceName ?? 'Team Chat'}
           channel={channel}
           onBack={() => router.back()}
+          onAI={handleOpenAI}
           onFiles={() => setShowFiles(true)}
           onSearch={() => setShowSearch(true)}
           onMembers={() => setShowMembers(true)}
@@ -757,14 +738,8 @@ export default function WorkspaceChatScreen() {
             supportedReactions={CUSTOM_REACTIONS}
             reactionListPosition="bottom"
             messageActions={MESSAGE_ACTIONS_NO_THREAD}
-            // Part 50.6: backfill image/video dimensions just before send so the
-            // bubble resizes to content on first render (kept on top of passing
-            // width/height to uploadNewFile, which handles the optimistic case).
+            // Part 50.6 (a): backfill image/video dimensions just before send.
             doSendMessageRequest={doSendMessageRequest}
-            // NOTE: No Gallery prop here — Stream's built-in Gallery handles
-            // both image AND video attachments. Replacing it breaks videos.
-            // Image/video sizing works because we now supply original_width/
-            // original_height. Theme (streamChatTheme.ts) unchanged.
             Attachment={CustomAttachment}
             AttachButton={() => (
               <CustomAttachButtonInner
@@ -783,6 +758,16 @@ export default function WorkspaceChatScreen() {
           </Channel>
         </Chat>
       </ChatWrapper>
+
+      {/* Part 50.6 (b): GIF/sticker sending chip */}
+      {sendingMedia && (
+        <View pointerEvents="none" style={[styles.sendingBanner, { top: insets.top + TOP_BAR_HEIGHT + 12 }]}>
+          <View style={styles.sendingPill}>
+            <ActivityIndicator size="small" color={COLORS.primary} />
+            <Text style={styles.sendingPillText}>{sendingMediaLabel || 'Sending…'}</Text>
+          </View>
+        </View>
+      )}
 
       <ChatFileFilterStream
         visible={showFiles}
@@ -830,6 +815,7 @@ export default function WorkspaceChatScreen() {
 interface TopBarProps {
   workspaceName: string;
   onBack:        () => void;
+  onAI:          () => void;
   onFiles:       () => void;
   onSearch:      () => void;
   onMembers:     () => void;
@@ -838,7 +824,7 @@ interface TopBarProps {
   memberCount:   number;
 }
 
-function TopBar({ workspaceName, onBack, onFiles, onSearch, onMembers, fileCount, onlineCount, memberCount }: TopBarProps) {
+function TopBar({ workspaceName, onBack, onAI, onFiles, onSearch, onMembers, fileCount, onlineCount, memberCount }: TopBarProps) {
   return (
     <Animated.View entering={FadeIn.duration(350)} style={styles.topBar}>
       <TouchableOpacity onPress={onBack} style={styles.backBtn}>
@@ -856,6 +842,10 @@ function TopBar({ workspaceName, onBack, onFiles, onSearch, onMembers, fileCount
         </Text>
       </View>
       <View style={styles.topActions}>
+        {/* Part 50.6 (c): Ask DeepDive AI — sits to the LEFT of search */}
+        <TouchableOpacity onPress={onAI} style={[styles.iconBtn, styles.aiBtn]} activeOpacity={0.7}>
+          <Ionicons name="sparkles" size={16} color={COLORS.primary} />
+        </TouchableOpacity>
         <TouchableOpacity onPress={onSearch} style={styles.iconBtn} activeOpacity={0.7}>
           <Ionicons name="search-outline" size={17} color={COLORS.textSecondary} />
         </TouchableOpacity>
@@ -940,8 +930,15 @@ const styles = StyleSheet.create({
   topActions:       { flexDirection: 'row', gap: 5, alignItems: 'center' },
   iconBtn:          { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
   iconBtnFiles:     { borderColor: `${COLORS.primary}35` },
+  aiBtn:            { backgroundColor: `${COLORS.primary}18`, borderColor: `${COLORS.primary}45` },
   badge:            { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 15, height: 15, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2, borderWidth: 1.5, borderColor: COLORS.background },
   badgeTxt:         { color: '#FFF', fontSize: 8, fontWeight: '800' },
+
+  // Part 50.6 (b) — GIF/sticker sending chip
+  sendingBanner:    { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 50 },
+  sendingPill:      { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.backgroundCard, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.full, paddingHorizontal: 16, paddingVertical: 9, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 12, elevation: 10 },
+  sendingPillText:  { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+
   lockScreen:       { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, gap: 16 },
   lockIcon:         { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.textMuted}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.sm },
   lockTitle:        { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
