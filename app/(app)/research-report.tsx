@@ -1,20 +1,11 @@
 // app/(app)/research-report.tsx
-// Part 34 — Enhanced Public Share Modal with Publish/Unpublish Toggle
+// ─────────────────────────────────────────────────────────────────────────────
+// Research Report — Detail Screen  (FULL UI REDESIGN)
 //
-// HEADER REDESIGN:
-//   Row 1: Back button | Report title (truncated) | Chevron
-//   Row 2: Date · Depth chip · Scrollable action icon row
-//   This removes the squeeze and gives each element breathing room.
-//   FIXED: Header now properly fixed with independent scrolling content
-//
-// ENHANCEMENTS:
-//   - Public share now supports publish/unpublish toggle
-//   - Status shows "Published" or "Unpublished" with appropriate styling
-//   - Toggle switch with confirmation for unpublishing
-//   - Preserves share ID when unpublished
-//   - Re-publish button when link exists but is unpublished
-//
-// All other functionality preserved unchanged.
+// Visual overhaul only. All data loading, field mapping, handlers, hooks,
+// publish/unpublish logic, tabs, visual mode, AI chat and every modal behave
+// exactly as before. Same imports, same screen contract.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -31,14 +22,16 @@ import {
   Dimensions,
   Modal,
   Animated as RNAnimated,
+  LayoutChangeEvent,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams }    from 'expo-router';
 import { supabase }                        from '../../src/lib/supabase';
 import { ReportSectionCard }               from '../../src/components/research/ReportSection';
+import { RichText }                         from '../../src/components/research/RichText';
 import { CitationModal }                   from '../../src/components/research/CitationModal';
 import { InfographicsPanel }               from '../../src/components/research/InfographicCard';
 import { SourceImageGallery }              from '../../src/components/research/SourceImageGallery';
@@ -64,23 +57,14 @@ const PANEL_W   = SCREEN_W - SPACING.lg * 2;
 const SHEET_MAX_H  = SCREEN_H * 0.72;
 const SCROLL_MAX_H = SHEET_MAX_H - 90;
 
-const DEPTH_LABELS: Record<string, string> = {
-  quick: 'Quick', deep: 'Deep Dive', expert: 'Expert',
-};
-const DEPTH_COLORS: Record<string, string> = {
-  quick: COLORS.success, deep: COLORS.primary, expert: COLORS.warning,
-};
+const DEPTH_LABELS: Record<string, string> = { quick: 'Quick', deep: 'Deep Dive', expert: 'Expert' };
+const DEPTH_COLORS: Record<string, string> = { quick: COLORS.success, deep: COLORS.primary, expert: COLORS.warning };
 
 // ── Action icon button ─────────────────────────────────────────────────────────
 
 interface ActionBtnProps {
-  icon:        string;
-  onPress:     () => void;
-  active?:     boolean;
-  activeColor?: string;
-  loading?:    boolean;
-  badge?:      string;
-  disabled?:   boolean;
+  icon: string; onPress: () => void;
+  active?: boolean; activeColor?: string; loading?: boolean; badge?: string; disabled?: boolean;
 }
 
 function ActionBtn({ icon, onPress, active, activeColor, loading, badge, disabled }: ActionBtnProps) {
@@ -90,83 +74,166 @@ function ActionBtn({ icon, onPress, active, activeColor, loading, badge, disable
       onPress={onPress}
       disabled={disabled || loading}
       hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-      style={{
-        width: 36, height: 36, borderRadius: 11,
-        backgroundColor: active ? `${color}20` : COLORS.backgroundElevated,
+      style={({ pressed }) => [{
+        width: 38, height: 38, borderRadius: 12,
+        backgroundColor: active ? `${color}22` : 'rgba(255,255,255,0.05)',
         alignItems: 'center', justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: active ? `${color}50` : COLORS.border,
-        opacity: disabled ? 0.5 : 1,
+        borderWidth: 1, borderColor: active ? `${color}55` : COLORS.border,
+        opacity: disabled ? 0.5 : pressed ? 0.7 : 1,
         position: 'relative',
-      }}
+      }]}
     >
       {loading
         ? <ActivityIndicator size="small" color={color} />
-        : <Ionicons name={icon as any} size={17} color={active ? color : COLORS.textSecondary} />
-      }
+        : <Ionicons name={icon as any} size={17} color={active ? color : COLORS.textSecondary} />}
       {badge && !loading && (
         <View style={{
-          position: 'absolute', top: -4, right: -4,
-          backgroundColor: color, borderRadius: 8,
-          paddingHorizontal: 4, paddingVertical: 1,
-          minWidth: 16, alignItems: 'center',
+          position: 'absolute', top: -5, right: -5,
+          backgroundColor: color, borderRadius: 8, paddingHorizontal: 4, paddingVertical: 1,
+          minWidth: 16, alignItems: 'center', borderWidth: 1.5, borderColor: COLORS.background,
         }}>
-          <Text style={{ color: '#FFF', fontSize: 8, fontWeight: '800' }}>{badge}</Text>
+          <Text style={{ color: '#FFF', fontSize: 8, fontWeight: '900' }}>{badge}</Text>
         </View>
       )}
     </Pressable>
   );
 }
 
-// ── Public Share Modal (Enhanced with Publish/Unpublish Toggle) ─────────────────
+// ── Reusable promo card ─────────────────────────────────────────────────────────
+
+interface PromoCardProps {
+  icon: string;
+  iconGradient: readonly [string, string];
+  title: string;
+  subtitle: string;
+  badge?: { text: string; color: string; icon?: string };
+  accentBorder: string;
+  chevronColor: string;
+  onPress: () => void;
+  delay?: number;
+}
+
+function PromoCard({ icon, iconGradient, title, subtitle, badge, accentBorder, chevronColor, onPress, delay = 0 }: PromoCardProps) {
+  return (
+    <Animated.View entering={FadeInDown.duration(400).delay(delay)} style={{ marginBottom: SPACING.md }}>
+      <Pressable onPress={onPress} style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }] }]}>
+        <View style={{ borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: accentBorder }}>
+          <LinearGradient colors={['#1A1A38', '#11112A']} style={{ padding: SPACING.lg }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
+              <LinearGradient colors={iconGradient} style={{ width: 50, height: 50, borderRadius: 15, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
+                <Ionicons name={icon as any} size={23} color="#FFF" />
+              </LinearGradient>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '900' }}>{title}</Text>
+                  {badge && (
+                    <View style={{
+                      backgroundColor: `${badge.color}22`, borderRadius: RADIUS.full,
+                      paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${badge.color}44`,
+                      flexDirection: 'row', alignItems: 'center', gap: 4,
+                    }}>
+                      {badge.icon && <Ionicons name={badge.icon as any} size={9} color={badge.color} />}
+                      <Text style={{ color: badge.color, fontSize: 9, fontWeight: '800' }}>{badge.text}</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 17 }}>{subtitle}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={chevronColor} />
+            </View>
+          </LinearGradient>
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+// ── Animated segmented tabs ─────────────────────────────────────────────────────
+
+interface SegTab { key: 'report' | 'findings' | 'sources'; label: string; }
+
+function SegmentedTabs({
+  tabs, active, onChange,
+}: { tabs: SegTab[]; active: string; onChange: (k: SegTab['key']) => void }) {
+  const [w, setW] = useState(0);
+  const indicatorX = useRef(new RNAnimated.Value(0)).current;
+  const pad = 4;
+  const tabW = w > 0 ? (w - pad * 2) / tabs.length : 0;
+  const activeIndex = Math.max(0, tabs.findIndex(t => t.key === active));
+
+  useEffect(() => {
+    RNAnimated.spring(indicatorX, {
+      toValue: pad + activeIndex * tabW,
+      useNativeDriver: true, friction: 9, tension: 80,
+    }).start();
+  }, [activeIndex, tabW]);
+
+  const onLayout = (e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width);
+
+  return (
+    <View
+      onLayout={onLayout}
+      style={{
+        flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.04)',
+        borderRadius: RADIUS.full, padding: pad, borderWidth: 1, borderColor: COLORS.border,
+        position: 'relative', overflow: 'hidden',
+      }}
+    >
+      {tabW > 0 && (
+        <RNAnimated.View style={{
+          position: 'absolute', top: pad, bottom: pad, left: 0, width: tabW,
+          transform: [{ translateX: indicatorX }],
+        }}>
+          <LinearGradient colors={COLORS.gradientPrimary} style={{ flex: 1, borderRadius: RADIUS.full, ...SHADOWS.small }} />
+        </RNAnimated.View>
+      )}
+      {tabs.map(tab => {
+        const isActive = tab.key === active;
+        return (
+          <Pressable key={tab.key} onPress={() => onChange(tab.key)} style={{ flex: 1, paddingVertical: 9, alignItems: 'center', zIndex: 1 }}>
+            <Text style={{ color: isActive ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: isActive ? '800' : '600' }}>
+              {tab.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+// ── Public Share Modal (redesigned · same props/logic) ──────────────────────────
 
 interface PublicShareModalProps {
-  visible:    boolean;
-  shareUrl:   string | null;
-  shareId:    string | null;
-  isActive:   boolean;          // Part 34: whether link is currently published
-  isLoading:  boolean;
-  isToggling: boolean;          // Part 34: toggling publish state
-  onClose:    () => void;
-  onCopy:     () => void;
-  onOpen:     () => void;
-  onShare:    () => void;
-  onPublish:  () => Promise<void>;   // Part 34
-  onUnpublish: () => Promise<void>;  // Part 34
+  visible: boolean;
+  shareUrl: string | null;
+  shareId: string | null;
+  isActive: boolean;
+  isLoading: boolean;
+  isToggling: boolean;
+  onClose: () => void;
+  onCopy: () => void;
+  onOpen: () => void;
+  onShare: () => void;
+  onPublish: () => Promise<void>;
+  onUnpublish: () => Promise<void>;
 }
 
 function PublicShareModal({
-  visible,
-  shareUrl,
-  shareId,
-  isActive,
-  isLoading,
-  isToggling,
-  onClose,
-  onCopy,
-  onOpen,
-  onShare,
-  onPublish,
-  onUnpublish,
+  visible, shareUrl, shareId, isActive, isLoading, isToggling,
+  onClose, onCopy, onOpen, onShare, onPublish, onUnpublish,
 }: PublicShareModalProps) {
   const insets = useSafeAreaInsets();
 
   const handleToggle = async (newValue: boolean) => {
     if (newValue) {
-      // Re-publish
       await onPublish();
     } else {
-      // Unpublish — confirm first
       Alert.alert(
         'Unpublish Report?',
         'The public URL will return 404 until you re-publish. Your share link will be preserved so the same URL works again when you re-enable it.',
         [
           { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Unpublish',
-            style: 'destructive',
-            onPress: onUnpublish,
-          },
+          { text: 'Unpublish', style: 'destructive', onPress: onUnpublish },
         ],
       );
     }
@@ -175,265 +242,149 @@ function PublicShareModal({
   const hasLink = !!shareId;
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <Pressable
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}
-        onPress={onClose}
-      >
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={onClose}>
         <Pressable onPress={e => e.stopPropagation()}>
-          <LinearGradient
-            colors={['#1A1A35', '#0A0A1A']}
-            style={{
-              borderTopLeftRadius:  28,
-              borderTopRightRadius: 28,
-              paddingBottom:        insets.bottom + SPACING.lg,
-              borderTopWidth:       1,
-              borderColor:          `${COLORS.primary}40`,
-            }}
-          >
-            {/* Handle */}
-            <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
+          <View style={{ borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden', borderTopWidth: 1, borderColor: `${isActive ? COLORS.success : COLORS.primary}40` }}>
+            <LinearGradient colors={['#1A1A38', '#0A0A1A']} style={{ paddingBottom: insets.bottom + SPACING.lg }}>
+              <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
 
-            {/* Header */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <LinearGradient
-                  colors={isActive ? [COLORS.success, `${COLORS.success}CC`] : ['#6C63FF', '#8B5CF6']}
-                  style={{ width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <Ionicons name={isActive ? 'globe' : 'globe-outline'} size={18} color="#FFF" />
-                </LinearGradient>
-                <View>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                    Public Report Link
-                  </Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                    {isActive ? '● Live — anyone with the link can view' : '○ Unpublished — link returns 404'}
-                  </Text>
+              {/* Header */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
+                  <LinearGradient colors={isActive ? [COLORS.success, `${COLORS.success}CC`] : ['#6C63FF', '#8B5CF6']} style={{ width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name={isActive ? 'globe' : 'globe-outline'} size={19} color="#FFF" />
+                  </LinearGradient>
+                  <View>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Public Report Link</Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                      {isActive ? '● Live — anyone with the link can view' : '○ Unpublished — link returns 404'}
+                    </Text>
+                  </View>
                 </View>
-              </View>
-              <Pressable
-                onPress={onClose}
-                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}
-              >
-                <Ionicons name="close" size={16} color={COLORS.textMuted} />
-              </Pressable>
-            </View>
-
-            <View style={{ paddingHorizontal: SPACING.lg }}>
-
-              {/* ── Part 34: Publish / Unpublish Toggle ── */}
-              <View style={{
-                flexDirection:   'row',
-                alignItems:      'center',
-                justifyContent:  'space-between',
-                backgroundColor: isActive ? `${COLORS.success}12` : COLORS.backgroundElevated,
-                borderRadius:    RADIUS.lg,
-                padding:         SPACING.md,
-                marginBottom:    SPACING.md,
-                borderWidth:     1,
-                borderColor:     isActive ? `${COLORS.success}30` : COLORS.border,
-              }}>
-                <View style={{ flex: 1, marginRight: SPACING.md }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                    {/* Status dot */}
-                    <View style={{
-                      width:           8,
-                      height:          8,
-                      borderRadius:    4,
-                      backgroundColor: isActive ? COLORS.success : COLORS.textMuted,
-                    }} />
-                    <Text style={{
-                      color:      isActive ? COLORS.success : COLORS.textMuted,
-                      fontSize:   FONTS.sizes.sm,
-                      fontWeight: '700',
-                    }}>
-                      {isActive ? 'Published' : 'Unpublished'}
-                    </Text>
-                    {isToggling && <ActivityIndicator size="small" color={COLORS.primary} />}
-                  </View>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
-                    {isActive
-                      ? 'Visitors can view this report · toggle off to hide it'
-                      : 'Report is hidden · toggle on to make it public again'}
-                  </Text>
-                </View>
-                <Switch
-                  value={isActive}
-                  onValueChange={handleToggle}
-                  disabled={isToggling || isLoading}
-                  trackColor={{
-                    false: COLORS.backgroundCard,
-                    true:  `${COLORS.success}60`,
-                  }}
-                  thumbColor={isActive ? COLORS.success : COLORS.textMuted}
-                  ios_backgroundColor={COLORS.backgroundCard}
-                />
+                <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={closeBtn}>
+                  <Ionicons name="close" size={16} color={COLORS.textMuted} />
+                </Pressable>
               </View>
 
-              {/* URL display box */}
-              <View style={{
-                backgroundColor: COLORS.backgroundElevated,
-                borderRadius:    RADIUS.lg,
-                padding:         SPACING.md,
-                marginBottom:    SPACING.md,
-                borderWidth:     1,
-                borderColor:     shareUrl && isActive ? `${COLORS.primary}30` : COLORS.border,
-                minHeight:       56,
-                justifyContent:  'center',
-              }}>
-                {isLoading ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    <ActivityIndicator size="small" color={COLORS.primary} />
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Generating share link…</Text>
-                  </View>
-                ) : shareUrl && isActive ? (
-                  <Text
-                    style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontFamily: 'monospace' }}
-                    numberOfLines={2}
-                    selectable
-                  >
-                    {shareUrl}
-                  </Text>
-                ) : shareUrl && !isActive ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Ionicons name="eye-off-outline" size={16} color={COLORS.textMuted} />
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
-                      Link is unpublished · toggle to re-enable
-                    </Text>
-                  </View>
-                ) : (
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
-                    Toggle the switch above to generate your public link
-                  </Text>
-                )}
-              </View>
-
-              {/* Info banner */}
-              <View style={{
-                flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-                backgroundColor: `${COLORS.info}10`, borderRadius: RADIUS.md,
-                padding: SPACING.sm, marginBottom: SPACING.lg,
-                borderWidth: 1, borderColor: `${COLORS.info}20`,
-              }}>
-                <Ionicons name="information-circle-outline" size={16} color={COLORS.info} style={{ marginTop: 1 }} />
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18 }}>
-                  Visitors get{' '}
-                  <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>3 free AI questions</Text>
-                  {' '}about this report, then they&apos;re prompted to download DeepDive AI.
-                </Text>
-              </View>
-
-              {/* Action buttons — only shown when active */}
-              {isActive && (
-                <View style={{ gap: SPACING.sm }}>
-                  {/* Copy Link */}
-                  <Pressable
-                    onPress={onCopy}
-                    style={({ pressed }) => [{
-                      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                      gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                      opacity: pressed ? 0.85 : 1,
-                      backgroundColor: shareUrl ? COLORS.primary : COLORS.backgroundElevated,
-                      borderWidth: 1,
-                      borderColor: shareUrl ? 'transparent' : COLORS.border,
-                    }]}
-                  >
-                    <Ionicons name="copy-outline" size={18} color={shareUrl ? '#FFF' : COLORS.textMuted} />
-                    <Text style={{ color: shareUrl ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                      Copy Link
-                    </Text>
-                  </Pressable>
-
-                  {/* Share via */}
-                  <Pressable
-                    onPress={onShare}
-                    style={({ pressed }) => [{
-                      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                      gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                      opacity: pressed ? 0.85 : 1,
-                      backgroundColor: COLORS.backgroundElevated,
-                      borderWidth: 1, borderColor: COLORS.border,
-                    }]}
-                  >
-                    <Ionicons name="share-social-outline" size={18} color={COLORS.textSecondary} />
-                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>
-                      Share via…
-                    </Text>
-                  </Pressable>
-
-                  {/* Preview in browser */}
-                  {shareUrl && (
-                    <Pressable
-                      onPress={onOpen}
-                      style={({ pressed }) => [{
-                        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                        gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                        opacity: pressed ? 0.85 : 1,
-                        backgroundColor: COLORS.backgroundElevated,
-                        borderWidth: 1, borderColor: COLORS.border,
-                      }]}
-                    >
-                      <Ionicons name="open-outline" size={18} color={COLORS.textSecondary} />
-                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' }}>
-                        Preview in Browser
+              <View style={{ paddingHorizontal: SPACING.lg }}>
+                {/* Toggle row */}
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  backgroundColor: isActive ? `${COLORS.success}12` : 'rgba(255,255,255,0.04)',
+                  borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
+                  borderWidth: 1, borderColor: isActive ? `${COLORS.success}33` : COLORS.border,
+                }}>
+                  <View style={{ flex: 1, marginRight: SPACING.md }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: isActive ? COLORS.success : COLORS.textMuted }} />
+                      <Text style={{ color: isActive ? COLORS.success : COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
+                        {isActive ? 'Published' : 'Unpublished'}
                       </Text>
-                    </Pressable>
+                      {isToggling && <ActivityIndicator size="small" color={COLORS.primary} />}
+                    </View>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
+                      {isActive ? 'Visitors can view this report · toggle off to hide it' : 'Report is hidden · toggle on to make it public again'}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={isActive} onValueChange={handleToggle} disabled={isToggling || isLoading}
+                    trackColor={{ false: COLORS.backgroundCard, true: `${COLORS.success}60` }}
+                    thumbColor={isActive ? COLORS.success : COLORS.textMuted}
+                    ios_backgroundColor={COLORS.backgroundCard}
+                  />
+                </View>
+
+                {/* URL box */}
+                <View style={{
+                  backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
+                  borderWidth: 1, borderColor: shareUrl && isActive ? `${COLORS.primary}33` : COLORS.border, minHeight: 56, justifyContent: 'center',
+                }}>
+                  {isLoading ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Generating share link…</Text>
+                    </View>
+                  ) : shareUrl && isActive ? (
+                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }} numberOfLines={2} selectable>{shareUrl}</Text>
+                  ) : shareUrl && !isActive ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name="eye-off-outline" size={16} color={COLORS.textMuted} />
+                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Link is unpublished · toggle to re-enable</Text>
+                    </View>
+                  ) : (
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Toggle the switch above to generate your public link</Text>
                   )}
                 </View>
-              )}
 
-              {/* When unpublished — show a re-publish shortcut */}
-              {!isActive && hasLink && (
-                <Pressable
-                  onPress={() => handleToggle(true)}
-                  disabled={isToggling}
-                  style={({ pressed }) => [{
-                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                    opacity: pressed || isToggling ? 0.7 : 1,
-                    backgroundColor: COLORS.primary,
-                  }]}
-                >
-                  {isToggling
-                    ? <ActivityIndicator size="small" color="#FFF" />
-                    : <Ionicons name="globe-outline" size={18} color="#FFF" />
-                  }
-                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                    Re-publish Report
+                {/* Info banner */}
+                <View style={{
+                  flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+                  backgroundColor: `${COLORS.info}12`, borderRadius: RADIUS.md, padding: SPACING.sm, marginBottom: SPACING.lg,
+                  borderWidth: 1, borderColor: `${COLORS.info}22`,
+                }}>
+                  <Ionicons name="information-circle-outline" size={16} color={COLORS.info} style={{ marginTop: 1 }} />
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18 }}>
+                    Visitors get{' '}<Text style={{ color: COLORS.textPrimary, fontWeight: '800' }}>3 free AI questions</Text>{' '}about this report, then they&apos;re prompted to download DeepDive AI.
                   </Text>
-                </Pressable>
-              )}
+                </View>
 
-              {/* First-time publish (no link yet) */}
-              {!hasLink && !isLoading && (
-                <Pressable
-                  onPress={() => handleToggle(true)}
-                  style={({ pressed }) => [{
-                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-                    opacity: pressed ? 0.85 : 1,
-                    backgroundColor: COLORS.primary,
-                  }]}
-                >
-                  <Ionicons name="globe-outline" size={18} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-                    Generate & Publish Link
-                  </Text>
-                </Pressable>
-              )}
-            </View>
-          </LinearGradient>
+                {isActive && (
+                  <View style={{ gap: SPACING.sm }}>
+                    <Pressable onPress={onCopy} style={({ pressed }) => [primaryBtn(shareUrl ? COLORS.primary : COLORS.backgroundElevated), { opacity: pressed ? 0.85 : 1, borderWidth: shareUrl ? 0 : 1, borderColor: COLORS.border }]}>
+                      <Ionicons name="copy-outline" size={18} color={shareUrl ? '#FFF' : COLORS.textMuted} />
+                      <Text style={{ color: shareUrl ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Copy Link</Text>
+                    </Pressable>
+                    <Pressable onPress={onShare} style={({ pressed }) => [secondaryBtn, { opacity: pressed ? 0.85 : 1 }]}>
+                      <Ionicons name="share-social-outline" size={18} color={COLORS.textSecondary} />
+                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Share via…</Text>
+                    </Pressable>
+                    {shareUrl && (
+                      <Pressable onPress={onOpen} style={({ pressed }) => [secondaryBtn, { opacity: pressed ? 0.85 : 1 }]}>
+                        <Ionicons name="open-outline" size={18} color={COLORS.textSecondary} />
+                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Preview in Browser</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                )}
+
+                {!isActive && hasLink && (
+                  <Pressable onPress={() => handleToggle(true)} disabled={isToggling} style={({ pressed }) => [primaryBtn(COLORS.primary), { opacity: pressed || isToggling ? 0.7 : 1 }]}>
+                    {isToggling ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="globe-outline" size={18} color="#FFF" />}
+                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Re-publish Report</Text>
+                  </Pressable>
+                )}
+
+                {!hasLink && !isLoading && (
+                  <Pressable onPress={() => handleToggle(true)} style={({ pressed }) => [primaryBtn(COLORS.primary), { opacity: pressed ? 0.85 : 1 }]}>
+                    <Ionicons name="globe-outline" size={18} color="#FFF" />
+                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Generate &amp; Publish Link</Text>
+                  </Pressable>
+                )}
+              </View>
+            </LinearGradient>
+          </View>
         </Pressable>
       </Pressable>
     </Modal>
   );
+}
+
+const closeBtn = {
+  width: 32, height: 32, borderRadius: 10,
+  backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center' as const, justifyContent: 'center' as const,
+  borderWidth: 1, borderColor: COLORS.border,
+};
+const secondaryBtn = {
+  flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
+  gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
+  backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: COLORS.border,
+};
+function primaryBtn(bg: string) {
+  return {
+    flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
+    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full, backgroundColor: bg,
+  };
 }
 
 // ── Main Screen ────────────────────────────────────────────────────────────────
@@ -526,7 +477,6 @@ export default function ResearchReportScreen() {
       setIsFromCache(false);
       await cacheReport(mapped as unknown as { id: string; title: string; [key: string]: unknown });
       await supabase.from('research_reports').update({ view_count: (data.view_count ?? 0) + 1 }).eq('id', reportId);
-
     } catch (err) {
       console.error('[ResearchReport] load error:', err);
     } finally {
@@ -560,8 +510,8 @@ export default function ResearchReportScreen() {
     });
   };
 
-  const handlePublicShareCopy  = async () => { await publicShare.copyUrl();    setShowPublicShare(false); };
-  const handlePublicShareOpen  = async () => { const url = publicShare.shareUrl; if (url && await Linking.canOpenURL(url)) await Linking.openURL(url); };
+  const handlePublicShareCopy   = async () => { await publicShare.copyUrl(); setShowPublicShare(false); };
+  const handlePublicShareOpen   = async () => { const url = publicShare.shareUrl; if (url && await Linking.canOpenURL(url)) await Linking.openURL(url); };
   const handlePublicShareNative = async () => { await publicShare.shareReport(); setShowPublicShare(false); };
 
   const openURL = async (url: string) => {
@@ -576,7 +526,7 @@ export default function ResearchReportScreen() {
     : (report?.reliabilityScore ?? 0) >= 6 ? COLORS.warning
     : COLORS.error;
 
-  const hasVisuals    = (report?.infographicData?.charts.length ?? 0) > 0 || (report?.infographicData?.stats.length ?? 0) > 0 || (report?.sourceImages?.length ?? 0) > 0 || !!report?.knowledgeGraph;
+  const hasVisuals       = (report?.infographicData?.charts.length ?? 0) > 0 || (report?.infographicData?.stats.length ?? 0) > 0 || (report?.sourceImages?.length ?? 0) > 0 || !!report?.knowledgeGraph;
   const hasPresentation  = !!report?.presentationId;
   const hasAcademicPaper = !!report?.academicPaperId;
   const isAcademicMode   = report?.researchMode === 'academic';
@@ -598,210 +548,108 @@ export default function ResearchReportScreen() {
 
   const depthColor = DEPTH_COLORS[report.depth] ?? COLORS.primary;
 
+  const statTiles = [
+    { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline',            color: COLORS.info },
+    { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary },
+    { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
+    ...(avgSourceQuality !== null ? [{ label: 'Src Quality', value: `${avgSourceQuality}/10`, icon: 'star-outline', color: getScoreColor(avgSourceQuality) }] : []),
+  ];
+
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        {/* ═══════════════════════════════════════════════════
-            FIXED HEADER — Outside KeyboardAvoidingView
-        ═══════════════════════════════════════════════════ */}
-        <View style={{
-          borderBottomWidth: 1, 
-          borderBottomColor: COLORS.border,
-          backgroundColor: COLORS.background,
-          zIndex: 10,
-        }}>
-          {/* Row 1: back + title + chevron */}
-          <View style={{
-            flexDirection: 'row', 
-            alignItems: 'center',
-            paddingHorizontal: SPACING.md, 
-            paddingTop: SPACING.sm, 
-            paddingBottom: 6,
-            gap: SPACING.sm,
-          }}>
-            <Pressable
-              onPress={() => router.push('/(app)/(tabs)/home' as any)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={{
-                width: 36, 
-                height: 36, 
-                borderRadius: 11,
-                backgroundColor: COLORS.backgroundElevated,
-                alignItems: 'center', 
-                justifyContent: 'center',
-                borderWidth: 1, 
-                borderColor: COLORS.border, 
-                flexShrink: 0,
-              }}
-            >
-              <Ionicons name="arrow-back" size={19} color={COLORS.textSecondary} />
-            </Pressable>
-
-            <Pressable
-              onPress={() => setShowReportDetails(true)}
-              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 }}
-              hitSlop={{ top: 6, bottom: 6 }}
-            >
-              {/* Status / mode badges */}
-              {isFromCache && (
-                <View style={{ backgroundColor: `${COLORS.info}20`, borderRadius: RADIUS.sm, paddingHorizontal: 5, paddingVertical: 2, flexShrink: 0 }}>
-                  <Text style={{ color: COLORS.info, fontSize: 8, fontWeight: '800' }}>OFFLINE</Text>
-                </View>
-              )}
-              {isAcademicMode && (
-                <View style={{ backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.sm, paddingHorizontal: 5, paddingVertical: 2, flexShrink: 0 }}>
-                  <Ionicons name="school" size={9} color={COLORS.primary} />
-                </View>
-              )}
-              <Text
-                style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1 }}
-                numberOfLines={1}
-                ellipsizeMode="tail"
+        {/* ══ FIXED HERO HEADER ══ */}
+        <View style={{ zIndex: 10 }}>
+          <LinearGradient colors={['#16162F', '#0E0E22']} style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+            {/* Row 1 */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: 6, gap: SPACING.sm }}>
+              <Pressable
+                onPress={() => router.push('/(app)/(tabs)/home' as any)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={({ pressed }) => [{
+                  width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
+                  alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border,
+                  flexShrink: 0, opacity: pressed ? 0.7 : 1,
+                }]}
               >
-                {report.title}
-              </Text>
-              <Ionicons name="chevron-down" size={13} color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-            </Pressable>
-          </View>
+                <Ionicons name="arrow-back" size={19} color={COLORS.textSecondary} />
+              </Pressable>
 
-          {/* Row 2: depth chip + date + scrollable action icons */}
-          <View style={{
-            flexDirection: 'row', 
-            alignItems: 'center',
-            paddingHorizontal: SPACING.md, 
-            paddingBottom: SPACING.sm,
-            gap: SPACING.sm,
-          }}>
-            {/* Depth chip */}
-            <View style={{
-              flexDirection: 'row', 
-              alignItems: 'center', 
-              gap: 4,
-              paddingHorizontal: 8, 
-              paddingVertical: 4,
-              backgroundColor: `${depthColor}15`, 
-              borderRadius: RADIUS.full,
-              borderWidth: 1, 
-              borderColor: `${depthColor}30`, 
-              flexShrink: 0,
-            }}>
-              <Ionicons
-                name={report.depth === 'expert' ? 'star' : report.depth === 'deep' ? 'layers' : 'flash'}
-                size={10}
-                color={depthColor}
-              />
-              <Text style={{ color: depthColor, fontSize: 10, fontWeight: '700' }}>
-                {DEPTH_LABELS[report.depth]}
-              </Text>
+              <Pressable onPress={() => setShowReportDetails(true)} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 }} hitSlop={{ top: 6, bottom: 6 }}>
+                {isFromCache && (
+                  <View style={{ backgroundColor: `${COLORS.info}22`, borderRadius: RADIUS.sm, paddingHorizontal: 5, paddingVertical: 2, flexShrink: 0 }}>
+                    <Text style={{ color: COLORS.info, fontSize: 8, fontWeight: '900' }}>OFFLINE</Text>
+                  </View>
+                )}
+                {isAcademicMode && (
+                  <View style={{ backgroundColor: `${COLORS.primary}1A`, borderRadius: RADIUS.sm, paddingHorizontal: 5, paddingVertical: 2, flexShrink: 0 }}>
+                    <Ionicons name="school" size={9} color={COLORS.primary} />
+                  </View>
+                )}
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', flex: 1, letterSpacing: -0.2 }} numberOfLines={1} ellipsizeMode="tail">
+                  {report.title}
+                </Text>
+                <View style={{ width: 22, height: 22, borderRadius: 7, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Ionicons name="chevron-down" size={13} color={COLORS.textMuted} />
+                </View>
+              </Pressable>
             </View>
 
-            {/* Date */}
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flexShrink: 0 }}>
-              {formatDate(report.createdAt)}
-            </Text>
-
-            {/* Spacer */}
-            <View style={{ flex: 1 }} />
-
-            {/* Scrollable action icons */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: SPACING.xs }}
-              style={{ flexShrink: 0, maxWidth: SCREEN_W - 200 }}
-            >
-              {/* Knowledge graph */}
-              {report.knowledgeGraph && (
-                <ActionBtn
-                  icon="git-network-outline"
-                  onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
-                />
-              )}
-
-              {/* Academic paper */}
-              <ActionBtn
-                icon={hasAcademicPaper ? 'school' : 'school-outline'}
-                onPress={handleOpenAcademicPaper}
-                active={hasAcademicPaper}
-              />
-
-              {/* Slides */}
-              <ActionBtn
-                icon={hasPresentation ? 'easel' : 'easel-outline'}
-                onPress={handleGenerateSlides}
-                active={hasPresentation}
-                badge={hasPresentation && report.slideCount ? String(report.slideCount) : undefined}
-              />
-
-              {/* AI chat */}
-              <ActionBtn
-                icon={showChat ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'}
-                onPress={() => setShowChat(v => !v)}
-                active={showChat || assistant.isEmbedded}
-                activeColor={assistant.isEmbedded && !showChat ? COLORS.success : COLORS.primary}
-              />
-
-              {/* Public share - Updated to show active state based on isActive */}
-              <ActionBtn
-                icon={publicShare.isActive ? 'globe' : 'globe-outline'}
-                onPress={() => setShowPublicShare(true)}
-                active={publicShare.isActive}
-                activeColor={COLORS.success}
-                loading={publicShare.isLoading}
-              />
-
-              {/* Export PDF */}
-              <ActionBtn
-                icon="download-outline"
-                onPress={handleExportPDF}
-                loading={exporting}
-              />
-
-              {/* Share sheet */}
-              <ActionBtn
-                icon="share-outline"
-                onPress={() => setShowShareSheet(true)}
-              />
-            </ScrollView>
-          </View>
+            {/* Row 2 */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm, gap: SPACING.sm }}>
+              <View style={{
+                flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5,
+                backgroundColor: `${depthColor}1A`, borderRadius: RADIUS.full, borderWidth: 1, borderColor: `${depthColor}40`, flexShrink: 0,
+              }}>
+                <Ionicons name={report.depth === 'expert' ? 'star' : report.depth === 'deep' ? 'layers' : 'flash'} size={10} color={depthColor} />
+                <Text style={{ color: depthColor, fontSize: 10, fontWeight: '800' }}>{DEPTH_LABELS[report.depth]}</Text>
+              </View>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flexShrink: 0 }}>{formatDate(report.createdAt)}</Text>
+              <View style={{ flex: 1 }} />
+              <ScrollView
+                horizontal showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ flexDirection: 'row', gap: 7, alignItems: 'center', paddingRight: SPACING.xs }}
+                style={{ flexShrink: 0, maxWidth: SCREEN_W - 200 }}
+              >
+                {report.knowledgeGraph && (
+                  <ActionBtn icon="git-network-outline" onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })} />
+                )}
+                <ActionBtn icon={hasAcademicPaper ? 'school' : 'school-outline'} onPress={handleOpenAcademicPaper} active={hasAcademicPaper} />
+                <ActionBtn icon={hasPresentation ? 'easel' : 'easel-outline'} onPress={handleGenerateSlides} active={hasPresentation} badge={hasPresentation && report.slideCount ? String(report.slideCount) : undefined} />
+                <ActionBtn icon={showChat ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'} onPress={() => setShowChat(v => !v)} active={showChat || assistant.isEmbedded} activeColor={assistant.isEmbedded && !showChat ? COLORS.success : COLORS.primary} />
+                <ActionBtn icon={publicShare.isActive ? 'globe' : 'globe-outline'} onPress={() => setShowPublicShare(true)} active={publicShare.isActive} activeColor={COLORS.success} loading={publicShare.isLoading} />
+                <ActionBtn icon="download-outline" onPress={handleExportPDF} loading={exporting} />
+                <ActionBtn icon="share-outline" onPress={() => setShowShareSheet(true)} />
+              </ScrollView>
+            </View>
+          </LinearGradient>
         </View>
-        {/* ═══════════════════════════════════════════════════
-            END FIXED HEADER
-        ═══════════════════════════════════════════════════ */}
 
-        <KeyboardAvoidingView 
-          style={{ flex: 1 }} 
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-        >
-          {/* ── Visual Toggle ── */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
+          {/* Visual toggle */}
           {hasVisuals && (
             <View style={{
-              flexDirection: 'row', 
-              alignItems: 'center', 
-              justifyContent: 'space-between',
-              paddingHorizontal: SPACING.lg, 
-              paddingVertical: SPACING.sm,
-              backgroundColor: visualMode ? `${COLORS.primary}08` : COLORS.background,
-              borderBottomWidth: 1, 
-              borderBottomColor: visualMode ? `${COLORS.primary}15` : COLORS.border,
+              flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+              paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+              backgroundColor: visualMode ? `${COLORS.primary}0A` : 'transparent',
+              borderBottomWidth: 1, borderBottomColor: visualMode ? `${COLORS.primary}18` : COLORS.border,
             }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <LinearGradient colors={visualMode ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']} style={{ width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}>
-                  <Ionicons name="bar-chart-outline" size={14} color="#FFF" />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
+                <LinearGradient colors={visualMode ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="bar-chart" size={15} color="#FFF" />
                 </LinearGradient>
                 <View>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>Visual Mode</Text>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Visual Mode</Text>
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{visualMode ? 'Charts & graphs shown' : 'Text-only view'}</Text>
                 </View>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <Pressable
-                  onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })}
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: COLORS.border }}>
-                  <Ionicons name="git-network-outline" size={12} color={COLORS.textMuted} />
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Graph</Text>
-                </Pressable>
+                {report.knowledgeGraph && (
+                  <Pressable onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 6, borderWidth: 1, borderColor: COLORS.border }}>
+                    <Ionicons name="git-network-outline" size={12} color={COLORS.primaryLight} />
+                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Graph</Text>
+                  </Pressable>
+                )}
                 <Switch value={visualMode} onValueChange={setVisualMode}
                   trackColor={{ false: COLORS.backgroundElevated, true: `${COLORS.primary}50` }}
                   thumbColor={visualMode ? COLORS.primary : COLORS.textMuted}
@@ -810,46 +658,43 @@ export default function ResearchReportScreen() {
             </View>
           )}
 
-          {/* ── Tabs ── */}
-          <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, gap: SPACING.sm }}>
-            {(['report', 'findings', 'sources'] as const).map(tab => (
-              <Pressable key={tab} onPress={() => setActiveTab(tab)} style={{ flex: 1, paddingVertical: 8, borderRadius: RADIUS.md, backgroundColor: activeTab === tab ? COLORS.primary : COLORS.backgroundElevated, alignItems: 'center' }}>
-                <Text style={{ color: activeTab === tab ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                  {tab === 'sources' ? `Sources${sortedCitations.length > 0 ? ` (${sortedCitations.length})` : ''}` : tab.charAt(0).toUpperCase() + tab.slice(1)}
-                </Text>
-              </Pressable>
-            ))}
+          {/* Tabs */}
+          <View style={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm }}>
+            <SegmentedTabs
+              tabs={[
+                { key: 'report', label: 'Report' },
+                { key: 'findings', label: 'Findings' },
+                { key: 'sources', label: `Sources${sortedCitations.length > 0 ? ` (${sortedCitations.length})` : ''}` },
+              ]}
+              active={activeTab}
+              onChange={setActiveTab}
+            />
           </View>
 
-          {/* ── Content ── */}
+          {/* Content */}
           {!showChat && (
             <ScrollView
               style={{ flex: 1 }}
-              contentContainerStyle={{ 
-                paddingHorizontal: SPACING.lg, 
-                paddingTop: SPACING.sm, 
-                paddingBottom: insets.bottom + 80 
-              }}
+              contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + 80 }}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              {/* Stats row */}
+              {/* Stat tiles */}
               <Animated.View entering={FadeInDown.duration(400)} style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
-                {[
-                  { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline',            color: COLORS.info      },
-                  { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary   },
-                  { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
-                  ...(avgSourceQuality !== null ? [{ label: 'Src Quality', value: `${avgSourceQuality}/10`, icon: 'star-outline', color: getScoreColor(avgSourceQuality) }] : []),
-                ].map(stat => (
-                  <View key={stat.label} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.sm, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
-                    <Ionicons name={stat.icon as any} size={16} color={stat.color} />
-                    <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '800', marginTop: 4 }}>{stat.value}</Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2, textAlign: 'center' }}>{stat.label}</Text>
+                {statTiles.map(stat => (
+                  <View key={stat.label} style={{ flex: 1, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${stat.color}33` }}>
+                    <LinearGradient colors={['#1A1A38', '#12122A']} style={{ padding: SPACING.sm, alignItems: 'center' }}>
+                      <LinearGradient colors={[stat.color, `${stat.color}99`]} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 6 }}>
+                        <Ionicons name={stat.icon as any} size={15} color="#FFF" />
+                      </LinearGradient>
+                      <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '900' }}>{stat.value}</Text>
+                      <Text style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 2, textAlign: 'center', fontWeight: '600' }}>{stat.label}</Text>
+                    </LinearGradient>
                   </View>
                 ))}
               </Animated.View>
 
-              {/* REPORT TAB */}
+              {/* ── REPORT TAB ── */}
               {activeTab === 'report' && (
                 <>
                   {visualMode && report.infographicData && (
@@ -859,166 +704,117 @@ export default function ResearchReportScreen() {
                   )}
 
                   <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-                    <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
-                        <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
-                          <Ionicons name="newspaper-outline" size={16} color="#FFF" />
-                        </LinearGradient>
-                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Executive Summary</Text>
-                      </View>
-                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>{report.executiveSummary}</Text>
-                    </LinearGradient>
+                    <View style={{ borderRadius: RADIUS.xl, marginBottom: SPACING.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}2A` }}>
+                      <LinearGradient colors={['#1B1B3C', '#121228']} style={{ padding: SPACING.lg }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
+                          <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
+                            <Ionicons name="newspaper" size={16} color="#FFF" />
+                          </LinearGradient>
+                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Executive Summary</Text>
+                        </View>
+                        <RichText
+                          content={report.executiveSummary}
+                          highlightStats
+                          lead
+                          dropCap
+                          accent={COLORS.primaryLight}
+                          size={FONTS.sizes.base}
+                          color={COLORS.textSecondary}
+                          lineHeight={24}
+                        />
+                      </LinearGradient>
+                    </View>
                   </Animated.View>
 
                   {report.sections.map((section, i) => (
                     <ReportSectionCard key={section.id ?? i} section={section} citations={report.citations} index={i} />
                   ))}
 
-                  {/* Public share promo card - Updated to show isActive status */}
-                  <View style={{ marginBottom: SPACING.lg }}>
-                    <Pressable onPress={() => setShowPublicShare(true)}>
-                      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: publicShare.isActive ? `${COLORS.success}50` : `${COLORS.primary}25` }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
-                          <LinearGradient colors={publicShare.isActive ? [COLORS.success, `${COLORS.success}BB`] : ['#6C63FF', '#4A42CC']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
-                            <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={22} color="#FFF" />
-                          </LinearGradient>
-                          <View style={{ flex: 1 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
-                                {publicShare.isActive ? 'Public Link Active' : (publicShare.shareId ? 'Unpublished' : 'Share as Public Page')}
-                              </Text>
-                              {publicShare.isActive && (
-                                <View style={{ backgroundColor: `${COLORS.success}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}40` }}>
-                                  <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>LIVE</Text>
-                                </View>
-                              )}
-                              {publicShare.shareId && !publicShare.isActive && (
-                                <View style={{ backgroundColor: `${COLORS.warning}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.warning}40` }}>
-                                  <Text style={{ color: COLORS.warning, fontSize: 9, fontWeight: '700' }}>UNPUBLISHED</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                              {publicShare.isActive ? 'Anyone with the link can read this · 3 free AI questions for visitors' : (publicShare.shareId ? 'Link is hidden · Tap to re-publish' : 'Generate a public URL · Visitors get 3 free AI questions · Great for sharing')}
-                            </Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={18} color={publicShare.isActive ? COLORS.success : COLORS.primary} />
-                        </View>
-                      </LinearGradient>
-                    </Pressable>
-                  </View>
+                  <PromoCard
+                    icon={publicShare.isActive ? 'globe' : 'globe-outline'}
+                    iconGradient={publicShare.isActive ? [COLORS.success, `${COLORS.success}BB`] : ['#6C63FF', '#4A42CC']}
+                    title={publicShare.isActive ? 'Public Link Active' : (publicShare.shareId ? 'Unpublished' : 'Share as Public Page')}
+                    subtitle={publicShare.isActive ? 'Anyone with the link can read this · 3 free AI questions for visitors' : (publicShare.shareId ? 'Link is hidden · Tap to re-publish' : 'Generate a public URL · Visitors get 3 free AI questions · Great for sharing')}
+                    badge={publicShare.isActive ? { text: 'LIVE', color: COLORS.success } : (publicShare.shareId ? { text: 'UNPUBLISHED', color: COLORS.warning } : undefined)}
+                    accentBorder={publicShare.isActive ? `${COLORS.success}50` : `${COLORS.primary}25`}
+                    chevronColor={publicShare.isActive ? COLORS.success : COLORS.primary}
+                    onPress={() => setShowPublicShare(true)}
+                  />
 
-                  {/* Academic paper promo */}
-                  <View style={{ marginBottom: SPACING.lg }}>
-                    <Pressable onPress={handleOpenAcademicPaper}>
-                      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: hasAcademicPaper ? `${COLORS.primary}50` : `${COLORS.primary}25` }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
-                          <LinearGradient colors={['#6C63FF', '#4A42CC']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
-                            <Ionicons name="school" size={22} color="#FFF" />
-                          </LinearGradient>
-                          <View style={{ flex: 1 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>{hasAcademicPaper ? 'View Academic Paper' : 'Generate Academic Paper'}</Text>
-                              {hasAcademicPaper && (
-                                <View style={{ backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.primary}40` }}>
-                                  <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>READY</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                              {hasAcademicPaper ? 'Abstract · Introduction · Literature Review · Methodology · Findings · Conclusion' : 'Convert this report into a full peer-review–quality academic paper'}
-                            </Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
-                        </View>
-                      </LinearGradient>
-                    </Pressable>
-                  </View>
+                  <PromoCard
+                    icon="school"
+                    iconGradient={['#6C63FF', '#4A42CC']}
+                    title={hasAcademicPaper ? 'View Academic Paper' : 'Generate Academic Paper'}
+                    subtitle={hasAcademicPaper ? 'Abstract · Introduction · Literature Review · Methodology · Findings · Conclusion' : 'Convert this report into a full peer-review–quality academic paper'}
+                    badge={hasAcademicPaper ? { text: 'READY', color: COLORS.primary } : undefined}
+                    accentBorder={hasAcademicPaper ? `${COLORS.primary}50` : `${COLORS.primary}25`}
+                    chevronColor={COLORS.primary}
+                    onPress={handleOpenAcademicPaper}
+                  />
 
-                  {/* Slides promo */}
-                  <View style={{ marginBottom: SPACING.lg }}>
-                    <Pressable onPress={handleGenerateSlides}>
-                      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: hasPresentation ? `${COLORS.primary}50` : `${COLORS.primary}25` }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
-                          <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
-                            <Ionicons name="easel" size={22} color="#FFF" />
-                          </LinearGradient>
-                          <View style={{ flex: 1 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>{hasPresentation ? 'View Presentation' : 'Generate Slides'}</Text>
-                              {hasPresentation && (
-                                <View style={{ backgroundColor: `${COLORS.accent}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.accent}40` }}>
-                                  <Text style={{ color: COLORS.accent, fontSize: 9, fontWeight: '700' }}>{report.slideCount} SLIDES</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{hasPresentation ? 'Your AI presentation is ready · Export as PPTX, PDF or HTML' : 'Convert this report into a beautiful slide deck with AI'}</Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
-                        </View>
-                      </LinearGradient>
-                    </Pressable>
-                  </View>
+                  <PromoCard
+                    icon="easel"
+                    iconGradient={['#6C63FF', '#8B5CF6']}
+                    title={hasPresentation ? 'View Presentation' : 'Generate Slides'}
+                    subtitle={hasPresentation ? 'Your AI presentation is ready · Export as PPTX, PDF or HTML' : 'Convert this report into a beautiful slide deck with AI'}
+                    badge={hasPresentation ? { text: `${report.slideCount} SLIDES`, color: COLORS.accent } : undefined}
+                    accentBorder={hasPresentation ? `${COLORS.primary}50` : `${COLORS.primary}25`}
+                    chevronColor={COLORS.primary}
+                    onPress={handleGenerateSlides}
+                  />
 
-                  {/* AI assistant promo */}
-                  <View style={{ marginBottom: SPACING.lg }}>
-                    <Pressable onPress={() => setShowChat(true)}>
-                      <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: assistant.isEmbedded ? `${COLORS.success}40` : `${COLORS.primary}25` }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
-                          <LinearGradient colors={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'AA'] : COLORS.gradientPrimary} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                            <Ionicons name="chatbubble-ellipses" size={22} color="#FFF" />
-                          </LinearGradient>
-                          <View style={{ flex: 1 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>AI Research Assistant</Text>
-                              {assistant.isEmbedded && (
-                                <View style={{ backgroundColor: `${COLORS.success}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}40`, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                                  <Ionicons name="sparkles" size={9} color={COLORS.success} />
-                                  <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>RAG READY</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>7 modes · RAG search · Follow-up questions</Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
-                        </View>
-                      </LinearGradient>
-                    </Pressable>
-                  </View>
+                  <PromoCard
+                    icon="chatbubble-ellipses"
+                    iconGradient={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'AA'] : COLORS.gradientPrimary}
+                    title="AI Research Assistant"
+                    subtitle="7 modes · RAG search · Follow-up questions"
+                    badge={assistant.isEmbedded ? { text: 'RAG READY', color: COLORS.success, icon: 'sparkles' } : undefined}
+                    accentBorder={assistant.isEmbedded ? `${COLORS.success}40` : `${COLORS.primary}25`}
+                    chevronColor={COLORS.primary}
+                    onPress={() => setShowChat(true)}
+                  />
                 </>
               )}
 
-              {/* FINDINGS TAB */}
+              {/* ── FINDINGS TAB ── */}
               {activeTab === 'findings' && (
                 <>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>Key Findings</Text>
+                  <Text style={sectionLabel}>Key Findings</Text>
                   {report.keyFindings.map((finding, i) => (
-                    <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
-                      <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
-                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{i + 1}</Text>
-                      </View>
-                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{finding}</Text>
-                    </View>
+                    <Animated.View key={i} entering={FadeInDown.duration(350).delay(i * 50)} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}>
+                      <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start', borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
+                        <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
+                          <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '900' }}>{i + 1}</Text>
+                        </LinearGradient>
+                        <RichText inline content={finding} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} weight="500" lineHeight={21} style={{ flex: 1 }} />
+                      </LinearGradient>
+                    </Animated.View>
                   ))}
+
                   {report.futurePredictions.length > 0 && (
                     <>
-                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md, marginTop: SPACING.lg }}>Future Predictions</Text>
+                      <Text style={[sectionLabel, { marginTop: SPACING.lg }]}>Future Predictions</Text>
                       {report.futurePredictions.map((pred, i) => (
-                        <View key={i} style={{ backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderColor: `${COLORS.warning}25` }}>
-                          <Ionicons name="telescope-outline" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
-                          <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{pred}</Text>
+                        <View key={i} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.warning}2A` }}>
+                          <LinearGradient colors={[`${COLORS.warning}14`, `${COLORS.warning}06`]} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start' }}>
+                            <Ionicons name="telescope" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
+                            <RichText inline content={pred} highlightStats accent={COLORS.warning} size={FONTS.sizes.sm} color={COLORS.textSecondary} lineHeight={21} style={{ flex: 1 }} />
+                          </LinearGradient>
                         </View>
                       ))}
                     </>
                   )}
+
                   {report.statistics.length > 0 && (
                     <>
-                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md, marginTop: SPACING.lg }}>Key Statistics</Text>
+                      <Text style={[sectionLabel, { marginTop: SPACING.lg }]}>Key Statistics</Text>
                       {report.statistics.slice(0, 10).map((stat, i) => (
-                        <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border }}>
-                          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>{stat.value}</Text>
-                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, marginTop: 4 }}>{stat.context}</Text>
-                          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Source: {stat.source}</Text>
+                        <View key={i} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}22` }}>
+                          <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md }}>
+                            <Text style={{ color: COLORS.primaryLight, fontSize: FONTS.sizes.lg, fontWeight: '900' }}>{stat.value}</Text>
+                            <RichText inline content={stat.context} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} lineHeight={19} style={{ marginTop: 4 }} />
+                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Source: {stat.source}</Text>
+                          </LinearGradient>
                         </View>
                       ))}
                     </>
@@ -1026,7 +822,7 @@ export default function ResearchReportScreen() {
                 </>
               )}
 
-              {/* SOURCES TAB */}
+              {/* ── SOURCES TAB ── */}
               {activeTab === 'sources' && (
                 <>
                   {visualMode && (report.sourceImages?.length ?? 0) > 0 && (
@@ -1041,43 +837,41 @@ export default function ResearchReportScreen() {
                     </Animated.View>
                   )}
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' }}>
-                      {sortedCitations.length} Sources · Sorted by Trust
-                    </Text>
-                    <Pressable onPress={() => setShowCitations(true)}
-                      style={{ backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
+                    <Text style={sectionLabel}>{sortedCitations.length} Sources · Sorted by Trust</Text>
+                    <Pressable onPress={() => setShowCitations(true)} style={{ backgroundColor: `${COLORS.primary}1A`, borderRadius: RADIUS.full, paddingHorizontal: 13, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: `${COLORS.primary}40` }}>
                       <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Cite</Text>
+                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Cite</Text>
                     </Pressable>
                   </View>
+
                   {sortedCitations.map((c, i) => (
-                    <Pressable key={c.id ?? i} onPress={() => openURL(c.url)}
-                      style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: c.trustScore?.tier === 1 ? `${COLORS.success}30` : c.trustScore?.tier === 2 ? `${COLORS.primary}25` : COLORS.border }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
-                        <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: c.trustScore?.tier === 1 ? `${COLORS.success}20` : `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', marginRight: 8, flexShrink: 0 }}>
-                          <Text style={{ color: c.trustScore?.tier === 1 ? COLORS.success : COLORS.primary, fontSize: 10, fontWeight: '700' }}>{i + 1}</Text>
+                    <Pressable key={c.id ?? i} onPress={() => openURL(c.url)} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: c.trustScore?.tier === 1 ? `${COLORS.success}33` : c.trustScore?.tier === 2 ? `${COLORS.primary}2A` : COLORS.border }}>
+                      <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
+                          <View style={{ width: 24, height: 24, borderRadius: 7, backgroundColor: c.trustScore?.tier === 1 ? `${COLORS.success}22` : `${COLORS.primary}22`, alignItems: 'center', justifyContent: 'center', marginRight: 9, flexShrink: 0 }}>
+                            <Text style={{ color: c.trustScore?.tier === 1 ? COLORS.success : COLORS.primary, fontSize: 10, fontWeight: '900' }}>{i + 1}</Text>
+                          </View>
+                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', flex: 1, lineHeight: 20 }}>{c.title}</Text>
+                          <Ionicons name="open-outline" size={16} color={COLORS.primary} style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
                         </View>
-                        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 }}>{c.title}</Text>
-                        <Ionicons name="open-outline" size={16} color={COLORS.primary} style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
-                      </View>
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 6 }}>{c.source}{c.date ? ` · ${c.date}` : ''}</Text>
-                      {c.trustScore && <View style={{ marginBottom: 6 }}><SourceTrustBadge score={c.trustScore} size="sm" showBias showScore /></View>}
-                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>{c.snippet}</Text>
+                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 6 }}>{c.source}{c.date ? ` · ${c.date}` : ''}</Text>
+                        {c.trustScore && <View style={{ marginBottom: 6 }}><SourceTrustBadge score={c.trustScore} size="sm" showBias showScore /></View>}
+                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>{c.snippet}</Text>
+                      </LinearGradient>
                     </Pressable>
                   ))}
+
                   {report.searchQueries.length > 0 && (
                     <View style={{ marginTop: SPACING.lg }}>
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
-                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' }}>
-                          {report.searchQueries.length} Search Queries
-                        </Text>
-                        <View style={{ backgroundColor: `${COLORS.info}15`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.info}25` }}>
-                          <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '700' }}>{report.sourcesCount} UNIQUE SOURCES</Text>
+                        <Text style={sectionLabel}>{report.searchQueries.length} Search Queries</Text>
+                        <View style={{ backgroundColor: `${COLORS.info}1A`, borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 4, borderWidth: 1, borderColor: `${COLORS.info}2A` }}>
+                          <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '800' }}>{report.sourcesCount} UNIQUE SOURCES</Text>
                         </View>
                       </View>
                       {report.searchQueries.map((q, i) => (
-                        <View key={i} style={{ backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 8, marginBottom: 6, flexDirection: 'row', alignItems: 'center' }}>
-                          <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 8 }} />
+                        <View key={i} style={{ backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 9, marginBottom: 6, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+                          <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 9 }} />
                           <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1 }}>{q}</Text>
                         </View>
                       ))}
@@ -1090,15 +884,15 @@ export default function ResearchReportScreen() {
 
           {/* Bottom CTA */}
           {!showChat && (
-            <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: 'rgba(10,10,26,0.96)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
+            <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: 'rgba(8,8,22,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Pressable onPress={() => setShowChat(true)}>
                 <LinearGradient
                   colors={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'CC'] : COLORS.gradientPrimary}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  style={{ borderRadius: RADIUS.full, paddingVertical: 14, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
+                  style={{ borderRadius: RADIUS.full, paddingVertical: 15, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, ...SHADOWS.medium }}
                 >
                   <Ionicons name={assistant.isEmbedded ? 'sparkles' : 'chatbubble-ellipses-outline'} size={18} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' }}>
+                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>
                     {assistant.isEmbedded ? 'AI Research Assistant (RAG Ready)' : assistant.isEmbedding ? 'AI Research Assistant (Indexing…)' : 'Open AI Research Assistant'}
                   </Text>
                 </LinearGradient>
@@ -1108,14 +902,14 @@ export default function ResearchReportScreen() {
 
           {/* AI Chat */}
           {showChat && (
-            <View style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+            <Animated.View entering={FadeIn.duration(200)} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Pressable onPress={() => setShowChat(false)} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <LinearGradient colors={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'AA'] : COLORS.gradientPrimary} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
+                  <LinearGradient colors={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'AA'] : COLORS.gradientPrimary} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
                     <Ionicons name="chatbubble-ellipses" size={15} color="#FFF" />
                   </LinearGradient>
                   <View>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>AI Research Assistant</Text>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '800' }}>AI Research Assistant</Text>
                     <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{assistant.isEmbedded ? '✦ RAG-powered · semantic search active' : assistant.isEmbedding ? '⟳ Indexing report…' : '· Keyword fallback mode'}</Text>
                   </View>
                 </View>
@@ -1123,15 +917,14 @@ export default function ResearchReportScreen() {
               </Pressable>
               <ResearchAssistantChat assistant={assistant} reportTitle={report.title} />
               <View style={{ height: insets.bottom }} />
-            </View>
+            </Animated.View>
           )}
         </KeyboardAvoidingView>
       </SafeAreaView>
 
       <CitationModal visible={showCitations} citations={report.citations} onClose={() => setShowCitations(false)} />
       <ShareSheet visible={showShareSheet} report={report} onClose={() => setShowShareSheet(false)} />
-      
-      {/* Enhanced Public Share Modal with all required props */}
+
       <PublicShareModal
         visible={showPublicShare}
         shareUrl={publicShare.shareUrl}
@@ -1151,126 +944,156 @@ export default function ResearchReportScreen() {
       <Modal visible={showReportDetails} transparent animationType="slide" onRequestClose={() => setShowReportDetails(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={() => setShowReportDetails(false)}>
           <Pressable onPress={e => e.stopPropagation()} style={{ maxHeight: SHEET_MAX_H }}>
-            <LinearGradient colors={['#1A1A35', '#0A0A1A']} style={{ borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: SPACING.sm, borderTopWidth: 1, borderColor: COLORS.border }}>
-              <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, marginBottom: SPACING.sm }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                  <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="document-text" size={16} color="#FFF" />
-                  </LinearGradient>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Report Details</Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }} numberOfLines={1}>{report.title}</Text>
-                  </View>
-                </View>
-                <Pressable onPress={() => setShowReportDetails(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                  style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
-                  <Ionicons name="close" size={16} color={COLORS.textMuted} />
-                </Pressable>
-              </View>
-              <View style={{ flexDirection: 'row', maxHeight: SCROLL_MAX_H }}>
-                <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}
-                  contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xs, paddingBottom: SPACING.lg, gap: SPACING.sm }}
-                  scrollEventThrottle={16}
-                  onScroll={RNAnimated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
-                  onContentSizeChange={(_, h) => setContentH(h)}
-                  onLayout={e => setScrollerH(e.nativeEvent.layout.height)}>
-
-                  <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Full Title</Text>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', lineHeight: 24 }}>{report.title}</Text>
-                  </View>
-
-                  <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <Ionicons name="search-outline" size={13} color={COLORS.primary} />
-                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' }}>Original Query</Text>
-                    </View>
-                    <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, fontStyle: 'italic' }}>"{report.query}"</Text>
-                  </View>
-
-                  <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-                    {[
-                      { icon: 'layers-outline', colors: COLORS.gradientPrimary, label: 'Depth', value: DEPTH_LABELS[report.depth], color: COLORS.textPrimary },
-                      { icon: 'shield-checkmark-outline', colors: [reliabilityColor, reliabilityColor + 'AA'] as [string,string], label: 'Reliability', value: `${report.reliabilityScore}/10`, color: reliabilityColor },
-                      { icon: 'globe-outline', colors: [COLORS.info, COLORS.info + 'AA'] as [string,string], label: 'Sources', value: String(report.sourcesCount), color: COLORS.info },
-                    ].map(item => (
-                      <View key={item.label} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', gap: 4 }}>
-                        <LinearGradient colors={item.colors} style={{ width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}>
-                          <Ionicons name={item.icon as any} size={13} color="#FFF" />
-                        </LinearGradient>
-                        <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.label}</Text>
-                        <Text style={{ color: item.color, fontSize: FONTS.sizes.xs, fontWeight: '700', textAlign: 'center' }}>{item.value}</Text>
-                      </View>
-                    ))}
-                  </View>
-
-                  {/* Public share row - Updated to show isActive status */}
-                  <Pressable onPress={() => { setShowReportDetails(false); setTimeout(() => setShowPublicShare(true), 300); }}
-                    style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: publicShare.isActive ? `${COLORS.success}30` : COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={16} color={publicShare.isActive ? COLORS.success : COLORS.textMuted} />
+            <View style={{ borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden', borderTopWidth: 1, borderColor: COLORS.border }}>
+              <LinearGradient colors={['#1A1A38', '#0A0A1A']} style={{ paddingTop: SPACING.sm }}>
+                <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, marginBottom: SPACING.sm }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, flex: 1 }}>
+                    <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center' }}>
+                      <Ionicons name="document-text" size={16} color="#FFF" />
+                    </LinearGradient>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8 }}>Public Link</Text>
-                      <Text style={{ color: publicShare.isActive ? COLORS.success : COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
-                        {publicShare.isActive ? `Active · /r/${publicShare.shareId}` : (publicShare.shareId ? 'Unpublished · Tap to manage' : 'Not generated · Tap to create')}
-                      </Text>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Report Details</Text>
+                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }} numberOfLines={1}>{report.title}</Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+                  </View>
+                  <Pressable onPress={() => setShowReportDetails(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={closeBtn}>
+                    <Ionicons name="close" size={16} color={COLORS.textMuted} />
                   </Pressable>
+                </View>
 
-                  {avgSourceQuality !== null && (
-                    <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${getScoreColor(avgSourceQuality)}25` }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                        <Ionicons name="star-outline" size={14} color={getScoreColor(avgSourceQuality)} />
-                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' }}>Source Quality</Text>
+                <View style={{ flexDirection: 'row', maxHeight: SCROLL_MAX_H }}>
+                  <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}
+                    contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xs, paddingBottom: SPACING.lg, gap: SPACING.sm }}
+                    scrollEventThrottle={16}
+                    onScroll={RNAnimated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
+                    onContentSizeChange={(_, h) => setContentH(h)}
+                    onLayout={e => setScrollerH(e.nativeEvent.layout.height)}>
+
+                    <View style={detailCard(`${COLORS.primary}30`)}>
+                      <Text style={detailLabel}>Full Title</Text>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 24 }}>{report.title}</Text>
+                    </View>
+
+                    <View style={detailCard(COLORS.border)}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <Ionicons name="search-outline" size={13} color={COLORS.primary} />
+                        <Text style={detailLabel}>Original Query</Text>
                       </View>
-                      <SourceTrustSummaryBanner results={sortedCitations} />
-                      <View style={{ marginTop: 8 }}><TrustDistributionBar results={sortedCitations} /></View>
+                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, fontStyle: 'italic' }}>&quot;{report.query}&quot;</Text>
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
+                      {[
+                        { icon: 'layers-outline', colors: COLORS.gradientPrimary, label: 'Depth', value: DEPTH_LABELS[report.depth], color: COLORS.textPrimary },
+                        { icon: 'shield-checkmark-outline', colors: [reliabilityColor, reliabilityColor + 'AA'] as [string, string], label: 'Reliability', value: `${report.reliabilityScore}/10`, color: reliabilityColor },
+                        { icon: 'globe-outline', colors: [COLORS.info, COLORS.info + 'AA'] as [string, string], label: 'Sources', value: String(report.sourcesCount), color: COLORS.info },
+                      ].map(item => (
+                        <View key={item.label} style={[detailCard(COLORS.border), { flex: 1, alignItems: 'center', gap: 4 }]}>
+                          <LinearGradient colors={item.colors} style={{ width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
+                            <Ionicons name={item.icon as any} size={13} color="#FFF" />
+                          </LinearGradient>
+                          <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.label}</Text>
+                          <Text style={{ color: item.color, fontSize: FONTS.sizes.xs, fontWeight: '800', textAlign: 'center' }}>{item.value}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    <Pressable onPress={() => { setShowReportDetails(false); setTimeout(() => setShowPublicShare(true), 300); }}
+                      style={[detailCard(publicShare.isActive ? `${COLORS.success}33` : COLORS.border), { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                      <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={16} color={publicShare.isActive ? COLORS.success : COLORS.textMuted} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={detailLabel}>Public Link</Text>
+                        <Text style={{ color: publicShare.isActive ? COLORS.success : COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
+                          {publicShare.isActive ? `Active · /r/${publicShare.shareId}` : (publicShare.shareId ? 'Unpublished · Tap to manage' : 'Not generated · Tap to create')}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+                    </Pressable>
+
+                    {avgSourceQuality !== null && (
+                      <View style={detailCard(`${getScoreColor(avgSourceQuality)}2A`)}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <Ionicons name="star-outline" size={14} color={getScoreColor(avgSourceQuality)} />
+                          <Text style={detailLabel}>Source Quality</Text>
+                        </View>
+                        <SourceTrustSummaryBanner results={sortedCitations} />
+                        <View style={{ marginTop: 8 }}><TrustDistributionBar results={sortedCitations} /></View>
+                      </View>
+                    )}
+
+                    <View style={[detailCard(COLORS.border), { gap: 8 }]}>
+                      {[
+                        { icon: 'time-outline', iconColor: COLORS.textMuted, label: 'Created', value: formatDate(report.createdAt) },
+                        ...(report.completedAt ? [{ icon: 'checkmark-circle-outline', iconColor: COLORS.success, label: 'Completed', value: formatDate(report.completedAt) }] : []),
+                        { icon: 'eye-outline', iconColor: COLORS.textMuted, label: 'Views', value: String(report.viewCount ?? 0) },
+                        { icon: 'download-outline', iconColor: COLORS.textMuted, label: 'Exports', value: String(report.exportCount ?? 0) },
+                      ].map(row => (
+                        <View key={row.label} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Ionicons name={row.icon as any} size={13} color={row.iconColor} />
+                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{row.label}</Text>
+                          </View>
+                          <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{row.value}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
+                      {[
+                        { icon: report.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline', color: report.status === 'completed' ? COLORS.success : COLORS.textMuted, border: report.status === 'completed' ? `${COLORS.success}33` : COLORS.border, label: 'Status', value: report.status },
+                        { icon: assistant.isEmbedded ? 'sparkles' : assistant.isEmbedding ? 'sync-outline' : 'cloud-outline', color: assistant.isEmbedded ? COLORS.success : assistant.isEmbedding ? COLORS.primary : COLORS.textMuted, border: assistant.isEmbedded ? `${COLORS.success}33` : COLORS.border, label: 'RAG', value: assistant.isEmbedded ? 'Ready' : assistant.isEmbedding ? 'Indexing' : 'Pending' },
+                        { icon: 'chatbubbles-outline', color: COLORS.primary, border: COLORS.border, label: 'Chats', value: String(assistant.messages.length) },
+                      ].map(item => (
+                        <View key={item.label} style={[detailCard(item.border), { flex: 1, alignItems: 'center', gap: 3 }]}>
+                          <Ionicons name={item.icon as any} size={16} color={item.color} />
+                          <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.label}</Text>
+                          <Text style={{ color: item.color, fontSize: FONTS.sizes.xs, fontWeight: '800', textTransform: 'capitalize' }}>{item.value}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </ScrollView>
+
+                  {contentH > scrollerH && (
+                    <View style={{ width: 4, marginRight: 6, marginVertical: SPACING.sm, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' }}>
+                      <RNAnimated.View style={{ width: 4, borderRadius: 2, backgroundColor: COLORS.primary, height: scrollerH > 0 ? Math.max(32, (scrollerH / contentH) * scrollerH) : 32, transform: [{ translateY: scrollerH > 0 && contentH > scrollerH ? scrollY.interpolate({ inputRange: [0, contentH - scrollerH], outputRange: [0, scrollerH - Math.max(32, (scrollerH / contentH) * scrollerH)], extrapolate: 'clamp' }) : 0 }] }} />
                     </View>
                   )}
-
-                  <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border, gap: 8 }}>
-                    {[
-                      { icon: 'time-outline', iconColor: COLORS.textMuted, label: 'Created', value: formatDate(report.createdAt) },
-                      ...(report.completedAt ? [{ icon: 'checkmark-circle-outline', iconColor: COLORS.success, label: 'Completed', value: formatDate(report.completedAt) }] : []),
-                      { icon: 'eye-outline', iconColor: COLORS.textMuted, label: 'Views', value: String(report.viewCount ?? 0) },
-                      { icon: 'download-outline', iconColor: COLORS.textMuted, label: 'Exports', value: String(report.exportCount ?? 0) },
-                    ].map(row => (
-                      <View key={row.label} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <Ionicons name={row.icon as any} size={13} color={row.iconColor} />
-                          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{row.label}</Text>
-                        </View>
-                        <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{row.value}</Text>
-                      </View>
-                    ))}
-                  </View>
-
-                  <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-                    {[
-                      { icon: report.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline', color: report.status === 'completed' ? COLORS.success : COLORS.textMuted, border: report.status === 'completed' ? `${COLORS.success}30` : COLORS.border, label: 'Status', value: report.status },
-                      { icon: assistant.isEmbedded ? 'sparkles' : assistant.isEmbedding ? 'sync-outline' : 'cloud-outline', color: assistant.isEmbedded ? COLORS.success : assistant.isEmbedding ? COLORS.primary : COLORS.textMuted, border: assistant.isEmbedded ? `${COLORS.success}30` : COLORS.border, label: 'RAG', value: assistant.isEmbedded ? 'Ready' : assistant.isEmbedding ? 'Indexing' : 'Pending' },
-                      { icon: 'chatbubbles-outline', color: COLORS.primary, border: COLORS.border, label: 'Chats', value: String(assistant.messages.length) },
-                    ].map(item => (
-                      <View key={item.label} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: item.border, alignItems: 'center', gap: 3 }}>
-                        <Ionicons name={item.icon as any} size={16} color={item.color} />
-                        <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.label}</Text>
-                        <Text style={{ color: item.color, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'capitalize' }}>{item.value}</Text>
-                      </View>
-                    ))}
-                  </View>
-                </ScrollView>
-
-                {contentH > scrollerH && (
-                  <View style={{ width: 4, marginRight: 6, marginVertical: SPACING.sm, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' }}>
-                    <RNAnimated.View style={{ width: 4, borderRadius: 2, backgroundColor: COLORS.primary, height: scrollerH > 0 ? Math.max(32, (scrollerH / contentH) * scrollerH) : 32, transform: [{ translateY: scrollerH > 0 && contentH > scrollerH ? scrollY.interpolate({ inputRange: [0, contentH - scrollerH], outputRange: [0, scrollerH - Math.max(32, (scrollerH / contentH) * scrollerH)], extrapolate: 'clamp' }) : 0 }] }} />
-                  </View>
-                )}
-              </View>
-            </LinearGradient>
+                </View>
+              </LinearGradient>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
     </LinearGradient>
   );
+}
+
+// ── shared inline styles ─────────────────────────────────────────────────────
+
+const sectionLabel = {
+  color: COLORS.textMuted,
+  fontSize: FONTS.sizes.xs,
+  fontWeight: '700' as const,
+  letterSpacing: 1,
+  textTransform: 'uppercase' as const,
+  marginBottom: SPACING.md,
+};
+
+const detailLabel = {
+  color: COLORS.textMuted,
+  fontSize: FONTS.sizes.xs,
+  fontWeight: '700' as const,
+  letterSpacing: 0.8,
+  textTransform: 'uppercase' as const,
+};
+
+function detailCard(border: string) {
+  return {
+    backgroundColor: COLORS.backgroundCard,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    borderWidth: 1,
+    borderColor: border,
+  };
 }
