@@ -1,5 +1,10 @@
 // src/components/search/SearchFilters.tsx
 // Part 35 — Global Search: Filter bar + advanced filter sheet
+// Part 50.8 — UI UPGRADE (visual only)
+//   Restyled the content-type chips, advanced-filter sheet (gradient surface),
+//   search-mode cards, sort chips and date presets into the gradient/glass
+//   system. Both exports, all props, the daysAgo() helper and every constant
+//   usage (CONTENT_TYPE_META / SORT_OPTIONS / SEARCH_MODE_META) are unchanged.
 //
 // Two parts:
 //   <SearchFilterBar />      — horizontal scrollable content-type chips
@@ -30,7 +35,7 @@ import {
   SORT_OPTIONS,
   SEARCH_MODE_META,
 } from '../../constants/search';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
 // ─── Horizontal content-type chips ───────────────────────────────────────────
 
@@ -63,25 +68,27 @@ export function SearchFilterBar({
             <TouchableOpacity
               key={type}
               onPress={() => onChange({ contentType: type })}
-              style={[
-                styles.chip,
-                isActive && { backgroundColor: meta.color, borderColor: meta.color },
-                !isActive && { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border },
-              ]}
               activeOpacity={0.75}
             >
-              <Ionicons
-                name={meta.icon as any}
-                size={13}
-                color={isActive ? '#FFF' : COLORS.textMuted}
-              />
-              <Text style={[
-                styles.chipText,
-                { color: isActive ? '#FFF' : COLORS.textMuted },
-                isActive && { fontWeight: '700' },
-              ]}>
-                {meta.label}
-              </Text>
+              {isActive ? (
+                <LinearGradient
+                  colors={[meta.color, `${meta.color}CC`]}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                  style={[styles.chip, { borderColor: meta.color }]}
+                >
+                  <Ionicons name={meta.icon as any} size={13} color="#FFF" />
+                  <Text style={[styles.chipText, { color: '#FFF', fontWeight: '700' }]}>
+                    {meta.label}
+                  </Text>
+                </LinearGradient>
+              ) : (
+                <View style={[styles.chip, { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: COLORS.border }]}>
+                  <Ionicons name={meta.icon as any} size={13} color={COLORS.textMuted} />
+                  <Text style={[styles.chipText, { color: COLORS.textMuted }]}>
+                    {meta.label}
+                  </Text>
+                </View>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -144,7 +151,7 @@ function SearchModeRow({
           >
             <View style={[
               styles.modeIcon,
-              { backgroundColor: isActive ? `${meta.color}25` : COLORS.backgroundElevated },
+              { backgroundColor: isActive ? `${meta.color}25` : 'rgba(255,255,255,0.05)' },
             ]}>
               <Ionicons
                 name={meta.icon as any}
@@ -222,142 +229,151 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
       >
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
 
-        <View style={styles.sheet}>
-          {/* Handle */}
-          <View style={styles.handle} />
+        <View style={styles.sheetOuter}>
+          <LinearGradient colors={['#1A1A38', '#0D0D20']} style={styles.sheet}>
+            {/* Handle */}
+            <View style={styles.handle} />
 
-          {/* Header */}
-          <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>Search Filters</Text>
-            <TouchableOpacity onPress={onReset} style={styles.resetBtn}>
-              <Text style={styles.resetText}>Reset</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Search Mode */}
-          <Text style={styles.sectionLabel}>SEARCH MODE</Text>
-          <SearchModeRow
-            selected={filters.searchMode}
-            onSelect={mode => onChange({ searchMode: mode })}
-          />
-
-          {/* Sort By */}
-          <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>SORT BY</Text>
-          <View style={styles.sortRow}>
-            {SORT_OPTIONS.map(opt => {
-              const isActive = filters.sortBy === opt.value;
-              return (
-                <TouchableOpacity
-                  key={opt.value}
-                  onPress={() => onChange({ sortBy: opt.value as SearchSortBy })}
-                  activeOpacity={0.8}
-                  style={[
-                    styles.sortChip,
-                    isActive && {
-                      backgroundColor: `${COLORS.primary}20`,
-                      borderColor:     COLORS.primary,
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name={opt.icon as any}
-                    size={13}
-                    color={isActive ? COLORS.primary : COLORS.textMuted}
-                  />
-                  <Text style={[
-                    styles.sortChipText,
-                    { color: isActive ? COLORS.primary : COLORS.textMuted },
-                    isActive && { fontWeight: '700' },
-                  ]}>
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {/* Date Range */}
-          <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>DATE RANGE</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingBottom: 4 }}
-          >
-            {DATE_PRESETS.map(preset => {
-              const isActive = activeDateLabel === preset.label;
-              return (
-                <TouchableOpacity
-                  key={preset.label}
-                  onPress={() => onChange({ dateFrom: preset.from, dateTo: preset.to })}
-                  activeOpacity={0.8}
-                  style={[
-                    styles.sortChip,
-                    isActive && {
-                      backgroundColor: `${COLORS.info}20`,
-                      borderColor:     COLORS.info,
-                    },
-                  ]}
-                >
-                  <Text style={[
-                    styles.sortChipText,
-                    { color: isActive ? COLORS.info : COLORS.textMuted },
-                    isActive && { fontWeight: '700' },
-                  ]}>
-                    {preset.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          {/* Depth filter (reports only) */}
-          {(filters.contentType === 'all' || filters.contentType === 'report') && (
-            <>
-              <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>RESEARCH DEPTH</Text>
-              <View style={styles.sortRow}>
-                {[
-                  { value: undefined, label: 'All depths', color: COLORS.textMuted },
-                  { value: 'quick',   label: 'Quick',      color: COLORS.info      },
-                  { value: 'deep',    label: 'Deep',       color: COLORS.primary   },
-                  { value: 'expert',  label: 'Expert',     color: COLORS.warning   },
-                ].map(opt => {
-                  const isActive = filters.depth === opt.value;
-                  return (
-                    <TouchableOpacity
-                      key={opt.label}
-                      onPress={() => onChange({ depth: opt.value as any })}
-                      activeOpacity={0.8}
-                      style={[
-                        styles.sortChip,
-                        isActive && {
-                          backgroundColor: `${opt.color}20`,
-                          borderColor:     opt.color,
-                        },
-                      ]}
-                    >
-                      <Text style={[
-                        styles.sortChipText,
-                        { color: isActive ? opt.color : COLORS.textMuted },
-                        isActive && { fontWeight: '700' },
-                      ]}>
-                        {opt.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+            {/* Header */}
+            <View style={styles.sheetHeader}>
+              <View style={styles.sheetHeaderLeft}>
+                <LinearGradient colors={COLORS.gradientPrimary} style={styles.sheetHeaderIcon}>
+                  <Ionicons name="options" size={16} color="#FFF" />
+                </LinearGradient>
+                <Text style={styles.sheetTitle}>Search Filters</Text>
               </View>
-            </>
-          )}
+              <TouchableOpacity onPress={onReset} style={styles.resetBtn}>
+                <Ionicons name="refresh" size={12} color={COLORS.error} />
+                <Text style={styles.resetText}>Reset</Text>
+              </TouchableOpacity>
+            </View>
 
-          {/* Done button */}
-          <TouchableOpacity onPress={onClose} activeOpacity={0.85} style={{ marginTop: SPACING.xl }}>
-            <LinearGradient
-              colors={COLORS.gradientPrimary}
-              style={styles.doneBtn}
+            {/* Search Mode */}
+            <Text style={styles.sectionLabel}>SEARCH MODE</Text>
+            <SearchModeRow
+              selected={filters.searchMode}
+              onSelect={mode => onChange({ searchMode: mode })}
+            />
+
+            {/* Sort By */}
+            <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>SORT BY</Text>
+            <View style={styles.sortRow}>
+              {SORT_OPTIONS.map(opt => {
+                const isActive = filters.sortBy === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    onPress={() => onChange({ sortBy: opt.value as SearchSortBy })}
+                    activeOpacity={0.8}
+                    style={[
+                      styles.sortChip,
+                      isActive && {
+                        backgroundColor: `${COLORS.primary}20`,
+                        borderColor:     COLORS.primary,
+                      },
+                    ]}
+                  >
+                    <Ionicons
+                      name={opt.icon as any}
+                      size={13}
+                      color={isActive ? COLORS.primary : COLORS.textMuted}
+                    />
+                    <Text style={[
+                      styles.sortChipText,
+                      { color: isActive ? COLORS.primary : COLORS.textMuted },
+                      isActive && { fontWeight: '700' },
+                    ]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Date Range */}
+            <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>DATE RANGE</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, paddingBottom: 4 }}
             >
-              <Text style={styles.doneBtnText}>Apply Filters</Text>
-            </LinearGradient>
-          </TouchableOpacity>
+              {DATE_PRESETS.map(preset => {
+                const isActive = activeDateLabel === preset.label;
+                return (
+                  <TouchableOpacity
+                    key={preset.label}
+                    onPress={() => onChange({ dateFrom: preset.from, dateTo: preset.to })}
+                    activeOpacity={0.8}
+                    style={[
+                      styles.sortChip,
+                      isActive && {
+                        backgroundColor: `${COLORS.info}20`,
+                        borderColor:     COLORS.info,
+                      },
+                    ]}
+                  >
+                    <Text style={[
+                      styles.sortChipText,
+                      { color: isActive ? COLORS.info : COLORS.textMuted },
+                      isActive && { fontWeight: '700' },
+                    ]}>
+                      {preset.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            {/* Depth filter (reports only) */}
+            {(filters.contentType === 'all' || filters.contentType === 'report') && (
+              <>
+                <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>RESEARCH DEPTH</Text>
+                <View style={styles.sortRow}>
+                  {[
+                    { value: undefined, label: 'All depths', color: COLORS.textMuted },
+                    { value: 'quick',   label: 'Quick',      color: COLORS.info      },
+                    { value: 'deep',    label: 'Deep',       color: COLORS.primary   },
+                    { value: 'expert',  label: 'Expert',     color: COLORS.warning   },
+                  ].map(opt => {
+                    const isActive = filters.depth === opt.value;
+                    return (
+                      <TouchableOpacity
+                        key={opt.label}
+                        onPress={() => onChange({ depth: opt.value as any })}
+                        activeOpacity={0.8}
+                        style={[
+                          styles.sortChip,
+                          isActive && {
+                            backgroundColor: `${opt.color}20`,
+                            borderColor:     opt.color,
+                          },
+                        ]}
+                      >
+                        <Text style={[
+                          styles.sortChipText,
+                          { color: isActive ? opt.color : COLORS.textMuted },
+                          isActive && { fontWeight: '700' },
+                        ]}>
+                          {opt.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {/* Done button */}
+            <TouchableOpacity onPress={onClose} activeOpacity={0.85} style={{ marginTop: SPACING.xl }}>
+              <LinearGradient
+                colors={COLORS.gradientPrimary}
+                style={styles.doneBtn}
+              >
+                <Ionicons name="checkmark-circle" size={17} color="#FFF" />
+                <Text style={styles.doneBtnText}>Apply Filters</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </LinearGradient>
         </View>
       </BlurView>
     </Modal>
@@ -397,13 +413,13 @@ const styles = StyleSheet.create({
   },
   chipText: {
     fontSize:   FONTS.sizes.sm,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   advancedBtn: {
     width:           38,
     height:          38,
     borderRadius:    12,
-    backgroundColor: COLORS.backgroundCard,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
@@ -435,14 +451,16 @@ const styles = StyleSheet.create({
     backgroundColor:  'rgba(10,10,26,0.70)',
     justifyContent:   'flex-end',
   },
-  sheet: {
-    backgroundColor:      COLORS.backgroundCard,
+  sheetOuter: {
     borderTopLeftRadius:  28,
     borderTopRightRadius: 28,
+    overflow:             'hidden',
+  },
+  sheet: {
     padding:              SPACING.xl,
     paddingBottom:        SPACING.xl + 20,
     borderTopWidth:       1,
-    borderTopColor:       COLORS.border,
+    borderTopColor:       `${COLORS.primary}30`,
   },
   handle: {
     width:           40,
@@ -458,12 +476,28 @@ const styles = StyleSheet.create({
     alignItems:      'center',
     marginBottom:    SPACING.lg,
   },
+  sheetHeaderLeft: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           SPACING.sm,
+  },
+  sheetHeaderIcon: {
+    width:          34,
+    height:         34,
+    borderRadius:   11,
+    alignItems:     'center',
+    justifyContent: 'center',
+    ...SHADOWS.small,
+  },
   sheetTitle: {
     color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.lg,
     fontWeight: '800',
   },
   resetBtn: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               4,
     backgroundColor:   `${COLORS.error}15`,
     borderRadius:      RADIUS.full,
     paddingHorizontal: 12,
@@ -491,7 +525,7 @@ const styles = StyleSheet.create({
   },
   modeCard: {
     flex:            1,
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:    RADIUS.lg,
     padding:         SPACING.sm,
     alignItems:      'center',
@@ -545,7 +579,7 @@ const styles = StyleSheet.create({
     paddingVertical:    7,
     borderWidth:       1,
     borderColor:       COLORS.border,
-    backgroundColor:   COLORS.backgroundElevated,
+    backgroundColor:   'rgba(255,255,255,0.04)',
   },
   sortChipText: {
     fontSize:   FONTS.sizes.xs,
@@ -554,13 +588,16 @@ const styles = StyleSheet.create({
 
   // Done
   doneBtn: {
+    flexDirection:  'row',
+    alignItems:     'center',
+    justifyContent: 'center',
+    gap:            8,
     borderRadius:   RADIUS.full,
     paddingVertical: 15,
-    alignItems:     'center',
   },
   doneBtnText: {
     color:      '#FFF',
     fontSize:   FONTS.sizes.base,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 });

@@ -1,10 +1,16 @@
 // src/components/collections/CollectionCard.tsx
 // Part 35 — Collections: Card displayed in the list/grid
+// Part 50.8 — UI UPGRADE
+//   Restyled into the gradient/glass system shared with the History tab:
+//   gradient card body, color-tinted gradient icon, left accent rail, glass
+//   count badge, and a press-scale micro-interaction. All props and behaviour
+//   (onPress, onLongPress, showMenu, onEdit, onDelete) are unchanged.
 
 import React, { memo } from 'react';
 import {
   View,
   Text,
+  Pressable,
   TouchableOpacity,
   StyleSheet,
 } from 'react-native';
@@ -36,83 +42,93 @@ function CollectionCardComponent({
   const color = collection.color ?? '#6C63FF';
 
   return (
-    <Animated.View entering={FadeInDown.duration(350).delay(index * 55)}>
-      <TouchableOpacity
+    <Animated.View entering={FadeInDown.duration(350).delay(Math.min(index, 8) * 55)}>
+      <Pressable
         onPress={onPress}
         onLongPress={onLongPress}
-        activeOpacity={0.80}
-        style={[styles.card, { borderColor: `${color}30` }]}
+        style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
       >
-        {/* Top gradient accent line */}
-        <LinearGradient
-          colors={[color, `${color}00`]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.topAccent}
-        />
+        <View style={[styles.card, { borderColor: `${color}40` }]}>
+          <LinearGradient colors={['#16162F', '#101024']} style={styles.cardGradient}>
+            {/* Left accent rail */}
+            <LinearGradient
+              colors={[color, `${color}44`]}
+              style={styles.accentRail}
+            />
 
-        <View style={styles.body}>
-          {/* Icon circle */}
-          <LinearGradient
-            colors={[color, `${color}BB`]}
-            style={styles.iconCircle}
-          >
-            <Ionicons name={collection.icon as any} size={22} color="#FFF" />
+            <View style={styles.body}>
+              {/* Icon circle */}
+              <LinearGradient
+                colors={[color, `${color}99`]}
+                style={styles.iconCircle}
+              >
+                <Ionicons name={collection.icon as any} size={22} color="#FFF" />
+              </LinearGradient>
+
+              {/* Text block */}
+              <View style={styles.textBlock}>
+                <Text style={styles.name} numberOfLines={1}>
+                  {collection.name}
+                </Text>
+                {collection.description ? (
+                  <Text style={styles.description} numberOfLines={2}>
+                    {collection.description}
+                  </Text>
+                ) : (
+                  <Text style={styles.descriptionMuted} numberOfLines={1}>
+                    Tap to view items
+                  </Text>
+                )}
+              </View>
+
+              {/* Actions column */}
+              <View style={styles.actions}>
+                {showMenu ? (
+                  <>
+                    <TouchableOpacity
+                      onPress={onEdit}
+                      hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                      style={styles.actionBtn}
+                    >
+                      <Ionicons name="pencil-outline" size={15} color={COLORS.textSecondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={onDelete}
+                      hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                      style={[styles.actionBtn, { backgroundColor: `${COLORS.error}12`, borderColor: `${COLORS.error}30` }]}
+                    >
+                      <Ionicons name="trash-outline" size={15} color={COLORS.error} />
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <View style={styles.chevronWrap}>
+                    <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+                  </View>
+                )}
+              </View>
+            </View>
+
+            {/* Footer: item count + date */}
+            <View style={styles.footer}>
+              <View style={[styles.countBadge, { backgroundColor: `${color}18`, borderColor: `${color}35` }]}>
+                <Ionicons name="layers-outline" size={10} color={color} />
+                <Text style={[styles.countText, { color }]}>
+                  {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
+                </Text>
+              </View>
+              <View style={styles.dateWrap}>
+                <Ionicons name="time-outline" size={10} color={COLORS.textMuted} />
+                <Text style={styles.dateText}>
+                  {new Date(collection.updatedAt).toLocaleDateString('en-US', {
+                    month: 'short',
+                    day:   'numeric',
+                  })}
+                </Text>
+              </View>
+            </View>
           </LinearGradient>
-
-          {/* Text block */}
-          <View style={styles.textBlock}>
-            <Text style={styles.name} numberOfLines={1}>
-              {collection.name}
-            </Text>
-            {collection.description ? (
-              <Text style={styles.description} numberOfLines={2}>
-                {collection.description}
-              </Text>
-            ) : null}
-          </View>
-
-          {/* Actions column */}
-          <View style={styles.actions}>
-            {showMenu ? (
-              <>
-                <TouchableOpacity
-                  onPress={onEdit}
-                  hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                  style={styles.actionBtn}
-                >
-                  <Ionicons name="pencil-outline" size={15} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={onDelete}
-                  hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                  style={styles.actionBtn}
-                >
-                  <Ionicons name="trash-outline" size={15} color={COLORS.error} />
-                </TouchableOpacity>
-              </>
-            ) : (
-              <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
-            )}
-          </View>
         </View>
-
-        {/* Footer: item count + date */}
-        <View style={styles.footer}>
-          <View style={[styles.countBadge, { backgroundColor: `${color}18`, borderColor: `${color}30` }]}>
-            <Ionicons name="layers-outline" size={10} color={color} />
-            <Text style={[styles.countText, { color }]}>
-              {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
-            </Text>
-          </View>
-          <Text style={styles.dateText}>
-            {new Date(collection.updatedAt).toLocaleDateString('en-US', {
-              month: 'short',
-              day:   'numeric',
-            })}
-          </Text>
-        </View>
-      </TouchableOpacity>
+      </Pressable>
     </Animated.View>
   );
 }
@@ -123,16 +139,20 @@ export const CollectionCard = memo(CollectionCardComponent);
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius:    RADIUS.xl,
-    marginBottom:    SPACING.sm,
-    borderWidth:     1,
-    overflow:        'hidden',
+    borderRadius: RADIUS.xl,
+    borderWidth:  1,
+    overflow:     'hidden',
     ...SHADOWS.small,
   },
-  topAccent: {
-    height: 2,
-    width:  '100%',
+  cardGradient: {
+    paddingLeft: 6,   // room for accent rail
+  },
+  accentRail: {
+    position: 'absolute',
+    left:     0,
+    top:      0,
+    bottom:   0,
+    width:    4,
   },
   body: {
     flexDirection: 'row',
@@ -147,6 +167,7 @@ const styles = StyleSheet.create({
     alignItems:     'center',
     justifyContent: 'center',
     flexShrink:     0,
+    ...SHADOWS.small,
   },
   textBlock: {
     flex:    1,
@@ -156,12 +177,17 @@ const styles = StyleSheet.create({
   name: {
     color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: -0.2,
   },
   description: {
-    color:      COLORS.textMuted,
+    color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.xs,
     lineHeight: 17,
+  },
+  descriptionMuted: {
+    color:    COLORS.textMuted,
+    fontSize: FONTS.sizes.xs,
   },
   actions: {
     alignItems:     'center',
@@ -170,12 +196,22 @@ const styles = StyleSheet.create({
     flexShrink:     0,
   },
   actionBtn: {
-    width:          28,
-    height:         28,
-    borderRadius:    8,
+    width:          30,
+    height:         30,
+    borderRadius:    9,
     alignItems:     'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth:     1,
+    borderColor:     COLORS.border,
+  },
+  chevronWrap: {
+    width:          30,
+    height:         30,
+    borderRadius:    9,
+    alignItems:     'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.04)',
   },
   footer: {
     flexDirection:  'row',
@@ -189,13 +225,18 @@ const styles = StyleSheet.create({
     alignItems:        'center',
     gap:                4,
     borderRadius:      RADIUS.full,
-    paddingHorizontal: 8,
-    paddingVertical:   3,
+    paddingHorizontal: 9,
+    paddingVertical:   4,
     borderWidth:       1,
   },
   countText: {
     fontSize:   FONTS.sizes.xs,
     fontWeight: '700',
+  },
+  dateWrap: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           4,
   },
   dateText: {
     color:    COLORS.textMuted,

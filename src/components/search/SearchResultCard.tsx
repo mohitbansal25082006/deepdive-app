@@ -1,24 +1,29 @@
 // src/components/search/SearchResultCard.tsx
 // Part 35 — FIXED
+// Part 50.8 — UI UPGRADE (visual only)
 //
-// Changes:
-//   • Removed internal router.push() calls — navigation now via onPress callback
-//     passed from global-search.tsx. This prevents the modal freeze bug where
-//     navigating from within a modal caused the screen to lock.
-//   • Component is now a pure presentational card.
+// IMPORTANT — navigation behaviour is UNCHANGED:
+//   • This component remains PURELY PRESENTATIONAL.
+//   • It does NOT call router.push() — navigation is delegated to the parent
+//     via the onPress callback. This preserves the modal-freeze fix from Part 35.
+//
+// Visual changes only: gradient glass card body, content-type accent rail,
+// gradient type icon, restyled depth/semantic badges. Query highlighting,
+// props, and CONTENT_TYPE_META usage are all preserved.
 
 import React, { memo } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
+  Pressable,
   StyleSheet,
 } from 'react-native';
 import { Ionicons }         from '@expo/vector-icons';
+import { LinearGradient }   from 'expo-linear-gradient';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SearchResult }     from '../../types/search';
 import { CONTENT_TYPE_META } from '../../constants/search';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
 // ─── Semantic Score Badge ─────────────────────────────────────────────────────
 
@@ -89,45 +94,52 @@ function SearchResultCardComponent({ result, index, query, onPress }: SearchResu
   const hasSemanticScore = (result.semanticScore ?? 0) > 0;
 
   return (
-    <Animated.View entering={FadeInDown.duration(300).delay(index * 40)}>
-      <TouchableOpacity
+    <Animated.View entering={FadeInDown.duration(300).delay(Math.min(index, 8) * 40)}>
+      <Pressable
         onPress={() => onPress(result)}
-        activeOpacity={0.78}
-        style={styles.card}
+        style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
       >
-        <View style={[styles.accentBar, { backgroundColor: meta.color }]} />
+        <View style={[styles.card, { borderColor: `${meta.color}33` }]}>
+          <LinearGradient colors={['#16162F', '#101024']} style={styles.cardGradient}>
+            <LinearGradient colors={[meta.color, `${meta.color}44`]} style={styles.accentBar} />
 
-        <View style={styles.content}>
-          <View style={styles.headerRow}>
-            <View style={[styles.iconWrap, { backgroundColor: `${meta.color}18`, borderColor: `${meta.color}30` }]}>
-              <Ionicons name={meta.icon as any} size={17} color={meta.color} />
-            </View>
+            <View style={styles.content}>
+              <View style={styles.headerRow}>
+                <LinearGradient
+                  colors={[meta.color, `${meta.color}99`]}
+                  style={styles.iconWrap}
+                >
+                  <Ionicons name={meta.icon as any} size={17} color="#FFF" />
+                </LinearGradient>
 
-            <View style={styles.titleWrap}>
-              {renderTitle()}
-              {result.subtitle ? (
-                <Text style={styles.subtitle} numberOfLines={1}>{result.subtitle}</Text>
+                <View style={styles.titleWrap}>
+                  {renderTitle()}
+                  {result.subtitle ? (
+                    <Text style={styles.subtitle} numberOfLines={1}>{result.subtitle}</Text>
+                  ) : null}
+                </View>
+
+                <Ionicons name="chevron-forward" size={15} color={COLORS.textMuted} style={styles.chevron} />
+              </View>
+
+              {result.preview ? (
+                <Text style={styles.preview} numberOfLines={2}>{result.preview}</Text>
               ) : null}
+
+              <View style={styles.footerRow}>
+                <View style={[styles.typeBadge, { backgroundColor: `${meta.color}18`, borderColor: `${meta.color}30` }]}>
+                  <Ionicons name={meta.icon as any} size={9} color={meta.color} />
+                  <Text style={[styles.typeBadgeText, { color: meta.color }]}>{meta.label}</Text>
+                </View>
+                {result.depth ? <DepthBadge depth={result.depth} /> : null}
+                {hasSemanticScore ? <SemanticBadge score={result.semanticScore!} /> : null}
+                <View style={styles.spacer} />
+                <Text style={styles.date}>{formattedDate}</Text>
+              </View>
             </View>
-
-            <Ionicons name="chevron-forward" size={15} color={COLORS.textMuted} style={styles.chevron} />
-          </View>
-
-          {result.preview ? (
-            <Text style={styles.preview} numberOfLines={2}>{result.preview}</Text>
-          ) : null}
-
-          <View style={styles.footerRow}>
-            <View style={[styles.typeBadge, { backgroundColor: `${meta.color}15`, borderColor: `${meta.color}30` }]}>
-              <Text style={[styles.typeBadgeText, { color: meta.color }]}>{meta.label}</Text>
-            </View>
-            {result.depth ? <DepthBadge depth={result.depth} /> : null}
-            {hasSemanticScore ? <SemanticBadge score={result.semanticScore!} /> : null}
-            <View style={styles.spacer} />
-            <Text style={styles.date}>{formattedDate}</Text>
-          </View>
+          </LinearGradient>
         </View>
-      </TouchableOpacity>
+      </Pressable>
     </Animated.View>
   );
 }
@@ -138,16 +150,20 @@ export const SearchResultCard = memo(SearchResultCardComponent);
 
 const styles = StyleSheet.create({
   card: {
-    flexDirection:   'row',
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius:    RADIUS.xl,
-    marginBottom:    SPACING.sm,
-    borderWidth:     1,
-    borderColor:     COLORS.border,
-    overflow:        'hidden',
+    borderRadius: RADIUS.xl,
+    borderWidth:  1,
+    overflow:     'hidden',
+    ...SHADOWS.small,
+  },
+  cardGradient: {
+    paddingLeft: 6,
   },
   accentBar: {
-    width: 3, alignSelf: 'stretch', borderRadius: 2,
+    position: 'absolute',
+    left:     0,
+    top:      0,
+    bottom:   0,
+    width:    4,
   },
   content: {
     flex: 1, padding: SPACING.md,
@@ -157,16 +173,16 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs, gap: SPACING.sm,
   },
   iconWrap: {
-    width: 38, height: 38, borderRadius: 11,
+    width: 38, height: 38, borderRadius: 12,
     alignItems: 'center', justifyContent: 'center',
-    flexShrink: 0, borderWidth: 1,
+    flexShrink: 0, ...SHADOWS.small,
   },
   titleWrap: {
     flex: 1, minWidth: 0,
   },
   title: {
     color: COLORS.textPrimary, fontSize: FONTS.sizes.base,
-    fontWeight: '700', lineHeight: 21,
+    fontWeight: '800', lineHeight: 21, letterSpacing: -0.2,
   },
   subtitle: {
     color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2,
@@ -182,6 +198,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6,
   },
   typeBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
     borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1,
   },
   typeBadgeText: {

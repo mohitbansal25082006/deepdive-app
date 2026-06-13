@@ -1,6 +1,12 @@
 // src/components/collections/ManageCollectionsSheet.tsx
 // Part 35 — Collections: Full manager bottom sheet
 // ✅ Full iOS + Android compatibility pass
+// Part 50.8 — UI UPGRADE (visual only)
+//   Restyled the sheet, header, form preview, swatch/icon pickers and empty
+//   state into the gradient/glass system. ALL platform-compat logic is
+//   unchanged: BackHandler handling, platformShadow(), the Overlay wrapper,
+//   SAFE_BOTTOM/SAFE_TOP, modal-dismiss timing (IS_IOS 300ms / Android 400ms),
+//   KeyboardAvoidingView, and every hook + prop + callback.
 //
 // Shows all collections, lets user:
 //   • View and navigate into each collection
@@ -143,7 +149,7 @@ function CollectionForm({
         >
           {/* Live Preview */}
           <View style={styles.preview}>
-            <LinearGradient colors={[color, `${color}BB`]} style={styles.previewIcon}>
+            <LinearGradient colors={[color, `${color}99`]} style={styles.previewIcon}>
               <Ionicons name={icon as any} size={28} color="#FFF" />
             </LinearGradient>
             <View style={{ flex: 1 }}>
@@ -440,139 +446,141 @@ export function ManageCollectionsSheet({
         </TouchableWithoutFeedback>
 
         {/* Sheet */}
-        <View style={styles.sheet}>
-          {/* Drag handle */}
-          <View style={styles.handle} />
+        <View style={styles.sheetOuter}>
+          <LinearGradient colors={['#1A1A38', '#0D0D20']} style={styles.sheet}>
+            {/* Drag handle */}
+            <View style={styles.handle} />
 
-          {/* ── Header ── */}
-          <View style={styles.header}>
-            {view !== 'list' ? (
-              <TouchableOpacity
-                onPress={goBack}
-                hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
-                activeOpacity={0.7}
-                style={styles.backBtn}
-              >
-                <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.headerIconWrap}>
-                <LinearGradient
-                  colors={COLORS.gradientPrimary as [string, string]}
-                  style={styles.headerIconGrad}
+            {/* ── Header ── */}
+            <View style={styles.header}>
+              {view !== 'list' ? (
+                <TouchableOpacity
+                  onPress={goBack}
+                  hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
+                  activeOpacity={0.7}
+                  style={styles.backBtn}
                 >
-                  <Ionicons name="folder" size={17} color="#FFF" />
-                </LinearGradient>
-              </View>
-            )}
-
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {headerTitle}
-            </Text>
-
-            {view === 'list' ? (
-              <TouchableOpacity
-                onPress={() => setView('create')}
-                activeOpacity={0.8}
-                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                style={styles.addBtn}
-              >
-                <Ionicons name="add" size={18} color={COLORS.primary} />
-              </TouchableOpacity>
-            ) : (
-              <View style={{ width: 34 }} />
-            )}
-          </View>
-
-          {/* ── Content: List ── */}
-          {view === 'list' && (
-            <ScrollView
-              style={{ maxHeight: SCREEN_H * 0.55 }}
-              showsVerticalScrollIndicator={false}
-              overScrollMode={IS_ANDROID ? 'never' : 'auto'}
-              contentContainerStyle={{ paddingBottom: SAFE_BOTTOM + SPACING.lg }}
-            >
-              {isLoading && collections.length === 0 ? (
-                <View style={styles.centeredState}>
-                  <ActivityIndicator color={COLORS.primary} />
-                </View>
-              ) : collections.length === 0 ? (
-                <Animated.View entering={FadeIn.duration(400)} style={styles.centeredState}>
-                  <View style={styles.emptyIcon}>
-                    <Ionicons name="folder-open-outline" size={40} color={COLORS.border} />
-                  </View>
-                  <Text style={styles.emptyTitle}>No collections yet</Text>
-                  <Text style={styles.emptySubtext}>
-                    Create your first collection to start organising your research
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => setView('create')}
-                    activeOpacity={0.85}
-                    style={{ marginTop: SPACING.md }}
-                  >
-                    <LinearGradient
-                      colors={COLORS.gradientPrimary as [string, string]}
-                      style={styles.createFirstBtn}
-                    >
-                      <Ionicons name="add" size={16} color="#FFF" />
-                      <Text style={styles.createFirstBtnText}>Create First Collection</Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                </Animated.View>
+                  <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
+                </TouchableOpacity>
               ) : (
-                <>
-                  <Text style={styles.listMeta}>
-                    {collections.length} collection{collections.length !== 1 ? 's' : ''}
-                  </Text>
-                  {collections.map((col, i) => (
-                    <Animated.View
-                      key={col.id}
-                      layout={Layout.springify()}
-                    >
-                      <CollectionCard
-                        collection={col}
-                        index={i}
-                        onPress={() => handleOpen(col)}
-                        showMenu
-                        onEdit={() => { setEditTarget(col); setView('edit'); }}
-                        onDelete={() => handleDelete(col)}
-                      />
-                    </Animated.View>
-                  ))}
-                </>
+                <View style={styles.headerIconWrap}>
+                  <LinearGradient
+                    colors={COLORS.gradientPrimary as [string, string]}
+                    style={styles.headerIconGrad}
+                  >
+                    <Ionicons name="folder" size={17} color="#FFF" />
+                  </LinearGradient>
+                </View>
               )}
-            </ScrollView>
-          )}
 
-          {/* ── Content: Create ── */}
-          {view === 'create' && (
-            <Animated.View entering={FadeIn.duration(250)}>
-              <CollectionForm
-                onSave={handleCreate}
-                onCancel={goBack}
-                isSaving={isSaving || isCreating}
-                isEditing={false}
-              />
-            </Animated.View>
-          )}
+              <Text style={styles.headerTitle} numberOfLines={1}>
+                {headerTitle}
+              </Text>
 
-          {/* ── Content: Edit ── */}
-          {view === 'edit' && editTarget && (
-            <Animated.View entering={FadeIn.duration(250)}>
-              <CollectionForm
-                initial={{
-                  name:        editTarget.name,
-                  description: editTarget.description ?? '',
-                  color:       editTarget.color,
-                  icon:        editTarget.icon,
-                }}
-                onSave={handleUpdate}
-                onCancel={goBack}
-                isSaving={isSaving}
-                isEditing
-              />
-            </Animated.View>
-          )}
+              {view === 'list' ? (
+                <TouchableOpacity
+                  onPress={() => setView('create')}
+                  activeOpacity={0.8}
+                  hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                  style={styles.addBtn}
+                >
+                  <Ionicons name="add" size={18} color={COLORS.primary} />
+                </TouchableOpacity>
+              ) : (
+                <View style={{ width: 34 }} />
+              )}
+            </View>
+
+            {/* ── Content: List ── */}
+            {view === 'list' && (
+              <ScrollView
+                style={{ maxHeight: SCREEN_H * 0.55 }}
+                showsVerticalScrollIndicator={false}
+                overScrollMode={IS_ANDROID ? 'never' : 'auto'}
+                contentContainerStyle={{ paddingBottom: SAFE_BOTTOM + SPACING.lg }}
+              >
+                {isLoading && collections.length === 0 ? (
+                  <View style={styles.centeredState}>
+                    <ActivityIndicator color={COLORS.primary} />
+                  </View>
+                ) : collections.length === 0 ? (
+                  <Animated.View entering={FadeIn.duration(400)} style={styles.centeredState}>
+                    <LinearGradient colors={['#22223E', '#1A1A33']} style={styles.emptyIcon}>
+                      <Ionicons name="folder-open-outline" size={40} color={COLORS.textMuted} />
+                    </LinearGradient>
+                    <Text style={styles.emptyTitle}>No collections yet</Text>
+                    <Text style={styles.emptySubtext}>
+                      Create your first collection to start organising your research
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => setView('create')}
+                      activeOpacity={0.85}
+                      style={{ marginTop: SPACING.md }}
+                    >
+                      <LinearGradient
+                        colors={COLORS.gradientPrimary as [string, string]}
+                        style={styles.createFirstBtn}
+                      >
+                        <Ionicons name="add" size={16} color="#FFF" />
+                        <Text style={styles.createFirstBtnText}>Create First Collection</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </Animated.View>
+                ) : (
+                  <>
+                    <Text style={styles.listMeta}>
+                      {collections.length} collection{collections.length !== 1 ? 's' : ''}
+                    </Text>
+                    {collections.map((col, i) => (
+                      <Animated.View
+                        key={col.id}
+                        layout={Layout.springify()}
+                      >
+                        <CollectionCard
+                          collection={col}
+                          index={i}
+                          onPress={() => handleOpen(col)}
+                          showMenu
+                          onEdit={() => { setEditTarget(col); setView('edit'); }}
+                          onDelete={() => handleDelete(col)}
+                        />
+                      </Animated.View>
+                    ))}
+                  </>
+                )}
+              </ScrollView>
+            )}
+
+            {/* ── Content: Create ── */}
+            {view === 'create' && (
+              <Animated.View entering={FadeIn.duration(250)}>
+                <CollectionForm
+                  onSave={handleCreate}
+                  onCancel={goBack}
+                  isSaving={isSaving || isCreating}
+                  isEditing={false}
+                />
+              </Animated.View>
+            )}
+
+            {/* ── Content: Edit ── */}
+            {view === 'edit' && editTarget && (
+              <Animated.View entering={FadeIn.duration(250)}>
+                <CollectionForm
+                  initial={{
+                    name:        editTarget.name,
+                    description: editTarget.description ?? '',
+                    color:       editTarget.color,
+                    icon:        editTarget.icon,
+                  }}
+                  onSave={handleUpdate}
+                  onCancel={goBack}
+                  isSaving={isSaving}
+                  isEditing
+                />
+              </Animated.View>
+            )}
+          </LinearGradient>
         </View>
       </Overlay>
     </Modal>
@@ -590,17 +598,19 @@ const styles = StyleSheet.create({
   },
 
   // ── Sheet ────────────────────────────────────────────────────────────────────
-  sheet: {
-    backgroundColor:      COLORS.backgroundCard,
+  sheetOuter: {
     borderTopLeftRadius:  28,
     borderTopRightRadius: 28,
+    overflow:             'hidden',
+    // Shadow for the rising sheet
+    ...platformShadow('#000', 0.35, 20, -4, 16),
+  },
+  sheet: {
     paddingHorizontal:    SPACING.xl,
     // Pad for home-indicator on iPhone; nothing extra on Android
     paddingBottom:        SPACING.xl + SAFE_BOTTOM,
     borderTopWidth:       1,
-    borderTopColor:       COLORS.border,
-    // Shadow for the rising sheet
-    ...platformShadow('#000', 0.35, 20, -4, 16),
+    borderTopColor:       `${COLORS.primary}30`,
   },
 
   // ── Handle ───────────────────────────────────────────────────────────────────
@@ -624,7 +634,7 @@ const styles = StyleSheet.create({
     width:           34,
     height:          34,
     borderRadius:    10,
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
@@ -661,6 +671,9 @@ const styles = StyleSheet.create({
   listMeta: {
     color:        COLORS.textMuted,
     fontSize:     FONTS.sizes.xs,
+    fontWeight:   '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
     marginBottom: SPACING.sm,
   },
 
@@ -671,18 +684,19 @@ const styles = StyleSheet.create({
     gap:              SPACING.sm,
   },
   emptyIcon: {
-    width:           72,
-    height:          72,
-    borderRadius:    22,
-    backgroundColor: COLORS.backgroundElevated,
+    width:           80,
+    height:          80,
+    borderRadius:    24,
     alignItems:      'center',
     justifyContent:  'center',
     marginBottom:    SPACING.sm,
+    borderWidth:     1,
+    borderColor:     COLORS.border,
   },
   emptyTitle: {
     color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   emptySubtext: {
     color:             COLORS.textMuted,
@@ -710,7 +724,7 @@ const styles = StyleSheet.create({
     flexDirection:   'row',
     alignItems:      'center',
     gap:              SPACING.md,
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:    RADIUS.xl,
     padding:         SPACING.md,
     borderWidth:     1,
@@ -727,7 +741,7 @@ const styles = StyleSheet.create({
   previewName: {
     color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   previewDesc: {
     color:     COLORS.textMuted,
@@ -744,7 +758,7 @@ const styles = StyleSheet.create({
     marginBottom:  SPACING.sm,
   },
   input: {
-    backgroundColor:   COLORS.backgroundElevated,
+    backgroundColor:   'rgba(0,0,0,0.25)',
     borderRadius:      RADIUS.lg,
     paddingHorizontal: SPACING.md,
     paddingVertical:   12,
@@ -786,7 +800,7 @@ const styles = StyleSheet.create({
     borderRadius:    12,
     alignItems:      'center',
     justifyContent:  'center',
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderWidth:     1,
     borderColor:     COLORS.border,
   },
@@ -797,7 +811,7 @@ const styles = StyleSheet.create({
     gap:            SPACING.sm,
   },
   cancelBtn: {
-    backgroundColor:   COLORS.backgroundElevated,
+    backgroundColor:   'rgba(255,255,255,0.05)',
     borderRadius:      RADIUS.lg,
     paddingVertical:   14,
     paddingHorizontal: SPACING.lg,

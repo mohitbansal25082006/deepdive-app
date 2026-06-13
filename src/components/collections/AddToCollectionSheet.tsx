@@ -1,7 +1,15 @@
 // src/components/collections/AddToCollectionSheet.tsx
 // Part 35 — Collections: Bottom sheet to add/remove a content item
-// from one or more collections. Shows all user collections with
-// a toggle checkmark per collection.
+// from one or more collections.
+// Part 50.8 — UI UPGRADE (visual only; all logic preserved)
+//   • Gradient sheet surface + gradient header icon.
+//   • Glassmorphic collection rows with a color-tinted gradient icon and a
+//     filled check state; selected rows get a colored ring.
+//   • Upgraded quick-create form (gradient preview chip, nicer swatches).
+//
+// Unchanged: useCollections / useItemCollections hooks, contentType/contentId
+// props, COLLECTION_COLORS / COLLECTION_ICONS, the toggle + create flow, and
+// the refresh-on-open effect.
 
 import React, { useEffect, useState, useCallback } from 'react';
 import {
@@ -32,7 +40,7 @@ import {
   COLLECTION_COLORS,
   COLLECTION_ICONS,
 }                         from '../../types/collections';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
 // Define the color type from COLLECTION_COLORS
 type CollectionColor = typeof COLLECTION_COLORS[number];
@@ -82,14 +90,23 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
         <View style={styles.createTriggerIcon}>
           <Ionicons name="add" size={18} color={COLORS.primary} />
         </View>
-        <Text style={styles.createTriggerText}>New Collection</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.createTriggerText}>New Collection</Text>
+          <Text style={styles.createTriggerSub}>Create one to organise this item</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
       </TouchableOpacity>
     );
   }
 
   return (
     <Animated.View entering={FadeIn.duration(250)} style={styles.quickForm}>
-      <Text style={styles.quickFormTitle}>New Collection</Text>
+      <View style={styles.quickFormHeader}>
+        <LinearGradient colors={[color, `${color}99`]} style={styles.quickFormPreviewIcon}>
+          <Ionicons name={icon as any} size={16} color="#FFF" />
+        </LinearGradient>
+        <Text style={styles.quickFormTitle}>{name.trim() || 'New Collection'}</Text>
+      </View>
 
       <TextInput
         value={name}
@@ -193,12 +210,15 @@ function CollectionRow({
       activeOpacity={0.78}
       style={[
         styles.collectionRow,
-        isChecked && { borderColor: `${color}50`, backgroundColor: `${color}08` },
+        isChecked && { borderColor: `${color}55`, backgroundColor: `${color}10` },
       ]}
     >
-      <View style={[styles.rowIcon, { backgroundColor: `${color}20` }]}>
-        <Ionicons name={collection.icon as any} size={18} color={color} />
-      </View>
+      <LinearGradient
+        colors={isChecked ? [color, `${color}99`] : ['#22223E', '#1A1A33']}
+        style={styles.rowIcon}
+      >
+        <Ionicons name={collection.icon as any} size={18} color={isChecked ? '#FFF' : color} />
+      </LinearGradient>
 
       <View style={styles.rowText}>
         <Text style={styles.rowName} numberOfLines={1}>
@@ -271,6 +291,7 @@ export function AddToCollectionSheet({
   }, [refreshCollections]);
 
   const isLoading = loadingCollections || loadingMembership;
+  const memberCount = memberIds.length;
 
   return (
     <Modal
@@ -285,76 +306,90 @@ export function AddToCollectionSheet({
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
-          <View style={styles.sheet}>
-            {/* Handle */}
-            <View style={styles.handle} />
+          <View style={styles.sheetOuter}>
+            <LinearGradient colors={['#1A1A38', '#0D0D20']} style={styles.sheet}>
+              {/* Handle */}
+              <View style={styles.handle} />
 
-            {/* Header */}
-            <View style={styles.sheetHeader}>
-              <View style={styles.sheetHeaderLeft}>
-                <LinearGradient
-                  colors={COLORS.gradientPrimary}
-                  style={styles.sheetHeaderIcon}
+              {/* Header */}
+              <View style={styles.sheetHeader}>
+                <View style={styles.sheetHeaderLeft}>
+                  <LinearGradient
+                    colors={COLORS.gradientPrimary}
+                    style={styles.sheetHeaderIcon}
+                  >
+                    <Ionicons name="bookmark" size={18} color="#FFF" />
+                  </LinearGradient>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.sheetTitle}>Add to Collection</Text>
+                    <Text style={styles.sheetSubtitle} numberOfLines={1}>
+                      {contentTitle}
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  onPress={onClose}
+                  hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                  style={styles.closeBtn}
                 >
-                  <Ionicons name="bookmark" size={18} color="#FFF" />
-                </LinearGradient>
-                <View>
-                  <Text style={styles.sheetTitle}>Add to Collection</Text>
-                  <Text style={styles.sheetSubtitle} numberOfLines={1}>
-                    {contentTitle}
+                  <Ionicons name="close" size={18} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Member count strip */}
+              {memberCount > 0 && (
+                <View style={styles.memberStrip}>
+                  <Ionicons name="checkmark-circle" size={13} color={COLORS.success} />
+                  <Text style={styles.memberStripText}>
+                    In {memberCount} collection{memberCount !== 1 ? 's' : ''}
                   </Text>
                 </View>
-              </View>
-              <TouchableOpacity
-                onPress={onClose}
-                hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-                style={styles.closeBtn}
-              >
-                <Ionicons name="close" size={18} color={COLORS.textMuted} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Collections list */}
-            <ScrollView
-              style={{ maxHeight: 320 }}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: SPACING.sm }}
-              keyboardShouldPersistTaps="handled"
-            >
-              {isLoading && collections.length === 0 ? (
-                <View style={styles.loadingWrap}>
-                  <ActivityIndicator color={COLORS.primary} />
-                  <Text style={styles.loadingText}>Loading collections…</Text>
-                </View>
-              ) : collections.length === 0 ? (
-                <View style={styles.emptyWrap}>
-                  <Ionicons name="folder-outline" size={36} color={COLORS.border} />
-                  <Text style={styles.emptyText}>No collections yet</Text>
-                  <Text style={styles.emptySubtext}>Create one below to start organising</Text>
-                </View>
-              ) : (
-                collections.map((col, i) => (
-                  <Animated.View
-                    key={col.id}
-                    entering={FadeInDown.duration(250).delay(i * 40)}
-                  >
-                    <CollectionRow
-                      collection={col}
-                      isChecked={memberIds.includes(col.id)}
-                      isToggling={togglingId === col.id}
-                      onToggle={() => handleToggle(col)}
-                    />
-                  </Animated.View>
-                ))
               )}
-            </ScrollView>
 
-            {/* Quick create */}
-            <QuickCreateForm
-              onCreated={handleCreated}
-              onCreate={create}
-              isCreating={isCreating}
-            />
+              {/* Collections list */}
+              <ScrollView
+                style={{ maxHeight: 320 }}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: SPACING.sm }}
+                keyboardShouldPersistTaps="handled"
+              >
+                {isLoading && collections.length === 0 ? (
+                  <View style={styles.loadingWrap}>
+                    <ActivityIndicator color={COLORS.primary} />
+                    <Text style={styles.loadingText}>Loading collections…</Text>
+                  </View>
+                ) : collections.length === 0 ? (
+                  <View style={styles.emptyWrap}>
+                    <LinearGradient colors={['#22223E', '#1A1A33']} style={styles.emptyIconWrap}>
+                      <Ionicons name="folder-outline" size={32} color={COLORS.textMuted} />
+                    </LinearGradient>
+                    <Text style={styles.emptyText}>No collections yet</Text>
+                    <Text style={styles.emptySubtext}>Create one below to start organising</Text>
+                  </View>
+                ) : (
+                  collections.map((col, i) => (
+                    <Animated.View
+                      key={col.id}
+                      entering={FadeInDown.duration(250).delay(Math.min(i, 8) * 40)}
+                    >
+                      <CollectionRow
+                        collection={col}
+                        isChecked={memberIds.includes(col.id)}
+                        isToggling={togglingId === col.id}
+                        onToggle={() => handleToggle(col)}
+                      />
+                    </Animated.View>
+                  ))
+                )}
+              </ScrollView>
+
+              {/* Quick create */}
+              <QuickCreateForm
+                onCreated={handleCreated}
+                onCreate={create}
+                isCreating={isCreating}
+              />
+            </LinearGradient>
           </View>
         </KeyboardAvoidingView>
       </BlurView>
@@ -370,14 +405,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(10,10,26,0.70)',
     justifyContent:  'flex-end',
   },
-  sheet: {
-    backgroundColor:      COLORS.backgroundCard,
+  sheetOuter: {
     borderTopLeftRadius:  28,
     borderTopRightRadius: 28,
+    overflow:             'hidden',
+  },
+  sheet: {
     paddingHorizontal:    SPACING.xl,
     paddingBottom:        SPACING.xl + 16,
     borderTopWidth:       1,
-    borderTopColor:       COLORS.border,
+    borderTopColor:       `${COLORS.primary}30`,
   },
   handle: {
     width:           40,
@@ -391,7 +428,8 @@ const styles = StyleSheet.create({
     flexDirection:   'row',
     alignItems:      'center',
     justifyContent:  'space-between',
-    marginBottom:    SPACING.lg,
+    marginBottom:    SPACING.md,
+    gap:             SPACING.sm,
   },
   sheetHeaderLeft: {
     flexDirection: 'row',
@@ -407,11 +445,12 @@ const styles = StyleSheet.create({
     alignItems:     'center',
     justifyContent: 'center',
     flexShrink:     0,
+    ...SHADOWS.small,
   },
   sheetTitle: {
     color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   sheetSubtitle: {
     color:    COLORS.textMuted,
@@ -422,12 +461,30 @@ const styles = StyleSheet.create({
     width:           32,
     height:          32,
     borderRadius:    10,
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
     borderColor:     COLORS.border,
     flexShrink:      0,
+  },
+  memberStrip: {
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               6,
+    alignSelf:         'flex-start',
+    backgroundColor:   `${COLORS.success}12`,
+    borderRadius:      RADIUS.full,
+    paddingHorizontal: 11,
+    paddingVertical:   5,
+    borderWidth:       1,
+    borderColor:       `${COLORS.success}30`,
+    marginBottom:      SPACING.md,
+  },
+  memberStripText: {
+    color:      COLORS.success,
+    fontSize:   FONTS.sizes.xs,
+    fontWeight: '700',
   },
 
   // Collection row
@@ -435,7 +492,7 @@ const styles = StyleSheet.create({
     flexDirection:  'row',
     alignItems:     'center',
     padding:        SPACING.md,
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:   RADIUS.lg,
     marginBottom:   SPACING.sm,
     borderWidth:    1,
@@ -457,7 +514,7 @@ const styles = StyleSheet.create({
   rowName: {
     color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   rowCount: {
     color:    COLORS.textMuted,
@@ -466,7 +523,7 @@ const styles = StyleSheet.create({
   checkbox: {
     width:          22,
     height:         22,
-    borderRadius:    6,
+    borderRadius:    7,
     borderWidth:     1.5,
     borderColor:    COLORS.border,
     alignItems:     'center',
@@ -480,7 +537,13 @@ const styles = StyleSheet.create({
     alignItems:     'center',
     gap:             SPACING.sm,
     paddingVertical: SPACING.md,
-    paddingHorizontal: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    marginTop:       SPACING.xs,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius:    RADIUS.lg,
+    borderWidth:     1,
+    borderColor:     `${COLORS.primary}25`,
+    borderStyle:     'dashed',
   },
   createTriggerIcon: {
     width:          36,
@@ -491,29 +554,46 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth:    1,
     borderColor:    `${COLORS.primary}30`,
-    borderStyle:    'dashed',
   },
   createTriggerText: {
-    color:      COLORS.primary,
+    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  createTriggerSub: {
+    color:    COLORS.textMuted,
+    fontSize: FONTS.sizes.xs,
+    marginTop: 1,
   },
   quickForm: {
-    backgroundColor: COLORS.backgroundElevated,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:    RADIUS.xl,
     padding:         SPACING.md,
     borderWidth:     1,
     borderColor:     `${COLORS.primary}30`,
     marginTop:       SPACING.sm,
   },
+  quickFormHeader: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           SPACING.sm,
+    marginBottom:  SPACING.sm,
+  },
+  quickFormPreviewIcon: {
+    width:          32,
+    height:         32,
+    borderRadius:   10,
+    alignItems:     'center',
+    justifyContent: 'center',
+  },
   quickFormTitle: {
-    color:        COLORS.textPrimary,
-    fontSize:     FONTS.sizes.base,
-    fontWeight:   '700',
-    marginBottom: SPACING.sm,
+    flex:       1,
+    color:      COLORS.textPrimary,
+    fontSize:   FONTS.sizes.base,
+    fontWeight: '800',
   },
   quickInput: {
-    backgroundColor:   COLORS.backgroundCard,
+    backgroundColor:   'rgba(0,0,0,0.25)',
     borderRadius:      RADIUS.lg,
     paddingHorizontal: SPACING.md,
     paddingVertical:   10,
@@ -540,7 +620,7 @@ const styles = StyleSheet.create({
     borderRadius:   10,
     alignItems:     'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.backgroundCard,
+    backgroundColor: 'rgba(0,0,0,0.25)',
     borderWidth:    1,
     borderColor:    COLORS.border,
   },
@@ -550,7 +630,7 @@ const styles = StyleSheet.create({
     marginTop:     SPACING.sm,
   },
   cancelBtn: {
-    backgroundColor:   COLORS.backgroundCard,
+    backgroundColor:   'rgba(255,255,255,0.05)',
     borderRadius:      RADIUS.lg,
     paddingVertical:   12,
     paddingHorizontal: SPACING.lg,
@@ -591,10 +671,20 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.xl,
     gap:            SPACING.sm,
   },
+  emptyIconWrap: {
+    width:          64,
+    height:         64,
+    borderRadius:   20,
+    alignItems:     'center',
+    justifyContent: 'center',
+    marginBottom:   SPACING.xs,
+    borderWidth:    1,
+    borderColor:    COLORS.border,
+  },
   emptyText: {
     color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.base,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   emptySubtext: {
     color:    COLORS.textMuted,

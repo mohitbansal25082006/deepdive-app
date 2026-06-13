@@ -1,20 +1,19 @@
 // app/(app)/(tabs)/history.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Research History  (FULL UI REDESIGN)
+// Research History
 //
-// Visual + interaction overhaul. Every behaviour from the previous version is
-// preserved: bookmark toggle (optimistic + supabase), delete w/ confirm,
-// compare mode (max 2), depth filters, local search, Collections / Saved /
-// Global Search navigation, pull-to-refresh, ManageCollections + AddToCollection
-// sheets.
+// Part 50.8 — BOOKMARK FIX (consumer side)
+//   • Removed the `pinnedOverrides` shim entirely. Bookmark state now comes
+//     directly from useHistory (which maps is_pinned and owns the optimistic
+//     toggle + rollback + refetch guard). This fixes:
+//       - the bookmark icon un-filling after a refresh/refocus
+//       - the "saved" count resetting while the report stayed bookmarked
+//   • handleToggleBookmark now just calls toggleBookmark(id) from the hook.
+//   • bookmarkedCount is derived from the canonical reports list.
 //
-// New: premium gradient header, live stats ribbon, animated segmented depth
-// filter with sliding indicator + live counts, glassmorphic report cards with
-// a depth accent rail, bookmark pop + press-scale micro-interactions, shimmer
-// skeletons, animated empty state, scroll-to-top FAB, and light haptics.
-//
-// Dependencies are already in the project (reanimated, expo-linear-gradient,
-// expo-haptics). No new installs.
+// Everything else (premium header, stats ribbon, animated depth filter, glass
+// cards, compare mode, search, skeletons, empty state, scroll-to-top FAB,
+// haptics, Collections / Saved / Search navigation) is unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
@@ -38,12 +37,11 @@ import Animated, {
   withTiming, withSpring, withSequence, runOnJS, Easing,
 } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router }         from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useHistory }     from '../../../src/hooks/useHistory';
 import { Avatar }         from '../../../src/components/common/Avatar';
 import { useAuth }        from '../../../src/context/AuthContext';
 import { ResearchReport } from '../../../src/types';
-import { supabase }       from '../../../src/lib/supabase';
 import { ManageCollectionsSheet }  from '../../../src/components/collections/ManageCollectionsSheet';
 import { AddToCollectionSheet }    from '../../../src/components/collections/AddToCollectionSheet';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../../src/constants/theme';
@@ -273,7 +271,7 @@ function ReportCard({
         <View style={{
           borderRadius: RADIUS.xl, overflow: 'hidden',
           borderWidth: compareMode && isSelected ? 1.5 : 1,
-          borderColor: compareMode && isSelected ? COLORS.primary : COLORS.border,
+          borderColor: compareMode && isSelected ? COLORS.primary : (isBookmarked ? `${COLORS.primary}40` : COLORS.border),
         }}>
           <LinearGradient
             colors={compareMode && isSelected ? ['#20204A', '#16163A'] : ['#16162F', '#101024']}
@@ -376,13 +374,22 @@ const iconBtn = {
 export default function HistoryScreen() {
   const { profile } = useAuth();
   const insets = useSafeAreaInsets();
-  const { reports: rawReports, loading, refreshing, refresh, deleteReport } = useHistory();
+  // Part 50.8: bookmark state + toggle now come straight from the hook.
+  const { reports, loading, refreshing, refresh, deleteReport, toggleBookmark } = useHistory();
 
-  const [pinnedOverrides, setPinnedOverrides] = useState<Record<string, boolean>>({});
-  const reports: ResearchReport[] = rawReports.map(r => ({
-    ...r,
-    isPinned: r.id in pinnedOverrides ? pinnedOverrides[r.id] : (r.isPinned ?? false),
-  }));
+  // Part 50.8 FIX: silent refresh whenever the tab regains focus. This means
+  // returning from the Bookmarks screen (or the report detail) after removing /
+  // toggling a bookmark auto-updates the list + the "saved" count with no manual
+  // pull-to-refresh. The first focus is skipped because useHistory already
+  // fetches on mount, and refresh() reconciles against the in-flight
+  // pendingBookmarks guard so it never clobbers a just-toggled bookmark.
+  const didInitialFocus = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didInitialFocus.current) { didInitialFocus.current = true; return; }
+      refresh();
+    }, [refresh]),
+  );
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter]           = useState<FilterKey>('all');
@@ -405,18 +412,10 @@ export default function HistoryScreen() {
   });
   const underlineStyle = useAnimatedStyle(() => ({ opacity: withTiming(scrollY.value > 6 ? 1 : 0, { duration: 160 }) }));
 
-  // ── Bookmark ─────────────────────────────────────────────────────────────────
-  const handleToggleBookmark = useCallback(async (report: ResearchReport) => {
-    const currentPinned = report.id in pinnedOverrides ? pinnedOverrides[report.id] : (report.isPinned ?? false);
-    const newVal = !currentPinned;
-    setPinnedOverrides(prev => ({ ...prev, [report.id]: newVal }));
-    try {
-      await supabase.from('research_reports').update({ is_pinned: newVal }).eq('id', report.id);
-    } catch {
-      setPinnedOverrides(prev => ({ ...prev, [report.id]: currentPinned }));
-      Alert.alert('Error', 'Could not update bookmark.');
-    }
-  }, [pinnedOverrides]);
+  // ── Bookmark — delegates to the hook (optimistic + rollback + refetch guard)
+  const handleToggleBookmark = useCallback((report: ResearchReport) => {
+    toggleBookmark(report.id);
+  }, [toggleBookmark]);
 
   // ── Delete ───────────────────────────────────────────────────────────────────
   const handleDelete = useCallback((report: ResearchReport) => {
@@ -466,7 +465,6 @@ export default function HistoryScreen() {
     <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
-        {/* The ENTIRE page scrolls. Search + filter is index 1 → stays pinned. */}
         <Animated.ScrollView
           ref={scrollRef}
           onScroll={onScroll}
@@ -480,11 +478,9 @@ export default function HistoryScreen() {
           {/* ═══════════ 0 · HEADER (scrolls away) ═══════════ */}
           <Animated.View entering={FadeIn.duration(500)}>
             <LinearGradient colors={['#15152F', '#0D0D22']} style={{ paddingBottom: SPACING.sm }}>
-              {/* soft glow accents */}
               <View pointerEvents="none" style={{ position: 'absolute', top: -40, right: -30, width: 140, height: 140, borderRadius: 70, backgroundColor: `${COLORS.primary}1A` }} />
               <View pointerEvents="none" style={{ position: 'absolute', top: 10, left: -40, width: 120, height: 120, borderRadius: 60, backgroundColor: `${COLORS.secondary}12` }} />
 
-              {/* title + avatar */}
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.sm, gap: SPACING.md }}>
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '900', lineHeight: 28, letterSpacing: -0.4 }} numberOfLines={1}>Research History</Text>
@@ -497,7 +493,6 @@ export default function HistoryScreen() {
                 </View>
               </View>
 
-              {/* stats ribbon */}
               {!compareMode && reports.length > 0 && (
                 <View style={{ flexDirection: 'row', gap: SPACING.sm, paddingHorizontal: SPACING.xl, marginBottom: SPACING.sm }}>
                   <StatCard icon="documents" value={String(reports.length)} label="Reports" gradient={COLORS.gradientPrimary} accent={COLORS.primary} />
@@ -506,7 +501,6 @@ export default function HistoryScreen() {
                 </View>
               )}
 
-              {/* action pills */}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: SPACING.xl, gap: 8 }}>
                 <ActionPill icon="search-outline" label="Search" onPress={() => router.push('/(app)/global-search' as any)} />
                 <ActionPill icon="albums-outline" label="Collections" onPress={() => setShowCollectionsManager(true)} active />
@@ -515,7 +509,6 @@ export default function HistoryScreen() {
               </ScrollView>
             </LinearGradient>
 
-            {/* compare banner (inside header so indices stay stable) */}
             {compareMode && (
               <Animated.View entering={FadeInDown.duration(300)} exiting={FadeOut.duration(150)} style={{ paddingHorizontal: SPACING.xl, paddingTop: SPACING.sm }}>
                 <View style={{ borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}40` }}>
@@ -558,7 +551,6 @@ export default function HistoryScreen() {
           {/* ═══════════ 1 · STICKY  search + filter ═══════════ */}
           <View>
             <LinearGradient colors={['#0E0E22', '#0B0B1C']} style={{ paddingHorizontal: SPACING.xl, paddingTop: SPACING.sm, paddingBottom: SPACING.sm }}>
-              {/* search */}
               <View style={{
                 backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.lg,
                 flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, height: 46,
@@ -579,10 +571,8 @@ export default function HistoryScreen() {
                 )}
               </View>
 
-              {/* filter */}
               <FilterSegment tabs={FILTER_TABS} active={filter} onChange={setFilter} />
 
-              {/* results count */}
               {!loading && reports.length > 0 && (
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: SPACING.sm }}>
                   {sorted.length === reports.length ? `Showing all ${reports.length}` : `${sorted.length} of ${reports.length} reports`}
@@ -590,7 +580,6 @@ export default function HistoryScreen() {
                 </Text>
               )}
             </LinearGradient>
-            {/* underline appears once the page is scrolled beneath the sticky bar */}
             <Animated.View style={[{ height: 1 }, underlineStyle]}>
               <LinearGradient colors={['transparent', `${COLORS.primary}55`, 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ flex: 1 }} />
             </Animated.View>
@@ -598,10 +587,8 @@ export default function HistoryScreen() {
 
           {/* ═══════════ 2 · CONTENT ═══════════ */}
           <View style={{ paddingHorizontal: SPACING.xl, paddingTop: SPACING.sm }}>
-            {/* skeletons */}
             {loading && reports.length === 0 && Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} index={i} />)}
 
-            {/* empty */}
             {!loading && sorted.length === 0 && (
               <Animated.View entering={FadeIn.duration(500)} style={{ alignItems: 'center', paddingTop: 60 }}>
                 <LinearGradient colors={['#1C1C40', '#14142E']} style={{ width: 92, height: 92, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
@@ -631,7 +618,6 @@ export default function HistoryScreen() {
               </Animated.View>
             )}
 
-            {/* cards */}
             {sorted.map((report, i) => (
               <ReportCard
                 key={report.id}
@@ -650,7 +636,6 @@ export default function HistoryScreen() {
           </View>
         </Animated.ScrollView>
 
-        {/* ── Scroll-to-top FAB ── */}
         {showTop && (
           <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(180)} style={{ position: 'absolute', right: 20, bottom: insets.bottom + 96 }}>
             <Pressable onPress={() => { haptic(); scrollRef.current?.scrollTo({ y: 0, animated: true }); }} style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.9 : 1 }] }]}>
@@ -662,7 +647,6 @@ export default function HistoryScreen() {
         )}
       </SafeAreaView>
 
-      {/* ── Sheets ── */}
       <ManageCollectionsSheet visible={showCollectionsManager} onClose={() => setShowCollectionsManager(false)} />
 
       {collectionTarget && (

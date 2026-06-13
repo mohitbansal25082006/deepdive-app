@@ -1,10 +1,16 @@
 // app/(app)/research-report.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Research Report — Detail Screen  (FULL UI REDESIGN)
+// Research Report — Detail Screen
 //
-// Visual overhaul only. All data loading, field mapping, handlers, hooks,
-// publish/unpublish logic, tabs, visual mode, AI chat and every modal behave
-// exactly as before. Same imports, same screen contract.
+// Part 50.8 — BOOKMARK SUPPORT ADDED
+//   • Loads `is_pinned` into the mapped report (was previously dropped here too).
+//   • New bookmark action button in the header action strip. Toggling writes
+//     `is_pinned` to Supabase (the same field History + Bookmarks read), with an
+//     optimistic update and rollback on failure. This keeps the bookmark state
+//     and the History "saved" count consistent everywhere.
+//
+// Everything else (data loading, field mapping, handlers, tabs, visual mode,
+// AI chat, publish/unpublish, all modals) behaves exactly as before.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -26,6 +32,7 @@ import {
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
+import * as Haptics          from 'expo-haptics';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams }    from 'expo-router';
@@ -59,6 +66,10 @@ const SCROLL_MAX_H = SHEET_MAX_H - 90;
 
 const DEPTH_LABELS: Record<string, string> = { quick: 'Quick', deep: 'Deep Dive', expert: 'Expert' };
 const DEPTH_COLORS: Record<string, string> = { quick: COLORS.success, deep: COLORS.primary, expert: COLORS.warning };
+
+const haptic = (style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Light) => {
+  try { Haptics.impactAsync(style); } catch {}
+};
 
 // ── Action icon button ─────────────────────────────────────────────────────────
 
@@ -249,7 +260,6 @@ function PublicShareModal({
             <LinearGradient colors={['#1A1A38', '#0A0A1A']} style={{ paddingBottom: insets.bottom + SPACING.lg }}>
               <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
 
-              {/* Header */}
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
                   <LinearGradient colors={isActive ? [COLORS.success, `${COLORS.success}CC`] : ['#6C63FF', '#8B5CF6']} style={{ width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
@@ -268,7 +278,6 @@ function PublicShareModal({
               </View>
 
               <View style={{ paddingHorizontal: SPACING.lg }}>
-                {/* Toggle row */}
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   backgroundColor: isActive ? `${COLORS.success}12` : 'rgba(255,255,255,0.04)',
@@ -295,7 +304,6 @@ function PublicShareModal({
                   />
                 </View>
 
-                {/* URL box */}
                 <View style={{
                   backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
                   borderWidth: 1, borderColor: shareUrl && isActive ? `${COLORS.primary}33` : COLORS.border, minHeight: 56, justifyContent: 'center',
@@ -317,7 +325,6 @@ function PublicShareModal({
                   )}
                 </View>
 
-                {/* Info banner */}
                 <View style={{
                   flexDirection: 'row', alignItems: 'flex-start', gap: 8,
                   backgroundColor: `${COLORS.info}12`, borderRadius: RADIUS.md, padding: SPACING.sm, marginBottom: SPACING.lg,
@@ -405,6 +412,10 @@ export default function ResearchReportScreen() {
   const [showReportDetails, setShowReportDetails] = useState(false);
   const [showPublicShare,   setShowPublicShare]   = useState(false);
 
+  // Part 50.8: bookmark state for this report
+  const [isBookmarked,      setIsBookmarked]      = useState(false);
+  const [bookmarking,       setBookmarking]       = useState(false);
+
   const scrollY   = useRef(new RNAnimated.Value(0)).current;
   const [contentH,  setContentH]  = useState(0);
   const [scrollerH, setScrollerH] = useState(0);
@@ -427,6 +438,7 @@ export default function ResearchReportScreen() {
           })),
         };
         setReport(enriched);
+        setIsBookmarked(enriched.isPinned ?? false);
         setIsFromCache(true);
         setLoading(false);
       }
@@ -474,6 +486,7 @@ export default function ResearchReportScreen() {
       };
 
       setReport(mapped);
+      setIsBookmarked(mapped.isPinned ?? false);
       setIsFromCache(false);
       await cacheReport(mapped as unknown as { id: string; title: string; [key: string]: unknown });
       await supabase.from('research_reports').update({ view_count: (data.view_count ?? 0) + 1 }).eq('id', reportId);
@@ -481,6 +494,29 @@ export default function ResearchReportScreen() {
       console.error('[ResearchReport] load error:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Part 50.8: bookmark toggle — writes the same is_pinned field as History
+  const handleToggleBookmark = async () => {
+    if (!report || bookmarking) return;
+    const next = !isBookmarked;
+    setIsBookmarked(next);
+    setBookmarking(true);
+    haptic(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const { error } = await supabase
+        .from('research_reports')
+        .update({ is_pinned: next })
+        .eq('id', report.id);
+      if (error) throw error;
+      setReport(prev => (prev ? { ...prev, isPinned: next } : prev));
+    } catch (err) {
+      console.error('[ResearchReport] bookmark error:', err);
+      setIsBookmarked(!next);
+      Alert.alert('Error', 'Could not update bookmark.');
+    } finally {
+      setBookmarking(false);
     }
   };
 
@@ -593,6 +629,24 @@ export default function ResearchReportScreen() {
                   <Ionicons name="chevron-down" size={13} color={COLORS.textMuted} />
                 </View>
               </Pressable>
+
+              {/* Part 50.8: quick bookmark toggle in the top row */}
+              <Pressable
+                onPress={handleToggleBookmark}
+                disabled={bookmarking}
+                hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                style={({ pressed }) => [{
+                  width: 38, height: 38, borderRadius: 12,
+                  backgroundColor: isBookmarked ? `${COLORS.primary}22` : 'rgba(255,255,255,0.05)',
+                  alignItems: 'center', justifyContent: 'center',
+                  borderWidth: 1, borderColor: isBookmarked ? `${COLORS.primary}55` : COLORS.border,
+                  flexShrink: 0, opacity: pressed ? 0.7 : 1,
+                }]}
+              >
+                {bookmarking
+                  ? <ActivityIndicator size="small" color={COLORS.primary} />
+                  : <Ionicons name={isBookmarked ? 'bookmark' : 'bookmark-outline'} size={18} color={isBookmarked ? COLORS.primary : COLORS.textSecondary} />}
+              </Pressable>
             </View>
 
             {/* Row 2 */}
@@ -626,7 +680,6 @@ export default function ResearchReportScreen() {
         </View>
 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
-          {/* Visual toggle */}
           {hasVisuals && (
             <View style={{
               flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -658,7 +711,6 @@ export default function ResearchReportScreen() {
             </View>
           )}
 
-          {/* Tabs */}
           <View style={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm }}>
             <SegmentedTabs
               tabs={[
@@ -671,7 +723,6 @@ export default function ResearchReportScreen() {
             />
           </View>
 
-          {/* Content */}
           {!showChat && (
             <ScrollView
               style={{ flex: 1 }}
@@ -679,7 +730,6 @@ export default function ResearchReportScreen() {
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              {/* Stat tiles */}
               <Animated.View entering={FadeInDown.duration(400)} style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
                 {statTiles.map(stat => (
                   <View key={stat.label} style={{ flex: 1, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${stat.color}33` }}>
@@ -694,7 +744,6 @@ export default function ResearchReportScreen() {
                 ))}
               </Animated.View>
 
-              {/* ── REPORT TAB ── */}
               {activeTab === 'report' && (
                 <>
                   {visualMode && report.infographicData && (
@@ -776,7 +825,6 @@ export default function ResearchReportScreen() {
                 </>
               )}
 
-              {/* ── FINDINGS TAB ── */}
               {activeTab === 'findings' && (
                 <>
                   <Text style={sectionLabel}>Key Findings</Text>
@@ -822,7 +870,6 @@ export default function ResearchReportScreen() {
                 </>
               )}
 
-              {/* ── SOURCES TAB ── */}
               {activeTab === 'sources' && (
                 <>
                   {visualMode && (report.sourceImages?.length ?? 0) > 0 && (
@@ -882,7 +929,6 @@ export default function ResearchReportScreen() {
             </ScrollView>
           )}
 
-          {/* Bottom CTA */}
           {!showChat && (
             <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: 'rgba(8,8,22,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Pressable onPress={() => setShowChat(true)}>
@@ -900,7 +946,6 @@ export default function ResearchReportScreen() {
             </View>
           )}
 
-          {/* AI Chat */}
           {showChat && (
             <Animated.View entering={FadeIn.duration(200)} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Pressable onPress={() => setShowChat(false)} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
@@ -940,7 +985,6 @@ export default function ResearchReportScreen() {
         onUnpublish={publicShare.unpublishReport}
       />
 
-      {/* Report Details Modal */}
       <Modal visible={showReportDetails} transparent animationType="slide" onRequestClose={() => setShowReportDetails(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={() => setShowReportDetails(false)}>
           <Pressable onPress={e => e.stopPropagation()} style={{ maxHeight: SHEET_MAX_H }}>
@@ -1068,8 +1112,6 @@ export default function ResearchReportScreen() {
     </LinearGradient>
   );
 }
-
-// ── shared inline styles ─────────────────────────────────────────────────────
 
 const sectionLabel = {
   color: COLORS.textMuted,
