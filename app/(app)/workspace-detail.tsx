@@ -1,16 +1,17 @@
 // app/(app)/workspace-detail.tsx
 // Part 46 UPDATE — Full realtime workspace detail screen.
 // Part 50.5 UPDATE — Added useWorkspaceBotIndex for silent background bot indexing.
+// Part 50.9 UPDATE — Live unread badge on the Team Chat button.
 //
-// Changes from Part 46:
-//   (all Part 46 changes preserved — see Part 46 comment block)
+//   Issue (Part 50.9): the chat button showed a `chatUnread` badge but it was
+//   wired to a local useState that was never populated, so it never appeared.
 //
-// Changes in Part 50.5:
-//   1. Import useWorkspaceBotIndex + triggerReportIndexing from useWorkspaceBotIndex hook
-//   2. Call useWorkspaceBotIndex(id) after useWorkspace() — silently indexes all
-//      workspace reports in the background so @deepdive bot can answer about them
-//   3. AddToWorkspaceSheet onAdded prop now also calls triggerReportIndexing so
-//      newly added reports are immediately available to the bot
+//   Fix: replaced the dead local state with useWorkspaceChatUnread(id, enabled),
+//   which subscribes to the Stream unread count for this workspace's channel and
+//   returns a live, reactive number. Every existing `chatUnread > 0` badge (top
+//   bar chat button, Feed CTA, Members entry) now renders the real unread count
+//   and updates in real time as messages arrive / are read. Opening chat clears
+//   it optimistically via clear(), and it re-syncs on focus.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -32,6 +33,8 @@ import { useDebateSharing }          from '../../src/hooks/useDebateSharing';
 import { useVoiceDebateSharing }     from '../../src/hooks/useVoiceDebateSharing';
 // Part 50.5: import background bot indexing hook
 import { useWorkspaceBotIndex, triggerReportIndexing } from '../../src/hooks/useWorkspaceBotIndex';
+// Part 50.9: live unread badge for the Team Chat button
+import { useWorkspaceChatUnread } from '../../src/hooks/useWorkspaceChatUnread';
 import { WorkspaceReportCard }       from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem }              from '../../src/components/workspace/ActivityItem';
 import { MemberAvatar }              from '../../src/components/workspace/MemberAvatar';
@@ -120,6 +123,13 @@ export default function WorkspaceDetailScreen() {
   const debateSharing      = useDebateSharing(activeWorkspaceId, sharedContentVersion);
   const voiceDebateSharing = useVoiceDebateSharing(activeWorkspaceId, sharedContentVersion);
 
+  const isOwner  = userRole === 'owner';
+  const isEditor = userRole === 'editor' || isOwner;
+
+  // Part 50.9: live unread badge — enabled only for owners/editors (chat access)
+  const { unread: chatUnread, clear: clearChatUnread } =
+    useWorkspaceChatUnread(id ?? null, isEditor);
+
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
   const [activeFilter,  setActiveFilter]  = useState<SharedFilter>('all');
   const [showInvite,    setShowInvite]    = useState(false);
@@ -130,10 +140,7 @@ export default function WorkspaceDetailScreen() {
   const [profileMember, setProfileMember] = useState<MiniProfile | null>(null);
   const [showProfile,   setShowProfile]   = useState(false);
   const [showRequests,  setShowRequests]  = useState(false);
-  const [chatUnread,    setChatUnread]    = useState(0);
 
-  const isOwner  = userRole === 'owner';
-  const isEditor = userRole === 'editor' || isOwner;
   const existingReportIds = reports.map(r => r.reportId);
 
   useEffect(() => {
@@ -173,9 +180,9 @@ export default function WorkspaceDetailScreen() {
 
   const openChat = useCallback(() => {
     if (!id) return;
-    setChatUnread(0);
+    clearChatUnread();
     router.push({ pathname: '/(app)/workspace-chat' as any, params: { id, name: workspace?.name ?? 'Team Chat', role: userRole ?? 'viewer' } });
-  }, [id, workspace?.name, userRole]);
+  }, [id, workspace?.name, userRole, clearChatUnread]);
 
   const handleOpenMemberProfile = useCallback((member: MiniProfile) => {
     setProfileMember(member);
@@ -436,7 +443,7 @@ export default function WorkspaceDetailScreen() {
                     </View>
                   </View>
                   <View style={styles.chatFeedCtaRight}>
-                    {chatUnread > 0 && <View style={styles.chatFeedBadge}><Text style={styles.chatFeedBadgeText}>{chatUnread}</Text></View>}
+                    {chatUnread > 0 && <View style={styles.chatFeedBadge}><Text style={styles.chatFeedBadgeText}>{chatUnread > 99 ? '99+' : chatUnread}</Text></View>}
                     <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
                   </View>
                 </TouchableOpacity>
@@ -611,7 +618,7 @@ export default function WorkspaceDetailScreen() {
                     <Text style={styles.chatMembersEntryTitle}>Team Chat</Text>
                     <Text style={styles.chatMembersEntrySub}>Chat with owners & editors only</Text>
                   </View>
-                  {chatUnread > 0 && <View style={styles.chatFeedBadge}><Text style={styles.chatFeedBadgeText}>{chatUnread}</Text></View>}
+                  {chatUnread > 0 && <View style={styles.chatFeedBadge}><Text style={styles.chatFeedBadgeText}>{chatUnread > 99 ? '99+' : chatUnread}</Text></View>}
                   <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
                 </TouchableOpacity>
               )}

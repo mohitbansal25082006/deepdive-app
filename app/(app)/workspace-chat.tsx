@@ -10,25 +10,31 @@
 //             (b) "Sending…" chip for GIFs & stickers
 //             (c) AI sparkles button (left of search) → personal Ask DeepDive AI
 //
-// ─── (a) IMAGE/VIDEO BUBBLE RESIZE FIX ───────────────────────────────────────
-//   Images only sized correctly after leaving + re-entering the chat, and videos
-//   never sized at all, because `uploadNewFile({uri,name,type,size})` never
-//   passed the asset's pixel width/height → the attachment had no
-//   original_width/original_height, which is what Stream's Gallery uses to size
-//   the bubble. GIFs always worked because handleGifSelect sends them with those
-//   fields. FIX: keep the message-box staging UX (so a caption can be added) but
-//     1) pass width/height to uploadNewFile (→ original_width/original_height),
-//     2) backfill any still-missing dims in doSendMessageRequest as a safety net.
-//   The gallery theme (streamChatTheme.ts) is intentionally unchanged.
+// Part 50.9 — ANDROID KEYBOARD + NAV BAR FIX (definitive)
 //
-// ─── (b) SENDING CHIP FOR GIFS & STICKERS ────────────────────────────────────
-//   GIFs/stickers still send instantly (no staging), but now show a small
-//   "Sending GIF…" / "Sending sticker…" chip while channel.sendMessage runs.
+//   Symptom history:
+//     • Previous attempt used KeyboardAvoidingView behavior="height" on Android
+//       AND disabled Stream's KeyboardCompatibleView. Result: input bar slipped
+//       BEHIND the Android navigation bar.
 //
-// ─── (c) PERSONAL AI CHAT ENTRY ──────────────────────────────────────────────
-//   A sparkles button to the LEFT of the search icon opens workspace-ai-chat —
-//   a private screen where the member talks to the same AI as the @deepdive bot
-//   without needing the @deepdive / /ai trigger.
+//   ROOT CAUSE:
+//     On Android with softwareKeyboardLayoutMode:'pan' (app.json), the OS pans
+//     the whole window up when the keyboard opens. Stream's <Channel> ALSO has
+//     its own KeyboardCompatibleView that repositions the MessageInput. Adding a
+//     React-Native KeyboardAvoidingView is a THIRD layer — three keyboard systems
+//     fighting → input mispositioned. Disabling Stream's view removed the one
+//     piece that actually keeps the input above the nav bar.
+//
+//   THE FIX:
+//     ANDROID:
+//       • NO KeyboardAvoidingView (plain View wrapper).
+//       • softwareKeyboardLayoutMode:'pan' pans the window (handles the keyboard).
+//       • Stream's KeyboardCompatibleView stays ENABLED (NOT disabled) so it
+//         positions the input correctly within the panned window.
+//       • bottomInset = insets.bottom on <Channel> + paddingBottom on the wrapper
+//         so the resting input clears the Android navigation/gesture bar.
+//     iOS:
+//       • KeyboardAvoidingView behavior="padding" with the top-bar offset.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -87,6 +93,7 @@ import {
   notifyMention, notifyChatMessage, notifyReply,
 } from '../../src/services/workspaceNotificationService';
 import { setActiveChatWorkspaceId } from '../../src/lib/screenState';
+import { markWorkspaceChannelRead } from '../../src/services/streamUnreadService';
 import {
   playSendSound, playReceiveSound, prewarmChatSounds,
 } from '../../src/services/chatSoundService';
@@ -265,11 +272,6 @@ const pickerStyles = StyleSheet.create({
 });
 
 // ─── Custom Attach Button ─────────────────────────────────────────────────────
-//
-// Part 50.6: camera & photo-library media stage in the composer (so a caption can
-// be added) via uploadNewFile, but we PASS width/height so the attachment carries
-// original_width/original_height. We also register the dims (by file name) so
-// doSendMessageRequest can backfill them as a safety net. Documents use pickFile.
 
 function CustomAttachButtonInner({
   onPollPress,
@@ -469,16 +471,34 @@ export default function WorkspaceChatScreen() {
 
   useEffect(() => { prewarmChatSounds().catch(() => {}); }, []);
 
+  // Mark this workspace's channel read on open AND on leave so the unread
+  // badge in workspace-detail resets correctly.
   useFocusEffect(
     useCallback(() => {
       isFocusedRef.current = true;
-      if (workspaceId) setActiveChatWorkspaceId(workspaceId);
+      if (workspaceId) {
+        setActiveChatWorkspaceId(workspaceId);
+        markWorkspaceChannelRead(workspaceId).catch(() => {});
+      }
       return () => {
         isFocusedRef.current = false;
         setActiveChatWorkspaceId(null);
+        if (workspaceId) markWorkspaceChannelRead(workspaceId).catch(() => {});
       };
     }, [workspaceId]),
   );
+
+  // Mark read whenever the watched channel reports a new message while focused.
+  useEffect(() => {
+    if (!channel || !workspaceId) return;
+    const onNew = () => {
+      if (isFocusedRef.current) {
+        channel.markRead().catch(() => {});
+      }
+    };
+    const sub = channel.on('message.new', onNew);
+    return () => sub.unsubscribe();
+  }, [channel, workspaceId]);
 
   const workspaceMemberRolesRef = useRef<WorkspaceMemberRoles>({});
   useEffect(() => { workspaceMemberRolesRef.current = workspaceMemberRoles; }, [workspaceMemberRoles]);
@@ -628,8 +648,6 @@ export default function WorkspaceChatScreen() {
           }],
         });
       } else {
-        // Resolve GIF dimensions before sending so Stream's Gallery can
-        // immediately show the correct aspect ratio on the receiver's side
         let gifWidth: number | undefined;
         let gifHeight: number | undefined;
         try {
@@ -702,10 +720,16 @@ export default function WorkspaceChatScreen() {
     );
   }
 
-  const channelTopInset    = insets.top + TOP_BAR_HEIGHT;
+  const channelTopInset = insets.top + TOP_BAR_HEIGHT;
+  // Part 50.9: bottomInset keeps the input ABOVE the Android nav/gesture bar.
   const channelBottomInset = insets.bottom;
 
-  const ChatWrapper      = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
+  // ── Part 50.9: platform-correct wrapper ─────────────────────────────────────
+  //   iOS     → KeyboardAvoidingView (padding) handles the keyboard.
+  //   Android → plain View. softwareKeyboardLayoutMode:'pan' + Stream's own
+  //             KeyboardCompatibleView handle the keyboard. We pad the bottom by
+  //             the safe-area inset so the resting input clears the nav bar.
+  const ChatWrapper = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
   const chatWrapperProps: any = Platform.OS === 'ios'
     ? { style: styles.chatContainer, behavior: 'padding', keyboardVerticalOffset: channelTopInset }
     : { style: [styles.chatContainer, { paddingBottom: insets.bottom }] };
@@ -738,7 +762,6 @@ export default function WorkspaceChatScreen() {
             supportedReactions={CUSTOM_REACTIONS}
             reactionListPosition="bottom"
             messageActions={MESSAGE_ACTIONS_NO_THREAD}
-            // Part 50.6 (a): backfill image/video dimensions just before send.
             doSendMessageRequest={doSendMessageRequest}
             Attachment={CustomAttachment}
             AttachButton={() => (
@@ -750,7 +773,10 @@ export default function WorkspaceChatScreen() {
             )}
             InlineDateSeparator={ChatDateSeparator}
             DateHeader={CustomDateHeader}
-            disableKeyboardCompatibleView={Platform.OS === 'android'}
+            // Part 50.9: Keep Stream's KeyboardCompatibleView ENABLED on Android.
+            // softwareKeyboardLayoutMode:'pan' pans the window; Stream positions the
+            // input within it. Disabling it (previous attempt) put the input behind
+            // the nav bar. NOT disabled now → correct positioning above the nav bar.
             audioRecordingEnabled
           >
             <MessageList targetedMessage={targetMsgId} />
@@ -759,7 +785,6 @@ export default function WorkspaceChatScreen() {
         </Chat>
       </ChatWrapper>
 
-      {/* Part 50.6 (b): GIF/sticker sending chip */}
       {sendingMedia && (
         <View pointerEvents="none" style={[styles.sendingBanner, { top: insets.top + TOP_BAR_HEIGHT + 12 }]}>
           <View style={styles.sendingPill}>
@@ -842,7 +867,6 @@ function TopBar({ workspaceName, onBack, onAI, onFiles, onSearch, onMembers, fil
         </Text>
       </View>
       <View style={styles.topActions}>
-        {/* Part 50.6 (c): Ask DeepDive AI — sits to the LEFT of search */}
         <TouchableOpacity onPress={onAI} style={[styles.iconBtn, styles.aiBtn]} activeOpacity={0.7}>
           <Ionicons name="sparkles" size={16} color={COLORS.primary} />
         </TouchableOpacity>
@@ -934,7 +958,6 @@ const styles = StyleSheet.create({
   badge:            { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 15, height: 15, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2, borderWidth: 1.5, borderColor: COLORS.background },
   badgeTxt:         { color: '#FFF', fontSize: 8, fontWeight: '800' },
 
-  // Part 50.6 (b) — GIF/sticker sending chip
   sendingBanner:    { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 50 },
   sendingPill:      { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.backgroundCard, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.full, paddingHorizontal: 16, paddingVertical: 9, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 12, elevation: 10 },
   sendingPillText:  { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },

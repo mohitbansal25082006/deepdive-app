@@ -1,5 +1,7 @@
 // app/(app)/workspace-ai-chat.tsx
 // Part 50.6 — Personal "Ask DeepDive AI" screen
+// Part 50.9 — Android keyboard fix (no distortion).
+// Part 50.9.1 — Tap-anywhere-to-dismiss keyboard on Android (and iOS).
 //
 // A PRIVATE 1:1 chat with the same AI that powers the @deepdive team-chat bot —
 // same RAG over the workspace's shared research reports, same answers — but here
@@ -7,6 +9,25 @@
 // conversation is visible only to them (persisted locally per user + workspace).
 //
 // Reached from the Team Chat top bar (sparkles button, left of search).
+//
+// ─── KEYBOARD FIX (Part 50.9) ────────────────────────────────────────────────
+//   Android → NO KeyboardAvoidingView. softwareKeyboardLayoutMode:'pan' (app.json)
+//             pans the window so the focused input rises above the keyboard. iOS
+//             uses KeyboardAvoidingView behavior="padding".
+//
+// ─── DISMISS FIX (Part 50.9.1) ───────────────────────────────────────────────
+//   Problem: on Android the keyboard could not be closed by tapping outside the
+//   input — tapping the message list / empty area / privacy bar did nothing.
+//   keyboardDismissMode="interactive" is iOS-only behaviour and does not dismiss
+//   on a plain tap on Android.
+//
+//   Fix: every tappable non-input surface now dismisses the keyboard:
+//     • The whole content area is wrapped so background taps call Keyboard.dismiss().
+//     • The FlatList uses keyboardShouldPersistTaps="handled" (taps on bubbles still
+//       work; taps on blank list space dismiss) + onScrollBeginDrag → dismiss.
+//     • The empty-state and privacy bar are wrapped in a dismiss handler.
+//   Because the wrapper uses Pressable with no visual feedback, normal touches on
+//   children (buttons, chips, the input) still work; only "background" taps dismiss.
 
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
@@ -21,6 +42,8 @@ import {
   Platform,
   StatusBar,
   KeyboardAvoidingView,
+  Keyboard,
+  Pressable,
   FlatList,
   Alert,
 } from 'react-native';
@@ -214,6 +237,11 @@ export default function WorkspaceAIChatScreen() {
   const [input, setInput] = useState('');
   const listRef = useRef<FlatList<AIChatMessage>>(null);
 
+  // Part 50.9.1: dismiss the keyboard from any background tap / scroll.
+  const dismissKeyboard = useCallback(() => {
+    Keyboard.dismiss();
+  }, []);
+
   const scrollToEnd = useCallback(() => {
     requestAnimationFrame(() => {
       try { listRef.current?.scrollToEnd({ animated: true }); } catch { /* */ }
@@ -233,11 +261,13 @@ export default function WorkspaceAIChatScreen() {
 
   const handleSuggestion = useCallback((s: string) => {
     if (sending) return;
+    Keyboard.dismiss();
     send(s);
   }, [sending, send]);
 
   const handleClear = useCallback(() => {
     if (messages.length === 0) return;
+    Keyboard.dismiss();
     Alert.alert(
       'Clear conversation',
       'This permanently clears your private chat with DeepDive AI for this workspace. This cannot be undone.',
@@ -248,6 +278,10 @@ export default function WorkspaceAIChatScreen() {
     );
   }, [messages.length, clear]);
 
+  // ── Part 50.9: platform-correct wrapper ─────────────────────────────────────
+  //   iOS     → KeyboardAvoidingView (padding) lifts the input above the keyboard.
+  //   Android → plain View. softwareKeyboardLayoutMode:'pan' pans the window so the
+  //             focused input rises above the keyboard. NO KeyboardAvoidingView.
   const Wrapper = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
   const wrapperProps: any = Platform.OS === 'ios'
     ? { style: { flex: 1 }, behavior: 'padding', keyboardVerticalOffset: insets.top + TOP_BAR_HEIGHT }
@@ -259,6 +293,8 @@ export default function WorkspaceAIChatScreen() {
 
   const isEmpty = loaded && messages.length === 0;
 
+  const inputBottomPad = Math.max(insets.bottom, 10);
+
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
@@ -266,7 +302,7 @@ export default function WorkspaceAIChatScreen() {
       {/* Top bar */}
       <View style={[styles.topBarSafe, { paddingTop: insets.top }]}>
         <Animated.View entering={FadeIn.duration(300)} style={styles.topBar}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
+          <TouchableOpacity onPress={() => { Keyboard.dismiss(); router.back(); }} style={styles.backBtn} activeOpacity={0.7}>
             <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
           </TouchableOpacity>
 
@@ -294,20 +330,23 @@ export default function WorkspaceAIChatScreen() {
       </View>
 
       <Wrapper {...wrapperProps}>
-        {/* Privacy notice */}
-        <View style={styles.privacyBar}>
+        {/* Part 50.9.1: tapping the privacy bar dismisses the keyboard */}
+        <Pressable onPress={dismissKeyboard} style={styles.privacyBar} android_disableSound>
           <Ionicons name="lock-closed" size={11} color={COLORS.textMuted} />
           <Text style={styles.privacyText}>
             Only you can see this chat. Answers come from your team’s shared research.
           </Text>
-        </View>
+        </Pressable>
 
         {!loaded ? (
-          <View style={styles.center}>
+          <Pressable style={styles.center} onPress={dismissKeyboard} android_disableSound>
             <ActivityIndicator size="large" color={COLORS.primary} />
-          </View>
+          </Pressable>
         ) : isEmpty ? (
-          <EmptyState onPick={handleSuggestion} disabled={sending} />
+          // Part 50.9.1: empty area dismisses keyboard on background tap
+          <Pressable style={{ flex: 1 }} onPress={dismissKeyboard} android_disableSound>
+            <EmptyState onPick={handleSuggestion} disabled={sending} />
+          </Pressable>
         ) : (
           <FlatList
             ref={listRef}
@@ -316,14 +355,22 @@ export default function WorkspaceAIChatScreen() {
             renderItem={renderItem}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
+            // Part 50.9.1: taps on bubbles still register; taps on blank list
+            // space fall through and dismiss the keyboard. Works on Android.
             keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="interactive"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            onScrollBeginDrag={dismissKeyboard}
             onContentSizeChange={scrollToEnd}
+            // An empty footer Pressable gives blank space below the last message
+            // a reliable dismiss target on Android.
+            ListFooterComponent={
+              <Pressable onPress={dismissKeyboard} android_disableSound style={styles.listFooterTap} />
+            }
           />
         )}
 
         {/* Input bar */}
-        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+        <View style={[styles.inputBar, { paddingBottom: inputBottomPad }]}>
           <View style={styles.inputWrap}>
             <TextInput
               style={styles.input}
@@ -411,7 +458,8 @@ const styles = StyleSheet.create({
   privacyText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1 },
 
   // list
-  listContent: { padding: SPACING.md, paddingBottom: SPACING.lg, gap: 4 },
+  listContent:   { padding: SPACING.md, paddingBottom: SPACING.lg, gap: 4 },
+  listFooterTap: { height: 40, width: '100%' },
 
   // rows + bubbles
   row:         { flexDirection: 'row', marginVertical: 6, maxWidth: '100%' },
