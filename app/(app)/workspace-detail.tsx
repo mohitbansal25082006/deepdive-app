@@ -1,22 +1,18 @@
 // app/(app)/workspace-detail.tsx
-// Part 46 UPDATE — Full realtime workspace detail screen.
-// Part 50.5 UPDATE — Added useWorkspaceBotIndex for silent background bot indexing.
-// Part 50.9 UPDATE — Live unread badge on the Team Chat button.
-//
-//   Issue (Part 50.9): the chat button showed a `chatUnread` badge but it was
-//   wired to a local useState that was never populated, so it never appeared.
-//
-//   Fix: replaced the dead local state with useWorkspaceChatUnread(id, enabled),
-//   which subscribes to the Stream unread count for this workspace's channel and
-//   returns a live, reactive number. Every existing `chatUnread > 0` badge (top
-//   bar chat button, Feed CTA, Members entry) now renders the real unread count
-//   and updates in real time as messages arrive / are read. Opening chat clears
-//   it optimistically via clear(), and it re-syncs on focus.
+// Part 46 / 50.5 / 50.9 / 51 — see prior history.
+// Part 51 REVISION — Shared content now loads ONLY when the Shared tab is first
+//   opened (one-way latch `sharedTabActivated` → `enabled` on the four sharing
+//   hooks). This stops the workspace from paying for four shared-content RPC
+//   calls when you land on Feed. While the first fetch is in flight a spinner
+//   shows; after it resolves the sections render and reveal more on scroll
+//   (useLazyReveal). Realtime add/remove still updates the Shared tab live once
+//   it has been opened.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  RefreshControl, StyleSheet, Alert, Share,
+  RefreshControl, StyleSheet, Alert, Share, ActivityIndicator,
+  type NativeSyntheticEvent, type NativeScrollEvent,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }           from '@expo/vector-icons';
@@ -31,9 +27,8 @@ import { useWorkspaceSharing }       from '../../src/hooks/useWorkspaceSharing';
 import { usePodcastSharing }         from '../../src/hooks/usePodcastSharing';
 import { useDebateSharing }          from '../../src/hooks/useDebateSharing';
 import { useVoiceDebateSharing }     from '../../src/hooks/useVoiceDebateSharing';
-// Part 50.5: import background bot indexing hook
+import { useLazyReveal }             from '../../src/hooks/useLazyReveal';
 import { useWorkspaceBotIndex, triggerReportIndexing } from '../../src/hooks/useWorkspaceBotIndex';
-// Part 50.9: live unread badge for the Team Chat button
 import { useWorkspaceChatUnread } from '../../src/hooks/useWorkspaceChatUnread';
 import { WorkspaceReportCard }       from '../../src/components/workspace/WorkspaceReportCard';
 import { ActivityItem }              from '../../src/components/workspace/ActivityItem';
@@ -75,6 +70,8 @@ const TABS: { id: TabId; label: string; icon: keyof typeof Ionicons.glyphMap }[]
   { id: 'members',  label: 'Members',  icon: 'people-outline'       },
 ];
 
+const SCROLL_REVEAL_THRESHOLD = 360;
+
 function formatJoined(raw: string | undefined | null): string {
   if (!raw) return 'Unknown date';
   const d = new Date(raw);
@@ -99,15 +96,14 @@ export default function WorkspaceDetailScreen() {
   const {
     workspace, members, reports, userRole,
     isLoading, isRefreshing, error,
-    refresh, update, addReport,
+    refresh, update, addReport, removeReport,
     sharedContentVersion,
     isSelfRemoved,
     pinnedReportIds,
     updatePin,
+    reportsHasMore, reportsLoadingMore, loadMoreReports,
   } = useWorkspace(id ?? null);
 
-  // Part 50.5: Silent background indexing so @deepdive bot can answer about
-  // all reports shared in this workspace. Runs once per session, zero UI impact.
   useWorkspaceBotIndex(id);
 
   const { items: activities } = useActivityFeed(id ?? null);
@@ -117,20 +113,28 @@ export default function WorkspaceDetailScreen() {
     isActioning, approve: approveRequest, deny: denyRequest,
   } = usePendingAccessRequests(id ?? null, userRole);
 
-  const activeWorkspaceId  = isSelfRemoved ? null : (id ?? null);
-  const sharing            = useWorkspaceSharing(activeWorkspaceId, sharedContentVersion);
-  const podcastSharing     = usePodcastSharing(activeWorkspaceId, sharedContentVersion);
-  const debateSharing      = useDebateSharing(activeWorkspaceId, sharedContentVersion);
-  const voiceDebateSharing = useVoiceDebateSharing(activeWorkspaceId, sharedContentVersion);
+  const [activeTab,     setActiveTab]     = useState<TabId>('feed');
+
+  // ── Part 51: one-way latch — Shared content fetches only after first open ──
+  const [sharedTabActivated, setSharedTabActivated] = useState(false);
+  useEffect(() => {
+    if (activeTab === 'shared') setSharedTabActivated(true);
+  }, [activeTab]);
+
+  const activeWorkspaceId = isSelfRemoved ? null : (id ?? null);
+  const sharedEnabled     = sharedTabActivated && !isSelfRemoved;
+
+  const sharing            = useWorkspaceSharing(activeWorkspaceId, sharedContentVersion, sharedEnabled);
+  const podcastSharing     = usePodcastSharing(activeWorkspaceId, sharedContentVersion, sharedEnabled);
+  const debateSharing      = useDebateSharing(activeWorkspaceId, sharedContentVersion, sharedEnabled);
+  const voiceDebateSharing = useVoiceDebateSharing(activeWorkspaceId, sharedContentVersion, sharedEnabled);
 
   const isOwner  = userRole === 'owner';
   const isEditor = userRole === 'editor' || isOwner;
 
-  // Part 50.9: live unread badge — enabled only for owners/editors (chat access)
   const { unread: chatUnread, clear: clearChatUnread } =
     useWorkspaceChatUnread(id ?? null, isEditor);
 
-  const [activeTab,     setActiveTab]     = useState<TabId>('feed');
   const [activeFilter,  setActiveFilter]  = useState<SharedFilter>('all');
   const [showInvite,    setShowInvite]    = useState(false);
   const [showAddReport, setShowAddReport] = useState(false);
@@ -172,6 +176,12 @@ export default function WorkspaceDetailScreen() {
       setIsPinToggling(false);
     }
   };
+
+  // ── Feature 4: remove a shared report ──────────────────────────────────
+  const handleRemoveReport = useCallback(async (reportId: string) => {
+    const { error } = await removeReport(reportId);
+    if (error) Alert.alert('Error', error);
+  }, [removeReport]);
 
   // ── Navigation ─────────────────────────────────────────────────────────
   const openReport = useCallback((reportId: string) => {
@@ -289,11 +299,57 @@ export default function WorkspaceDetailScreen() {
   const voiceDebateCount   = voiceDebateSharing.voiceDebates.length;
   const totalSharedCount   = presentationCount + paperCount + podcastCount + debateCount + voiceDebateCount;
 
+  // Part 51 — all four first-loads resolved? (false until Shared opened + fetched)
+  const sharedReady =
+    sharing.hasLoaded && podcastSharing.hasLoaded &&
+    debateSharing.hasLoaded && voiceDebateSharing.hasLoaded;
+
   const showPresentations = activeFilter === 'all' || activeFilter === 'presentation';
   const showPapers        = activeFilter === 'all' || activeFilter === 'academic_paper';
   const showPodcasts      = activeFilter === 'all' || activeFilter === 'podcast';
   const showDebates       = activeFilter === 'all' || activeFilter === 'debate';
   const showVoiceDebates  = activeFilter === 'all' || activeFilter === 'voice_debate';
+
+  // ── Lazy-reveal windows ────────────────────────────────────────────────
+  const feedReveal  = useLazyReveal(sortedReports.length,                  { initial: 6, step: 6 });
+  const presReveal  = useLazyReveal(sharing.presentations.length,          { initial: 5, step: 5 });
+  const paperReveal = useLazyReveal(sharing.papers.length,                 { initial: 5, step: 5 });
+  const podReveal   = useLazyReveal(podcastSharing.podcasts.length,        { initial: 5, step: 5 });
+  const debReveal   = useLazyReveal(debateSharing.debates.length,          { initial: 5, step: 5 });
+  const vdReveal    = useLazyReveal(voiceDebateSharing.voiceDebates.length,{ initial: 5, step: 5 });
+
+  useEffect(() => {
+    feedReveal.reset(); presReveal.reset(); paperReveal.reset();
+    podReveal.reset();  debReveal.reset();  vdReveal.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, activeFilter]);
+
+  // ── Scroll-near-bottom handler ─────────────────────────────────────────
+  const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+    const distanceToBottom =
+      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    if (distanceToBottom > SCROLL_REVEAL_THRESHOLD) return;
+
+    if (activeTab === 'feed') {
+      if (feedReveal.hasMore) {
+        feedReveal.revealMore();
+      } else if (reportsHasMore && !reportsLoadingMore) {
+        loadMoreReports();
+      }
+    } else if (activeTab === 'shared') {
+      if (presReveal.hasMore)  presReveal.revealMore();
+      if (paperReveal.hasMore) paperReveal.revealMore();
+      if (podReveal.hasMore)   podReveal.revealMore();
+      if (debReveal.hasMore)   debReveal.revealMore();
+      if (vdReveal.hasMore)    vdReveal.revealMore();
+    }
+  }, [
+    activeTab, feedReveal, reportsHasMore, reportsLoadingMore, loadMoreReports,
+    presReveal, paperReveal, podReveal, debReveal, vdReveal,
+  ]);
+
+  const visibleReports = sortedReports.slice(0, feedReveal.visible);
 
   if (error) {
     return (
@@ -371,7 +427,7 @@ export default function WorkspaceDetailScreen() {
           </Animated.View>
         )}
 
-        {/* Stats strip */}
+        {/* Stats strip — Shared count populates after the tab is first opened */}
         {workspace && (
           <Animated.View entering={FadeIn.duration(500).delay(100)} style={styles.statsStrip}>
             <StatChip icon="people-outline"        value={members.length}    label="Members"  />
@@ -409,15 +465,20 @@ export default function WorkspaceDetailScreen() {
         <ScrollView
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
               onRefresh={() => {
                 refresh(true);
-                sharing.load();
-                podcastSharing.load();
-                debateSharing.load();
-                voiceDebateSharing.load();
+                // Part 51 — only refresh shared content if it's actually been opened
+                if (sharedTabActivated) {
+                  sharing.load();
+                  podcastSharing.load();
+                  debateSharing.load();
+                  voiceDebateSharing.load();
+                }
               }}
               tintColor={COLORS.primary}
             />
@@ -448,7 +509,7 @@ export default function WorkspaceDetailScreen() {
                   </View>
                 </TouchableOpacity>
               )}
-              {pinnedIds.size > 0 && sortedReports.some(r => r.isPinned) && (
+              {pinnedIds.size > 0 && visibleReports.some(r => r.isPinned) && (
                 <View style={styles.pinnedHeader}>
                   <Ionicons name="pin" size={13} color={COLORS.warning} />
                   <Text style={styles.pinnedHeaderText}>Pinned</Text>
@@ -467,30 +528,47 @@ export default function WorkspaceDetailScreen() {
                   )}
                 </View>
               ) : (
-                sortedReports.map((wr, i) => (
-                  <React.Fragment key={wr.id}>
-                    {i > 0 && sortedReports[i-1].isPinned && !wr.isPinned && (
-                      <View style={styles.sectionDivider}>
-                        <View style={styles.sectionDividerLine} />
-                        <Text style={styles.sectionDividerText}>All Reports</Text>
-                        <View style={styles.sectionDividerLine} />
-                      </View>
-                    )}
-                    <View style={styles.reportCardWrap}>
-                      <WorkspaceReportCard item={wr} index={i} onPress={() => openReport(wr.reportId)} />
-                      {isEditor && (
-                        <TouchableOpacity
-                          onPress={() => handleTogglePin(wr.reportId, wr.report?.title ?? '')}
-                          disabled={isPinToggling}
-                          style={[styles.pinBtn, wr.isPinned && styles.pinBtnActive]}
-                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                        >
-                          <Ionicons name={wr.isPinned ? 'pin' : 'pin-outline'} size={14} color={wr.isPinned ? COLORS.warning : COLORS.textMuted} />
-                        </TouchableOpacity>
+                <>
+                  {visibleReports.map((wr, i) => (
+                    <React.Fragment key={wr.id}>
+                      {i > 0 && visibleReports[i-1].isPinned && !wr.isPinned && (
+                        <View style={styles.sectionDivider}>
+                          <View style={styles.sectionDividerLine} />
+                          <Text style={styles.sectionDividerText}>All Reports</Text>
+                          <View style={styles.sectionDividerLine} />
+                        </View>
                       )}
+                      <View style={styles.reportCardWrap}>
+                        <WorkspaceReportCard
+                          item={wr}
+                          index={i}
+                          onPress={() => openReport(wr.reportId)}
+                          canRemove={isEditor}
+                          onRemove={() => handleRemoveReport(wr.reportId)}
+                        />
+                        {isEditor && (
+                          <TouchableOpacity
+                            onPress={() => handleTogglePin(wr.reportId, wr.report?.title ?? '')}
+                            disabled={isPinToggling}
+                            style={[styles.pinBtn, wr.isPinned && styles.pinBtnActive]}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                          >
+                            <Ionicons name={wr.isPinned ? 'pin' : 'pin-outline'} size={14} color={wr.isPinned ? COLORS.warning : COLORS.textMuted} />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </React.Fragment>
+                  ))}
+
+                  {(feedReveal.hasMore || reportsHasMore || reportsLoadingMore) && (
+                    <View style={styles.loadMoreRow}>
+                      {reportsLoadingMore
+                        ? <ActivityIndicator size="small" color={COLORS.primary} />
+                        : <Text style={styles.loadMoreText}>Scroll to load more…</Text>
+                      }
                     </View>
-                  </React.Fragment>
-                ))
+                  )}
+                </>
               )}
             </>
           )}
@@ -508,82 +586,97 @@ export default function WorkspaceDetailScreen() {
                 </View>
               </Animated.View>
 
-              {totalSharedCount > 0 && (
-                <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
-                  {([
-                    { id: 'all',           label: `All (${totalSharedCount})`,          icon: 'apps-outline'      },
-                    ...(presentationCount > 0 ? [{ id: 'presentation',  label: `Slides (${presentationCount})`,   icon: 'easel-outline'     }] : []),
-                    ...(paperCount        > 0 ? [{ id: 'academic_paper',label: `Papers (${paperCount})`,          icon: 'school-outline'    }] : []),
-                    ...(podcastCount      > 0 ? [{ id: 'podcast',       label: `Podcasts (${podcastCount})`,      icon: 'mic-outline'       }] : []),
-                    ...(debateCount       > 0 ? [{ id: 'debate',        label: `Debates (${debateCount})`,        icon: 'people-outline'    }] : []),
-                    ...(voiceDebateCount  > 0 ? [{ id: 'voice_debate',  label: `Voice (${voiceDebateCount})`,     icon: 'mic-circle-outline'}] : []),
-                  ] as { id: SharedFilter; label: string; icon: string }[]).map(chip => (
-                    <TouchableOpacity
-                      key={chip.id}
-                      onPress={() => setActiveFilter(chip.id)}
-                      style={[styles.filterChip, activeFilter === chip.id && styles.filterChipActive]}
-                      activeOpacity={0.75}
-                    >
-                      <Ionicons name={chip.icon as any} size={11} color={activeFilter === chip.id ? COLORS.primary : COLORS.textMuted} />
-                      <Text style={[styles.filterChipText, activeFilter === chip.id && styles.filterChipTextActive]}>{chip.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </Animated.View>
-              )}
-
-              {showPresentations && sharing.presentations.length > 0 && (
-                <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-                  <ContentSectionHeader label="Presentations"    count={sharing.presentations.length}       colors={['#6C63FF','#8B5CF6']} />
-                  {sharing.presentations.map((item, i) => (
-                    <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
-                  ))}
-                </Animated.View>
-              )}
-              {showPapers && sharing.papers.length > 0 && (
-                <Animated.View entering={FadeInDown.duration(400).delay(140)}>
-                  <ContentSectionHeader label="Academic Papers"  count={sharing.papers.length}              colors={['#10B981','#059669']} badgeColor={COLORS.success} />
-                  {sharing.papers.map((item, i) => (
-                    <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
-                  ))}
-                </Animated.View>
-              )}
-              {showPodcasts && podcastSharing.podcasts.length > 0 && (
-                <Animated.View entering={FadeInDown.duration(400).delay(180)}>
-                  <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length}     colors={['#FF6584','#FF8FA3']} badgeColor="#FF6584" />
-                  {podcastSharing.podcasts.map((podcast, i) => (
-                    <SharedPodcastCard key={podcast.id} item={podcast} index={i} userRole={userRole} onPlay={handleOpenSharedPodcast} onRemove={handleRemoveSharedPodcast} onDownloadMP3={handleDownloadPodcastMP3} onExportPDF={handleExportPodcastPDF} onCopyScript={handleCopyPodcastScript} />
-                  ))}
-                </Animated.View>
-              )}
-              {showDebates && debateSharing.debates.length > 0 && (
-                <Animated.View entering={FadeInDown.duration(400).delay(220)}>
-                  <ContentSectionHeader label="AI Debates"       count={debateSharing.debates.length}       colors={['#6C63FF','#9B59FF']} badgeColor={COLORS.primary} />
-                  {debateSharing.debates.map((debate, i) => (
-                    <SharedDebateCard key={debate.id} item={debate} index={i} userRole={userRole} onView={handleOpenSharedDebate} onRemove={handleRemoveSharedDebate} onExportPDF={handleExportDebatePDF} onCopyText={handleCopyDebateText} onShareText={handleShareDebateText} />
-                  ))}
-                </Animated.View>
-              )}
-              {showVoiceDebates && voiceDebateSharing.voiceDebates.length > 0 && (
-                <Animated.View entering={FadeInDown.duration(400).delay(260)}>
-                  <ContentSectionHeader label="Voice Debates"    count={voiceDebateSharing.voiceDebates.length} colors={['#8B5CF6','#A78BFA']} badgeColor="#8B5CF6" />
-                  {voiceDebateSharing.voiceDebates.map((svd, i) => (
-                    <SharedVoiceDebateCard key={svd.id} item={svd} index={i} userRole={userRole} onPlay={handleOpenSharedVoiceDebate} onRemove={handleRemoveSharedVoiceDebate} onCopyText={handleCopyVoiceDebateText} />
-                  ))}
-                </Animated.View>
-              )}
-
-              {totalSharedCount === 0 && !sharing.isLoading && !podcastSharing.isLoading && !debateSharing.isLoading && !voiceDebateSharing.isLoading && (
-                <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
-                  <View style={styles.sharedEmptyIcon}><Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} /></View>
-                  <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
-                  <Text style={styles.emptyDesc}>{isEditor ? 'Share presentations, papers, podcasts, debates, and voice debates from your content.' : 'No content has been shared to this workspace yet.'}</Text>
-                  {isEditor && (
-                    <View style={styles.sharedEmptyHint}>
-                      <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
-                      <Text style={styles.sharedEmptyHintText}>Open a report, debate, or podcast → tap the share icon to share here</Text>
-                    </View>
+              {/* Part 51 — first-open spinner until all four sections have fetched */}
+              {!sharedReady ? (
+                <View style={styles.sharedLoading}>
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                  <Text style={styles.sharedLoadingText}>Loading shared content…</Text>
+                </View>
+              ) : (
+                <>
+                  {totalSharedCount > 0 && (
+                    <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
+                      {([
+                        { id: 'all',           label: `All (${totalSharedCount})`,          icon: 'apps-outline'      },
+                        ...(presentationCount > 0 ? [{ id: 'presentation',  label: `Slides (${presentationCount})`,   icon: 'easel-outline'     }] : []),
+                        ...(paperCount        > 0 ? [{ id: 'academic_paper',label: `Papers (${paperCount})`,          icon: 'school-outline'    }] : []),
+                        ...(podcastCount      > 0 ? [{ id: 'podcast',       label: `Podcasts (${podcastCount})`,      icon: 'mic-outline'       }] : []),
+                        ...(debateCount       > 0 ? [{ id: 'debate',        label: `Debates (${debateCount})`,        icon: 'people-outline'    }] : []),
+                        ...(voiceDebateCount  > 0 ? [{ id: 'voice_debate',  label: `Voice (${voiceDebateCount})`,     icon: 'mic-circle-outline'}] : []),
+                      ] as { id: SharedFilter; label: string; icon: string }[]).map(chip => (
+                        <TouchableOpacity
+                          key={chip.id}
+                          onPress={() => setActiveFilter(chip.id)}
+                          style={[styles.filterChip, activeFilter === chip.id && styles.filterChipActive]}
+                          activeOpacity={0.75}
+                        >
+                          <Ionicons name={chip.icon as any} size={11} color={activeFilter === chip.id ? COLORS.primary : COLORS.textMuted} />
+                          <Text style={[styles.filterChipText, activeFilter === chip.id && styles.filterChipTextActive]}>{chip.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </Animated.View>
                   )}
-                </Animated.View>
+
+                  {showPresentations && sharing.presentations.length > 0 && (
+                    <Animated.View entering={FadeInDown.duration(400).delay(100)}>
+                      <ContentSectionHeader label="Presentations"    count={sharing.presentations.length}       colors={['#6C63FF','#8B5CF6']} />
+                      {sharing.presentations.slice(0, presReveal.visible).map((item, i) => (
+                        <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
+                      ))}
+                      {presReveal.hasMore && <SectionMoreHint />}
+                    </Animated.View>
+                  )}
+                  {showPapers && sharing.papers.length > 0 && (
+                    <Animated.View entering={FadeInDown.duration(400).delay(140)}>
+                      <ContentSectionHeader label="Academic Papers"  count={sharing.papers.length}              colors={['#10B981','#059669']} badgeColor={COLORS.success} />
+                      {sharing.papers.slice(0, paperReveal.visible).map((item, i) => (
+                        <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
+                      ))}
+                      {paperReveal.hasMore && <SectionMoreHint />}
+                    </Animated.View>
+                  )}
+                  {showPodcasts && podcastSharing.podcasts.length > 0 && (
+                    <Animated.View entering={FadeInDown.duration(400).delay(180)}>
+                      <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length}     colors={['#FF6584','#FF8FA3']} badgeColor="#FF6584" />
+                      {podcastSharing.podcasts.slice(0, podReveal.visible).map((podcast, i) => (
+                        <SharedPodcastCard key={podcast.id} item={podcast} index={i} userRole={userRole} onPlay={handleOpenSharedPodcast} onRemove={handleRemoveSharedPodcast} onDownloadMP3={handleDownloadPodcastMP3} onExportPDF={handleExportPodcastPDF} onCopyScript={handleCopyPodcastScript} />
+                      ))}
+                      {podReveal.hasMore && <SectionMoreHint />}
+                    </Animated.View>
+                  )}
+                  {showDebates && debateSharing.debates.length > 0 && (
+                    <Animated.View entering={FadeInDown.duration(400).delay(220)}>
+                      <ContentSectionHeader label="AI Debates"       count={debateSharing.debates.length}       colors={['#6C63FF','#9B59FF']} badgeColor={COLORS.primary} />
+                      {debateSharing.debates.slice(0, debReveal.visible).map((debate, i) => (
+                        <SharedDebateCard key={debate.id} item={debate} index={i} userRole={userRole} onView={handleOpenSharedDebate} onRemove={handleRemoveSharedDebate} onExportPDF={handleExportDebatePDF} onCopyText={handleCopyDebateText} onShareText={handleShareDebateText} />
+                      ))}
+                      {debReveal.hasMore && <SectionMoreHint />}
+                    </Animated.View>
+                  )}
+                  {showVoiceDebates && voiceDebateSharing.voiceDebates.length > 0 && (
+                    <Animated.View entering={FadeInDown.duration(400).delay(260)}>
+                      <ContentSectionHeader label="Voice Debates"    count={voiceDebateSharing.voiceDebates.length} colors={['#8B5CF6','#A78BFA']} badgeColor="#8B5CF6" />
+                      {voiceDebateSharing.voiceDebates.slice(0, vdReveal.visible).map((svd, i) => (
+                        <SharedVoiceDebateCard key={svd.id} item={svd} index={i} userRole={userRole} onPlay={handleOpenSharedVoiceDebate} onRemove={handleRemoveSharedVoiceDebate} onCopyText={handleCopyVoiceDebateText} />
+                      ))}
+                      {vdReveal.hasMore && <SectionMoreHint />}
+                    </Animated.View>
+                  )}
+
+                  {totalSharedCount === 0 && (
+                    <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
+                      <View style={styles.sharedEmptyIcon}><Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} /></View>
+                      <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
+                      <Text style={styles.emptyDesc}>{isEditor ? 'Share presentations, papers, podcasts, debates, and voice debates from your content.' : 'No content has been shared to this workspace yet.'}</Text>
+                      {isEditor && (
+                        <View style={styles.sharedEmptyHint}>
+                          <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
+                          <Text style={styles.sharedEmptyHintText}>Open a report, debate, or podcast → tap the share icon to share here</Text>
+                        </View>
+                      )}
+                    </Animated.View>
+                  )}
+                </>
               )}
             </>
           )}
@@ -659,8 +752,6 @@ export default function WorkspaceDetailScreen() {
             onClose={() => setShowAddReport(false)}
             onAdded={reportId => {
               addReport?.(reportId);
-              // Part 50.5: trigger background bot indexing for the newly added report
-              // fire-and-forget — never blocks the UI
               triggerReportIndexing(id, reportId).catch(() => {});
             }}
           />
@@ -684,6 +775,15 @@ export default function WorkspaceDetailScreen() {
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+function SectionMoreHint() {
+  return (
+    <View style={styles.sectionMoreHint}>
+      <Ionicons name="chevron-down" size={12} color={COLORS.textMuted} />
+      <Text style={styles.sectionMoreHintText}>Scroll to load more</Text>
+    </View>
+  );
+}
 
 function ContentSectionHeader({ label, count, colors, badgeColor = COLORS.primary }: {
   label: string; count: number; colors: [string, string]; badgeColor?: string;
@@ -767,6 +867,13 @@ const styles = StyleSheet.create({
   reportCardWrap: { position: 'relative' },
   pinBtn:         { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, zIndex: 10 },
   pinBtnActive:   { backgroundColor: `${COLORS.warning}15`, borderColor: `${COLORS.warning}40` },
+  loadMoreRow:      { alignItems: 'center', justifyContent: 'center', paddingVertical: SPACING.md, gap: 6 },
+  loadMoreText:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  sectionMoreHint:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: SPACING.sm },
+  sectionMoreHintText: { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
+  // Part 51 — shared tab first-load spinner
+  sharedLoading:     { alignItems: 'center', justifyContent: 'center', paddingTop: 50, gap: 10 },
+  sharedLoadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600' },
   sharedHeader:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
   sharedHeaderIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   sharedHeaderTitle:{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' },

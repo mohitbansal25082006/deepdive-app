@@ -1,9 +1,15 @@
 // src/components/workspace/WorkspaceReportCard.tsx
 // Report card in the workspace shared feed.
+//
+// Part 51 UPDATE (Feature 4): added an optional "Remove" (trash) button in the
+// footer, shown only when `canRemove` is true (editors/owners). Tapping it
+// confirms via Alert, then calls `onRemove()`. The button lives in the footer
+// (not the top corner) so it never collides with the pin button that
+// workspace-detail overlays at the top-right of the card.
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet,
+  View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,12 +25,17 @@ const DEPTH_COLOR: Record<string, string> = {
 };
 
 interface Props {
-  item:    WorkspaceReport;
-  onPress: () => void;
-  index?:  number;
+  item:      WorkspaceReport;
+  onPress:   () => void;
+  index?:    number;
+  // Part 51 — Feature 4: remove shared report (editors/owners only)
+  canRemove?: boolean;
+  onRemove?:  () => Promise<void> | void;
 }
 
-export function WorkspaceReportCard({ item, onPress, index = 0 }: Props) {
+export function WorkspaceReportCard({
+  item, onPress, index = 0, canRemove = false, onRemove,
+}: Props) {
   const r       = item.report;
   const profile = item.addedByProfile;
   const depth   = r?.depth ?? 'deep';
@@ -32,6 +43,32 @@ export function WorkspaceReportCard({ item, onPress, index = 0 }: Props) {
 
   const reliability = r?.reliabilityScore ?? 0;
   const relColor    = reliability >= 7 ? COLORS.success : reliability >= 5 ? COLORS.warning : COLORS.error;
+
+  const [isRemoving, setIsRemoving] = useState(false);
+
+  const handleRemove = () => {
+    if (!onRemove || isRemoving) return;
+    Alert.alert(
+      'Remove Report',
+      `Remove "${(r?.title ?? r?.query ?? 'this report').slice(0, 60)}" from this workspace? ` +
+      `It won't be deleted — just unshared from the team.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setIsRemoving(true);
+            try {
+              await onRemove();
+            } finally {
+              setIsRemoving(false);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(index * 50)}>
@@ -85,7 +122,7 @@ export function WorkspaceReportCard({ item, onPress, index = 0 }: Props) {
               </Text>
             </View>
 
-            {/* Stats */}
+            {/* Stats + remove */}
             <View style={styles.stats}>
               {(r?.sourcesCount ?? 0) > 0 && (
                 <View style={styles.stat}>
@@ -98,6 +135,21 @@ export function WorkspaceReportCard({ item, onPress, index = 0 }: Props) {
                   <Ionicons name="shield-checkmark-outline" size={11} color={relColor} />
                   <Text style={[styles.statText, { color: relColor }]}>{reliability}/10</Text>
                 </View>
+              )}
+
+              {/* Part 51 — Remove (editors/owners only) */}
+              {canRemove && onRemove && (
+                <TouchableOpacity
+                  onPress={handleRemove}
+                  disabled={isRemoving}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.removeBtn}
+                >
+                  {isRemoving
+                    ? <ActivityIndicator size="small" color={COLORS.error} />
+                    : <Ionicons name="trash-outline" size={12} color={COLORS.error} />
+                  }
+                </TouchableOpacity>
               )}
             </View>
           </View>
@@ -133,4 +185,11 @@ const styles = StyleSheet.create({
     backgroundColor: `${COLORS.textMuted}10`,
   },
   statText:    { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  // Part 51 — remove button
+  removeBtn:   {
+    width: 26, height: 26, borderRadius: 8,
+    backgroundColor: `${COLORS.error}12`,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: `${COLORS.error}25`,
+  },
 });

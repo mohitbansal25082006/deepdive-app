@@ -1,17 +1,23 @@
 // src/hooks/useWorkspaceRealtime.ts
 // Part 46 Fix 2 v3 — Uses realtime.send() triggers with correct payload structure.
+// Part 51 UPDATE — Added the dedicated "workspace_shared:{id}" Broadcast channel.
 //
-// KEY FIXES from v2:
-//   1. supabase.realtime.setAuth() before subscribing — required for private channels.
-//   2. realtime.send() payload arrives as payload.payload (not payload.payload.record).
-//      broadcast_changes() uses payload.payload.record / payload.payload.old_record.
-//      We switched to realtime.send() with simple JSON so payload.payload is flat.
-//   3. Pin channel uses event "pin_change" (matches trigger), reads
-//      payload.payload.report_id and payload.payload.pinned directly.
-//   4. Kick channel uses event "workspace_kick" (matches trigger).
-//   5. Role channel uses event "role_change" (matches trigger).
-//   6. Unique instanceId per hook prevents channel name collisions between
-//      useWorkspace and useWorkspaceMembers instances (preserved from v2).
+//   WHY (Feature 2): postgres_changes on the five shared_* tables can be flaky
+//   for recipients under RLS, and DELETE events drop columns. Part 51's SQL
+//   adds SECURITY DEFINER triggers that fire realtime.send() on a single
+//   private channel "workspace_shared:{workspace_id}" with a unified payload
+//   { workspace_id, content_type, content_id, action }. This channel is the
+//   PRIMARY mechanism for instant add/remove updates across all members'
+//   devices. The existing postgres_changes subscriptions remain as a
+//   belt-and-suspenders fallback.
+//
+//   New callbacks:
+//     onSharedBroadcast(contentType, contentId, action)
+//       contentType ∈ report | presentation | academic_paper
+//                     | podcast | debate | voice_debate
+//       action      ∈ added | removed
+//
+// All Part 46 behaviour preserved exactly.
 
 import { useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
@@ -19,6 +25,12 @@ import { useAuth } from '../context/AuthContext';
 import { WorkspaceRole } from '../types';
 
 let _instanceCounter = 0;
+
+export type SharedBroadcastContentType =
+  | 'report' | 'presentation' | 'academic_paper'
+  | 'podcast' | 'debate' | 'voice_debate';
+
+export type SharedBroadcastAction = 'added' | 'removed';
 
 export interface WorkspaceRealtimeCallbacks {
   onMemberInsert?:        (userId: string, role: WorkspaceRole) => void;
@@ -31,6 +43,12 @@ export interface WorkspaceRealtimeCallbacks {
   onPinChanged?:          (reportId: string, pinned: boolean) => void;
   onSharedContentInsert?: (contentType: string, contentId: string) => void;
   onSharedContentDelete?: (contentType: string, contentId: string) => void;
+  // Part 51 — unified shared-content broadcast (primary realtime path)
+  onSharedBroadcast?:     (
+    contentType: SharedBroadcastContentType,
+    contentId:   string,
+    action:      SharedBroadcastAction,
+  ) => void;
   onActivityInsert?:      (activityId: string) => void;
   onCommentInsert?:       (commentId: string, userId: string) => void;
   onCommentUpdate?:       (commentId: string) => void;
@@ -45,8 +63,6 @@ export function useWorkspaceRealtime(
 ) {
   const { user } = useAuth();
   const cbRef      = useRef(callbacks);
-  // Unique per-instance ID — prevents channel name collisions when
-  // useWorkspace and useWorkspaceMembers both mount with the same workspaceId
   const instanceId = useRef(`i${++_instanceCounter}`).current;
 
   useEffect(() => { cbRef.current = callbacks; }, [callbacks]);
@@ -54,21 +70,17 @@ export function useWorkspaceRealtime(
   const setupChannels = useCallback(() => {
     if (!workspaceId || !user) return () => {};
 
-    // Required for all private Broadcast channels
     supabase.realtime.setAuth();
 
     const pfx = `p46:${instanceId}:ws:${workspaceId}`;
     const channels: ReturnType<typeof supabase.channel>[] = [];
 
     // ── 0a. PRIVATE BROADCAST: kick signal (remove OR block) ──────────────
-    // Trigger broadcast_member_removed() → event "workspace_kick"
-    // Trigger broadcast_member_blocked() → same event, same channel
-    // Payload (from realtime.send): { type, workspace_id, user_id }
     const kickChannel = supabase
       .channel(`workspace_member_removed:${user.id}`, { config: { private: true } })
       .on('broadcast', { event: 'workspace_kick' }, (payload) => {
-        const data          = (payload.payload ?? {}) as Record<string, unknown>;
-        const kickedWsId    = data.workspace_id as string | undefined;
+        const data       = (payload.payload ?? {}) as Record<string, unknown>;
+        const kickedWsId = data.workspace_id as string | undefined;
         if (kickedWsId === workspaceId) {
           cbRef.current.onSelfRemoved?.();
         }
@@ -77,8 +89,6 @@ export function useWorkspaceRealtime(
     channels.push(kickChannel);
 
     // ── 0b. PRIVATE BROADCAST: pin changes ────────────────────────────────
-    // Trigger broadcast_pin_change() → event "pin_change"
-    // Payload (from realtime.send): { workspace_id, report_id, pinned }
     const pinChannel = supabase
       .channel(`workspace_pins:${workspaceId}`, { config: { private: true } })
       .on('broadcast', { event: 'pin_change' }, (payload) => {
@@ -93,8 +103,6 @@ export function useWorkspaceRealtime(
     channels.push(pinChannel);
 
     // ── 0c. PRIVATE BROADCAST: role changes ───────────────────────────────
-    // Trigger broadcast_role_change() → event "role_change"
-    // Payload (from realtime.send): { user_id, workspace_id, role }
     const roleChannel = supabase
       .channel(`workspace_members:${workspaceId}`, { config: { private: true } })
       .on('broadcast', { event: 'role_change' }, (payload) => {
@@ -108,6 +116,25 @@ export function useWorkspaceRealtime(
       .subscribe();
     channels.push(roleChannel);
 
+    // ── 0d. PART 51 PRIVATE BROADCAST: shared content add/remove ──────────
+    // Channel: "workspace_shared:{workspace_id}"   Event: "shared_change"
+    // Payload: { workspace_id, content_type, content_id, action }
+    // Fired by SECURITY DEFINER triggers on all five shared_* tables AND
+    // workspace_reports — reliable instant delivery to every member.
+    const sharedChannel = supabase
+      .channel(`workspace_shared:${workspaceId}`, { config: { private: true } })
+      .on('broadcast', { event: 'shared_change' }, (payload) => {
+        const data        = (payload.payload ?? {}) as Record<string, unknown>;
+        const contentType = data.content_type as SharedBroadcastContentType | undefined;
+        const contentId   = data.content_id   as string | undefined;
+        const action      = data.action       as SharedBroadcastAction | undefined;
+        if (contentType && contentId && action) {
+          cbRef.current.onSharedBroadcast?.(contentType, contentId, action);
+        }
+      })
+      .subscribe();
+    channels.push(sharedChannel);
+
     // ── 1. workspace_members Postgres Changes (INSERT + DELETE fallback) ──
     const membersChannel = supabase
       .channel(`${pfx}:members`)
@@ -119,7 +146,6 @@ export function useWorkspaceRealtime(
           cbRef.current.onMemberInsert?.(row.user_id as string, row.role as WorkspaceRole);
         })
       .on('postgres_changes',
-        // UPDATE fallback — Broadcast trigger is primary, this is belt-and-suspenders
         { event: 'UPDATE', schema: 'public', table: 'workspace_members',
           filter: `workspace_id=eq.${workspaceId}` },
         (payload) => {
@@ -127,8 +153,6 @@ export function useWorkspaceRealtime(
           cbRef.current.onMemberUpdate?.(row.user_id as string, row.role as WorkspaceRole);
         })
       .on('postgres_changes',
-        // DELETE fallback — payload.old may only have {id} with RLS, but
-        // the Broadcast kick channel above is the reliable mechanism
         { event: 'DELETE', schema: 'public', table: 'workspace_members',
           filter: `workspace_id=eq.${workspaceId}` },
         (payload) => {

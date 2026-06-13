@@ -1,31 +1,15 @@
 // src/hooks/useWorkspace.ts
 // Part 46 UPDATE — Full realtime wiring via useWorkspaceRealtime.
+// Part 51 UPDATE —
+//   Feature 1 (fast open): feed loads a SMALL first page (8 rows) and exposes
+//     loadMoreReports() + reportsHasMore so workspace-detail can paginate the
+//     feed instead of pulling 20+ heavy report objects up front.
+//   Feature 2 (realtime shared): onSharedBroadcast bumps sharedContentVersion
+//     on add AND remove for every content type — the four sharing hooks reload
+//     instantly on all members' devices. The legacy onSharedContentInsert/
+//     Delete still bump the version too (fallback).
 //
-// What's new vs Part 10/11:
-//
-//   MEMBERS (realtime):
-//     • INSERT  → add member card without full reload (profile fetched separately)
-//     • UPDATE  → update role pill instantly on all screens
-//     • DELETE  → remove member card instantly; if current user → trigger onSelfRemoved
-//     • BLOCK INSERT → same as DELETE for the blocked user
-//
-//   REPORTS FEED (realtime):
-//     • INSERT → reload feed (need full report object from RPC, not just workspace_reports row)
-//     • DELETE → remove card instantly by workspaceReportId
-//     • UPDATE → update isPinned on the matching card instantly
-//
-//   SHARED CONTENT (realtime):
-//     • INSERT → reload the relevant sharing hook (presentation/paper/podcast/debate)
-//     • DELETE → remove from local state instantly
-//
-//   ACTIVITY (realtime):
-//     • INSERT → reload activity feed (actorProfile needs a profile join)
-//
-//   USER ROLE (self):
-//     • When the current user's own role changes, userRole state updates instantly
-//       so all permission gates (isEditor, isOwner) flip without refresh.
-//
-// All Part 10/11/12/13 actions (update, remove, addReport, etc.) unchanged.
+// All Part 10/11/12/13/46 actions unchanged.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
@@ -43,6 +27,9 @@ import { useAuth } from '../context/AuthContext';
 import { useWorkspaceRealtime } from './useWorkspaceRealtime';
 import { logSharedContentAdded } from '../services/activityService';
 
+// Part 51 — small first page so the screen opens fast even with many reports
+const FEED_PAGE_SIZE = 8;
+
 export function useWorkspace(workspaceId: string | null) {
   const { user } = useAuth();
 
@@ -56,14 +43,14 @@ export function useWorkspace(workspaceId: string | null) {
     error:        null,
   });
 
-  // Part 46 Fix 2: pinnedReportIds managed here so onPinChanged can update it
-  // directly from the Broadcast trigger without going through reports[].
   const [pinnedReportIds, setPinnedReportIds] = useState<Set<string>>(new Set());
 
-  // Track whether we've been removed from the workspace (to stop reloading)
+  // Part 51 — feed pagination state
+  const [reportsHasMore,    setReportsHasMore]    = useState(true);
+  const [reportsLoadingMore, setReportsLoadingMore] = useState(false);
+  const feedOffsetRef = useRef(0);
+
   const removedRef = useRef(false);
-  // Part 46 FIX: expose this so workspace-detail can navigate away immediately
-  // without waiting for workspace===null (which onSelfRemoved never sets)
   const [isSelfRemoved, setIsSelfRemoved] = useState(false);
 
   // ── Load workspace ──────────────────────────────────────────────────────
@@ -81,7 +68,8 @@ export function useWorkspace(workspaceId: string | null) {
       const [wsResult, membersResult, feedResult] = await Promise.all([
         supabase.from('workspaces').select('*').eq('id', workspaceId).single(),
         getWorkspaceMembersWithProfiles(workspaceId),
-        getWorkspaceFeed(workspaceId, 20, 0),
+        // Part 51 — first page only
+        getWorkspaceFeed(workspaceId, FEED_PAGE_SIZE, 0),
       ]);
 
       if (wsResult.error) throw wsResult.error;
@@ -91,10 +79,11 @@ export function useWorkspace(workspaceId: string | null) {
 
       const feedData = feedResult.data;
 
-      // Part 46 Fix 2: Load pinned report IDs directly from pinned_workspace_reports.
-      // The feed mapper in workspaceService.ts does NOT set isPinned on WorkspaceReport,
-      // so reading feedData.filter(r => r.isPinned) always returns empty. We query the
-      // pinned_workspace_reports table directly which is the authoritative source.
+      // Part 51 — reset pagination cursors for the fresh load
+      feedOffsetRef.current = feedData.length;
+      setReportsHasMore(feedData.length === FEED_PAGE_SIZE);
+
+      // Load pinned report IDs directly from pinned_workspace_reports
       try {
         const { data: pinnedRows } = await supabase
           .from('pinned_workspace_reports')
@@ -105,7 +94,6 @@ export function useWorkspace(workspaceId: string | null) {
         );
         setPinnedReportIds(initialPinned);
       } catch {
-        // Non-fatal — pins just show as unpinned until Broadcast arrives
         setPinnedReportIds(new Set());
       }
 
@@ -128,10 +116,34 @@ export function useWorkspace(workspaceId: string | null) {
     }
   }, [workspaceId]);
 
-  // ── Helper: reload only the feed ───────────────────────────────────────
+  // ── Part 51: load next page of feed reports ────────────────────────────
+  const loadMoreReports = useCallback(async () => {
+    if (!workspaceId || removedRef.current) return;
+    if (reportsLoadingMore || !reportsHasMore) return;
+
+    setReportsLoadingMore(true);
+    try {
+      const { data } = await getWorkspaceFeed(workspaceId, FEED_PAGE_SIZE, feedOffsetRef.current);
+      setState(s => {
+        const seen = new Set(s.reports.map(r => r.id));
+        const fresh = data.filter(r => !seen.has(r.id));
+        return { ...s, reports: [...s.reports, ...fresh] };
+      });
+      feedOffsetRef.current += data.length;
+      setReportsHasMore(data.length === FEED_PAGE_SIZE);
+    } catch {
+      // non-fatal — user can pull-to-refresh
+    } finally {
+      setReportsLoadingMore(false);
+    }
+  }, [workspaceId, reportsLoadingMore, reportsHasMore]);
+
+  // ── Helper: reload only the feed (first page) ──────────────────────────
   const reloadFeed = useCallback(async () => {
     if (!workspaceId || removedRef.current) return;
-    const { data } = await getWorkspaceFeed(workspaceId, 20, 0);
+    const { data } = await getWorkspaceFeed(workspaceId, FEED_PAGE_SIZE, 0);
+    feedOffsetRef.current = data.length;
+    setReportsHasMore(data.length === FEED_PAGE_SIZE);
     setState(s => ({ ...s, reports: data }));
   }, [workspaceId]);
 
@@ -153,21 +165,73 @@ export function useWorkspace(workspaceId: string | null) {
     load();
   }, [workspaceId, load]);
 
+  // ── Part 51: bump shared version + log activity helper ──────────────────
+  const bumpSharedVersion = useCallback(() => {
+    setState(s => ({
+      ...s,
+      _sharedContentVersion: ((s as any)._sharedContentVersion ?? 0) + 1,
+    } as any));
+  }, []);
+
+  const logSharedAdded = useCallback((contentType: string, contentId: string) => {
+    if (!workspaceId || !user) return;
+    void (async () => {
+      try {
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        if (!currentUser) return;
+
+        const { data: ws } = await supabase
+          .from('workspaces').select('name').eq('id', workspaceId).single();
+        const workspaceName = (ws as any)?.name ?? '';
+
+        const { data: profile } = await supabase
+          .from('profiles').select('full_name, username').eq('id', currentUser.id).single();
+        const sharerName = (profile as any)?.full_name ?? (profile as any)?.username ?? 'A member';
+
+        let contentTitle = 'Untitled';
+        if (contentType === 'presentation') {
+          const { data: p } = await supabase.from('presentations').select('title').eq('id', contentId).single();
+          contentTitle = (p as any)?.title ?? 'Untitled Presentation';
+        } else if (contentType === 'academic_paper') {
+          const { data: p } = await supabase.from('academic_papers').select('title').eq('id', contentId).single();
+          contentTitle = (p as any)?.title ?? 'Untitled Paper';
+        } else if (contentType === 'podcast') {
+          const { data: p } = await supabase.from('shared_podcasts').select('title').eq('podcast_id', contentId).eq('workspace_id', workspaceId).single();
+          contentTitle = (p as any)?.title ?? 'Untitled Podcast';
+        } else if (contentType === 'debate') {
+          const { data: p } = await supabase.from('shared_debates').select('topic').eq('debate_id', contentId).eq('workspace_id', workspaceId).single();
+          contentTitle = (p as any)?.topic ?? 'Untitled Debate';
+        } else if (contentType === 'voice_debate') {
+          const { data: p } = await supabase.from('shared_voice_debates').select('topic').eq('voice_debate_id', contentId).eq('workspace_id', workspaceId).single();
+          contentTitle = (p as any)?.topic ?? 'Untitled Voice Debate';
+        } else {
+          return; // report adds are logged via report_added activity already
+        }
+
+        await logSharedContentAdded({
+          workspaceId,
+          workspaceName,
+          contentType: contentType as any,
+          contentId,
+          contentTitle,
+          sharerName,
+        });
+      } catch {
+        // non-fatal
+      }
+    })();
+  }, [workspaceId, user]);
+
   // ── Part 46: Centralised realtime subscriptions ─────────────────────────
   useWorkspaceRealtime(workspaceId, {
     // ── Members ──────────────────────────────────────────────────────────
-    onMemberInsert: (_userId, _role) => {
-      // Reload members to get the full profile object (avatar, name etc.)
-      reloadMembers();
-    },
+    onMemberInsert: () => { reloadMembers(); },
 
     onMemberUpdate: (updatedUserId, newRole) => {
       setState(s => {
-        // Update the role in the members list instantly
         const updatedMembers = s.members.map(m =>
           m.userId === updatedUserId ? { ...m, role: newRole } : m,
         );
-        // If it's the current user's role that changed, update userRole too
         const newUserRole = updatedUserId === user?.id ? newRole : s.userRole;
         return { ...s, members: updatedMembers, userRole: newUserRole };
       });
@@ -181,21 +245,15 @@ export function useWorkspace(workspaceId: string | null) {
     },
 
     onSelfRemoved: () => {
-      // Current user was removed or blocked — mark as removed so we
-      // don't fire further loads; the screen will navigate away.
       removedRef.current = true;
       setIsSelfRemoved(true);
       setState(s => ({ ...s, userRole: null, members: [], reports: [] }));
     },
 
     // ── Reports feed ──────────────────────────────────────────────────────
-    onReportInsert: (_wrId, _reportId) => {
-      // Need full report object from RPC — do a silent feed reload
-      reloadFeed();
-    },
+    onReportInsert: () => { reloadFeed(); },
 
-    onReportDelete: (wrId, _reportId) => {
-      // Remove the card instantly by workspace_reports.id
+    onReportDelete: (wrId) => {
       setState(s => ({
         ...s,
         reports: s.reports.filter(r => r.id !== wrId),
@@ -203,21 +261,13 @@ export function useWorkspace(workspaceId: string | null) {
     },
 
     onReportUpdate: (wrId, _reportId, isPinned) => {
-      // Fired for metadata changes on workspace_reports.
-      // Pin changes are now handled by onPinChanged (Broadcast trigger).
       if (isPinned === undefined) return;
       setState(s => ({
         ...s,
-        reports: s.reports.map(r =>
-          r.id === wrId ? { ...r, isPinned } : r,
-        ),
+        reports: s.reports.map(r => (r.id === wrId ? { ...r, isPinned } : r)),
       }));
     },
 
-    // Part 46 Fix 2: Pin realtime via Broadcast trigger on pinned_workspace_reports.
-    // Fires instantly on ALL members' devices when any member pins/unpins a report.
-    // Updates BOTH reports[].isPinned AND the dedicated pinnedReportIds Set so
-    // workspace-detail can read from either without any sync useEffect delay.
     onPinChanged: (reportId, pinned) => {
       setState(s => ({
         ...s,
@@ -233,86 +283,36 @@ export function useWorkspace(workspaceId: string | null) {
       });
     },
 
-    // ── Shared content ────────────────────────────────────────────────────
-    // We don't store shared content in this hook's state — useWorkspaceSharing,
-    // usePodcastSharing, useDebateSharing each manage their own lists.
-    // Signal them to reload via a lightweight approach: we expose a
-    // sharedContentVersion counter that those hooks can watch.
-    onSharedContentInsert: (contentType, contentId) => {
-      // Bump version for ALL content types including voice_debate (channel 6b)
-      // This triggers auto-reload in all four sharing hooks via sharedContentVersion
-      setState(s => ({
-        ...s,
-        _sharedContentVersion: ((s as any)._sharedContentVersion ?? 0) + 1,
-      } as any));
-
-      // Part 46: Log activity for ALL shared content types.
-      // We run this async without awaiting — non-blocking.
-      // Fetches content title from the relevant table then logs.
-      if (!workspaceId || !user) return;
-      void (async () => {
-        try {
-          const { data: { user: currentUser } } = await supabase.auth.getUser();
-          if (!currentUser) return;
-
-          // Get workspace name
-          const { data: ws } = await supabase
-            .from('workspaces').select('name').eq('id', workspaceId).single();
-          const workspaceName = (ws as any)?.name ?? '';
-
-          // Get sharer profile name
-          const { data: profile } = await supabase
-            .from('profiles').select('full_name, username').eq('id', currentUser.id).single();
-          const sharerName = (profile as any)?.full_name ?? (profile as any)?.username ?? 'A member';
-
-          // Look up content title based on type
-          let contentTitle = 'Untitled';
-          if (contentType === 'presentation') {
-            const { data: p } = await supabase
-              .from('presentations').select('title').eq('id', contentId).single();
-            contentTitle = (p as any)?.title ?? 'Untitled Presentation';
-          } else if (contentType === 'academic_paper') {
-            const { data: p } = await supabase
-              .from('academic_papers').select('title').eq('id', contentId).single();
-            contentTitle = (p as any)?.title ?? 'Untitled Paper';
-          } else if (contentType === 'podcast') {
-            const { data: p } = await supabase
-              .from('shared_podcasts').select('title').eq('podcast_id', contentId).eq('workspace_id', workspaceId).single();
-            contentTitle = (p as any)?.title ?? 'Untitled Podcast';
-          } else if (contentType === 'debate') {
-            const { data: p } = await supabase
-              .from('shared_debates').select('topic').eq('debate_id', contentId).eq('workspace_id', workspaceId).single();
-            contentTitle = (p as any)?.topic ?? 'Untitled Debate';
-          } else if (contentType === 'voice_debate') {
-            const { data: p } = await supabase
-              .from('shared_voice_debates').select('topic').eq('voice_debate_id', contentId).eq('workspace_id', workspaceId).single();
-            contentTitle = (p as any)?.topic ?? 'Untitled Voice Debate';
-          }
-
-          await logSharedContentAdded({
-            workspaceId,
-            workspaceName,
-            contentType: contentType as any,
-            contentId,
-            contentTitle,
-            sharerName,
-          });
-        } catch {
-          // Non-fatal — activity log failure should never break the share action
+    // ── Part 51: unified shared broadcast (PRIMARY realtime path) ─────────
+    onSharedBroadcast: (contentType, contentId, action) => {
+      if (contentType === 'report') {
+        // Report add/remove also affects the Feed tab — refresh first page.
+        // (Remove is already handled instantly by postgres_changes DELETE for
+        //  the actor; this catches the recipient side reliably.)
+        if (action === 'removed') {
+          setState(s => ({
+            ...s,
+            reports: s.reports.filter(r => r.reportId !== contentId),
+          }));
+        } else {
+          reloadFeed();
         }
-      })();
+        return;
+      }
+      // All non-report shared content → bump version so sharing hooks reload
+      bumpSharedVersion();
+      if (action === 'added') logSharedAdded(contentType, contentId);
     },
 
-    onSharedContentDelete: (_contentType, _contentId) => {
-      setState(s => ({
-        ...s,
-        _sharedContentVersion: ((s as any)._sharedContentVersion ?? 0) + 1,
-      } as any));
+    // ── Legacy postgres_changes fallback (still bump version) ─────────────
+    onSharedContentInsert: (contentType, contentId) => {
+      bumpSharedVersion();
+      logSharedAdded(contentType, contentId);
     },
 
-    // ── Activity ──────────────────────────────────────────────────────────
-    // useActivityFeed has its own subscribeToActivity channel.
-    // No action needed here — it self-manages.
+    onSharedContentDelete: () => {
+      bumpSharedVersion();
+    },
   });
 
   // ── Actions ─────────────────────────────────────────────────────────────
@@ -334,22 +334,27 @@ export function useWorkspace(workspaceId: string | null) {
   const addReport = useCallback(async (reportId: string) => {
     if (!workspaceId) return { error: 'No workspace' };
     const result = await addReportToWorkspace(workspaceId, reportId);
-    // Realtime INSERT on workspace_reports will trigger reloadFeed()
     return result;
   }, [workspaceId]);
 
+  // Part 51 — Feature 4: remove a shared report from the workspace.
+  // Optimistically removes the card; realtime DELETE confirms on other devices.
   const removeReport = useCallback(async (reportId: string) => {
     if (!workspaceId) return { error: 'No workspace' };
+    setState(s => ({
+      ...s,
+      reports: s.reports.filter(r => r.reportId !== reportId),
+    }));
     const result = await removeReportFromWorkspace(workspaceId, reportId);
-    // Realtime DELETE on workspace_reports will remove the card instantly
+    if (result.error) {
+      // rollback by reloading the feed if the delete failed
+      reloadFeed();
+    }
     return result;
-  }, [workspaceId]);
+  }, [workspaceId, reloadFeed]);
 
-  // Expose sharedContentVersion so workspace-detail.tsx can react to it
   const sharedContentVersion = (state as any)._sharedContentVersion ?? 0;
 
-  // Part 46 Fix 2: optimistic pin update called by workspace-detail after toggle
-  // so the pin icon flips immediately on the toggling device without waiting for Broadcast
   const updatePin = useCallback((reportId: string, pinned: boolean) => {
     setPinnedReportIds(prev => {
       const next = new Set(prev);
@@ -362,9 +367,13 @@ export function useWorkspace(workspaceId: string | null) {
   return {
     ...state,
     sharedContentVersion,
-    isSelfRemoved,     // Part 46 FIX: workspace-detail watches this to navigate away
-    pinnedReportIds,   // Part 46 Fix 2: direct Set<string> updated by Broadcast trigger
-    updatePin,         // Part 46 Fix 2: optimistic pin update for toggling device
+    isSelfRemoved,
+    pinnedReportIds,
+    updatePin,
+    // Part 51 — feed pagination
+    reportsHasMore,
+    reportsLoadingMore,
+    loadMoreReports,
     refresh:      (silent?: boolean) => load(silent),
     update,
     remove,

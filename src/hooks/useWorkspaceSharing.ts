@@ -1,16 +1,13 @@
 // src/hooks/useWorkspaceSharing.ts
-// Part 46 UPDATE — Auto-reloads when realtime shared content events fire.
+// Part 46 — Auto-reloads when realtime shared content events fire.
+// Part 51 UPDATE — Deferred loading:
+//   • New `enabled` param (default true for backward compat). When false the
+//     hook does NOT fetch on mount and ignores version bumps, so the Shared
+//     tab's network call only happens once the user actually opens that tab.
+//   • New `hasLoaded` flag so the screen can show a spinner until the first
+//     fetch resolves, then show content / empty state.
 //
-// The central useWorkspaceRealtime hook (via useWorkspace) bumps
-// sharedContentVersion on INSERT/DELETE for shared_workspace_content.
-// This hook accepts that version as an optional prop and reloads
-// whenever it changes — giving instant Shared tab updates.
-//
-// Pass sharedContentVersion from useWorkspace into this hook in
-// workspace-detail.tsx:
-//   const sharing = useWorkspaceSharing(id, sharedContentVersion);
-//
-// All Part 14 FIX behaviour (server reload after share/unshare) preserved.
+// All Part 14/46 behaviour preserved.
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
@@ -27,8 +24,9 @@ import {
 
 export function useWorkspaceSharing(
   workspaceId: string | null,
-  // Part 46: optional realtime version counter — reload when it changes
   sharedContentVersion?: number,
+  // Part 51 — defer loading until enabled (Shared tab opened)
+  enabled: boolean = true,
 ) {
   const [state, setState] = useState<WorkspaceSharingState>({
     items:     [],
@@ -36,15 +34,13 @@ export function useWorkspaceSharing(
     isSharing: false,
     error:     null,
   });
-  // Track previous version to detect changes
+  const [hasLoaded, setHasLoaded] = useState(false);
   const prevVersionRef = useRef<number | undefined>(sharedContentVersion);
+  const notMemberRef   = useRef(false);
 
   const patch = useCallback((partial: Partial<WorkspaceSharingState>) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
-
-  // Part 46 FIX: stop retrying when user is confirmed not-a-member
-  const notMemberRef = useRef(false);
 
   // ── Load all shared content ────────────────────────────────────────────
   const load = useCallback(async (contentType?: SharedContentType) => {
@@ -56,6 +52,7 @@ export function useWorkspaceSharing(
     if (notMember) {
       notMemberRef.current = true;
       patch({ items: [], isLoading: false, error: null });
+      setHasLoaded(true);
       return;
     }
 
@@ -65,19 +62,27 @@ export function useWorkspaceSharing(
     } else {
       patch({ items: data, isLoading: false, error: null });
     }
+    setHasLoaded(true);
   }, [workspaceId, patch]);
 
-  // ── Auto-load on mount and workspaceId change ──────────────────────────
+  // ── Reset on workspace change ──────────────────────────────────────────
   useEffect(() => {
-    if (workspaceId) {
+    notMemberRef.current = false;
+    setHasLoaded(false);
+  }, [workspaceId]);
+
+  // ── Part 51: load only when enabled ────────────────────────────────────
+  useEffect(() => {
+    if (workspaceId && enabled) {
       load();
       prevVersionRef.current = sharedContentVersion;
     }
-  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Part 46: Reload when sharedContentVersion bumps ───────────────────
+  // ── Reload when sharedContentVersion bumps (only while enabled) ─────────
   useEffect(() => {
     if (
+      enabled &&
       sharedContentVersion !== undefined &&
       sharedContentVersion !== prevVersionRef.current &&
       workspaceId
@@ -85,7 +90,7 @@ export function useWorkspaceSharing(
       prevVersionRef.current = sharedContentVersion;
       load();
     }
-  }, [sharedContentVersion, workspaceId, load]);
+  }, [sharedContentVersion, workspaceId, load, enabled]);
 
   // ── Share presentation ─────────────────────────────────────────────────
   const sharePresentation = useCallback(async (
@@ -137,7 +142,6 @@ export function useWorkspaceSharing(
     const { error } = await removeSharedContent(workspaceId, contentType, contentId);
 
     if (!error) {
-      // Optimistic removal — realtime DELETE will confirm
       setState(prev => ({
         ...prev,
         items: prev.items.filter(
@@ -159,6 +163,7 @@ export function useWorkspaceSharing(
     isLoading:     state.isLoading,
     isSharing:     state.isSharing,
     error:         state.error,
+    hasLoaded,     // Part 51
     load,
     sharePresentation,
     sharePaper,

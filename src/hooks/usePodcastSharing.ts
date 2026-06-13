@@ -1,11 +1,9 @@
 // src/hooks/usePodcastSharing.ts
-// Part 46 UPDATE — Auto-reloads when realtime shared podcast events fire.
+// Part 46 — Auto-reloads when realtime shared podcast events fire.
+// Part 51 UPDATE — Deferred loading via `enabled` (default true) + `hasLoaded`.
+//   Podcast section only fetches once the Shared tab is opened.
 //
-// Accepts optional sharedContentVersion from useWorkspace.
-// When it changes, load() is called automatically so the Shared tab
-// podcast section updates without any manual refresh.
-//
-// All Part 15 behaviour preserved exactly.
+// All Part 15 behaviour preserved.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -18,8 +16,8 @@ import { SharedPodcast, SharedPodcastState } from '../types';
 
 export function usePodcastSharing(
   workspaceId: string | null,
-  // Part 46: optional realtime version counter
   sharedContentVersion?: number,
+  enabled: boolean = true,
 ) {
   const [state, setState] = useState<SharedPodcastState>({
     podcasts:  [],
@@ -27,26 +25,25 @@ export function usePodcastSharing(
     isSharing: false,
     error:     null,
   });
+  const [hasLoaded, setHasLoaded] = useState(false);
   const prevVersionRef = useRef<number | undefined>(sharedContentVersion);
+  const notMemberRef   = useRef(false);
 
   const patch = useCallback((partial: Partial<SharedPodcastState>) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
 
   // ── Load shared podcasts ───────────────────────────────────────────────
-  // Part 46 FIX: stop retrying when user is confirmed not-a-member
-  const notMemberRef = useRef(false);
-
   const load = useCallback(async () => {
     if (!workspaceId || notMemberRef.current) return;
     patch({ isLoading: true, error: null });
 
     const { data, error, notMember } = await getWorkspaceSharedPodcasts(workspaceId);
 
-    // Part 46 FIX: service now returns notMember:true for membership errors
     if (notMember) {
       notMemberRef.current = true;
       patch({ podcasts: [], isLoading: false, error: null });
+      setHasLoaded(true);
       return;
     }
 
@@ -55,19 +52,27 @@ export function usePodcastSharing(
     } else {
       patch({ podcasts: data, isLoading: false, error: null });
     }
+    setHasLoaded(true);
   }, [workspaceId, patch]);
 
-  // ── Auto-load on mount ─────────────────────────────────────────────────
+  // ── Reset on workspace change ──────────────────────────────────────────
   useEffect(() => {
-    if (workspaceId) {
+    notMemberRef.current = false;
+    setHasLoaded(false);
+  }, [workspaceId]);
+
+  // ── Part 51: load only when enabled ────────────────────────────────────
+  useEffect(() => {
+    if (workspaceId && enabled) {
       load();
       prevVersionRef.current = sharedContentVersion;
     }
-  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Part 46: Reload when sharedContentVersion bumps ───────────────────
+  // ── Reload when sharedContentVersion bumps (only while enabled) ─────────
   useEffect(() => {
     if (
+      enabled &&
       sharedContentVersion !== undefined &&
       sharedContentVersion !== prevVersionRef.current &&
       workspaceId
@@ -75,7 +80,7 @@ export function usePodcastSharing(
       prevVersionRef.current = sharedContentVersion;
       load();
     }
-  }, [sharedContentVersion, workspaceId, load]);
+  }, [sharedContentVersion, workspaceId, load, enabled]);
 
   // ── Share a podcast ────────────────────────────────────────────────────
   const share = useCallback(async (
@@ -116,6 +121,7 @@ export function usePodcastSharing(
     isLoading:    state.isLoading,
     isSharing:    state.isSharing,
     error:        state.error,
+    hasLoaded,    // Part 51
     totalMinutes,
     load,
     share,

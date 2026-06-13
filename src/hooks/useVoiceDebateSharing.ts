@@ -1,11 +1,9 @@
 // src/hooks/useVoiceDebateSharing.ts
-// Part 46 UPDATE — Auto-reloads when realtime shared voice debate events fire.
+// Part 46 — Auto-reloads when realtime shared voice debate events fire.
+// Part 51 UPDATE — Deferred loading via `enabled` (default true) + `hasLoaded`.
+//   Voice Debates section only fetches once the Shared tab is opened.
 //
-// Accepts optional sharedContentVersion from useWorkspace.
-// When it changes, load() is called automatically so the Shared tab
-// Voice Debates section updates without any manual refresh.
-//
-// All Part 44 behaviour preserved exactly.
+// All Part 44 behaviour preserved.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -25,8 +23,8 @@ interface VoiceDebateSharingState {
 
 export function useVoiceDebateSharing(
   workspaceId: string | null,
-  // Part 46: optional realtime version counter
   sharedContentVersion?: number,
+  enabled: boolean = true,
 ) {
   const [state, setState] = useState<VoiceDebateSharingState>({
     voiceDebates: [],
@@ -34,26 +32,25 @@ export function useVoiceDebateSharing(
     isSharing:    false,
     error:        null,
   });
+  const [hasLoaded, setHasLoaded] = useState(false);
   const prevVersionRef = useRef<number | undefined>(sharedContentVersion);
+  const notMemberRef   = useRef(false);
 
   const patch = useCallback((partial: Partial<VoiceDebateSharingState>) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
 
   // ── Load shared voice debates ──────────────────────────────────────────
-  // Part 46 FIX: stop retrying when user is confirmed not-a-member
-  const notMemberRef = useRef(false);
-
   const load = useCallback(async () => {
     if (!workspaceId || notMemberRef.current) return;
     patch({ isLoading: true, error: null });
 
     const { data, error, notMember } = await getWorkspaceSharedVoiceDebates(workspaceId);
 
-    // Part 46 FIX: service now returns notMember:true for membership errors
     if (notMember) {
       notMemberRef.current = true;
       patch({ voiceDebates: [], isLoading: false, error: null });
+      setHasLoaded(true);
       return;
     }
 
@@ -62,19 +59,27 @@ export function useVoiceDebateSharing(
     } else {
       patch({ voiceDebates: data, isLoading: false, error: null });
     }
+    setHasLoaded(true);
   }, [workspaceId, patch]);
 
-  // ── Auto-load on mount ─────────────────────────────────────────────────
+  // ── Reset on workspace change ──────────────────────────────────────────
   useEffect(() => {
-    if (workspaceId) {
+    notMemberRef.current = false;
+    setHasLoaded(false);
+  }, [workspaceId]);
+
+  // ── Part 51: load only when enabled ────────────────────────────────────
+  useEffect(() => {
+    if (workspaceId && enabled) {
       load();
       prevVersionRef.current = sharedContentVersion;
     }
-  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Part 46: Reload when sharedContentVersion bumps ───────────────────
+  // ── Reload when sharedContentVersion bumps (only while enabled) ─────────
   useEffect(() => {
     if (
+      enabled &&
       sharedContentVersion !== undefined &&
       sharedContentVersion !== prevVersionRef.current &&
       workspaceId
@@ -82,7 +87,7 @@ export function useVoiceDebateSharing(
       prevVersionRef.current = sharedContentVersion;
       load();
     }
-  }, [sharedContentVersion, workspaceId, load]);
+  }, [sharedContentVersion, workspaceId, load, enabled]);
 
   // ── Share a voice debate ───────────────────────────────────────────────
   const share = useCallback(async (
@@ -117,6 +122,7 @@ export function useVoiceDebateSharing(
     isLoading:    state.isLoading,
     isSharing:    state.isSharing,
     error:        state.error,
+    hasLoaded,    // Part 51
     load,
     share,
     remove,

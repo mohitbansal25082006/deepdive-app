@@ -1,25 +1,16 @@
 // app/(app)/workspace-shared-voice-debate-player.tsx
 // Part 44 FINAL REDESIGN — 1:1 match with voice-debate-player.tsx
+// Part 51 UPDATE (Feature 3): cross-device playback fix.
 //
-// Identical layout structure to voice-debate-player.tsx:
-//   [Header]
-//   [ScrollView: topic + AgentAvatarStrip + WaveformVisualizer + turn card + CollapsibleArc]
-//   [Controls panel PINNED at bottom — always visible]
-//   [TranscriptSheet overlay]
-//   [ShareSheet overlay]
+//   PROBLEM: When A shared a voice debate, B couldn't play it. The stored
+//   audio_storage_urls are *public* URLs into the private `podcast-audio`
+//   bucket, which stream unreliably for non-owners.
 //
-// Workspace additions vs normal player:
-//   • Loads from shared_voice_debates via getSharedVoiceDebateById RPC
-//   • Attribution banner in header centre ("Shared by X")
-//   • View-only badge instead of segment badge
-//   • "Streaming from cloud" indicator
-//   • All exports identical to normal player (PDF, MP3, Copy)
-//   • No re-generation option
-//   • View tracking on mount
-//
-// All sub-components (Orb, AgentAvatarStrip, SegmentProgressBar, RateSelector,
-// CollapsibleArc) are identical to voice-debate-player.tsx — only their data
-// source differs (SharedVoiceDebate → synthetic VoiceDebate object).
+//   FIX: On load we call resolveVoiceDebatePlayableUrls() which mints fresh
+//   SIGNED URLs (valid 6h) for every segment via createSignedUrls — these
+//   stream reliably for any authenticated workspace member. The synthetic
+//   VoiceDebate is built from the resolved URLs, and `hasAudio` now uses the
+//   resolved set so the play button enables correctly for B.
 
 import React, {
   useEffect, useState, useCallback, useMemo, useRef,
@@ -63,6 +54,11 @@ import {
   trackVoiceDebateView,
   trackVoiceDebateDownload,
 }                                         from '../../src/services/voiceDebateSharingService';
+// Part 51 — signed-URL resolver for cross-device playback
+import {
+  resolveVoiceDebatePlayableUrls,
+  hasPlayableAudio,
+}                                         from '../../src/lib/voiceDebatePlayback';
 import type { SharedVoiceDebate }         from '../../src/types/voiceDebateSharing';
 import type { VoiceDebate }               from '../../src/types/voiceDebate';
 import type { DebateAgentRole }           from '../../src/types';
@@ -77,11 +73,13 @@ function asSegmentKey(value: unknown): SegmentKey {
 }
 
 // ─── Build synthetic VoiceDebate from SharedVoiceDebate ───────────────────────
-// Patches each turn's audioPath with the corresponding cloud URL so
-// VoiceDebateEngine Tier-3 resolution streams from Supabase Storage.
+// Part 51: accepts the RESOLVED (signed) cloud URLs so playback works on any device.
 
-function buildSyntheticVoiceDebate(svd: SharedVoiceDebate): VoiceDebate {
-  const cloudUrls = svd.audioStorageUrls ?? [];
+function buildSyntheticVoiceDebate(
+  svd: SharedVoiceDebate,
+  resolvedUrls: string[],
+): VoiceDebate {
+  const cloudUrls = resolvedUrls.length > 0 ? resolvedUrls : (svd.audioStorageUrls ?? []);
   const patchedScript = {
     ...svd.script,
     turns: ((svd.script as any)?.turns ?? []).map((turn: any, i: number) => ({
@@ -427,18 +425,18 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [svd,                setSvd]                = useState<SharedVoiceDebate | null>(null);
   const [voiceDebate,        setVoiceDebate]        = useState<VoiceDebate | null>(null);
+  const [resolvedUrls,       setResolvedUrls]       = useState<string[]>([]);
   const [isLoading,          setIsLoading]          = useState(true);
   const [loadError,          setLoadError]          = useState<string | null>(null);
   const [showTranscript,     setShowTranscript]     = useState(false);
   const [showShare,          setShowShare]          = useState(false);
   const [shareBusy,          setShareBusy]          = useState<string | null>(null);
   const [shareCopied,        setShareCopied]        = useState(false);
-  // MP3: tracks download progress (0–total) while segments download
   const [mp3Progress,        setMp3Progress]        = useState<{ done: number; total: number } | null>(null);
 
   const hasInitialisedRef = useRef(false);
 
-  // ── Load shared voice debate ───────────────────────────────────────────────
+  // ── Load shared voice debate + resolve signed playable URLs ───────────────
   useEffect(() => {
     if (!workspaceId || !sharedId) {
       setLoadError('Missing workspace or shared debate ID.');
@@ -451,7 +449,16 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
         if (error) throw new Error(error);
         if (!data)  throw new Error('Voice debate not found or not shared to this workspace.');
         setSvd(data);
-        setVoiceDebate(buildSyntheticVoiceDebate(data));
+
+        // Part 51 — resolve fresh signed URLs so playback works on any device
+        const playable = await resolveVoiceDebatePlayableUrls({
+          storedUrls:    data.audioStorageUrls,
+          voiceDebateId: data.voiceDebateId,
+          totalTurns:    data.totalTurns,
+        });
+        setResolvedUrls(playable);
+        setVoiceDebate(buildSyntheticVoiceDebate(data, playable));
+
         trackVoiceDebateView(sharedId);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : 'Failed to load voice debate.');
@@ -470,10 +477,10 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
     stopPlayback, formatTime,
   } = useVoiceDebatePlayer(voiceDebate);
 
-  // ── Smart initialisation: reattach vs fresh start ─────────────────────────
+  // Part 51 — hasAudio now considers the RESOLVED urls (any segment signed = playable)
   const hasAudio =
-    svd?.audioAllUploaded === true &&
-    (svd?.audioStorageUrls?.filter(Boolean).length ?? 0) > 0;
+    hasPlayableAudio(svd?.audioAllUploaded, svd?.audioStorageUrls) ||
+    resolvedUrls.filter(Boolean).length > 0;
 
   useEffect(() => {
     if (!voiceDebate || isLoading || hasInitialisedRef.current) return;
@@ -504,8 +511,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
   const turns          = (voiceDebate?.script as any)?.turns ?? [];
 
   // ── Export: PDF ───────────────────────────────────────────────────────────
-  // Delegates to exportVoiceDebateAsPDF from voiceDebateExport.ts — identical
-  // output to the normal player (full styled HTML with segment groups + cover).
   const handleSharePDF = async () => {
     if (!voiceDebate || shareBusy) return;
     setShareBusy('pdf');
@@ -520,15 +525,12 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
   };
 
   // ── Export: MP3 ───────────────────────────────────────────────────────────
-  // Delegates to exportVoiceDebateAsMP3FromCloud from voiceDebateExport.ts.
-  // Downloads cloud segments via voiceDebateAudioCache → concatenates base64
-  // → shares as single .mp3. Progress shown in the share sheet while downloading.
   const handleShareMP3 = async () => {
     if (!voiceDebate || !svd || shareBusy) return;
 
-    const cloudUrls = (svd.audioStorageUrls ?? []).filter(
-      (u): u is string => typeof u === 'string' && u.startsWith('https://')
-    );
+    // Part 51 — prefer resolved signed URLs (work for non-owners)
+    const cloudUrls = (resolvedUrls.length > 0 ? resolvedUrls : (svd.audioStorageUrls ?? []))
+      .filter((u): u is string => typeof u === 'string' && u.startsWith('https://'));
 
     if (cloudUrls.length === 0) {
       Alert.alert('No Audio', 'No cloud audio is available yet. Try again once the upload completes.');
@@ -554,8 +556,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
   };
 
   // ── Export: Copy ──────────────────────────────────────────────────────────
-  // Uses copyVoiceDebateTranscript from voiceDebateExport.ts — same format as
-  // normal player (segment headers + argument reference threading).
   const handleCopy = async () => {
     if (!voiceDebate || shareBusy) return;
     setShareBusy('copy');
@@ -571,7 +571,7 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
   };
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Loading state — identical dark bg to normal player
+  // Loading state
   // ─────────────────────────────────────────────────────────────────────────
 
   if (isLoading) {
@@ -602,7 +602,7 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Main render — 1:1 layout match with voice-debate-player.tsx
+  // Main render
   // ─────────────────────────────────────────────────────────────────────────
 
   const headerSegKey = asSegmentKey(playerState.currentSegmentType);
@@ -611,25 +611,21 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
     <View style={{ flex: 1, backgroundColor: '#06060F' }}>
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      {/* Gradient background */}
       <LinearGradient
         colors={bgColors}
         start={{ x: 0.3, y: 0 }} end={{ x: 0.7, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
 
-      {/* Ambient orbs */}
       <Orb x={SCREEN_W * 0.15} y={SCREEN_H * 0.20} size={160} color={accentColor} duration={3400} />
       <Orb x={SCREEN_W * 0.82} y={SCREEN_H * 0.35} size={130} color={accentColor} duration={4200} />
 
       {/* ── HEADER ──────────────────────────────────────────────────────── */}
       <View style={[s.header, { paddingTop: topInset }]}>
-        {/* Back */}
         <TouchableOpacity onPress={() => router.back()} style={s.headerBtn}>
           <Ionicons name="chevron-down" size={22} color="rgba(255,255,255,0.9)" />
         </TouchableOpacity>
 
-        {/* Centre: shared-by label + view-only badge */}
         <View style={s.headerCentre}>
           <View style={s.viewOnlyBadge}>
             <Ionicons name="eye-outline" size={9} color="rgba(255,255,255,0.55)" />
@@ -642,7 +638,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           ) : null}
         </View>
 
-        {/* Right actions */}
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <TouchableOpacity
             onPress={() => setShowTranscript(true)}
@@ -663,7 +658,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Topic */}
         <Text style={{
           color: 'rgba(255,255,255,0.32)', fontSize: 11, textAlign: 'center',
           marginBottom: 16, fontWeight: '500', paddingHorizontal: 16,
@@ -671,10 +665,8 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           {voiceDebate.topic}
         </Text>
 
-        {/* Agent avatar strip */}
         <AgentAvatarStrip voiceDebate={voiceDebate} activeSpeaker={activeSpeaker} />
 
-        {/* No-audio notice — shows instead of waveform when still uploading */}
         {!hasAudio ? (
           <View style={{
             flexDirection: 'row', alignItems: 'center', gap: 7,
@@ -689,7 +681,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
             </Text>
           </View>
         ) : (
-          /* Waveform */
           <View style={{ marginTop: 18, marginBottom: 6, alignItems: 'center' }}>
             <WaveformVisualizer
               isPlaying={playerState.isPlaying}
@@ -701,7 +692,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           </View>
         )}
 
-        {/* Cloud streaming badge */}
         {hasAudio && (
           <View style={{ flexDirection: 'row', justifyContent: 'center', marginBottom: 4 }}>
             <View style={{
@@ -718,7 +708,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           </View>
         )}
 
-        {/* Turn indicator */}
         <Text style={{
           color: 'rgba(255,255,255,0.36)', fontSize: 11, fontWeight: '600',
           textAlign: 'center', marginBottom: 12,
@@ -727,7 +716,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           {displayMinutes > 0 ? ` · ~${displayMinutes} min` : ''}
         </Text>
 
-        {/* Current speaker card — full text, no numberOfLines limit */}
         {currentTurn && (
           <Animated.View
             key={playerState.currentTurnIndex}
@@ -757,7 +745,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           </Animated.View>
         )}
 
-        {/* Collapsible confidence arc */}
         {turns.length > 0 && (
           <CollapsibleArc voiceDebate={voiceDebate} accentColor={accentColor} />
         )}
@@ -767,7 +754,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
       <View style={[s.controlsPanel, { paddingBottom: bottomInset + 12 }]}>
         <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.07)', marginBottom: 14 }} />
 
-        {/* Segment progress bar */}
         <View style={{ paddingHorizontal: 20, marginBottom: 4 }}>
           <SegmentProgressBar
             voiceDebate={voiceDebate}
@@ -780,7 +766,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           />
         </View>
 
-        {/* Transport controls */}
         <View style={{
           flexDirection: 'row', alignItems: 'center',
           justifyContent: 'center', gap: 32,
@@ -828,7 +813,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Rate selector */}
         <View style={{ paddingHorizontal: 20 }}>
           <RateSelector
             current={playerState.playbackRate}
@@ -867,7 +851,6 @@ export default function WorkspaceSharedVoiceDebatePlayerScreen() {
                   borderTopWidth:      1, borderTopColor: 'rgba(255,255,255,0.09)',
                 }}
               >
-                {/* Handle */}
                 <View style={{
                   width: 38, height: 4, borderRadius: 2,
                   backgroundColor: 'rgba(255,255,255,0.13)',
@@ -1022,7 +1005,6 @@ const s = StyleSheet.create({
     fontSize:  10,
     fontWeight:'500',
   },
-  // Controls panel pinned at bottom — same as voice-debate-player.tsx
   controlsPanel: {
     backgroundColor: 'rgba(6, 6, 15, 0.92)',
     borderTopWidth:  1,
