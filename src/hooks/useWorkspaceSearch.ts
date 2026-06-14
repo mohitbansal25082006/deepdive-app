@@ -1,36 +1,23 @@
 // src/hooks/useWorkspaceSearch.ts
-// Part 46 — Full workspace search: reports, comments, members,
-//   AND all shared content (presentations, papers, podcasts, debates).
-//
-// The search_workspace RPC was extended in schema_part46.sql to return
-// all content types. This hook handles the result mapping for all types.
-//
-// Part 11 original only covered: report | comment | member
-// Part 46 adds:  presentation | academic_paper | podcast | debate
-//
-// Navigation:
-//   report        → onOpenReport(reportId)
-//   comment       → onOpenReport(reportId)  [scrolls to comment]
-//   member        → onOpenMemberProfile(miniProfile)
-//   presentation  → onOpenSharedContent('presentation', contentId)
-//   academic_paper→ onOpenSharedContent('academic_paper', contentId)
-//   podcast       → onOpenSharedContent('podcast', contentId)
-//   debate        → onOpenSharedContent('debate', contentId)
+// Part 46 — Full workspace search across 7 content types.
+// Part 52 (update) — Reliability fix:
+//   The redesigned modal showed "Search didn't work" because the
+//   search_workspace RPC could throw 'not_member' (and similar) which the hook
+//   surfaced as an error state. Two changes here make search robust regardless
+//   of SQL deployment state:
+//     1. A `not_member` / membership-style error is now treated as ZERO
+//        results (empty state) rather than an error.
+//     2. Empty/whitespace queries never hit the RPC.
+//   The accompanying SQL patch (schema_part52_search_patch.sql) also makes the
+//   RPC return empty instead of raising — this is the belt to that suspenders.
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-// Note: we intentionally do NOT import WorkspaceSearchResult here because
-// ExtendedWorkspaceSearchResult redefines the `type` field to a wider union,
-// which TypeScript forbids via `extends`. We define it standalone instead.
 
 export type ExtendedSearchResultType =
   | 'report' | 'comment' | 'member'
-  | 'presentation' | 'academic_paper' | 'podcast' | 'debate';
+  | 'presentation' | 'academic_paper' | 'podcast' | 'debate' | 'voice_debate';
 
-// Standalone — mirrors WorkspaceSearchResult but with a wider `type` union.
-// Cannot use `extends WorkspaceSearchResult` because that type's `type` field
-// is the narrower union 'report' | 'comment' | 'member' and TypeScript (ts2430)
-// forbids widening a property type in an extending interface.
 export interface ExtendedWorkspaceSearchResult {
   type:       ExtendedSearchResultType;
   id:         string;
@@ -39,7 +26,7 @@ export interface ExtendedWorkspaceSearchResult {
   reportId?:  string;
   avatarUrl?: string;
   createdAt?: string;
-  contentId?: string; // for shared content items (presentation/paper/podcast/debate)
+  contentId?: string;
 }
 
 export interface ExtendedWorkspaceSearchState {
@@ -47,6 +34,17 @@ export interface ExtendedWorkspaceSearchState {
   results:     ExtendedWorkspaceSearchResult[];
   isSearching: boolean;
   error:       string | null;
+}
+
+// Errors that should be treated as "no results", not a hard failure.
+function isBenignSearchError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('not_member') ||
+    m.includes('not a member') ||
+    m.includes('access denied') ||
+    m.includes('permission')
+  );
 }
 
 export function useWorkspaceSearch(workspaceId: string | null) {
@@ -57,8 +55,7 @@ export function useWorkspaceSearch(workspaceId: string | null) {
     error:      null,
   });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Track mounted state to avoid setState on unmounted
-  const mountedRef = useRef(true);
+  const mountedRef  = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -67,7 +64,10 @@ export function useWorkspaceSearch(workspaceId: string | null) {
 
   // ── Execute search ─────────────────────────────────────────────────────────
   const executeSearch = useCallback(async (query: string) => {
-    if (!workspaceId || !query.trim()) return;
+    if (!workspaceId || !query.trim()) {
+      if (mountedRef.current) setState(s => ({ ...s, results: [], isSearching: false, error: null }));
+      return;
+    }
 
     try {
       const { data, error } = await supabase.rpc('search_workspace', {
@@ -76,35 +76,48 @@ export function useWorkspaceSearch(workspaceId: string | null) {
         p_limit:        30,
       });
 
-      if (error) throw error;
+      if (error) {
+        // Log the FULL error so the real cause is visible in the console
+        // (e.g. PGRST203 overload conflict, PGRST202 missing function, or a
+        // genuine SQL error). This is what to read if search still misbehaves.
+        console.error('[useWorkspaceSearch] RPC error:', {
+          code:    (error as any).code,
+          message: error.message,
+          details: (error as any).details,
+          hint:    (error as any).hint,
+        });
+
+        // Membership / permission errors → empty results, not a failure.
+        if (isBenignSearchError(error.message)) {
+          if (mountedRef.current) {
+            setState(s => ({ ...s, results: [], isSearching: false, error: null }));
+          }
+          return;
+        }
+        throw error;
+      }
+
       if (!mountedRef.current) return;
 
       const rows = (data as Record<string, unknown>[]) ?? [];
-
       const results: ExtendedWorkspaceSearchResult[] = rows.map((r) => {
         const type = r.result_type as ExtendedSearchResultType;
         return {
           type,
-          id:         r.result_id as string,
-          title:      (r.title as string) ?? '',
-          subtitle:   (r.subtitle as string) ?? '',
-          reportId:   (r.report_id as string) ?? undefined,
-          avatarUrl:  (r.avatar_url as string) ?? undefined,
-          createdAt:  (r.created_at as string) ?? undefined,
-          // For shared content items, contentId == result_id
-          contentId:  ['presentation', 'academic_paper', 'podcast', 'debate'].includes(type)
+          id:        r.result_id as string,
+          title:     (r.title as string) ?? '',
+          subtitle:  (r.subtitle as string) ?? '',
+          reportId:  (r.report_id as string) ?? undefined,
+          avatarUrl: (r.avatar_url as string) ?? undefined,
+          createdAt: (r.created_at as string) ?? undefined,
+          contentId: ['presentation', 'academic_paper', 'podcast', 'debate', 'voice_debate'].includes(type)
             ? (r.result_id as string)
             : undefined,
         };
       });
 
       if (mountedRef.current) {
-        setState((s) => ({
-          ...s,
-          results,
-          isSearching: false,
-          error:       null,
-        }));
+        setState((s) => ({ ...s, results, isSearching: false, error: null }));
       }
     } catch (err) {
       if (mountedRef.current) {
@@ -132,7 +145,7 @@ export function useWorkspaceSearch(workspaceId: string | null) {
 
     debounceRef.current = setTimeout(() => {
       executeSearch(query);
-    }, 350);
+    }, 320);
   }, [executeSearch]);
 
   // ── Clear ─────────────────────────────────────────────────────────────────
@@ -152,7 +165,6 @@ export function useWorkspaceSearch(workspaceId: string | null) {
     search,
     clear,
     byType,
-    // Grouped convenience accessors
     reportResults:       state.results.filter(r => r.type === 'report'),
     commentResults:      state.results.filter(r => r.type === 'comment'),
     memberResults:       state.results.filter(r => r.type === 'member'),
@@ -160,5 +172,6 @@ export function useWorkspaceSearch(workspaceId: string | null) {
     paperResults:        state.results.filter(r => r.type === 'academic_paper'),
     podcastResults:      state.results.filter(r => r.type === 'podcast'),
     debateResults:       state.results.filter(r => r.type === 'debate'),
+    voiceDebateResults:  state.results.filter(r => r.type === 'voice_debate'),
   };
 }

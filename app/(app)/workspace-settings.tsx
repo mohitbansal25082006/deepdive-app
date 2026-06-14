@@ -1,13 +1,20 @@
 // app/(app)/workspace-settings.tsx
 // Part 11 (patched) — Copy invite code, editor PDF export, etc.
-// Part 13A UPDATE:
-//   • New "Workspace Logo" section at the top — visible to BOTH owners AND editors.
-//   • Logo preview with current image, pick-from-library button, take-photo button,
-//     and remove-logo button.
-//   • Uses workspaceMediaService (Part 13A) which calls update_workspace_logo RPC,
-//     allowing editors to update the logo despite owner-only RLS on the workspaces table.
+// Part 13A — Workspace Logo section (owner + editor) via update_workspace_logo RPC.
+// Part 52 UPDATE — Feature 1 (realtime settings + delete):
+//   • The name / description / logo fields now stay in sync with the LIVE
+//     workspace object from useWorkspace. When another editor/owner changes
+//     something, the broadcast patches `workspace` in the hook, and a
+//     useEffect here re-seeds the local form fields (only when the user isn't
+//     mid-edit, so we never clobber an in-progress edit). Logo always re-seeds.
+//   • Delete no longer manually navigates — the workspace delete broadcast
+//     trigger fires `isDeleted`/`isSelfRemoved`, and a useEffect here navigates
+//     out to the Teams tab. This guarantees the SAME exit path runs for the
+//     owner who deleted AND any member who happens to be on this screen.
+//   • Logo upload/remove now go through update_workspace_logo RPC (unchanged),
+//     which fires the broadcast trigger → other members' headers/cards update.
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   Alert, ActivityIndicator, Image, ActionSheetIOS,
@@ -37,8 +44,10 @@ export default function WorkspaceSettingsScreen() {
   const isOwner  = userRole === 'owner';
   const isEditor = userRole === 'editor' || isOwner;
 
-  const { workspace, reports, members, update, remove, refresh, isLoading } =
-    useWorkspace(id ?? null);
+  const {
+    workspace, reports, members, update, remove, refresh, isLoading,
+    isSelfRemoved, isDeleted, // Part 52
+  } = useWorkspace(id ?? null);
 
   // General info fields (owner only)
   const [name,        setName]        = useState('');
@@ -48,16 +57,32 @@ export default function WorkspaceSettingsScreen() {
   const [codeCopied,  setCodeCopied]  = useState(false);
 
   // Logo state (owner + editor)
-  const [logoUrl,       setLogoUrl]       = useState<string | null>(null);
+  const [logoUrl,         setLogoUrl]         = useState<string | null>(null);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
 
+  // Part 52 — track whether the user is actively editing text so a live
+  // broadcast from another member doesn't clobber their in-progress edit.
+  const isEditingTextRef = useRef(false);
+
+  // ── Seed local fields from the live workspace object ───────────────────────
   useEffect(() => {
-    if (workspace) {
+    if (!workspace) return;
+    // Logo always re-seeds (image edits don't conflict with text editing)
+    setLogoUrl(workspace.avatarUrl ?? null);
+
+    // Text fields re-seed only when the user is NOT mid-edit.
+    if (!isEditingTextRef.current) {
       setName(workspace.name);
       setDescription(workspace.description ?? '');
-      setLogoUrl(workspace.avatarUrl ?? null);
     }
   }, [workspace]);
+
+  // ── Part 52: navigate out when the workspace is deleted (by anyone) ───────
+  useEffect(() => {
+    if (isDeleted || isSelfRemoved) {
+      router.replace('/(app)/(tabs)/workspace' as any);
+    }
+  }, [isDeleted, isSelfRemoved]);
 
   // ── General save (owner only) ──────────────────────────────────────────────
 
@@ -75,6 +100,7 @@ export default function WorkspaceSettingsScreen() {
       description: description.trim(),
     } as any);
     setIsSaving(false);
+    isEditingTextRef.current = false; // edit committed
     if (error) Alert.alert('Error', error);
   };
 
@@ -98,15 +124,16 @@ export default function WorkspaceSettingsScreen() {
     }
     if (result.url) {
       setLogoUrl(result.url);
-      // Also refresh the workspace in the hook so the card reflects the new logo
-      await refresh?.();
+      // The update_workspace_logo RPC fires the broadcast trigger, so other
+      // members' headers/cards update automatically. Local refresh keeps this
+      // screen authoritative.
+      await refresh?.(true);
     }
   };
 
   const handlePickLogo = () => {
     if (!isEditor) return;
 
-    // On iOS show ActionSheet for camera vs library choice
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
@@ -121,16 +148,11 @@ export default function WorkspaceSettingsScreen() {
         },
       );
     } else {
-      // Android — show a simple Alert
       Alert.alert('Workspace Logo', 'Choose an option', [
         { text: 'Cancel',              style: 'cancel' },
         { text: 'Take Photo',          onPress: () => handleLogoUpload('camera')  },
         { text: 'Choose from Library', onPress: () => handleLogoUpload('library') },
-        {
-          text: 'Remove Logo',
-          style: 'destructive',
-          onPress: handleRemoveLogo,
-        },
+        { text: 'Remove Logo',         style: 'destructive', onPress: handleRemoveLogo },
       ]);
     }
   };
@@ -149,7 +171,7 @@ export default function WorkspaceSettingsScreen() {
           if (error) Alert.alert('Error', error);
           else {
             setLogoUrl(null);
-            await refresh?.();
+            await refresh?.(true);
           }
         },
       },
@@ -176,11 +198,15 @@ export default function WorkspaceSettingsScreen() {
   };
 
   // ── Delete workspace ───────────────────────────────────────────────────────
+  // Part 52: We no longer manually navigate on success. The delete fires the
+  // broadcast trigger → isDeleted flips → the useEffect above navigates out.
+  // This keeps the owner and every member on the same exit path. We keep a
+  // safety fallback navigate in case the broadcast is delayed.
 
   const handleDelete = () => {
     Alert.alert(
       'Delete Workspace',
-      'This permanently deletes the workspace, all reports, comments, and activity. Cannot be undone.',
+      'This permanently deletes the workspace, all reports, comments, and activity. Every member will be removed instantly. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -188,8 +214,15 @@ export default function WorkspaceSettingsScreen() {
           style: 'destructive',
           onPress: async () => {
             const { error } = await remove();
-            if (!error) router.replace('/(app)/(tabs)/workspace' as any);
-            else Alert.alert('Error', error);
+            if (error) {
+              Alert.alert('Error', error);
+              return;
+            }
+            // Safety fallback — if the broadcast hasn't navigated us out
+            // within a moment, do it manually.
+            setTimeout(() => {
+              router.replace('/(app)/(tabs)/workspace' as any);
+            }, 600);
           },
         },
       ],
@@ -256,7 +289,6 @@ export default function WorkspaceSettingsScreen() {
                             style={styles.logoImage}
                             resizeMode="cover"
                           />
-                          {/* Edit overlay */}
                           <View style={styles.logoEditOverlay}>
                             <Ionicons name="camera" size={16} color="#FFF" />
                           </View>
@@ -313,7 +345,7 @@ export default function WorkspaceSettingsScreen() {
                   </View>
 
                   <Text style={styles.logoHint}>
-                    Square images work best (max 5 MB). Visible to all workspace members.
+                    Square images work best (max 5 MB). Changes appear instantly for all members.
                   </Text>
                 </Animated.View>
               )}
@@ -326,7 +358,8 @@ export default function WorkspaceSettingsScreen() {
                     <Text style={styles.fieldLabel}>Workspace Name</Text>
                     <TextInput
                       value={name}
-                      onChangeText={setName}
+                      onChangeText={(t) => { isEditingTextRef.current = true; setName(t); }}
+                      onBlur={() => { if (!hasChanges) isEditingTextRef.current = false; }}
                       placeholder="Workspace name"
                       placeholderTextColor={COLORS.textMuted}
                       style={styles.input}
@@ -337,7 +370,8 @@ export default function WorkspaceSettingsScreen() {
                     <Text style={styles.fieldLabel}>Description</Text>
                     <TextInput
                       value={description}
-                      onChangeText={setDescription}
+                      onChangeText={(t) => { isEditingTextRef.current = true; setDescription(t); }}
+                      onBlur={() => { if (!hasChanges) isEditingTextRef.current = false; }}
                       placeholder="What is this workspace for?"
                       placeholderTextColor={COLORS.textMuted}
                       style={[styles.input, { height: 90 }]}
@@ -426,7 +460,7 @@ export default function WorkspaceSettingsScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.deleteBtnText}>Delete Workspace</Text>
                       <Text style={styles.deleteBtnDesc}>
-                        Permanently removes workspace and all data
+                        Removes workspace and kicks all members instantly
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={COLORS.error} />

@@ -1,15 +1,17 @@
 // src/hooks/useWorkspace.ts
 // Part 46 UPDATE — Full realtime wiring via useWorkspaceRealtime.
-// Part 51 UPDATE —
-//   Feature 1 (fast open): feed loads a SMALL first page (8 rows) and exposes
-//     loadMoreReports() + reportsHasMore so workspace-detail can paginate the
-//     feed instead of pulling 20+ heavy report objects up front.
-//   Feature 2 (realtime shared): onSharedBroadcast bumps sharedContentVersion
-//     on add AND remove for every content type — the four sharing hooks reload
-//     instantly on all members' devices. The legacy onSharedContentInsert/
-//     Delete still bump the version too (fallback).
+// Part 51 UPDATE — fast-open feed pagination + realtime shared content.
+// Part 52 UPDATE —
+//   Feature 1 (realtime settings + delete kick-out):
+//     • Now also mounts useWorkspaceSettingsRealtime, which listens on the
+//       "workspace_settings:{id}" private channel and the member kick channel.
+//     • onSettingsUpdated → patches the in-state `workspace` object live so the
+//       detail header / settings screen reflect name/description/avatar changes
+//       made by ANY editor or owner, on every member's device, instantly.
+//     • onWorkspaceDeleted → flips isSelfRemoved so workspace-detail navigates
+//       the member out to the Teams tab (same exit path used for remove/block).
 //
-// All Part 10/11/12/13/46 actions unchanged.
+// All Part 10/11/12/13/46/51 actions unchanged.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
@@ -25,6 +27,7 @@ import {
 import { getWorkspaceMembersWithProfiles } from '../services/workspaceInviteService';
 import { useAuth } from '../context/AuthContext';
 import { useWorkspaceRealtime } from './useWorkspaceRealtime';
+import { useWorkspaceSettingsRealtime } from './useWorkspaceSettingsRealtime'; // Part 52
 import { logSharedContentAdded } from '../services/activityService';
 
 // Part 51 — small first page so the screen opens fast even with many reports
@@ -52,6 +55,9 @@ export function useWorkspace(workspaceId: string | null) {
 
   const removedRef = useRef(false);
   const [isSelfRemoved, setIsSelfRemoved] = useState(false);
+
+  // Part 52 — true only when removal was caused by the workspace being deleted
+  const [isDeleted, setIsDeleted] = useState(false);
 
   // ── Load workspace ──────────────────────────────────────────────────────
   const load = useCallback(async (silent = false) => {
@@ -162,6 +168,8 @@ export function useWorkspace(workspaceId: string | null) {
   // ── Initial load ────────────────────────────────────────────────────────
   useEffect(() => {
     removedRef.current = false;
+    setIsSelfRemoved(false);
+    setIsDeleted(false);
     load();
   }, [workspaceId, load]);
 
@@ -286,9 +294,6 @@ export function useWorkspace(workspaceId: string | null) {
     // ── Part 51: unified shared broadcast (PRIMARY realtime path) ─────────
     onSharedBroadcast: (contentType, contentId, action) => {
       if (contentType === 'report') {
-        // Report add/remove also affects the Feed tab — refresh first page.
-        // (Remove is already handled instantly by postgres_changes DELETE for
-        //  the actor; this catches the recipient side reliably.)
         if (action === 'removed') {
           setState(s => ({
             ...s,
@@ -299,7 +304,6 @@ export function useWorkspace(workspaceId: string | null) {
         }
         return;
       }
-      // All non-report shared content → bump version so sharing hooks reload
       bumpSharedVersion();
       if (action === 'added') logSharedAdded(contentType, contentId);
     },
@@ -312,6 +316,35 @@ export function useWorkspace(workspaceId: string | null) {
 
     onSharedContentDelete: () => {
       bumpSharedVersion();
+    },
+  });
+
+  // ── Part 52: Realtime workspace settings + delete kick-out ──────────────
+  useWorkspaceSettingsRealtime(workspaceId, {
+    onSettingsUpdated: ({ name, description, avatarUrl }) => {
+      // Patch the in-state workspace object live. We only overwrite fields
+      // that were present in the broadcast payload.
+      setState(s => {
+        if (!s.workspace) return s;
+        return {
+          ...s,
+          workspace: {
+            ...s.workspace,
+            name:        name        !== undefined ? (name ?? s.workspace.name)               : s.workspace.name,
+            description: description !== undefined ? (description ?? null)                    : s.workspace.description,
+            avatarUrl:   avatarUrl   !== undefined ? (avatarUrl ?? null)                      : s.workspace.avatarUrl,
+            updatedAt:   new Date().toISOString(),
+          },
+        };
+      });
+    },
+
+    onWorkspaceDeleted: () => {
+      // Treat exactly like being removed — workspace-detail will navigate out.
+      removedRef.current = true;
+      setIsDeleted(true);
+      setIsSelfRemoved(true);
+      setState(s => ({ ...s, userRole: null, members: [], reports: [] }));
     },
   });
 
@@ -338,7 +371,6 @@ export function useWorkspace(workspaceId: string | null) {
   }, [workspaceId]);
 
   // Part 51 — Feature 4: remove a shared report from the workspace.
-  // Optimistically removes the card; realtime DELETE confirms on other devices.
   const removeReport = useCallback(async (reportId: string) => {
     if (!workspaceId) return { error: 'No workspace' };
     setState(s => ({
@@ -347,7 +379,6 @@ export function useWorkspace(workspaceId: string | null) {
     }));
     const result = await removeReportFromWorkspace(workspaceId, reportId);
     if (result.error) {
-      // rollback by reloading the feed if the delete failed
       reloadFeed();
     }
     return result;
@@ -368,6 +399,7 @@ export function useWorkspace(workspaceId: string | null) {
     ...state,
     sharedContentVersion,
     isSelfRemoved,
+    isDeleted,           // Part 52
     pinnedReportIds,
     updatePin,
     // Part 51 — feed pagination

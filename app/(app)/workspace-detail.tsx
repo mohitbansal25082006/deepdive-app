@@ -1,12 +1,14 @@
 // app/(app)/workspace-detail.tsx
 // Part 46 / 50.5 / 50.9 / 51 — see prior history.
-// Part 51 REVISION — Shared content now loads ONLY when the Shared tab is first
-//   opened (one-way latch `sharedTabActivated` → `enabled` on the four sharing
-//   hooks). This stops the workspace from paying for four shared-content RPC
-//   calls when you land on Feed. While the first fetch is in flight a spinner
-//   shows; after it resolves the sections render and reveal more on scroll
-//   (useLazyReveal). Realtime add/remove still updates the Shared tab live once
-//   it has been opened.
+// Part 51 REVISION — Shared content loads only when the Shared tab is opened.
+// Part 52 UPDATE — Feature 1 (realtime delete + settings):
+//   • isDeleted (from useWorkspace) navigates the member out to the Teams tab
+//     when the owner deletes the workspace — distinct from isSelfRemoved which
+//     covers remove/block. Both exit to the Teams tab.
+//   • The header name + role pill already read from the live `workspace` /
+//     `userRole` returned by useWorkspace, which Part 52's settings broadcast
+//     now patches in place — so a rename by any editor/owner shows here live
+//     with no extra code in this screen.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -99,6 +101,7 @@ export default function WorkspaceDetailScreen() {
     refresh, update, addReport, removeReport,
     sharedContentVersion,
     isSelfRemoved,
+    isDeleted, // Part 52
     pinnedReportIds,
     updatePin,
     reportsHasMore, reportsLoadingMore, loadMoreReports,
@@ -121,8 +124,8 @@ export default function WorkspaceDetailScreen() {
     if (activeTab === 'shared') setSharedTabActivated(true);
   }, [activeTab]);
 
-  const activeWorkspaceId = isSelfRemoved ? null : (id ?? null);
-  const sharedEnabled     = sharedTabActivated && !isSelfRemoved;
+  const activeWorkspaceId = (isSelfRemoved || isDeleted) ? null : (id ?? null);
+  const sharedEnabled     = sharedTabActivated && !isSelfRemoved && !isDeleted;
 
   const sharing            = useWorkspaceSharing(activeWorkspaceId, sharedContentVersion, sharedEnabled);
   const podcastSharing     = usePodcastSharing(activeWorkspaceId, sharedContentVersion, sharedEnabled);
@@ -147,11 +150,25 @@ export default function WorkspaceDetailScreen() {
 
   const existingReportIds = reports.map(r => r.reportId);
 
+  // ── Part 52: exit on remove/block OR workspace deletion ──────────────────
+  const exitedRef = useRef(false);
   useEffect(() => {
-    if (isSelfRemoved) {
-      router.replace('/(app)/(tabs)/workspace' as any);
+    if ((isSelfRemoved || isDeleted) && !exitedRef.current) {
+      exitedRef.current = true;
+      if (isDeleted) {
+        // Brief toast-style notice then navigate out.
+        Alert.alert(
+          'Workspace Deleted',
+          'This workspace was deleted by the owner.',
+          [{ text: 'OK', onPress: () => router.replace('/(app)/(tabs)/workspace' as any) }],
+        );
+        // Safety navigate if the alert is dismissed another way.
+        setTimeout(() => router.replace('/(app)/(tabs)/workspace' as any), 50);
+      } else {
+        router.replace('/(app)/(tabs)/workspace' as any);
+      }
     }
-  }, [isSelfRemoved]);
+  }, [isSelfRemoved, isDeleted]);
 
   // ── Pin toggle ─────────────────────────────────────────────────────────
   const handleTogglePin = async (reportId: string, reportTitle: string) => {
@@ -216,7 +233,7 @@ export default function WorkspaceDetailScreen() {
   }, [id]);
 
   const handleOpenSearchSharedContent = useCallback((
-    contentType: 'presentation' | 'academic_paper' | 'podcast' | 'debate',
+    contentType: 'presentation' | 'academic_paper' | 'podcast' | 'debate' | 'voice_debate',
     contentId:   string,
     workspaceId: string,
   ) => {
@@ -226,6 +243,8 @@ export default function WorkspaceDetailScreen() {
       router.push({ pathname: '/(app)/workspace-shared-podcast-player' as any, params: { workspaceId, sharedId: contentId, contentTitle: '' } });
     } else if (contentType === 'debate') {
       router.push({ pathname: '/(app)/workspace-shared-debate' as any, params: { workspaceId, sharedId: contentId, contentTitle: '' } });
+    } else if (contentType === 'voice_debate') {
+      router.push({ pathname: '/(app)/workspace-shared-voice-debate-player' as any, params: { workspaceId, sharedId: contentId, contentTitle: '' } });
     }
   }, []);
 
@@ -299,7 +318,6 @@ export default function WorkspaceDetailScreen() {
   const voiceDebateCount   = voiceDebateSharing.voiceDebates.length;
   const totalSharedCount   = presentationCount + paperCount + podcastCount + debateCount + voiceDebateCount;
 
-  // Part 51 — all four first-loads resolved? (false until Shared opened + fetched)
   const sharedReady =
     sharing.hasLoaded && podcastSharing.hasLoaded &&
     debateSharing.hasLoaded && voiceDebateSharing.hasLoaded;
@@ -369,7 +387,7 @@ export default function WorkspaceDetailScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
 
-        {/* Top bar */}
+        {/* Top bar — name + role pill read from the live workspace object */}
         <Animated.View entering={FadeIn.duration(400)} style={styles.topBar}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backIconBtn}>
             <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
@@ -427,7 +445,7 @@ export default function WorkspaceDetailScreen() {
           </Animated.View>
         )}
 
-        {/* Stats strip — Shared count populates after the tab is first opened */}
+        {/* Stats strip */}
         {workspace && (
           <Animated.View entering={FadeIn.duration(500).delay(100)} style={styles.statsStrip}>
             <StatChip icon="people-outline"        value={members.length}    label="Members"  />
@@ -472,7 +490,6 @@ export default function WorkspaceDetailScreen() {
               refreshing={isRefreshing}
               onRefresh={() => {
                 refresh(true);
-                // Part 51 — only refresh shared content if it's actually been opened
                 if (sharedTabActivated) {
                   sharing.load();
                   podcastSharing.load();
@@ -586,7 +603,6 @@ export default function WorkspaceDetailScreen() {
                 </View>
               </Animated.View>
 
-              {/* Part 51 — first-open spinner until all four sections have fetched */}
               {!sharedReady ? (
                 <View style={styles.sharedLoading}>
                   <ActivityIndicator size="small" color={COLORS.primary} />
@@ -871,7 +887,6 @@ const styles = StyleSheet.create({
   loadMoreText:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
   sectionMoreHint:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: SPACING.sm },
   sectionMoreHintText: { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
-  // Part 51 — shared tab first-load spinner
   sharedLoading:     { alignItems: 'center', justifyContent: 'center', paddingTop: 50, gap: 10 },
   sharedLoadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600' },
   sharedHeader:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },

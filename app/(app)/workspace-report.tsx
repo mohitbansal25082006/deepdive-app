@@ -1,14 +1,21 @@
 // app/(app)/workspace-report.tsx
-// Part 15 — Added "Download Report" button for ALL workspace members
-// (not just the owner). Uses exportWorkspaceReportAsPDF() which loads
-// the full report via get_workspace_report_full() SECURITY DEFINER RPC,
-// then opens the native share sheet so any member can save/send the PDF.
+// Part 15 — Download Report (all members), Copy as Markdown / Text.
+// Part 52 (update) — Feature 1: REALTIME ROLE SYNC.
+//   The screen used to read `userRole` once from the nav param. When an owner
+//   approved a viewer's editor request (or demoted an editor back to viewer)
+//   WHILE that user had the report open, the screen kept the OLD role — edit
+//   controls (section comments, comment input, FAB) didn't appear/disappear
+//   until the user backed out and reopened.
 //
-// Also added "Copy as Markdown" and "Copy Text" options in a small
-// export sheet that appears when the download icon is tapped.
-//
-// All other Part 12 functionality (comments, AI summary, viewer access
-// request) is unchanged.
+//   Now the screen derives its role from useWorkspaceReportRole(), which:
+//     • seeds from the nav param (no flash),
+//     • subscribes to the "workspace_members:{id}" role_change broadcast,
+//     • falls back to postgres_changes on workspace_members,
+//     • refetches the authoritative role on mount,
+//     • and fires onKicked if the user is removed/blocked or the workspace is
+//       deleted while viewing — navigating them out.
+//   Result: promoting A from viewer→editor instantly reveals the editor UI in
+//   the open report; demoting editor→viewer instantly hides it. Live, no reload.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -26,6 +33,7 @@ import { useReportComments }   from '../../src/hooks/useReportComments';
 import { usePresence }         from '../../src/hooks/usePresence';
 import { useCommentReactions } from '../../src/hooks/useCommentReactions';
 import { useMyAccessRequest }  from '../../src/hooks/useEditAccessRequest';
+import { useWorkspaceReportRole } from '../../src/hooks/useWorkspaceReportRole'; // Part 52
 import { CommentThread }       from '../../src/components/workspace/CommentThread';
 import { CommentInput }        from '../../src/components/workspace/CommentInput';
 import { PresenceBar }         from '../../src/components/workspace/PresenceBar';
@@ -187,8 +195,26 @@ function ExportSheet({
 export default function WorkspaceReportScreen() {
   const { reportId, workspaceId, userRole: roleParam } =
     useLocalSearchParams<{ reportId: string; workspaceId: string; userRole?: string }>();
-  const userRole = (roleParam as WorkspaceRole) ?? 'viewer';
   const insets   = useSafeAreaInsets();
+
+  // ── Part 52: realtime role (seeded from nav param, then kept live) ────────
+  const initialRole = (roleParam as WorkspaceRole) ?? 'viewer';
+  const { role: liveRole } = useWorkspaceReportRole(
+    workspaceId ?? null,
+    initialRole,
+    {
+      onKicked: () => {
+        // Removed / blocked / workspace deleted while viewing → exit.
+        Alert.alert(
+          'Access Removed',
+          'You no longer have access to this report.',
+          [{ text: 'OK', onPress: () => router.back() }],
+        );
+        setTimeout(() => router.back(), 50);
+      },
+    },
+  );
+  const userRole = liveRole ?? initialRole;
 
   const [report,          setReport]          = useState<ResearchReport | null>(null);
   const [isLoadingReport, setIsLoadingReport] = useState(true);
@@ -245,6 +271,16 @@ export default function WorkspaceReportScreen() {
   const isEditor      = userRole === 'owner' || userRole === 'editor';
   const isViewer      = userRole === 'viewer';
   const totalComments = comments.length;
+
+  // ── Part 52: if the user gets demoted to viewer while the comments sheet is
+  // open on a specific section, close the section composer cleanly. If promoted
+  // to editor, nothing to do — the editor UI simply appears.
+  useEffect(() => {
+    if (!isEditor) {
+      // Viewers can still READ all comments, but cannot target a section.
+      setActiveSection(null);
+    }
+  }, [isEditor]);
 
   const handleGenerateSummary = async () => {
     if (!reportId || !workspaceId) return;
@@ -336,7 +372,7 @@ export default function WorkspaceReportScreen() {
           </TouchableOpacity>
         </Animated.View>
 
-        {/* ── Viewer "Request Editor Access" banner ── */}
+        {/* ── Viewer "Request Editor Access" banner ── (live: hides instantly on promotion) */}
         {isViewer && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.viewerBanner}>
             {hasPendingRequest ? (
@@ -361,6 +397,18 @@ export default function WorkspaceReportScreen() {
                 <Text style={[styles.viewerBannerCtaText, { color: COLORS.warning }]}>View</Text>
               </TouchableOpacity>
             )}
+          </Animated.View>
+        )}
+
+        {/* ── Editor confirmation banner — appears instantly on promotion ── */}
+        {isEditor && (
+          <Animated.View entering={FadeIn.duration(300)} style={[styles.viewerBanner, { borderColor: `${COLORS.success}30`, backgroundColor: `${COLORS.success}0C` }]}>
+            <View style={styles.viewerBannerLeft}>
+              <Ionicons name="create-outline" size={14} color={COLORS.success} />
+              <Text style={[styles.viewerBannerText, { color: COLORS.success, fontWeight: '600' }]}>
+                {userRole === 'owner' ? 'Owner — full edit access' : 'Editor — you can comment & discuss'}
+              </Text>
+            </View>
           </Animated.View>
         )}
 
@@ -446,7 +494,7 @@ export default function WorkspaceReportScreen() {
           )}
         </ScrollView>
 
-        {/* ── FAB ── */}
+        {/* ── FAB ── (editor-only; appears/disappears live with role) */}
         {isEditor && !showComments && (
           <Animated.View entering={FadeIn.duration(300)} style={[styles.fab, { bottom: insets.bottom + 20 }]}>
             <TouchableOpacity onPress={handleHeaderCommentPress} style={styles.fabBtn} activeOpacity={0.85}>
@@ -513,6 +561,7 @@ export default function WorkspaceReportScreen() {
             )}
           </ScrollView>
 
+          {/* Composer is editor-only; disappears instantly if demoted to viewer */}
           {isEditor && (
             <CommentInput sectionTitle={activeSection?.title} isSending={isSending}
               onSubmit={(text) => postComment(text, activeSection?.id, [])}

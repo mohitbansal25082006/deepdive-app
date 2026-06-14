@@ -1,12 +1,27 @@
 // src/hooks/useEditAccessRequest.ts
 // Part 12 — Manages edit access request state for viewers and owners.
-// Part 13B UPDATE:
-//   • useMyAccessRequest now exposes `hasRemovedRequest` flag
-//   • Subscribes to realtime updates on own request so viewer sees
-//     the "removed as editor" banner instantly when the owner demotes them.
-//   • When status is 'removed', viewer can re-submit a fresh request.
-//   • useWorkspaceMembers calls demoteEditorToViewer instead of regular
-//     updateMemberRole when demoting editor → viewer (handled in that hook).
+// Part 13B — Added 'removed' status + viewer realtime banner.
+// Part 52 (FIX) — Feature 2 (realtime viewer→editor requests) NOW WORKS LIVE.
+//
+//   THE BUG (why the owner only saw a request after leaving & re-entering):
+//     Private Realtime channels require the socket to be authenticated FIRST.
+//     supabase.realtime.setAuth() returns a Promise, but the previous code
+//     called it fire-and-forget and immediately .subscribe()'d the private
+//     channel. The channel therefore subscribed BEFORE auth was applied, so
+//     Realtime Authorization (RLS on realtime.messages) REJECTED broadcast
+//     delivery — the owner received nothing. It only "worked" after navigating
+//     away and back because by then some OTHER channel had set the auth token
+//     on the socket, so the second subscribe succeeded.
+//
+//   THE FIX:
+//     await supabase.realtime.setAuth()  BEFORE  .subscribe() on every private
+//     channel, on BOTH the viewer side and the owner side. Now the broadcast
+//     reaches the owner instantly on the first mount.
+//
+//   Channels (from schema_part52.sql broadcast_access_request_change()):
+//     • owner feed:   "workspace_access_requests:{workspace_id}"  event "request_change"
+//     • viewer's own: "workspace_my_request:{workspace_id}:{user_id}" event "my_request_change"
+//   postgres_changes is kept as a secondary fallback.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
@@ -45,7 +60,14 @@ export function useMyAccessRequest(
 
   // Only viewers need to track their own request
   const shouldLoad = userRole === 'viewer' && !!workspaceId;
-  const unsubRef   = useRef<(() => void) | null>(null);
+  const pgUnsubRef   = useRef<(() => void) | null>(null);
+  const bcChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  const reloadMine = useCallback(async () => {
+    if (!workspaceId) return;
+    const { data } = await fetchMyRequest(workspaceId);
+    setState((s) => ({ ...s, myRequest: data }));
+  }, [workspaceId]);
 
   // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -53,38 +75,52 @@ export function useMyAccessRequest(
       setState((s) => ({ ...s, isLoading: false }));
       return;
     }
-
     fetchMyRequest(workspaceId!).then(({ data, error }) => {
       setState({ myRequest: data, isLoading: false, isSubmitting: false, error });
     });
   }, [workspaceId, shouldLoad]);
 
-  // ── Realtime: watch for status changes (approved → removed, etc.) ─────────
+  // ── Realtime broadcast (PRIMARY) + postgres_changes (fallback) ────────────
   useEffect(() => {
     if (!shouldLoad) return;
 
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user || !workspaceId) return;
+    let cancelled = false;
 
-      unsubRef.current = subscribeToMyRequest(
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const user = session?.user;
+      if (!user || !workspaceId || cancelled) return;
+
+      // CRITICAL: authenticate the realtime socket with the EXPLICIT access
+      // token BEFORE subscribing to the private channel, otherwise RLS rejects
+      // broadcast delivery ("permissions to read from this Topic").
+      await supabase.realtime.setAuth(session!.access_token);
+      if (cancelled) return;
+
+      const bc = supabase
+        .channel(`workspace_my_request:${workspaceId}:${user.id}`, { config: { private: true } })
+        .on('broadcast', { event: 'my_request_change' }, () => {
+          reloadMine();
+        })
+        .subscribe();
+      bcChannelRef.current = bc;
+
+      // FALLBACK: postgres_changes (Part 13B behaviour)
+      pgUnsubRef.current = subscribeToMyRequest(
         workspaceId,
         user.id,
         (updatedRequest) => {
-          setState((s) => ({
-            ...s,
-            myRequest: updatedRequest,
-          }));
+          setState((s) => ({ ...s, myRequest: updatedRequest }));
         },
       );
-    });
+    })();
 
     return () => {
-      if (unsubRef.current) {
-        unsubRef.current();
-        unsubRef.current = null;
-      }
+      cancelled = true;
+      if (bcChannelRef.current) { supabase.removeChannel(bcChannelRef.current); bcChannelRef.current = null; }
+      if (pgUnsubRef.current)   { pgUnsubRef.current();                         pgUnsubRef.current = null; }
     };
-  }, [workspaceId, shouldLoad]);
+  }, [workspaceId, shouldLoad, reloadMine]);
 
   // ── Submit ────────────────────────────────────────────────────────────────
   const submit = useCallback(async (message?: string) => {
@@ -117,7 +153,7 @@ export function useMyAccessRequest(
     hasPendingRequest:  status === 'pending',
     hasApprovedRequest: status === 'approved',
     hasDeniedRequest:   status === 'denied',
-    hasRemovedRequest:  status === 'removed',   // ← Part 13B
+    hasRemovedRequest:  status === 'removed',
   };
 }
 
@@ -141,8 +177,9 @@ export function usePendingAccessRequests(
     error:       null,
   });
 
-  const unsubRef    = useRef<(() => void) | null>(null);
-  const shouldLoad  = (userRole === 'owner' || userRole === 'editor') && !!workspaceId;
+  const pgUnsubRef   = useRef<(() => void) | null>(null);
+  const bcChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const shouldLoad   = (userRole === 'owner' || userRole === 'editor') && !!workspaceId;
 
   const load = useCallback(async () => {
     if (!shouldLoad) return;
@@ -151,13 +188,48 @@ export function usePendingAccessRequests(
     setState({ requests: data, isLoading: false, isActioning: false, error });
   }, [workspaceId, shouldLoad]);
 
+  // Reload only the list (no spinner) — used by realtime callbacks.
+  const reloadSilent = useCallback(async () => {
+    if (!shouldLoad) return;
+    const { data } = await fetchPendingRequests(workspaceId!);
+    setState((s) => ({ ...s, requests: data }));
+  }, [workspaceId, shouldLoad]);
+
   useEffect(() => {
     if (!shouldLoad) return;
 
+    let cancelled = false;
+
     load();
 
-    unsubRef.current = subscribeToAccessRequests(workspaceId!, {
+    (async () => {
+      // CRITICAL: authenticate the realtime socket with the EXPLICIT access
+      // token BEFORE subscribing to the private channel. Without this, the
+      // owner's private channel subscribes before auth is applied and RLS
+      // silently drops the broadcast — which is exactly why a new request only
+      // showed up after leaving and re-entering the workspace.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || cancelled) return;
+      await supabase.realtime.setAuth(session.access_token);
+      if (cancelled) return;
+
+      // PRIMARY: broadcast channel for this workspace's request feed
+      const bc = supabase
+        .channel(`workspace_access_requests:${workspaceId}`, { config: { private: true } })
+        .on('broadcast', { event: 'request_change' }, () => {
+          // Any change (created / updated / deleted) — re-fetch the pending list.
+          reloadSilent();
+        })
+        .subscribe();
+      bcChannelRef.current = bc;
+    })();
+
+    // FALLBACK: postgres_changes (Part 12 behaviour) — set up immediately.
+    pgUnsubRef.current = subscribeToAccessRequests(workspaceId!, {
       onInsert: (req) => {
+        // A new request landed — re-fetch authoritative joined data so the
+        // requester's name/avatar are correct, then also optimistically add.
+        reloadSilent();
         setState((s) => {
           if (s.requests.some((r) => r.id === req.id)) return s;
           return { ...s, requests: [req, ...s.requests] };
@@ -170,16 +242,17 @@ export function usePendingAccessRequests(
             ? s.requests.map((r) => (r.id === req.id ? req : r))
             : s.requests.filter((r) => r.id !== req.id),
         }));
+        // Re-sync to be safe (handles approve/deny from another device).
+        reloadSilent();
       },
     });
 
     return () => {
-      if (unsubRef.current) {
-        unsubRef.current();
-        unsubRef.current = null;
-      }
+      cancelled = true;
+      if (bcChannelRef.current) { supabase.removeChannel(bcChannelRef.current); bcChannelRef.current = null; }
+      if (pgUnsubRef.current)   { pgUnsubRef.current();                         pgUnsubRef.current = null; }
     };
-  }, [workspaceId, shouldLoad, load]);
+  }, [workspaceId, shouldLoad, load, reloadSilent]);
 
   const approve = useCallback(async (requestId: string) => {
     setState((s) => ({ ...s, isActioning: true, error: null }));
@@ -187,9 +260,7 @@ export function usePendingAccessRequests(
     setState((s) => ({
       ...s,
       isActioning: false,
-      requests: error
-        ? s.requests
-        : s.requests.filter((r) => r.id !== requestId),
+      requests: error ? s.requests : s.requests.filter((r) => r.id !== requestId),
       error,
     }));
     return { error };
@@ -201,9 +272,7 @@ export function usePendingAccessRequests(
     setState((s) => ({
       ...s,
       isActioning: false,
-      requests: error
-        ? s.requests
-        : s.requests.filter((r) => r.id !== requestId),
+      requests: error ? s.requests : s.requests.filter((r) => r.id !== requestId),
       error,
     }));
     return { error };

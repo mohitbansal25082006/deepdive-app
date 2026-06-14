@@ -1,18 +1,16 @@
 // src/hooks/useWorkspaceList.ts
-// Part 46 UPDATE — Integrates useWorkspaceListRealtime so:
-//   • Workspace card disappears instantly when the current user is
-//     removed (by owner) or blocked — no manual refresh needed.
-//   • Workspace card appears instantly when the current user joins.
-//   • Role pill on WorkspaceCard updates instantly when owner changes
-//     the current user's role in any workspace.
+// Part 46 UPDATE — Integrates useWorkspaceListRealtime (join/remove/block/role).
+// Part 52 UPDATE —
+//   Feature 1 (realtime settings on the Teams tab):
+//     • Also mounts useWorkspaceListDeleteRealtime, which patches a card's
+//       name / description / avatar in place when the owner or an editor edits
+//       the workspace in settings — so the Teams-tab card never shows stale
+//       data and updates live on every member's device.
+//     • Card REMOVAL on delete is already handled by useWorkspaceListRealtime's
+//       onRemoved (the Part 52 delete trigger fans out a kick on the same
+//       "workspace_member_removed:{user_id}" channel it already listens on).
 //
-// Previously this hook subscribed to workspace_members with
-// filter: `user_id=eq.${user.id}` and called load() on ANY change.
-// That still works but is now also handled via useWorkspaceListRealtime
-// which gives us the workspace_id from the DELETE payload (REPLICA IDENTITY FULL)
-// so we can remove the specific card without a full reload.
-//
-// All Part 10 behaviour is preserved.
+// All Part 10/46 behaviour preserved.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
@@ -20,6 +18,7 @@ import { Workspace, WorkspaceListState } from '../types';
 import { listUserWorkspaces, createWorkspace } from '../services/workspaceService';
 import { useAuth } from '../context/AuthContext';
 import { useWorkspaceListRealtime } from './useWorkspaceListRealtime';
+import { useWorkspaceListDeleteRealtime } from './useWorkspaceListDeleteRealtime'; // Part 52
 
 export function useWorkspaceList() {
   const { user } = useAuth();
@@ -44,19 +43,17 @@ export function useWorkspaceList() {
     load();
   }, [user, load]);
 
-  // ── Part 46: Realtime — targeted workspace list mutations ─────────────────
-  // Instead of a full reload on every change (which causes flicker),
-  // we surgically add/remove/update workspace cards based on the event.
+  // ── Part 46: Realtime — join / remove / block / role ──────────────────────
   useWorkspaceListRealtime({
     onJoined: (workspaceId) => {
-      // User joined a new workspace — reload to get the full workspace object
-      // (we need name, description, avatar, etc. which aren't in the member row)
+      // User joined a new workspace — reload to get the full workspace object.
       load();
     },
 
     onRemoved: (workspaceId) => {
-      // Part 46: Instantly remove the workspace card — no full reload needed.
-      // This fires when the owner removes the current user OR when they leave.
+      // Instantly remove the card. Fires when the owner removes the user, when
+      // they leave, OR when the workspace is deleted (Part 52 delete trigger
+      // fans out a kick on this same channel).
       setState(prev => ({
         ...prev,
         workspaces: prev.workspaces.filter(ws => ws.id !== workspaceId),
@@ -64,9 +61,6 @@ export function useWorkspaceList() {
     },
 
     onBlocked: (workspaceId) => {
-      // Part 46: Instantly remove the workspace card when the user is blocked.
-      // The member row DELETE fires first (handled by onRemoved above),
-      // but workspace_blocked_members INSERT is a backup signal.
       setState(prev => ({
         ...prev,
         workspaces: prev.workspaces.filter(ws => ws.id !== workspaceId),
@@ -74,7 +68,6 @@ export function useWorkspaceList() {
     },
 
     onRoleChanged: (workspaceId, newRole) => {
-      // Part 46: Update the role pill on the workspace card instantly.
       setState(prev => ({
         ...prev,
         workspaces: prev.workspaces.map(ws =>
@@ -82,6 +75,24 @@ export function useWorkspaceList() {
             ? { ...ws, userRole: newRole as Workspace['userRole'] }
             : ws,
         ),
+      }));
+    },
+  });
+
+  // ── Part 52: Realtime — live card name/description/avatar updates ─────────
+  useWorkspaceListDeleteRealtime({
+    onWorkspaceUpdated: (workspaceId, updates) => {
+      setState(prev => ({
+        ...prev,
+        workspaces: prev.workspaces.map(ws => {
+          if (ws.id !== workspaceId) return ws;
+          return {
+            ...ws,
+            name:        updates.name        !== undefined ? (updates.name ?? ws.name) : ws.name,
+            description: updates.description !== undefined ? (updates.description ?? null) : ws.description,
+            avatarUrl:   updates.avatarUrl   !== undefined ? (updates.avatarUrl ?? null) : ws.avatarUrl,
+          };
+        }),
       }));
     },
   });
