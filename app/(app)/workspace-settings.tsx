@@ -13,6 +13,16 @@
 //     owner who deleted AND any member who happens to be on this screen.
 //   • Logo upload/remove now go through update_workspace_logo RPC (unchanged),
 //     which fires the broadcast trigger → other members' headers/cards update.
+//
+// Part 52.1 UPDATE — Feature 1 (advanced workspace export):
+//   • The old one-tap "Export as PDF Bundle" row (which merged every report into
+//     a single lossy summary PDF) is REPLACED with an "Export Bundle" row that
+//     opens the new ExportBundleModal. There the owner/editor can pick ANY mix
+//     of reports + shared content (presentations, papers, podcasts, debates,
+//     voice debates) and download them as a single .zip with each item in its
+//     own original full-fidelity format (PDF / PPTX / MP3).
+//   • exportWorkspaceAsPDF + the old handleExportPDF / isExporting state are
+//     removed (no original standalone export elsewhere is affected).
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -27,7 +37,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useWorkspace } from '../../src/hooks/useWorkspace';
-import { exportWorkspaceAsPDF } from '../../src/services/workspaceExport';
+import { ExportBundleModal } from '../../src/components/workspace/ExportBundleModal';
 import {
   pickAndUploadWorkspaceLogo,
   takeAndUploadWorkspaceLogo,
@@ -53,8 +63,10 @@ export default function WorkspaceSettingsScreen() {
   const [name,        setName]        = useState('');
   const [description, setDescription] = useState('');
   const [isSaving,    setIsSaving]    = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
   const [codeCopied,  setCodeCopied]  = useState(false);
+
+  // Part 52.1 — advanced export modal
+  const [showExportModal, setShowExportModal] = useState(false);
 
   // Logo state (owner + editor)
   const [logoUrl,         setLogoUrl]         = useState<string | null>(null);
@@ -176,16 +188,6 @@ export default function WorkspaceSettingsScreen() {
         },
       },
     ]);
-  };
-
-  // ── PDF export ─────────────────────────────────────────────────────────────
-
-  const handleExportPDF = async () => {
-    if (!workspace) return;
-    setIsExporting(true);
-    const { success, error } = await exportWorkspaceAsPDF(workspace, reports);
-    setIsExporting(false);
-    if (!success && error) Alert.alert('Export Failed', error);
   };
 
   // ── Copy invite code ───────────────────────────────────────────────────────
@@ -386,21 +388,19 @@ export default function WorkspaceSettingsScreen() {
               <Animated.View entering={FadeInDown.duration(400).delay(120)}>
                 <Text style={styles.sectionLabel}>Export & Sharing</Text>
 
+                {/* Part 52.1 — Advanced export: opens the bundle picker modal */}
                 <TouchableOpacity
-                  onPress={handleExportPDF}
-                  disabled={isExporting || reports.length === 0}
-                  style={[styles.actionRow, reports.length === 0 && { opacity: 0.4 }]}
+                  onPress={() => setShowExportModal(true)}
+                  style={styles.actionRow}
                   activeOpacity={0.8}
                 >
-                  <View style={[styles.actionIcon, { backgroundColor: `${COLORS.error}18` }]}>
-                    {isExporting
-                      ? <ActivityIndicator size="small" color={COLORS.error} />
-                      : <Ionicons name="document-attach-outline" size={20} color={COLORS.error} />}
+                  <View style={[styles.actionIcon, { backgroundColor: `${COLORS.primary}18` }]}>
+                    <Ionicons name="archive-outline" size={20} color={COLORS.primary} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.actionLabel}>Export as PDF Bundle</Text>
+                    <Text style={styles.actionLabel}>Export Bundle</Text>
                     <Text style={styles.actionDesc}>
-                      {reports.length} report{reports.length !== 1 ? 's' : ''} combined into one PDF
+                      Pick any reports & shared content — downloads as one .zip
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
@@ -470,6 +470,15 @@ export default function WorkspaceSettingsScreen() {
             </>
           )}
         </ScrollView>
+
+        {/* Part 52.1 — Advanced export modal */}
+        {workspace && (
+          <ExportBundleModal
+            visible={showExportModal}
+            workspace={workspace}
+            onClose={() => setShowExportModal(false)}
+          />
+        )}
       </SafeAreaView>
     </LinearGradient>
   );

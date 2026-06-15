@@ -1,25 +1,59 @@
 // src/components/podcast/MiniPlayer.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Part 41.2 UPDATE — Show "Paused · Offline" label.
-// DRAGGABLE UPDATE — Fully movable via PanResponder.
-// REANIMATED FIX — Splits layout animation (FadeInDown/FadeOutDown) and
-//   drag transform onto separate Animated.Views so they don't conflict.
-//   Root cause of the warning:
-//     "Property 'transform' of AnimatedComponent(View) may be overwritten
-//      by a layout animation."
-//   Fix: outer Animated.View carries ONLY entering/exiting (layout animation).
-//        inner Animated.View carries ONLY dragStyle (transform).
-//   These two animated properties must never live on the same view.
+// Part 41.2 — Show "Paused · Offline" label.
+// Part 41.2 DRAGGABLE — Fully movable.
+//
+// Part 52.1 ANDROID DRAG FIX  (v2 — the definitive fix)
+// ─────────────────────────────────────────────────────
+// SYMPTOM (Android only): the mini player could be dragged ONCE, then froze —
+// the next drag did nothing (or snapped wrong). iOS was always fine.
+//
+// WHY THE EARLIER ATTEMPTS DIDN'T WORK:
+//   • v0 used Reanimated SharedValues read synchronously inside PanResponder
+//     callbacks (JS thread) → stale-value reads after the first withSpring.
+//   • v1 swapped to a plain RN Animated.ValueXY + setOffset/flattenOffset. This
+//     removed the stale-read, but the freeze persisted because the ROOT problem
+//     on Android is PanResponder itself: there are long-standing platform bugs
+//     where a PanResponder view stops receiving a SECOND gesture
+//     (facebook/react-native #27902, #28228, #26082) — e.g. when any ancestor
+//     has an onLayout, or a ScrollView ancestor reclaims the responder, the
+//     native responder is never released after the first drag on Android.
+//
+// THE REAL FIX:
+//   Drop PanResponder entirely and use react-native-gesture-handler's
+//   `Gesture.Pan()` driven by Reanimated `useAnimatedStyle`. Gesture Handler
+//   uses the NATIVE gesture system (not the JS responder system), so:
+//     • the gesture callbacks are worklets running on the UI thread — no
+//       JS-thread stale reads, no thread hop;
+//     • the native handler correctly resets between gestures on Android, so
+//       repeated drags work indefinitely;
+//     • it composes cleanly with Tap gestures for tap-to-open / toggle.
+//
+//   Pattern (canonical RNGH + Reanimated draggable):
+//     translateX/Y  = useSharedValue(0)     ← live position
+//     startX/Y      = useSharedValue(0)     ← committed position at gesture start
+//     Gesture.Pan()
+//       .onStart  → startX = translateX (snapshot)
+//       .onUpdate → translateX = clamp(startX + e.translationX)  (clamp on UI thread)
+//       .onEnd    → settle with withSpring
+//     Gesture.Tap() → runOnJS(navigate); double-tap → reset position
+//     Gesture.Race(pan, Exclusive(doubleTap, tap))
+//
+// NOTES:
+//   • The OUTER positioning view has NO onLayout (that alone breaks Android
+//     PanResponder; we avoid it regardless).
+//   • Requires a GestureHandlerRootView at the app root. Expo Router wraps the
+//     app in one by default; the global MiniPlayer is mounted inside it.
+//   • Progress bar + enter/exit layout animation stay on Reanimated (UI-thread,
+//     no hazard), isolated on separate views from the drag transform.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
   Platform,
   Dimensions,
-  PanResponder,
 }                                                            from 'react-native';
 import { Ionicons }                                          from '@expo/vector-icons';
 import Animated, {
@@ -27,9 +61,14 @@ import Animated, {
   FadeOutDown,
   useSharedValue,
   useAnimatedStyle,
-  withSpring,
   withTiming,
+  withSpring,
+  runOnJS,
 }                                                            from 'react-native-reanimated';
+import {
+  Gesture,
+  GestureDetector,
+}                                                            from 'react-native-gesture-handler';
 import { router }                                            from 'expo-router';
 import { useSafeAreaInsets }                                 from 'react-native-safe-area-context';
 import { LinearGradient }                                    from 'expo-linear-gradient';
@@ -175,7 +214,7 @@ export function MiniPlayer(_props: MiniPlayerProps) {
   // Voice debate takes priority
   const local = vdLocal.isVisible ? vdLocal : podcastLocal;
 
-  // ── Progress bar ───────────────────────────────────────────────────────────
+  // ── Progress bar (Reanimated — UI-thread, isolated view) ──────────────────
   const progressFill = useSharedValue(local.progressPercent);
   useEffect(() => {
     progressFill.value = withTiming(
@@ -187,74 +226,117 @@ export function MiniPlayer(_props: MiniPlayerProps) {
     width: `${Math.min(100, Math.max(0, progressFill.value * 100))}%` as any,
   }));
 
-  // ── Drag position ──────────────────────────────────────────────────────────
+  // ── DRAG — react-native-gesture-handler + Reanimated (UI-thread, native) ──
+  // translateX/Y hold the live position; startX/Y snapshot it at gesture start
+  // so each new drag continues from where the last one ended (this is what makes
+  // REPEATED drags work — and on Android it works because RNGH uses the native
+  // gesture system, not the buggy JS PanResponder).
   const translateX = useSharedValue(0);
   const translateY = useSharedValue(0);
-  const offsetX    = useSharedValue(0);
-  const offsetY    = useSharedValue(0);
+  const startX     = useSharedValue(0);
+  const startY     = useSharedValue(0);
 
   const tabBarHeight  = 64 + insets.bottom;
   const defaultBottom = tabBarHeight + 4;
 
-  const clampX = useCallback((raw: number): number => {
-    const limit = SPACING.md + 80;
-    return Math.min(limit, Math.max(-limit, raw));
-  }, []);
+  // Clamp bounds (plain numbers captured into the worklets).
+  const limitX     = SPACING.md + 80;
+  const upLimitY   = -(SCREEN_H - defaultBottom - 70 - insets.top - 20);
+  const downLimitY = 0;
 
-  const clampY = useCallback((raw: number): number => {
-    const upLimit   = -(SCREEN_H - defaultBottom - 70 - insets.top - 20);
-    const downLimit = 0;
-    return Math.min(downLimit, Math.max(upLimit, raw));
-  }, [defaultBottom, insets.top]);
-
-  const lastTapRef = useRef(0);
-
+  // Reset to home position (double-tap). Shared-value writes run on UI thread.
   const resetPosition = useCallback(() => {
-    translateX.value = withSpring(0, { damping: 18, stiffness: 220 });
-    translateY.value = withSpring(0, { damping: 18, stiffness: 220 });
-    offsetX.value    = 0;
-    offsetY.value    = 0;
-  }, []);
+    translateX.value = withSpring(0, { damping: 18, stiffness: 220, mass: 0.6 });
+    translateY.value = withSpring(0, { damping: 18, stiffness: 220, mass: 0.6 });
+  }, [translateX, translateY]);
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder:  (_, g) =>
-        Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4,
+  // Navigation (JS thread via runOnJS).
+  const navigateToPlayer = useCallback(() => {
+    if (local.contentType === 'voice_debate' && local.voiceDebateId) {
+      router.push({ pathname: '/(app)/voice-debate-player' as any, params: { voiceDebateId: local.voiceDebateId } });
+      return;
+    }
+    if (local.sourceScreen) {
+      router.push({ pathname: local.sourceScreen as any, params: local.sourceParams ?? {} });
+      return;
+    }
+    if (local.podcastId) {
+      router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId: local.podcastId } });
+    }
+  }, [local.contentType, local.voiceDebateId, local.sourceScreen, local.sourceParams, local.podcastId]);
 
-      onPanResponderGrant: () => {
-        offsetX.value = translateX.value;
-        offsetY.value = translateY.value;
-      },
+  const handleToggle = useCallback(async () => {
+    if (local.contentType === 'voice_debate') {
+      await VoiceDebateEngine.toggle();
+    } else {
+      await AudioEngine.toggle();
+    }
+  }, [local.contentType]);
 
-      onPanResponderMove: (_, g) => {
-        translateX.value = clampX(offsetX.value + g.dx);
-        translateY.value = clampY(offsetY.value + g.dy);
-      },
+  const handleDismiss = useCallback(async () => {
+    MiniPlayerBus.emit('dismiss');
+    if (local.contentType === 'voice_debate') {
+      await VoiceDebateEngine.stop();
+    } else {
+      await AudioEngine.stop();
+    }
+  }, [local.contentType]);
 
-      onPanResponderRelease: (_, g) => {
-        const finalX = clampX(offsetX.value + g.dx);
-        const finalY = clampY(offsetY.value + g.dy);
-
-        if (Math.abs(finalX) < 20) {
-          translateX.value = withSpring(0, { damping: 20, stiffness: 280 });
-          offsetX.value    = 0;
-        } else {
-          translateX.value = withSpring(finalX, { damping: 20, stiffness: 280 });
-          offsetX.value    = finalX;
-        }
-        translateY.value = withSpring(finalY, { damping: 20, stiffness: 200 });
-        offsetY.value    = finalY;
-      },
-
-      onPanResponderTerminate: () => {},
+  // Pan gesture — worklet callbacks on the UI thread.
+  const panGesture = Gesture.Pan()
+    .activeOffsetX([-6, 6])   // require ~6px before the pan claims the gesture…
+    .activeOffsetY([-6, 6])   // …so quick taps still register as taps
+    .onStart(() => {
+      'worklet';
+      startX.value = translateX.value;
+      startY.value = translateY.value;
     })
-  ).current;
+    .onUpdate((e: { translationX: number; translationY: number }) => {
+      'worklet';
+      const nextX = startX.value + e.translationX;
+      const nextY = startY.value + e.translationY;
+      translateX.value = Math.min(limitX,     Math.max(-limitX,  nextX));
+      translateY.value = Math.min(downLimitY, Math.max(upLimitY, nextY));
+    })
+    .onEnd(() => {
+      'worklet';
+      // Gentle settle + re-clamp in case of fling overshoot.
+      translateX.value = withSpring(
+        Math.min(limitX, Math.max(-limitX, translateX.value)),
+        { damping: 20, stiffness: 280, mass: 0.7 },
+      );
+      translateY.value = withSpring(
+        Math.min(downLimitY, Math.max(upLimitY, translateY.value)),
+        { damping: 20, stiffness: 280, mass: 0.7 },
+      );
+    });
 
-  // ── REANIMATED FIX: drag transform is on its OWN Animated.View ────────────
-  // The outer Animated.View (below) carries ONLY entering/exiting.
-  // This Animated.View carries ONLY the transform.
-  // Mixing both on one view caused the Reanimated warning.
+  // Single tap → open player. Double tap → reset position.
+  const tapGesture = Gesture.Tap()
+    .maxDuration(250)
+    .numberOfTaps(1)
+    .onEnd(() => {
+      'worklet';
+      runOnJS(navigateToPlayer)();
+    });
+
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .onEnd(() => {
+      'worklet';
+      resetPosition();
+    });
+
+  // Race: pan wins once finger moves >6px; otherwise the tap(s) fire.
+  const composedGesture = Gesture.Race(
+    panGesture,
+    Gesture.Exclusive(doubleTapGesture, tapGesture),
+  );
+
+  // Independent tap gestures for the control buttons.
+  const toggleTap  = Gesture.Tap().onEnd(() => { 'worklet'; runOnJS(handleToggle)(); });
+  const dismissTap = Gesture.Tap().onEnd(() => { 'worklet'; runOnJS(handleDismiss)(); });
+
   const dragStyle = useAnimatedStyle(() => ({
     transform: [
       { translateX: translateX.value },
@@ -270,49 +352,10 @@ export function MiniPlayer(_props: MiniPlayerProps) {
     ? (COLORS.warning ?? '#F59E0B')
     : local.accentColor;
 
-  // ── Navigation on body tap ─────────────────────────────────────────────────
-  const handleBodyPress = () => {
-    const now = Date.now();
-    if (now - lastTapRef.current < 300) {
-      resetPosition();
-      lastTapRef.current = 0;
-      return;
-    }
-    lastTapRef.current = now;
-
-    if (local.contentType === 'voice_debate' && local.voiceDebateId) {
-      router.push({ pathname: '/(app)/voice-debate-player' as any, params: { voiceDebateId: local.voiceDebateId } });
-      return;
-    }
-    if (local.sourceScreen) {
-      router.push({ pathname: local.sourceScreen as any, params: local.sourceParams ?? {} });
-      return;
-    }
-    if (local.podcastId) {
-      router.push({ pathname: '/(app)/podcast-player' as any, params: { podcastId: local.podcastId } });
-    }
-  };
-
-  const handleToggle = async () => {
-    if (local.contentType === 'voice_debate') {
-      await VoiceDebateEngine.toggle();
-    } else {
-      await AudioEngine.toggle();
-    }
-  };
-
-  const handleDismiss = async () => {
-    MiniPlayerBus.emit('dismiss');
-    if (local.contentType === 'voice_debate') {
-      await VoiceDebateEngine.stop();
-    } else {
-      await AudioEngine.stop();
-    }
-  };
-
   return (
-    // ── OUTER: layout animation ONLY (entering / exiting) ─────────────────
-    // No transform here — that's what caused the Reanimated warning.
+    // ── OUTER: Reanimated layout animation ONLY (entering / exiting) ──────
+    // NO onLayout here (Android responder hazard) and NO transform (keeps the
+    // layout animation isolated from the drag transform below).
     <Animated.View
       entering={FadeInDown.duration(300)}
       exiting={FadeOutDown.duration(200)}
@@ -324,147 +367,144 @@ export function MiniPlayer(_props: MiniPlayerProps) {
         zIndex:   9990,
       }}
     >
-      {/* ── INNER: drag transform ONLY — no layout animation ───────────── */}
+      {/* ── INNER: Reanimated.View carrying the drag transform ONLY ───────── */}
       <Animated.View style={dragStyle}>
+        {/* The whole card + handle is wrapped in ONE GestureDetector so the drag
+            works from anywhere on the player. Tap/double-tap are composed in.
+            The control buttons have their OWN tap detectors which win via the
+            native gesture arbitration. */}
+        <GestureDetector gesture={composedGesture}>
+          <View>
+            {/* Drag handle pill (visual affordance) */}
+            <View style={{ alignItems: 'center', paddingBottom: 5, paddingTop: 4 }}>
+              <View style={{
+                width:           36,
+                height:          4,
+                borderRadius:    2,
+                backgroundColor: `${effectiveAccent}45`,
+              }} />
+            </View>
 
-        {/* Drag handle pill */}
-        <View
-          {...panResponder.panHandlers}
-          style={{ alignItems: 'center', paddingBottom: 5, paddingTop: 4 }}
-        >
-          <View style={{
-            width:           36,
-            height:          4,
-            borderRadius:    2,
-            backgroundColor: `${effectiveAccent}45`,
-          }} />
-        </View>
-
-        {/* Card — also receives pan handlers so dragging works from body */}
-        <View
-          {...panResponder.panHandlers}
-          style={{
-            backgroundColor: COLORS.backgroundCard,
-            borderRadius:    RADIUS.xl,
-            borderWidth:     1,
-            borderColor:     showOfflineLabel
-                               ? `${COLORS.warning ?? '#F59E0B'}50`
-                               : local.contentType === 'voice_debate'
-                                 ? `${local.accentColor}40`
-                                 : COLORS.border,
-            overflow:        'hidden',
-            ...Platform.select({
-              ios:     {
-                shadowColor:   '#000',
-                shadowOpacity: 0.25,
-                shadowRadius:  12,
-                shadowOffset:  { width: 0, height: 4 },
-              },
-              android: { elevation: 10 },
-            }),
-          }}
-        >
-          {/* Progress strip */}
-          <View style={{ height: 2, backgroundColor: COLORS.backgroundElevated }}>
-            <Animated.View style={[progressStyle, {
-              height:          '100%',
-              backgroundColor: effectiveAccent,
-            }]} />
-          </View>
-
-          {/* Content row */}
-          <View style={{
-            flexDirection: 'row',
-            alignItems:    'center',
-            gap:           SPACING.sm,
-            padding:       SPACING.sm + 2,
-          }}>
-            {/* Tappable body */}
-            <TouchableOpacity
-              onPress={handleBodyPress}
-              activeOpacity={0.85}
-              style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: SPACING.sm }}
-            >
-              {local.contentType === 'voice_debate' ? (
-                <LinearGradient
-                  colors={['#1A1035', '#0D0820']}
-                  style={{
-                    width:          40,
-                    height:         40,
-                    borderRadius:   12,
-                    alignItems:     'center',
-                    justifyContent: 'center',
-                    borderWidth:    1,
-                    borderColor:    `${local.accentColor}40`,
-                  }}
-                >
-                  <Ionicons name="mic" size={18} color={local.accentColor} />
-                </LinearGradient>
-              ) : (
-                <EpisodeArtwork title={local.title} size={40} borderRadius={12} />
-              )}
-
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text
-                  style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}
-                  numberOfLines={1}
-                >
-                  {local.title}
-                </Text>
-
-                {showOfflineLabel ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                    <Ionicons name="cloud-offline-outline" size={11} color={COLORS.warning ?? '#F59E0B'} />
-                    <Text
-                      style={{ color: COLORS.warning ?? '#F59E0B', fontSize: FONTS.sizes.xs, fontWeight: '600' }}
-                      numberOfLines={1}
-                    >
-                      Paused · Offline
-                    </Text>
-                  </View>
-                ) : (
-                  <Text
-                    style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}
-                    numberOfLines={1}
-                  >
-                    {local.subtitle}
-                  </Text>
-                )}
-              </View>
-            </TouchableOpacity>
-
-            {/* Play / Pause */}
-            <TouchableOpacity
-              onPress={handleToggle}
-              hitSlop={{ top: 10, right: 4, bottom: 10, left: 10 }}
+            {/* Card */}
+            <View
               style={{
-                width:           38,
-                height:          38,
-                borderRadius:    19,
-                backgroundColor: effectiveAccent,
-                alignItems:      'center',
-                justifyContent:  'center',
-                flexShrink:      0,
+                backgroundColor: COLORS.backgroundCard,
+                borderRadius:    RADIUS.xl,
+                borderWidth:     1,
+                borderColor:     showOfflineLabel
+                                   ? `${COLORS.warning ?? '#F59E0B'}50`
+                                   : local.contentType === 'voice_debate'
+                                     ? `${local.accentColor}40`
+                                     : COLORS.border,
+                overflow:        'hidden',
+                ...Platform.select({
+                  ios:     {
+                    shadowColor:   '#000',
+                    shadowOpacity: 0.25,
+                    shadowRadius:  12,
+                    shadowOffset:  { width: 0, height: 4 },
+                  },
+                  android: { elevation: 10 },
+                }),
               }}
             >
-              <Ionicons
-                name={local.isPlaying ? 'pause' : 'play'}
-                size={16}
-                color="#FFF"
-                style={{ marginLeft: local.isPlaying ? 0 : 1 }}
-              />
-            </TouchableOpacity>
+              {/* Progress strip (Reanimated) */}
+              <View style={{ height: 2, backgroundColor: COLORS.backgroundElevated }}>
+                <Animated.View style={[progressStyle, {
+                  height:          '100%',
+                  backgroundColor: effectiveAccent,
+                }]} />
+              </View>
 
-            {/* Dismiss */}
-            <TouchableOpacity
-              onPress={handleDismiss}
-              hitSlop={{ top: 10, right: 10, bottom: 10, left: 4 }}
-              style={{ padding: 4 }}
-            >
-              <Ionicons name="close" size={16} color={COLORS.textMuted} />
-            </TouchableOpacity>
+              {/* Content row */}
+              <View style={{
+                flexDirection: 'row',
+                alignItems:    'center',
+                gap:           SPACING.sm,
+                padding:       SPACING.sm + 2,
+              }}>
+                {/* Body (artwork + text) — plain View; tap handled by composed gesture */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: SPACING.sm }}>
+                  {local.contentType === 'voice_debate' ? (
+                    <LinearGradient
+                      colors={['#1A1035', '#0D0820']}
+                      style={{
+                        width:          40,
+                        height:         40,
+                        borderRadius:   12,
+                        alignItems:     'center',
+                        justifyContent: 'center',
+                        borderWidth:    1,
+                        borderColor:    `${local.accentColor}40`,
+                      }}
+                    >
+                      <Ionicons name="mic" size={18} color={local.accentColor} />
+                    </LinearGradient>
+                  ) : (
+                    <EpisodeArtwork title={local.title} size={40} borderRadius={12} />
+                  )}
+
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text
+                      style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}
+                      numberOfLines={1}
+                    >
+                      {local.title}
+                    </Text>
+
+                    {showOfflineLabel ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                        <Ionicons name="cloud-offline-outline" size={11} color={COLORS.warning ?? '#F59E0B'} />
+                        <Text
+                          style={{ color: COLORS.warning ?? '#F59E0B', fontSize: FONTS.sizes.xs, fontWeight: '600' }}
+                          numberOfLines={1}
+                        >
+                          Paused · Offline
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text
+                        style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}
+                        numberOfLines={1}
+                      >
+                        {local.subtitle}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                {/* Play / Pause — own tap detector */}
+                <GestureDetector gesture={toggleTap}>
+                  <View
+                    style={{
+                      width:           38,
+                      height:          38,
+                      borderRadius:    19,
+                      backgroundColor: effectiveAccent,
+                      alignItems:      'center',
+                      justifyContent:  'center',
+                      flexShrink:      0,
+                    }}
+                  >
+                    <Ionicons
+                      name={local.isPlaying ? 'pause' : 'play'}
+                      size={16}
+                      color="#FFF"
+                      style={{ marginLeft: local.isPlaying ? 0 : 1 }}
+                    />
+                  </View>
+                </GestureDetector>
+
+                {/* Dismiss — own tap detector */}
+                <GestureDetector gesture={dismissTap}>
+                  <View style={{ padding: 4 }}>
+                    <Ionicons name="close" size={16} color={COLORS.textMuted} />
+                  </View>
+                </GestureDetector>
+              </View>
+            </View>
           </View>
-        </View>
+        </GestureDetector>
       </Animated.View>
     </Animated.View>
   );
