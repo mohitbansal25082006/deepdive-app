@@ -1,6 +1,23 @@
 // src/types/index.ts
 // DeepDive AI — Complete Type Definitions
-// Parts 1–41.8
+// Parts 1–52.2B
+//
+// Part 52.2B changes (follow-up patch on top of 52.2A):
+//   • WorkspaceActivityAction union extended with:
+//       member_unblocked                                      (Fix 2 — unblock entry)
+//       presentation_unshared, academic_paper_unshared,
+//       podcast_unshared, debate_unshared, voice_debate_unshared
+//                                                             (Fix 6 — content removed entries)
+//   • ActivityMetadata extended with:
+//       left_name, unblocked_name, unblocked_by_name, unblocked_user_id
+//       (remover_name was already present from 52.2A)
+//
+// Part 52.2A changes:
+//   • WorkspaceActivityAction union extended with:
+//       workspace_renamed, workspace_description_changed, workspace_logo_changed,
+//       voice_debate_shared  (workspace_updated & debate_shared kept for legacy)
+//   • ActivityResourceKind type added
+//   • ActivityMetadata interface added
 //
 // Part 41.8 change: AcademicSection.type widened from AcademicSectionType to string
 // so that custom sections added in the editor (e.g. 'discussion', 'limitations',
@@ -790,17 +807,108 @@ export interface DebateOrchestratorCallbacks {
 
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
+// ── Part 52.2B: WorkspaceActivityAction ──────────────────────────────────────
+// 52.2A added: workspace_renamed, workspace_description_changed,
+//              workspace_logo_changed, voice_debate_shared.
+// 52.2B adds:  member_unblocked                           (Fix 2)
+//              presentation_unshared, academic_paper_unshared,
+//              podcast_unshared, debate_unshared, voice_debate_unshared
+//                                                         (Fix 6)
+// Legacy values workspace_updated & debate_shared retained for backward compat.
 export type WorkspaceActivityAction =
   | 'workspace_created'       | 'workspace_updated'
+  | 'workspace_renamed'
+  | 'workspace_description_changed'
+  | 'workspace_logo_changed'
   | 'report_added'            | 'report_removed'
   | 'member_joined'           | 'member_left'         | 'member_removed'
   | 'member_role_changed'     | 'comment_added'       | 'comment_resolved'
-  | 'ownership_transferred'   | 'member_blocked'
+  | 'ownership_transferred'   | 'member_blocked'      | 'member_unblocked'
   | 'debate_shared'           | 'presentation_shared'
   | 'academic_paper_shared'   | 'podcast_shared'
+  | 'voice_debate_shared'
+  // Part 52.2B (Fix 6) — dedicated "removed shared content" actions
+  | 'presentation_unshared'   | 'academic_paper_unshared'
+  | 'podcast_unshared'        | 'debate_unshared'
+  | 'voice_debate_unshared'
   | 'chat_mention'            | 'report_pinned'       | 'report_unpinned'
   | 'comment_reply_added'     | 'access_request_sent'
   | 'access_request_approved' | 'access_request_denied';
+
+/**
+ * Part 52.2A: what an activity entry's resource points to. Used by ActivityItem
+ * to decide the tap target (open a report, open shared content, open a member
+ * profile, or nothing).
+ */
+export type ActivityResourceKind =
+  | 'report'
+  | 'presentation'
+  | 'academic_paper'
+  | 'podcast'
+  | 'debate'
+  | 'voice_debate'
+  | 'member'
+  | 'workspace'
+  | 'none';
+
+/**
+ * Part 52.2A/B: loosely-typed view over WorkspaceActivity.metadata. Every field
+ * is optional because the shape depends on the action. ActivityItem reads from
+ * here defensively. All names are stored WITHOUT truncation server-side.
+ *
+ * Part 52.2B additions (Fix 2 — unblock; Fix 6 — unshared content):
+ *   left_name, unblocked_name, unblocked_by_name, unblocked_user_id
+ *   (remover_name already present from 52.2A and reused for *_unshared actions)
+ */
+export interface ActivityMetadata {
+  // Reports / shared content
+  report_title?:   string;
+  title?:          string;     // shared content title (slides/papers/etc.)
+  topic?:          string;     // debates / voice debates
+  is_voice?:       boolean;
+  removed?:        boolean;    // logo removed vs set
+
+  // Actors involved in member/role/ownership/access events
+  adder_name?:        string;
+  remover_name?:      string;  // also reused by *_unshared actions (Fix 6)
+  sharer_name?:       string;
+  removed_name?:      string;
+  removed_by_name?:   string;
+  blocked_name?:      string;
+  blocked_by_name?:   string;
+  target_name?:       string;
+  changed_by_name?:   string;
+  new_owner_name?:    string;
+  previous_owner?:    string;
+  requester_name?:    string;
+  approver_name?:     string;
+  joined_name?:       string;
+  left_name?:         string;  // Part 52.2B (Fix 2) — member_left
+  new_role?:          string;
+
+  // Part 52.2B (Fix 2) — member_unblocked
+  unblocked_name?:     string; // display name of the unblocked member
+  unblocked_by_name?:  string; // display name of the actor who unblocked
+  unblocked_user_id?:  string; // user id of the unblocked member (for profile nav)
+
+  // Linked user ids (for opening profiles)
+  target_user_id?:    string;
+  removed_user_id?:   string;
+  blocked_user_id?:   string;
+  new_owner_id?:      string;
+  actor_id?:          string;
+
+  // Settings changes (from → to)
+  old_name?:          string;
+  new_name?:          string;
+  old_description?:   string;
+  new_description?:   string;
+
+  // Linked report for shared content (so a tap can open the source report)
+  report_id?:         string;
+
+  [key: string]: unknown;
+}
 
 export type WorkspaceAccentColor = 'purple' | 'blue' | 'green' | 'orange' | 'pink' | 'cyan';
 

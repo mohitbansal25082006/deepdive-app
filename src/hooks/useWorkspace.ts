@@ -11,6 +11,19 @@
 //     • onWorkspaceDeleted → flips isSelfRemoved so workspace-detail navigates
 //       the member out to the Teams tab (same exit path used for remove/block).
 //
+// Part 52.2 FOLLOW-UP (Fix 5) —
+//   Shared-content activity is now logged EXACTLY ONCE at the user-action call
+//   site (ShareToWorkspaceModal for presentations & academic papers;
+//   usePodcastSharing / useDebateSharing / useVoiceDebateSharing for the rest).
+//   The realtime auto-logging that used to live here (logSharedAdded, fired from
+//   onSharedBroadcast / onSharedContentInsert) caused TWO problems:
+//     • it ran on EVERY member's device that had the workspace open → duplicate
+//       feed entries, and
+//     • it surfaced academic-paper shares as mislabeled/duplicate entries.
+//   So logSharedAdded is now a NO-OP and is no longer called from the realtime
+//   handlers. We still call bumpSharedVersion() so the Shared tab refreshes in
+//   realtime — only the (duplicate) logging is removed.
+//
 // All Part 10/11/12/13/46/51 actions unchanged.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -28,7 +41,6 @@ import { getWorkspaceMembersWithProfiles } from '../services/workspaceInviteServ
 import { useAuth } from '../context/AuthContext';
 import { useWorkspaceRealtime } from './useWorkspaceRealtime';
 import { useWorkspaceSettingsRealtime } from './useWorkspaceSettingsRealtime'; // Part 52
-import { logSharedContentAdded } from '../services/activityService';
 
 // Part 51 — small first page so the screen opens fast even with many reports
 const FEED_PAGE_SIZE = 8;
@@ -173,7 +185,7 @@ export function useWorkspace(workspaceId: string | null) {
     load();
   }, [workspaceId, load]);
 
-  // ── Part 51: bump shared version + log activity helper ──────────────────
+  // ── Part 51: bump shared version (drives Shared-tab realtime refresh) ───
   const bumpSharedVersion = useCallback(() => {
     setState(s => ({
       ...s,
@@ -181,54 +193,13 @@ export function useWorkspace(workspaceId: string | null) {
     } as any));
   }, []);
 
-  const logSharedAdded = useCallback((contentType: string, contentId: string) => {
-    if (!workspaceId || !user) return;
-    void (async () => {
-      try {
-        const { data: { user: currentUser } } = await supabase.auth.getUser();
-        if (!currentUser) return;
-
-        const { data: ws } = await supabase
-          .from('workspaces').select('name').eq('id', workspaceId).single();
-        const workspaceName = (ws as any)?.name ?? '';
-
-        const { data: profile } = await supabase
-          .from('profiles').select('full_name, username').eq('id', currentUser.id).single();
-        const sharerName = (profile as any)?.full_name ?? (profile as any)?.username ?? 'A member';
-
-        let contentTitle = 'Untitled';
-        if (contentType === 'presentation') {
-          const { data: p } = await supabase.from('presentations').select('title').eq('id', contentId).single();
-          contentTitle = (p as any)?.title ?? 'Untitled Presentation';
-        } else if (contentType === 'academic_paper') {
-          const { data: p } = await supabase.from('academic_papers').select('title').eq('id', contentId).single();
-          contentTitle = (p as any)?.title ?? 'Untitled Paper';
-        } else if (contentType === 'podcast') {
-          const { data: p } = await supabase.from('shared_podcasts').select('title').eq('podcast_id', contentId).eq('workspace_id', workspaceId).single();
-          contentTitle = (p as any)?.title ?? 'Untitled Podcast';
-        } else if (contentType === 'debate') {
-          const { data: p } = await supabase.from('shared_debates').select('topic').eq('debate_id', contentId).eq('workspace_id', workspaceId).single();
-          contentTitle = (p as any)?.topic ?? 'Untitled Debate';
-        } else if (contentType === 'voice_debate') {
-          const { data: p } = await supabase.from('shared_voice_debates').select('topic').eq('voice_debate_id', contentId).eq('workspace_id', workspaceId).single();
-          contentTitle = (p as any)?.topic ?? 'Untitled Voice Debate';
-        } else {
-          return; // report adds are logged via report_added activity already
-        }
-
-        await logSharedContentAdded({
-          workspaceId,
-          workspaceName,
-          contentType: contentType as any,
-          contentId,
-          contentTitle,
-          sharerName,
-        });
-      } catch {
-        // non-fatal
-      }
-    })();
-  }, [workspaceId, user]);
+  // ── Part 52.2 (Fix 5): shared-content activity logging moved to the share
+  //    call sites. This realtime auto-logger is now a NO-OP to prevent
+  //    duplicate / mislabeled feed entries. Kept as a stable function so the
+  //    realtime handler signatures don't need to change.
+  const logSharedAdded = useCallback((_contentType: string, _contentId: string) => {
+    return;
+  }, []);
 
   // ── Part 46: Centralised realtime subscriptions ─────────────────────────
   useWorkspaceRealtime(workspaceId, {
@@ -292,6 +263,9 @@ export function useWorkspace(workspaceId: string | null) {
     },
 
     // ── Part 51: unified shared broadcast (PRIMARY realtime path) ─────────
+    //   Part 52.2 (Fix 5): we still bump the shared version so the Shared tab
+    //   refreshes live, but we NO LONGER log activity here (logging happens
+    //   once at the share call site).
     onSharedBroadcast: (contentType, contentId, action) => {
       if (contentType === 'report') {
         if (action === 'removed') {
@@ -305,13 +279,11 @@ export function useWorkspace(workspaceId: string | null) {
         return;
       }
       bumpSharedVersion();
-      if (action === 'added') logSharedAdded(contentType, contentId);
     },
 
-    // ── Legacy postgres_changes fallback (still bump version) ─────────────
-    onSharedContentInsert: (contentType, contentId) => {
+    // ── Legacy postgres_changes fallback (still bump version, no logging) ─
+    onSharedContentInsert: (_contentType, _contentId) => {
       bumpSharedVersion();
-      logSharedAdded(contentType, contentId);
     },
 
     onSharedContentDelete: () => {

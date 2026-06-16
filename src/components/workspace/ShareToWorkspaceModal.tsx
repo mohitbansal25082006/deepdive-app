@@ -4,6 +4,10 @@
 //      (prefix added to fix Postgres 42702 ambiguous column error).
 //   2. Shows workspace avatar_url (logo) via Image component.
 //   3. Retry button shown on load error.
+// Part 52.2 FOLLOW-UP:
+//   Activity logging for share/unshare is handled SERVER-SIDE by DB triggers on
+//   shared_workspace_content (schema_part52_2.sql §9), so this modal no longer
+//   logs activity itself — one correct entry per action regardless of path.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {

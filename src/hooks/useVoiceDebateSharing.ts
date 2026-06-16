@@ -1,7 +1,8 @@
 // src/hooks/useVoiceDebateSharing.ts
 // Part 46 — Auto-reloads when realtime shared voice debate events fire.
 // Part 51 UPDATE — Deferred loading via `enabled` (default true) + `hasLoaded`.
-//   Voice Debates section only fetches once the Shared tab is opened.
+// Part 52.2 FOLLOW-UP — share/remove activity is logged server-side by DB
+//   triggers on shared_voice_debates (schema_part52_2.sql §9); none here.
 //
 // All Part 44 behaviour preserved.
 
@@ -40,7 +41,6 @@ export function useVoiceDebateSharing(
     setState(prev => ({ ...prev, ...partial }));
   }, []);
 
-  // ── Load shared voice debates ──────────────────────────────────────────
   const load = useCallback(async () => {
     if (!workspaceId || notMemberRef.current) return;
     patch({ isLoading: true, error: null });
@@ -62,13 +62,11 @@ export function useVoiceDebateSharing(
     setHasLoaded(true);
   }, [workspaceId, patch]);
 
-  // ── Reset on workspace change ──────────────────────────────────────────
   useEffect(() => {
     notMemberRef.current = false;
     setHasLoaded(false);
   }, [workspaceId]);
 
-  // ── Part 51: load only when enabled ────────────────────────────────────
   useEffect(() => {
     if (workspaceId && enabled) {
       load();
@@ -76,7 +74,6 @@ export function useVoiceDebateSharing(
     }
   }, [workspaceId, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Reload when sharedContentVersion bumps (only while enabled) ─────────
   useEffect(() => {
     if (
       enabled &&
@@ -89,7 +86,6 @@ export function useVoiceDebateSharing(
     }
   }, [sharedContentVersion, workspaceId, load, enabled]);
 
-  // ── Share a voice debate ───────────────────────────────────────────────
   const share = useCallback(async (
     voiceDebateId: string,
   ): Promise<{ error: string | null }> => {
@@ -102,7 +98,6 @@ export function useVoiceDebateSharing(
     return { error };
   }, [workspaceId, patch, load]);
 
-  // ── Remove a shared voice debate ───────────────────────────────────────
   const remove = useCallback(async (
     voiceDebateId: string,
   ): Promise<{ error: string | null }> => {
@@ -122,14 +117,12 @@ export function useVoiceDebateSharing(
     isLoading:    state.isLoading,
     isSharing:    state.isSharing,
     error:        state.error,
-    hasLoaded,    // Part 51
+    hasLoaded,
     load,
     share,
     remove,
   };
 }
-
-// ─── useVoiceDebateSharedWorkspaces ──────────────────────────────────────────
 
 export function useVoiceDebateSharedWorkspaces(
   voiceDebateId: string | null | undefined,

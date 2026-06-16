@@ -1,14 +1,11 @@
 // app/(app)/workspace-detail.tsx
 // Part 46 / 50.5 / 50.9 / 51 — see prior history.
 // Part 51 REVISION — Shared content loads only when the Shared tab is opened.
-// Part 52 UPDATE — Feature 1 (realtime delete + settings):
-//   • isDeleted (from useWorkspace) navigates the member out to the Teams tab
-//     when the owner deletes the workspace — distinct from isSelfRemoved which
-//     covers remove/block. Both exit to the Teams tab.
-//   • The header name + role pill already read from the live `workspace` /
-//     `userRole` returned by useWorkspace, which Part 52's settings broadcast
-//     now patches in place — so a rename by any editor/owner shows here live
-//     with no extra code in this screen.
+// Part 52 — Feature 1 (realtime delete + settings).
+// Part 52.2 — Activity Feed v2 wiring: the Activity tab now passes navigation
+//   callbacks to ActivityItem so actor/target NAMES open member profiles and
+//   report / shared-content TITLES open the resource. The feed updates in
+//   realtime (handled inside useActivityFeed) with no refresh.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -44,7 +41,7 @@ import { SharedContentCard }         from '../../src/components/workspace/Shared
 import { SharedPodcastCard }         from '../../src/components/workspace/SharedPodcastCard';
 import { SharedDebateCard }          from '../../src/components/workspace/SharedDebateCard';
 import { SharedVoiceDebateCard }     from '../../src/components/workspace/SharedVoiceDebateCard';
-import { logPinToggled, logSharedContentAdded } from '../../src/services/activityService';
+import { logPinToggled, logSharedContentAdded, logMemberLeft, resolveActorName } from '../../src/services/activityService';
 import {
   exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
 } from '../../src/services/podcastExport';
@@ -56,7 +53,7 @@ import { sharedDebateToSession }     from '../../src/services/debateSharingServi
 import { VOICE_PERSONAS }            from '../../src/constants/voiceDebate';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
-  SharedPodcast, SharedDebate,
+  SharedPodcast, SharedDebate, ActivityResourceKind,
 } from '../../src/types';
 import type { SharedVoiceDebate }    from '../../src/types/voiceDebateSharing';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
@@ -216,6 +213,90 @@ export default function WorkspaceDetailScreen() {
     setShowProfile(true);
   }, []);
 
+  // ── Part 52.2: Activity feed navigation handlers ─────────────────────────
+  // Names → member profile; report/shared-content titles → the resource.
+  const handleOpenActivityMember = useCallback((userId: string, fallback?: MiniProfile) => {
+    const fromMembers = members.find(m => m.userId === userId)?.profile;
+    const profile: MiniProfile =
+      fromMembers ??
+      fallback ??
+      { id: userId, username: null, fullName: null, avatarUrl: null };
+    setProfileMember(profile);
+    setShowProfile(true);
+  }, [members]);
+
+  const handleOpenActivityResource = useCallback(async (
+    kind:       ActivityResourceKind,
+    resourceId: string,
+    reportId?:  string,
+    title?:     string,
+  ) => {
+    if (!id) return;
+    switch (kind) {
+      case 'report':
+        openReport(reportId ?? resourceId);
+        break;
+
+      case 'presentation':
+      case 'academic_paper':
+        // The shared viewer's resolveContentId() accepts the SOURCE content id
+        // directly (its shared-row lookup misses and falls back to the id we
+        // pass), so opening with the source id works as-is.
+        router.push({
+          pathname: '/(app)/workspace-shared-viewer' as any,
+          params: { contentType: kind, contentId: resourceId, workspaceId: id, sharerName: '', sharedAt: '' },
+        });
+        break;
+
+      // Fix 4: podcast / debate / voice players expect the SHARED-ROW id
+      // (sharedId), but activity stores the SOURCE content id. Resolve the
+      // shared-row id from the loaded sharing lists (loading on demand), then
+      // navigate. If it can't be resolved, fall back to opening the Shared tab.
+      case 'podcast': {
+        let row = podcastSharing.podcasts.find(p => p.podcastId === resourceId);
+        if (!row) { await podcastSharing.load(); row = podcastSharing.podcasts.find(p => p.podcastId === resourceId); }
+        if (row) {
+          router.push({
+            pathname: '/(app)/workspace-shared-podcast-player' as any,
+            params: { workspaceId: id, sharedId: row.id, contentTitle: row.title ?? title ?? '' },
+          });
+        } else {
+          setActiveTab('shared'); setActiveFilter('podcast');
+        }
+        break;
+      }
+      case 'debate': {
+        let row = debateSharing.debates.find(d => d.debateId === resourceId);
+        if (!row) { await debateSharing.load(); row = debateSharing.debates.find(d => d.debateId === resourceId); }
+        if (row) {
+          router.push({
+            pathname: '/(app)/workspace-shared-debate' as any,
+            params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' },
+          });
+        } else {
+          setActiveTab('shared'); setActiveFilter('debate');
+        }
+        break;
+      }
+      case 'voice_debate': {
+        let row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === resourceId);
+        if (!row) { await voiceDebateSharing.load(); row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === resourceId); }
+        if (row) {
+          router.push({
+            pathname: '/(app)/workspace-shared-voice-debate-player' as any,
+            params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' },
+          });
+        } else {
+          setActiveTab('shared'); setActiveFilter('voice_debate');
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }, [id, openReport, podcastSharing, debateSharing, voiceDebateSharing]);
+
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({ pathname: '/(app)/workspace-shared-viewer' as any, params: { contentType: item.contentType, contentId: item.contentId, workspaceId: item.workspaceId, sharerName: item.sharerName ?? '', sharedAt: item.sharedAt ?? '' } });
   }, []);
@@ -286,6 +367,17 @@ export default function WorkspaceDetailScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Leave', style: 'destructive', onPress: async () => {
         if (!id) return;
+
+        // Fix 3: log "left the workspace" BEFORE leaving — once we leave, RLS
+        // blocks the insert. Best-effort; never blocks the leave.
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            const leftName = await resolveActorName();
+            await logMemberLeft({ workspaceId: id, userId: user.id, leftName });
+          }
+        } catch { /* non-fatal */ }
+
         const { error } = await leaveWorkspace(id);
         if (!error) router.replace('/(app)/(tabs)/workspace' as any);
         else Alert.alert('Error', error);
@@ -701,12 +793,37 @@ export default function WorkspaceDetailScreen() {
           {activeTab === 'activity' && (
             activities.length === 0 ? (
               <View style={styles.emptyState}>
-                <Ionicons name="pulse-outline" size={40} color={COLORS.textMuted} />
+                <View style={styles.activityEmptyIcon}>
+                  <Ionicons name="pulse-outline" size={34} color={COLORS.primary} />
+                </View>
                 <Text style={styles.emptyTitle}>No activity yet</Text>
-                <Text style={styles.emptyDesc}>All workspace actions are logged here in real-time.</Text>
+                <Text style={styles.emptyDesc}>
+                  Reports, shares, pins, members, and settings changes appear here in real time.
+                </Text>
               </View>
             ) : (
-              activities.map(a => <ActivityItem key={a.id} activity={a} />)
+              <View style={styles.activityList}>
+                {(() => {
+                  // Issue 1: a shared-content add entry whose content was later
+                  // removed (a matching *_unshared exists for the same
+                  // resource_id) should be non-tappable.
+                  const removedResourceIds = new Set(
+                    activities
+                      .filter(a => typeof a.action === 'string' && a.action.endsWith('_unshared') && a.resourceId)
+                      .map(a => a.resourceId as string),
+                  );
+                  return activities.map((a, i) => (
+                    <ActivityItem
+                      key={a.id}
+                      activity={a}
+                      isLast={i === activities.length - 1}
+                      resourceRemoved={!!a.resourceId && removedResourceIds.has(a.resourceId)}
+                      onOpenMember={handleOpenActivityMember}
+                      onOpenResource={handleOpenActivityResource}
+                    />
+                  ));
+                })()}
+              </View>
             )
           )}
 
@@ -911,6 +1028,9 @@ const styles = StyleSheet.create({
   emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21, maxWidth: 290 },
   emptyAddBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4 },
   emptyAddBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  // Part 52.2 — Activity tab
+  activityList:      { paddingTop: SPACING.sm },
+  activityEmptyIcon: { width: 72, height: 72, borderRadius: 20, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
   manageMembersBtn:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30` },
   manageMembersBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 },
   memberRow:        { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },

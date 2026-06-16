@@ -1,7 +1,8 @@
 // src/hooks/useDebateSharing.ts
 // Part 46 — Auto-reloads when realtime shared debate events fire.
 // Part 51 UPDATE — Deferred loading via `enabled` (default true) + `hasLoaded`.
-//   Debate section only fetches once the Shared tab is opened.
+// Part 52.2 FOLLOW-UP — share/remove activity is logged server-side by DB
+//   triggers on shared_debates (schema_part52_2.sql §9); no client logging here.
 //
 // All Part 16 behaviour preserved.
 
@@ -33,7 +34,6 @@ export function useDebateSharing(
     setState(prev => ({ ...prev, ...partial }));
   }, []);
 
-  // ── Load shared debates ───────────────────────────────────────────────
   const load = useCallback(async () => {
     if (!workspaceId || notMemberRef.current) return;
     patch({ isLoading: true, error: null });
@@ -55,13 +55,11 @@ export function useDebateSharing(
     setHasLoaded(true);
   }, [workspaceId, patch]);
 
-  // ── Reset on workspace change ──────────────────────────────────────────
   useEffect(() => {
     notMemberRef.current = false;
     setHasLoaded(false);
   }, [workspaceId]);
 
-  // ── Part 51: load only when enabled ────────────────────────────────────
   useEffect(() => {
     if (workspaceId && enabled) {
       load();
@@ -69,7 +67,6 @@ export function useDebateSharing(
     }
   }, [workspaceId, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Reload when sharedContentVersion bumps (only while enabled) ─────────
   useEffect(() => {
     if (
       enabled &&
@@ -82,7 +79,6 @@ export function useDebateSharing(
     }
   }, [sharedContentVersion, workspaceId, load, enabled]);
 
-  // ── Share a debate ────────────────────────────────────────────────────
   const share = useCallback(async (
     debateId: string,
   ): Promise<{ error: string | null }> => {
@@ -95,7 +91,6 @@ export function useDebateSharing(
     return { error };
   }, [workspaceId, patch, load]);
 
-  // ── Remove a shared debate ────────────────────────────────────────────
   const remove = useCallback(async (
     debateId: string,
   ): Promise<{ error: string | null }> => {
@@ -110,7 +105,6 @@ export function useDebateSharing(
     return { error };
   }, [workspaceId]);
 
-  // ── Derived ────────────────────────────────────────────────────────────
   const totalPerspectives = state.debates.reduce(
     (sum, d) => sum + (d.perspectives?.length ?? 0),
     0,
@@ -121,15 +115,13 @@ export function useDebateSharing(
     isLoading:         state.isLoading,
     isSharing:         state.isSharing,
     error:             state.error,
-    hasLoaded,         // Part 51
+    hasLoaded,
     totalPerspectives,
     load,
     share,
     remove,
   };
 }
-
-// ─── useDebateSharedWorkspaces ────────────────────────────────────────────────
 
 export function useDebateSharedWorkspaces(debateId: string | null | undefined) {
   const [workspaceIds, setWorkspaceIds] = useState<string[]>([]);
