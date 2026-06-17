@@ -1,27 +1,29 @@
 // src/components/workspace/ActivityItem.tsx
 // Part 52.2 — Activity Feed v2 (full redesign).
+// Part 52.3 — Fixes:
+//   (Issue 2)  member_left: the actor (the person who left) is NO LONGER a
+//              clickable name chip — they are not a current member, so tapping
+//              their name and opening a profile is wrong. The actor name renders
+//              as static text for member_left, member_removed-as-actor cases.
+//   (Issue 7)  Shared content (podcast / debate / voice — and slides / papers)
+//              title pills are TAPPABLE while the content exists, and become
+//              NON-tappable automatically once the content is removed
+//              (resourceRemoved=true, derived in workspace-detail.tsx from a
+//              matching *_unshared entry). The label per type is rendered from
+//              SHARE_LABEL so "shared a podcast/debate/voice debate" is correct.
 //
-//   GOALS (Part 52.2 spec):
-//     • Distinct visual treatment per action family (reports / sharing /
-//       membership / settings / pins / access) — each with its own accent.
-//     • FULL, untruncated resource names. Report & shared-content titles render
-//       in a dedicated tappable "title pill" that wraps to as many lines as
-//       needed (no numberOfLines clamp).
-//     • Clickable NAMES: actor name and any target member name are inline
-//       tappable chips that open that member's workspace profile.
-//     • Clickable TITLES: report / shared-content titles open the resource.
-//     • Settings changes show "from → to" for name & description, and a
-//       dedicated logo entry (Feature 1f).
-//     • Member/role/ownership/block/join/access entries show BOTH names and
-//       what was done to whom (Feature 1e).
+//   GOALS (Part 52.2 spec, unchanged):
+//     • Distinct visual treatment per action family.
+//     • FULL, untruncated resource names in a tappable "title pill".
+//     • Clickable NAMES (actor + target) open the member's workspace profile,
+//       EXCEPT where the person is no longer in the workspace.
+//     • Settings "from → to" diffs; both-name member/role/access entries.
 //     • Comment activity never reaches this component (filtered server-side).
 //
 //   This component is presentational. Navigation is delegated to callbacks
 //   passed from workspace-detail.tsx:
 //     onOpenMember(userId, fallbackProfile?)   → open a member profile
 //     onOpenResource(kind, resourceId, reportId?, title?) → open report/content
-//
-//   Both are optional; when absent the relevant element is non-interactive.
 
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
@@ -54,7 +56,7 @@ interface Props extends ActivityItemHandlers {
   activity: WorkspaceActivity;
   /** Whether this is the last entry (hides the timeline connector tail). */
   isLast?: boolean;
-  /** Issue 1: true when this share entry's content was later removed → the
+  /** Issue 7: true when this share entry's content was later removed → the
    *  title pill becomes non-tappable (the content no longer exists). */
   resourceRemoved?: boolean;
 }
@@ -121,6 +123,14 @@ const ACTION_META: Partial<Record<WorkspaceActivityAction, ActionMeta>> = {
 };
 
 const FALLBACK_META: ActionMeta = { family: 'system', icon: 'ellipse-outline' };
+
+// ─── Actions where the ACTOR is no longer a current member ───────────────────
+// For these, the actor's own name must render as STATIC text (non-clickable),
+// because tapping it to open a workspace profile would be wrong / dead.
+//   • member_left      — the actor left the workspace (Issue 2)
+const ACTOR_NOT_CLICKABLE: ReadonlySet<WorkspaceActivityAction> = new Set<WorkspaceActivityAction>([
+  'member_left',
+]);
 
 // ─── Shared content kind from action ──────────────────────────────────────────
 
@@ -226,7 +236,12 @@ export function ActivityItem({
 
   const actor = activity.actorProfile;
   const actorName = actor?.fullName ?? actor?.username ?? 'Someone';
-  const actorId   = activity.userId ?? actor?.id ?? null;
+
+  // Issue 2: for member_left (and any future actor-not-current cases), the actor
+  // name must NOT be a tappable chip — pass a null id so NameChip renders static.
+  const actorId = ACTOR_NOT_CLICKABLE.has(activity.action)
+    ? null
+    : (activity.userId ?? actor?.id ?? null);
 
   // Resolve a target user id (the person an action was done TO).
   const targetUserId =
@@ -337,8 +352,8 @@ export function ActivityItem({
         const kind  = resourceKindForShare(activity.action);
         const title = md.title ?? md.topic ?? 'an item';
         const label = SHARE_LABEL[activity.action] ?? 'shared content';
-        // Issue 1: once the content has been removed, this add entry must not
-        // be tappable (there's nothing to open). Otherwise it opens directly.
+        // Issue 7: tappable while the content exists; once removed (a matching
+        // *_unshared entry exists → resourceRemoved=true) it becomes static.
         const canOpen = !resourceRemoved && !!onOpenResource && !!activity.resourceId;
         return {
           sentence: `shared ${label}`,
@@ -377,6 +392,7 @@ export function ActivityItem({
         return { sentence: 'joined the workspace', extra: noExtra };
       }
       case 'member_left': {
+        // Issue 2: actor (already rendered static above) — body has no name.
         return { sentence: 'left the workspace', extra: noExtra };
       }
       case 'member_removed': {
