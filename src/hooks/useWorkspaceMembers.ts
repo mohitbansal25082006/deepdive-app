@@ -1,22 +1,23 @@
 // src/hooks/useWorkspaceMembers.ts
 // Part 46 UPDATE — Realtime member list: role changes, removals, and
-// blocks now propagate instantly to every device viewing the members
-// screen — no manual refresh needed.
+// blocks propagate instantly to every device viewing the members screen.
 //
-// Changes from Part 13B:
-//   • useWorkspaceRealtime replaces the old subscribeToMembers channel
-//     (deduplicates subscriptions when workspace-detail and workspace-members
-//     are both mounted).
-//   • changeRole now fires logRoleChanged so the Activity tab captures it.
-//   • remove now fires logMemberRemoved (with name lookup) for the Activity tab.
-//   • block now fires logMemberBlocked for the Activity tab.
-//   • transferOwner now fires logOwnershipTransferred for the Activity tab.
-//   • onSelfRemoved: if the current user's own member row is deleted while
-//     they are viewing this screen, userRole is set to null so all
-//     management controls disappear without a crash.
+// Part 52.3B UPDATE — Activity-log correctness (works with schema_part52_3.sql):
+//   The legacy RPCs (block_workspace_member, demote_editor_to_viewer,
+//   approve_editor_request) used to insert their OWN nameless activity rows,
+//   which produced "blocked a member" / a second "changed a member's role".
+//   schema_part52_3.sql now DROPS those nameless RPC rows at the source, so the
+//   NAMED client logs emitted here are the single source of truth. To make those
+//   named rows correct:
+//     • changeRole(): resolve `changedByName` from the CURRENT user (the actor),
+//       not from "the owner row". Previously it read the owner's profile, which
+//       mislabels the actor whenever the acting owner's row isn't the first
+//       owner found, and is simply wrong conceptually. We now read the acting
+//       member's own profile (falling back to a DB profile fetch).
+//     • block()/remove()/transferOwner() already log named entries — unchanged,
+//       they remain the surviving rows after the RPC's nameless ones are dropped.
 //
-// All Part 13B behaviour (demoteEditorToViewer, leaveWorkspace, etc.)
-// is preserved exactly.
+// All Part 13B behaviour (demoteEditorToViewer, leaveWorkspace, etc.) preserved.
 
 import { useState, useEffect, useCallback } from 'react';
 import { WorkspaceMember, WorkspaceRole } from '../types';
@@ -50,6 +51,29 @@ export function useWorkspaceMembers(workspaceId: string | null) {
   const isOwner    = userRole === 'owner';
   const canManage  = isOwner;
 
+  // ── Helper: resolve the CURRENT actor's display name ────────────────────
+  // Prefers the in-memory member profile; falls back to a direct profiles
+  // fetch so the name is correct even before the member list loads.
+  const resolveActorName = useCallback(async (): Promise<string> => {
+    const fromMembers = members.find((m) => m.userId === user?.id)?.profile;
+    if (fromMembers?.fullName || fromMembers?.username) {
+      return fromMembers.fullName ?? fromMembers.username ?? 'A member';
+    }
+    try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) return 'A member';
+      const { data } = await supabase
+        .from('profiles')
+        .select('full_name, username')
+        .eq('id', authUser.id)
+        .single();
+      const p = data as { full_name?: string; username?: string } | null;
+      return p?.full_name ?? p?.username ?? 'A member';
+    } catch {
+      return 'A member';
+    }
+  }, [members, user?.id]);
+
   // ── Load ──────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
     if (!workspaceId) return;
@@ -67,7 +91,6 @@ export function useWorkspaceMembers(workspaceId: string | null) {
   }, [workspaceId, load]);
 
   // ── Part 46: Realtime subscriptions ───────────────────────────────────
-  // Using useWorkspaceRealtime (centralised) — no duplicate channels.
   useWorkspaceRealtime(workspaceId, {
     onMemberInsert: (_userId, _role) => {
       // Reload to get the full profile object for the new member
@@ -85,8 +108,6 @@ export function useWorkspaceMembers(workspaceId: string | null) {
     },
 
     onSelfRemoved: () => {
-      // Current user was removed while viewing this screen —
-      // clear state so no management UI is shown
       setMembers([]);
     },
   });
@@ -105,9 +126,11 @@ export function useWorkspaceMembers(workspaceId: string | null) {
     let result: { error: string | null };
 
     if (isEditorDemotion) {
-      // Use special RPC that also resets the access request to 'removed'
+      // Special RPC that also resets the access request to 'removed'.
+      // (Its own nameless member_role_changed row is dropped by 52.3 SQL.)
       result = await demoteEditorToViewer(workspaceId, userId);
     } else {
+      // (updateMemberRole does not emit activity; we log the named row below.)
       result = await updateMemberRole(workspaceId, userId, role);
     }
 
@@ -117,33 +140,41 @@ export function useWorkspaceMembers(workspaceId: string | null) {
         prev.map(m => m.userId === userId ? { ...m, role } : m),
       );
 
-      // Part 46: Log role change to Activity tab
+      // Part 52.3B: log the NAMED role-change entry (the single surviving row).
       const targetName = currentMember?.profile?.fullName
         ?? currentMember?.profile?.username
         ?? 'A member';
-      const ownerProfile = members.find(m => m.role === 'owner')?.profile;
-      const changedByName = ownerProfile?.fullName ?? ownerProfile?.username ?? 'Owner';
 
-      // Get workspace name for notification
+      // FIX: the actor is the CURRENT user, not "whichever owner row we find".
+      const changedByName = await resolveActorName();
+
       try {
         const { data: ws } = await supabase
           .from('workspaces').select('name').eq('id', workspaceId).single();
-        if (ws) {
-          logRoleChanged({
-            workspaceId,
-            workspaceName: (ws as any).name ?? '',
-            targetUserId:  userId,
-            targetName,
-            newRole:        role,
-            changedByName,
-          }).catch(() => {});
-        }
-      } catch {}
+        logRoleChanged({
+          workspaceId,
+          workspaceName: (ws as any)?.name ?? '',
+          targetUserId:  userId,
+          targetName,
+          newRole:        role,
+          changedByName,
+        }).catch(() => {});
+      } catch {
+        // Even if the workspace-name lookup fails, still log the entry.
+        logRoleChanged({
+          workspaceId,
+          workspaceName: '',
+          targetUserId:  userId,
+          targetName,
+          newRole:        role,
+          changedByName,
+        }).catch(() => {});
+      }
     }
 
     setIsUpdating(false);
     return result;
-  }, [workspaceId, members]);
+  }, [workspaceId, members, resolveActorName]);
 
   // ── Remove member ─────────────────────────────────────────────────────
   const remove = useCallback(async (userId: string) => {
@@ -157,11 +188,7 @@ export function useWorkspaceMembers(workspaceId: string | null) {
       // Optimistic update — realtime DELETE will confirm
       setMembers(prev => prev.filter(m => m.userId !== userId));
 
-      // Part 46 FIX: send Broadcast kick signal to removed user
-      // so they get navigated away instantly without relying on
-      // the Postgres Changes DELETE event (which loses user_id with RLS).
-      // Wrapped in void async IIFE — supabase.rpc() returns PostgrestFilterBuilder
-      // which has no .catch() in its TypeScript types (ts2551).
+      // Part 46 FIX: Broadcast kick signal to removed user.
       void (async () => {
         try {
           await supabase.rpc('notify_workspace_member_removed', {
@@ -173,30 +200,34 @@ export function useWorkspaceMembers(workspaceId: string | null) {
         }
       })();
 
-      // Part 46: Log member removal to Activity tab
-      const removedName   = targetMember?.profile?.fullName ?? targetMember?.profile?.username ?? 'A member';
-      const currentName   = members.find(m => m.userId === user?.id)?.profile?.fullName
-        ?? members.find(m => m.userId === user?.id)?.profile?.username
-        ?? 'Owner';
+      // Part 52.3B: log the NAMED removal entry with the correct actor name.
+      const removedName = targetMember?.profile?.fullName ?? targetMember?.profile?.username ?? 'A member';
+      const currentName = await resolveActorName();
 
       try {
         const { data: ws } = await supabase
           .from('workspaces').select('name').eq('id', workspaceId).single();
-        if (ws) {
-          logMemberRemoved({
-            workspaceId,
-            workspaceName: (ws as any).name ?? '',
-            removedUserId: userId,
-            removedName,
-            removedByName: currentName,
-          }).catch(() => {});
-        }
-      } catch {}
+        logMemberRemoved({
+          workspaceId,
+          workspaceName: (ws as any)?.name ?? '',
+          removedUserId: userId,
+          removedName,
+          removedByName: currentName,
+        }).catch(() => {});
+      } catch {
+        logMemberRemoved({
+          workspaceId,
+          workspaceName: '',
+          removedUserId: userId,
+          removedName,
+          removedByName: currentName,
+        }).catch(() => {});
+      }
     }
 
     setIsUpdating(false);
     return result;
-  }, [workspaceId, members, user?.id]);
+  }, [workspaceId, members, resolveActorName]);
 
   // ── Leave workspace ────────────────────────────────────────────────────
   const leave = useCallback(async () => {
@@ -215,36 +246,39 @@ export function useWorkspaceMembers(workspaceId: string | null) {
     const result = await transferOwnership(workspaceId, newOwnerId);
 
     if (!result.error) {
-      // Part 46 FIX: Don't call load() — realtime UPDATE events from
-      // transfer_workspace_ownership RPC fire onMemberUpdate for BOTH affected
-      // rows (old owner → editor, new owner → owner) instantly on all devices.
-      // Calling load() here races with realtime and can cause a flash/flicker.
-
-      // Part 46: Log ownership transfer to Activity tab
-      const newOwnerName   = newOwnerMember?.profile?.fullName ?? newOwnerMember?.profile?.username ?? 'New owner';
-      const previousOwner  = previousOwnerMember?.profile?.fullName ?? previousOwnerMember?.profile?.username ?? 'Previous owner';
+      // Realtime UPDATE events flip both rows on all devices; don't call load().
+      const newOwnerName  = newOwnerMember?.profile?.fullName ?? newOwnerMember?.profile?.username ?? 'New owner';
+      const previousOwner = previousOwnerMember?.profile?.fullName ?? previousOwnerMember?.profile?.username ?? 'Previous owner';
 
       try {
         const { data: ws } = await supabase
           .from('workspaces').select('name').eq('id', workspaceId).single();
-        if (ws) {
-          logOwnershipTransferred({
-            workspaceId,
-            workspaceName: (ws as any).name ?? '',
-            newOwnerId,
-            newOwnerName,
-            previousOwner,
-          }).catch(() => {});
-        }
-      } catch {}
+        logOwnershipTransferred({
+          workspaceId,
+          workspaceName: (ws as any)?.name ?? '',
+          newOwnerId,
+          newOwnerName,
+          previousOwner,
+        }).catch(() => {});
+      } catch {
+        logOwnershipTransferred({
+          workspaceId,
+          workspaceName: '',
+          newOwnerId,
+          newOwnerName,
+          previousOwner,
+        }).catch(() => {});
+      }
     }
 
     setIsUpdating(false);
     return result;
-  }, [workspaceId, members, load]);
+  }, [workspaceId, members]);
 
   // ── Block member ───────────────────────────────────────────────────────
-  // Calls block_workspace_member RPC (Part 13B), then logs to Activity tab (Part 46).
+  // Calls block_workspace_member RPC, then logs the NAMED entry (Part 52.3B).
+  // The RPC's own nameless 'member_blocked' row is dropped by schema_part52_3.sql,
+  // so this named entry is the single "blocked <name>" row that survives.
   const block = useCallback(async (userId: string, reason?: string) => {
     if (!workspaceId) return { error: 'No workspace' };
     setIsUpdating(true);
@@ -263,25 +297,29 @@ export function useWorkspaceMembers(workspaceId: string | null) {
       // Optimistic update — realtime DELETE + blocked INSERT will confirm
       setMembers(prev => prev.filter(m => m.userId !== userId));
 
-      // Part 46: Log block to Activity tab
+      // Part 52.3B: NAMED block entry with the correct actor name.
       const blockedName   = targetMember?.profile?.fullName ?? targetMember?.profile?.username ?? 'A member';
-      const blockedByName = members.find(m => m.userId === user?.id)?.profile?.fullName
-        ?? members.find(m => m.userId === user?.id)?.profile?.username
-        ?? 'Owner';
+      const blockedByName = await resolveActorName();
 
       try {
         const { data: ws } = await supabase
           .from('workspaces').select('name').eq('id', workspaceId).single();
-        if (ws) {
-          logMemberBlocked({
-            workspaceId,
-            workspaceName: (ws as any).name ?? '',
-            blockedUserId: userId,
-            blockedName,
-            blockedByName,
-          }).catch(() => {});
-        }
-      } catch {}
+        logMemberBlocked({
+          workspaceId,
+          workspaceName: (ws as any)?.name ?? '',
+          blockedUserId: userId,
+          blockedName,
+          blockedByName,
+        }).catch(() => {});
+      } catch {
+        logMemberBlocked({
+          workspaceId,
+          workspaceName: '',
+          blockedUserId: userId,
+          blockedName,
+          blockedByName,
+        }).catch(() => {});
+      }
 
       setIsUpdating(false);
       return { error: null };
@@ -289,7 +327,7 @@ export function useWorkspaceMembers(workspaceId: string | null) {
       setIsUpdating(false);
       return { error: err instanceof Error ? err.message : 'Failed to block member' };
     }
-  }, [workspaceId, members, user?.id]);
+  }, [workspaceId, members, resolveActorName]);
 
   return {
     members, isLoading, isUpdating, error,

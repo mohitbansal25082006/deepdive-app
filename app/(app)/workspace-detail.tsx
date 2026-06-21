@@ -2,10 +2,17 @@
 // Part 46 / 50.5 / 50.9 / 51 — see prior history.
 // Part 51 REVISION — Shared content loads only when the Shared tab is opened.
 // Part 52 — Feature 1 (realtime delete + settings).
-// Part 52.2 — Activity Feed v2 wiring: the Activity tab now passes navigation
+// Part 52.2 — Activity Feed v2 wiring: the Activity tab passes navigation
 //   callbacks to ActivityItem so actor/target NAMES open member profiles and
-//   report / shared-content TITLES open the resource. The feed updates in
-//   realtime (handled inside useActivityFeed) with no refresh.
+//   report / shared-content TITLES open the resource.
+// Part 52.3B — Activity tab refinements:
+//   • Removed the dead `logSharedContentAdded` import (share logging is owned
+//     by DB triggers since 52.2; the symbol was imported but never used).
+//   • `resourceRemoved` is now TYPE-AWARE: it keys the removed-set by
+//     `${kind}:${resourceId}` built from *_unshared entries, and a *_shared
+//     entry is considered removed only when ITS OWN kind+id matches. Previously
+//     a flat resourceId set could disable an unrelated share entry's tap target
+//     if two content types happened to share an id.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -41,7 +48,7 @@ import { SharedContentCard }         from '../../src/components/workspace/Shared
 import { SharedPodcastCard }         from '../../src/components/workspace/SharedPodcastCard';
 import { SharedDebateCard }          from '../../src/components/workspace/SharedDebateCard';
 import { SharedVoiceDebateCard }     from '../../src/components/workspace/SharedVoiceDebateCard';
-import { logPinToggled, logSharedContentAdded, logMemberLeft, resolveActorName } from '../../src/services/activityService';
+import { logPinToggled, logMemberLeft, resolveActorName } from '../../src/services/activityService';
 import {
   exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
 } from '../../src/services/podcastExport';
@@ -53,7 +60,7 @@ import { sharedDebateToSession }     from '../../src/services/debateSharingServi
 import { VOICE_PERSONAS }            from '../../src/constants/voiceDebate';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
-  SharedPodcast, SharedDebate, ActivityResourceKind,
+  SharedPodcast, SharedDebate, ActivityResourceKind, WorkspaceActivityAction,
 } from '../../src/types';
 import type { SharedVoiceDebate }    from '../../src/types/voiceDebateSharing';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
@@ -70,6 +77,24 @@ const TABS: { id: TabId; label: string; icon: keyof typeof Ionicons.glyphMap }[]
 ];
 
 const SCROLL_REVEAL_THRESHOLD = 360;
+
+// Part 52.3B — map a share/unshare action to its content "kind" so the
+// removed-set can be keyed by `${kind}:${resourceId}` (type-aware).
+function shareKindOf(action: WorkspaceActivityAction): ActivityResourceKind | null {
+  switch (action) {
+    case 'presentation_shared':
+    case 'presentation_unshared':   return 'presentation';
+    case 'academic_paper_shared':
+    case 'academic_paper_unshared': return 'academic_paper';
+    case 'podcast_shared':
+    case 'podcast_unshared':        return 'podcast';
+    case 'debate_shared':
+    case 'debate_unshared':         return 'debate';
+    case 'voice_debate_shared':
+    case 'voice_debate_unshared':   return 'voice_debate';
+    default:                         return null;
+  }
+}
 
 function formatJoined(raw: string | undefined | null): string {
   if (!raw) return 'Unknown date';
@@ -153,13 +178,11 @@ export default function WorkspaceDetailScreen() {
     if ((isSelfRemoved || isDeleted) && !exitedRef.current) {
       exitedRef.current = true;
       if (isDeleted) {
-        // Brief toast-style notice then navigate out.
         Alert.alert(
           'Workspace Deleted',
           'This workspace was deleted by the owner.',
           [{ text: 'OK', onPress: () => router.replace('/(app)/(tabs)/workspace' as any) }],
         );
-        // Safety navigate if the alert is dismissed another way.
         setTimeout(() => router.replace('/(app)/(tabs)/workspace' as any), 50);
       } else {
         router.replace('/(app)/(tabs)/workspace' as any);
@@ -214,7 +237,6 @@ export default function WorkspaceDetailScreen() {
   }, []);
 
   // ── Part 52.2: Activity feed navigation handlers ─────────────────────────
-  // Names → member profile; report/shared-content titles → the resource.
   const handleOpenActivityMember = useCallback((userId: string, fallback?: MiniProfile) => {
     const fromMembers = members.find(m => m.userId === userId)?.profile;
     const profile: MiniProfile =
@@ -239,19 +261,15 @@ export default function WorkspaceDetailScreen() {
 
       case 'presentation':
       case 'academic_paper':
-        // The shared viewer's resolveContentId() accepts the SOURCE content id
-        // directly (its shared-row lookup misses and falls back to the id we
-        // pass), so opening with the source id works as-is.
         router.push({
           pathname: '/(app)/workspace-shared-viewer' as any,
           params: { contentType: kind, contentId: resourceId, workspaceId: id, sharerName: '', sharedAt: '' },
         });
         break;
 
-      // Fix 4: podcast / debate / voice players expect the SHARED-ROW id
-      // (sharedId), but activity stores the SOURCE content id. Resolve the
-      // shared-row id from the loaded sharing lists (loading on demand), then
-      // navigate. If it can't be resolved, fall back to opening the Shared tab.
+      // podcast / debate / voice players expect the SHARED-ROW id (sharedId),
+      // but activity stores the SOURCE content id. Resolve the shared-row id
+      // from the loaded sharing lists (loading on demand), then navigate.
       case 'podcast': {
         let row = podcastSharing.podcasts.find(p => p.podcastId === resourceId);
         if (!row) { await podcastSharing.load(); row = podcastSharing.podcasts.find(p => p.podcastId === resourceId); }
@@ -804,20 +822,33 @@ export default function WorkspaceDetailScreen() {
             ) : (
               <View style={styles.activityList}>
                 {(() => {
-                  // Issue 1: a shared-content add entry whose content was later
-                  // removed (a matching *_unshared exists for the same
-                  // resource_id) should be non-tappable.
-                  const removedResourceIds = new Set(
-                    activities
-                      .filter(a => typeof a.action === 'string' && a.action.endsWith('_unshared') && a.resourceId)
-                      .map(a => a.resourceId as string),
-                  );
+                  // Part 52.3B — TYPE-AWARE removed-set. A shared-content add
+                  // entry whose content was later removed (a matching *_unshared
+                  // exists for the SAME kind + resource_id) must be non-tappable.
+                  // Keying by `${kind}:${resourceId}` prevents a removed podcast
+                  // from accidentally disabling a presentation that happens to
+                  // share an id.
+                  const removedKeys = new Set<string>();
+                  for (const a of activities) {
+                    if (typeof a.action === 'string' && a.action.endsWith('_unshared') && a.resourceId) {
+                      const kind = shareKindOf(a.action as WorkspaceActivityAction);
+                      if (kind) removedKeys.add(`${kind}:${a.resourceId}`);
+                    }
+                  }
+                  const isShareRemoved = (a: typeof activities[number]): boolean => {
+                    if (!a.resourceId) return false;
+                    if (typeof a.action !== 'string' || !a.action.endsWith('_shared')) return false;
+                    const kind = shareKindOf(a.action as WorkspaceActivityAction);
+                    if (!kind) return false;
+                    return removedKeys.has(`${kind}:${a.resourceId}`);
+                  };
+
                   return activities.map((a, i) => (
                     <ActivityItem
                       key={a.id}
                       activity={a}
                       isLast={i === activities.length - 1}
-                      resourceRemoved={!!a.resourceId && removedResourceIds.has(a.resourceId)}
+                      resourceRemoved={isShareRemoved(a)}
                       onOpenMember={handleOpenActivityMember}
                       onOpenResource={handleOpenActivityResource}
                     />

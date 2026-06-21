@@ -1,14 +1,7 @@
 // src/services/agents/academicPaperAgent.ts
 // Part 7 — AI Academic Paper Mode
-//
-// Converts a completed ResearchReport + raw pipeline data into a full
-// academic research paper with 7 canonical sections:
-//   Abstract · Introduction · Literature Review · Methodology ·
-//   Findings · Conclusion · References
-//
-// The agent is called by the orchestrator only when input.mode === 'academic'.
-// It runs after the reporter + visualizer steps, using the already-gathered
-// research intelligence so no additional web searches are needed.
+// Part 53G — accepts an AbortSignal and passes it to the LLM call so a
+//   cancelled research run stops the paper generation too (no token spend).
 
 import { chatCompletionJSON } from '../openaiClient';
 import {
@@ -24,18 +17,10 @@ import {
   AcademicCitationStyle,
 } from '../../types';
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/**
- * Count words in a string (rough estimate for academic papers).
- */
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-/**
- * Count total words across all sections of the paper.
- */
 function totalWordCount(sections: AcademicSection[]): number {
   return sections.reduce((sum, s) => {
     const sectionWords = countWords(s.content);
@@ -47,9 +32,6 @@ function totalWordCount(sections: AcademicSection[]): number {
   }, 0);
 }
 
-/**
- * Attach sequential IDs to sections and their subsections.
- */
 function hydrateSections(raw: AcademicAgentOutput['sections']): AcademicSection[] {
   return raw.map((section, i) => ({
     ...section,
@@ -60,8 +42,6 @@ function hydrateSections(raw: AcademicAgentOutput['sections']): AcademicSection[
     })),
   }));
 }
-
-// ─── System prompt ───────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a senior academic researcher and expert scientific writer with 20+ years of experience publishing in peer-reviewed journals. Your writing is precise, formal, and deeply analytical.
 
@@ -85,19 +65,6 @@ Each section must be substantive:
 
 Total target: 3500–5000 words across the full paper.`;
 
-// ─── Main agent function ──────────────────────────────────────────────────────
-
-/**
- * Generate a full academic paper from the completed research pipeline.
- *
- * @param input      Original user research input (query, depth, focusAreas)
- * @param plan       The research plan produced by plannerAgent
- * @param analysis   Facts, statistics, trends from analysisAgent
- * @param factCheck  Verified facts and reliability score from factCheckerAgent
- * @param searchBatches  Raw web search results for citations
- * @param report     The completed standard report (for additional context)
- * @param citationStyle  Preferred academic citation format (default: 'apa')
- */
 export async function runAcademicPaperAgent(
   input: ResearchInput,
   plan: ResearchPlan,
@@ -105,14 +72,12 @@ export async function runAcademicPaperAgent(
   factCheck: FactCheckOutput,
   searchBatches: SearchBatch[],
   report: ResearchReport,
-  citationStyle: AcademicCitationStyle = 'apa'
+  citationStyle: AcademicCitationStyle = 'apa',
+  signal?: AbortSignal,            // ── Part 53G ──
 ): Promise<{ output: AcademicAgentOutput; citations: Citation[]; wordCount: number; pageEstimate: number }> {
 
-  // ── Build citations list ────────────────────────────────────────────────────
-  // Reuse citations from the completed report (already deduplicated)
   const citations: Citation[] = Array.isArray(report.citations) ? report.citations : [];
 
-  // ── Build research context for the prompt ──────────────────────────────────
   const verifiedFacts  = Array.isArray(factCheck?.verifiedFacts)  ? factCheck.verifiedFacts  : [];
   const statistics     = Array.isArray(analysis?.statistics)      ? analysis.statistics      : [];
   const trends         = Array.isArray(analysis?.trends)          ? analysis.trends          : [];
@@ -124,7 +89,6 @@ export async function runAcademicPaperAgent(
   const futurePreds    = Array.isArray(report?.futurePredictions) ? report.futurePredictions : [];
   const contradictions = Array.isArray(analysis?.contradictions)  ? analysis.contradictions  : [];
 
-  // Build a condensed citation reference list for in-text use
   const citationRef = citations
     .slice(0, 20)
     .map((c, i) => `[${i + 1}] ${c.source ?? 'Unknown'} (${c.date ?? 'n.d.'}) — "${c.title}"`)
@@ -161,7 +125,6 @@ ${contradictions.length > 0 ? contradictions.map((c, i) => `${i + 1}. ${c}`).joi
 AVAILABLE CITATIONS (use as [N] in text):
 ${citationRef || 'No citations available'}`;
 
-  // ── JSON schema description for the prompt ──────────────────────────────────
   const sectionSchema = `
 {
   "title":          "string — section heading e.g. '1. Introduction'",
@@ -200,71 +163,43 @@ Return ONLY a single valid JSON object with NO markdown fences, NO preamble:
 MANDATORY SECTION ORDER AND REQUIREMENTS:
 
 1. ABSTRACT (type: "abstract")
-   - Title: "Abstract"
-   - Single paragraph, 250-300 words
+   - Title: "Abstract"; single paragraph, 250-300 words
    - Structured: Background • Objective • Method • Findings • Conclusions
-   - No subsections
-   - NO in-text citations
+   - No subsections; NO in-text citations
 
 2. INTRODUCTION (type: "introduction")
-   - Title: "1. Introduction"
-   - Main content: 3-4 paragraphs introducing the topic, its significance, and research gap
-   - Subsections:
-     * "1.1 Background and Context" — historical/conceptual foundation
-     * "1.2 Research Objectives" — 3-4 specific objectives this paper addresses
-     * "1.3 Paper Organization" — brief outline of section structure
+   - Title: "1. Introduction"; 3-4 paragraphs introducing topic, significance, research gap
+   - Subsections: "1.1 Background and Context", "1.2 Research Objectives", "1.3 Paper Organization"
    - Use in-text citations for all factual claims
 
 3. LITERATURE REVIEW (type: "literature_review")
-   - Title: "2. Literature Review"
-   - Main content: 3-4 paragraphs synthesizing existing knowledge
-   - Subsections:
-     * "2.1 Theoretical Framework" — conceptual underpinnings
-     * "2.2 Current State of Research" — what is already known
-     * "2.3 Research Gaps and Limitations" — what remains unknown or contested
-   - Critically analyze sources, not just summarize them
-   - Use heavy in-text citations
+   - Title: "2. Literature Review"; 3-4 paragraphs synthesizing existing knowledge
+   - Subsections: "2.1 Theoretical Framework", "2.2 Current State of Research", "2.3 Research Gaps and Limitations"
+   - Critically analyze sources; use heavy in-text citations
 
 4. METHODOLOGY (type: "methodology")
-   - Title: "3. Methodology"
-   - Main content: 2-3 paragraphs describing the AI-augmented research approach
-   - Subsections:
-     * "3.1 Research Design" — systematic literature review via AI agents
-     * "3.2 Data Collection and Sources" — web search queries, databases used
-     * "3.3 Analysis Framework" — how information was extracted and verified
-   - Be transparent about AI-assisted nature of the research
-   - Include the reliability score and source diversity metrics
+   - Title: "3. Methodology"; 2-3 paragraphs on the AI-augmented research approach
+   - Subsections: "3.1 Research Design", "3.2 Data Collection and Sources", "3.3 Analysis Framework"
+   - Be transparent about the AI-assisted nature; include reliability score + source diversity
 
 5. FINDINGS (type: "findings")
-   - Title: "4. Findings"
-   - Main content: 3-4 paragraphs presenting the most critical discoveries
-   - Subsections (create 3-4 thematic subsections based on the research, e.g.):
-     * "4.1 [First Major Theme]"
-     * "4.2 [Second Major Theme]"
-     * "4.3 [Third Major Theme]"
-     * "4.4 Statistical Evidence" — key data points and figures
-   - Use all available statistics and verified facts
-   - Provide critical analysis, not just description
+   - Title: "4. Findings"; 3-4 paragraphs presenting critical discoveries
+   - Subsections (3-4 thematic): e.g. "4.1 [Theme]", "4.2 [Theme]", "4.3 [Theme]", "4.4 Statistical Evidence"
+   - Use all available statistics and verified facts; provide critical analysis
 
 6. CONCLUSION (type: "conclusion")
-   - Title: "5. Conclusion"
-   - Main content: 3-4 paragraphs synthesizing the overall contribution
-   - Subsections:
-     * "5.1 Summary of Key Contributions" — what this paper established
-     * "5.2 Practical Implications" — real-world applications
-     * "5.3 Limitations and Future Research" — honest assessment of scope and next steps
-   - Connect back to objectives stated in Introduction
+   - Title: "5. Conclusion"; 3-4 paragraphs synthesizing the contribution
+   - Subsections: "5.1 Summary of Key Contributions", "5.2 Practical Implications", "5.3 Limitations and Future Research"
+   - Connect back to the objectives stated in the Introduction
 
 7. REFERENCES (type: "references")
-   - Title: "References"
-   - Content: Full formatted reference list in ${citationStyle.toUpperCase()} style
-   - Format each reference on a new line as: "[N] AuthorLastName, A. B. (Year). Title. Source. URL"
-   - Include ALL citations from the available citations list
-   - No subsections
+   - Title: "References"; full formatted list in ${citationStyle.toUpperCase()} style
+   - Each reference on a new line: "[N] AuthorLastName, A. B. (Year). Title. Source. URL"
+   - Include ALL citations; no subsections
 
-Write at a doctoral / journal submission level. Be specific with data. Use formal academic register throughout. Every factual claim must be supported by a citation.`;
+Write at a doctoral / journal submission level. Be specific with data. Use formal
+academic register throughout. Every factual claim must be supported by a citation.`;
 
-  // ── Call the LLM ───────────────────────────────────────────────────────────
   const raw = await chatCompletionJSON<AcademicAgentOutput>(
     [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -273,20 +208,18 @@ Write at a doctoral / journal submission level. Be specific with data. Use forma
     {
       temperature: 0.45,
       maxTokens:   6000,
+      signal,                       // ── Part 53G ──
     }
   );
 
-  // ── Validate minimal structure ─────────────────────────────────────────────
   if (!raw?.title || !Array.isArray(raw?.sections) || raw.sections.length === 0) {
     throw new Error(
       'Academic Paper Agent returned an invalid response. Please try again.'
     );
   }
 
-  // ── Hydrate section IDs ────────────────────────────────────────────────────
   const sections = hydrateSections(raw.sections);
 
-  // ── Compute word count and page estimate ───────────────────────────────────
   const abstractWords = countWords(raw.abstract ?? '');
   const sectionWords  = totalWordCount(sections);
   const wordCount     = abstractWords + sectionWords;

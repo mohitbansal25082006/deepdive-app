@@ -1,16 +1,26 @@
 // src/hooks/usePublicShare.ts
-// DeepDive AI — Part 36: publishReport() calls notifyFollowersOfNewReport()
-// after a successful share link creation or reactivation.
-// All Part 33 / 34 exports and behaviour preserved unchanged.
+// DeepDive AI — Part 36: publishReport() previously called
+// notifyFollowersOfNewReport() after a successful share-link creation.
+//
+// ── Part 53G FIX (feed double-notification) ──────────────────────────────────
+// The DB publish trigger (trg_notify_followers_on_publish) ALSO inserts a
+// new_report follow_notification the moment a share-link's is_active becomes
+// true. So having the client ALSO call notifyFollowersOfNewReport() produced
+// TWO inserts → two webhook calls → two push notifications for a single share.
+//
+// The delete-then-insert dedup can't merge these because the two inserts race.
+// Fix: the DB trigger is now the SINGLE SOURCE of the new_report notification.
+// The client-side notifyFollowersOfNewReport() call (and its import) are removed.
+// All other Part 33/34/36 exports and behaviour are preserved unchanged.
 
 import { useState, useEffect, useCallback } from 'react';
 import { Alert, Share }                      from 'react-native';
 import * as ExpoClipboard                    from 'expo-clipboard';
 import { supabase }                          from '../lib/supabase';
-import { notifyFollowersOfNewReport }        from '../services/followService';
+// (Part 53G) notifyFollowersOfNewReport import removed — DB trigger handles it.
 
 const PUBLIC_REPORTS_URL =
-  process.env.EXPO_PUBLIC_PUBLIC_REPORTS_URL ?? 'https://deepdive-reports.vercel.app';
+  process.env.EXPO_PUBLIC_PUBLIC_REPORTS_URL ?? 'https://deepdive.website';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -162,17 +172,15 @@ export function usePublicShare(reportId: string | null): UsePublicShareReturn {
     return fetchOrCreateShareLink();
   }, [fetchOrCreateShareLink]);
 
-  // Part 36: after a successful publish, fire follower notifications.
-  // Only notify when creating a NEW share link (was inactive/null before).
+  // ── Part 53G: publish no longer fires a client-side notification ──────────
+  // The DB publish trigger (trg_notify_followers_on_publish) inserts the
+  // new_report follow_notification automatically when is_active flips true.
+  // Firing it here too caused DUPLICATE push notifications, so it's removed.
   const publishReport = useCallback(async (tagsOverride?: string[]) => {
-    const wasActiveBefore = isActive;
-    const url = await fetchOrCreateShareLink(tagsOverride);
-
-    if (url && reportId && !wasActiveBefore) {
-      // Fire-and-forget — never blocks the UI
-      notifyFollowersOfNewReport(reportId).catch(() => {});
-    }
-  }, [fetchOrCreateShareLink, reportId, isActive]);
+    await fetchOrCreateShareLink(tagsOverride);
+    // No notifyFollowersOfNewReport() here — the database trigger is the
+    // single source of the "new report" notification to followers.
+  }, [fetchOrCreateShareLink]);
 
   const unpublishReport = useCallback(async () => {
     if (!shareId) return;

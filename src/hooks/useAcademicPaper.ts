@@ -2,13 +2,16 @@
 // Part 7 — Original (full academic paper generation, sections fix, load/generate/export)
 // Part 22 — Added: autoCacheAcademicPaper() called after generate() saves to DB
 //            and also after loadPaper() / loadByReportId() succeeds.
+// Part 53 — ADDED: fires a unified "paper ready" notification after a NEW paper
+//            is generated (not on load).
 //
-// CHANGE LOG (Part 22 only):
-//   Line added: import { autoCacheAcademicPaper } from '../lib/autoCacheMiddleware';
-//   Line added inside generate()     after setPaper(newPaper):  autoCacheAcademicPaper(newPaper);
-//   Line added inside loadPaper()    after setPaper(loaded):    autoCacheAcademicPaper(loaded);
-//   Line added inside loadByReportId after setPaper(loaded):    autoCacheAcademicPaper(loaded);
-//   Everything else is byte-for-byte identical to Part 7.
+// CHANGE LOG (Part 53 only):
+//   • import { notifyContentReady } from '../services/appNotificationService';
+//   • inside generate(), after autoCacheAcademicPaper(newPaper), call
+//       notifyContentReady({ kind: 'paper', contentId: newPaper.id,
+//                            reportId: newPaper.reportId, title: newPaper.title });
+//   Not fired inside loadPaper()/loadByReportId() (loading shouldn't notify).
+//   Everything else is byte-for-byte identical to Part 22.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Alert, Share } from 'react-native';
@@ -24,6 +27,8 @@ import {
 import { exportAcademicPaperAsPDF } from '../services/academicPdfExport';
 // ── Part 22: Auto-cache import ───────────────────────────────────────────────
 import { autoCacheAcademicPaper }   from '../lib/autoCacheMiddleware';
+// ── Part 53: unified notification fire-point ─────────────────────────────────
+import { notifyContentReady }       from '../services/appNotificationService';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -108,6 +113,9 @@ function mapRow(data: Record<string, any>): AcademicPaper {
 export function useAcademicPaper(report: ResearchReport | null) {
   const { user }   = useAuth();
   const isMounted  = useRef(true);
+  // Part 53F: explicit cancel flag so a finishing generate() is a no-op.
+  const cancelledRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);   // Part 53G
 
   const [paper,          setPaper]          = useState<AcademicPaper | null>(null);
   const [isLoading,      setIsLoading]      = useState(false);
@@ -120,7 +128,10 @@ export function useAcademicPaper(report: ResearchReport | null) {
 
   useEffect(() => {
     isMounted.current = true;
-    return () => { isMounted.current = false; };
+    return () => {
+      isMounted.current = false;
+      try { controllerRef.current?.abort(); } catch {}   // Part 53G: stop on unmount
+    };
   }, []);
 
   // ── Auto-load if report already has an academic_paper_id ────────────────
@@ -159,6 +170,7 @@ export function useAcademicPaper(report: ResearchReport | null) {
 
         // ── Part 22: Auto-cache the loaded paper ───────────────────────
         autoCacheAcademicPaper(loaded);
+        // NOTE (Part 53): no notification on LOAD — only on fresh generation.
       }
     } catch (err) {
       if (isMounted.current) setError('Unexpected error loading paper.');
@@ -203,6 +215,7 @@ export function useAcademicPaper(report: ResearchReport | null) {
 
         // ── Part 22: Auto-cache the loaded paper ───────────────────────
         autoCacheAcademicPaper(loaded);
+        // NOTE (Part 53): no notification on LOAD — only on fresh generation.
       }
     } catch (err) {
       console.error('[useAcademicPaper] loadByReportId error:', err);
@@ -216,6 +229,8 @@ export function useAcademicPaper(report: ResearchReport | null) {
     if (!report || !user || isGenerating) return;
     if (!isMounted.current) return;
 
+    cancelledRef.current = false;  // Part 53F
+    controllerRef.current = new AbortController();   // Part 53G
     setIsGenerating(true);
     setError(null);
     setProgress('Loading research data…');
@@ -272,6 +287,7 @@ export function useAcademicPaper(report: ResearchReport | null) {
           [],   // no raw search batches needed — report already has citations
           report,
           citationStyle,
+          controllerRef.current?.signal,   // ── Part 53G ──
         );
 
       setProgress('Saving academic paper…');
@@ -327,17 +343,27 @@ export function useAcademicPaper(report: ResearchReport | null) {
         exportCount:   0,
       };
 
-      if (isMounted.current) {
+      // ── Part 53F: CANCEL GUARD — skip UI + notification if cancelled ──
+      if (isMounted.current && !cancelledRef.current) {
         setPaper(newPaper);
         const first = newPaper.sections.find(s => s.type !== 'abstract');
         if (first) setActiveSectionId(first.id);
         setProgress('');
 
         // ── Part 22: Auto-cache the newly generated paper ──────────────
-        // Fire-and-forget — never throws, never blocks state updates above
         autoCacheAcademicPaper(newPaper);
+
+        // ── Part 53: fire a "paper ready" notification ─────────────────
+        notifyContentReady({
+          kind:      'paper',
+          contentId: newPaper.id,
+          reportId:  newPaper.reportId,
+          title:     newPaper.title,
+        }).catch(() => {});
       }
     } catch (err) {
+      // Part 53G: cancellation surfaces as AbortError — silent stop.
+      if ((err as { name?: string })?.name === 'AbortError' || cancelledRef.current) return;
       const msg = err instanceof Error ? err.message : 'Unknown error';
       if (isMounted.current) {
         setError(msg);
@@ -437,5 +463,12 @@ export function useAcademicPaper(report: ResearchReport | null) {
     navigateToSection,
     setCitationStyle,
     clearError: () => setError(null),
+    // Part 53F: call this from a Cancel button to stop notifying on completion.
+    cancelGeneration: () => {
+      cancelledRef.current = true;
+      try { controllerRef.current?.abort(); } catch {}   // Part 53G
+      controllerRef.current = null;
+      setIsGenerating(false); setProgress('');
+    },
   };
 }

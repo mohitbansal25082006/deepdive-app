@@ -1,17 +1,30 @@
 // app/(app)/_layout.tsx
 // Part 44 UPDATE — Registers workspace-shared-voice-debate-player screen route.
-// Part 49 UPDATE — No structural changes; workspace-chat screen now powered by
-//                  Stream Chat but uses the same route name and params as before.
-//                  All other screens preserved exactly from Part 44.
-// Part 50.6 UPDATE — Registers workspace-ai-chat (personal "Ask DeepDive AI") route.
+// Part 49 UPDATE — workspace-chat screen powered by Stream Chat (same route/params).
+// Part 50.6 UPDATE — Registers workspace-ai-chat route.
+// Part 53D UPDATE —
+//   1. Wraps the whole app stack in <NotificationsProvider> so the bell and the
+//      Profile tab badge share ONE realtime unread count.
+//   2. Registers the Expo push token on login (registerAndSaveToken) so REMOTE
+//      push works when the app is closed.
+//   3. Handles COLD-START deep links: if the app was launched by tapping a push
+//      while closed, getInitialNotificationResponse() routes to that content.
+//      (The warm case — app already running — stays on registerNotificationTap-
+//      Handler below.)
 
 import { useEffect, useRef }             from 'react';
 import { View, Animated }                from 'react-native';
 import { Stack, router, usePathname }    from 'expo-router';
 import { COLORS }                        from '../../src/constants/theme';
-import { registerNotificationTapHandler } from '../../src/lib/notifications';
+import {
+  registerNotificationTapHandler,
+  getInitialNotificationResponse,
+  registerAndSaveToken,
+} from '../../src/lib/notifications';
+import { markNotificationReadFromData } from '../../src/services/appNotificationService';
 import { useNetwork }                    from '../../src/context/NetworkContext';
 import { useAuth }                       from '../../src/context/AuthContext';
+import { NotificationsProvider }         from '../../src/context/NotificationsContext';
 import { checkOnboardingStatus }         from '../../src/services/onboardingService';
 import { OfflineScreen }                 from '../../src/components/offline/OfflineScreen';
 import { AccountSuspendedScreen }        from '../../src/components/common/AccountSuspendedScreen';
@@ -73,10 +86,41 @@ function AppLayoutInner() {
     }
   }, [isOffline, isConnecting]);
 
-  // ── Deep-link routing from notification taps ──────────────────────────────
+  // ── Part 53D: register push token once the user is known ──────────────────
+  const tokenRegistered = useRef(false);
   useEffect(() => {
-    const unsubscribe = registerNotificationTapHandler((href) => { router.push(href as any); });
+    if (!user?.id || tokenRegistered.current) return;
+    tokenRegistered.current = true;
+    registerAndSaveToken(user.id).catch(() => {});
+  }, [user?.id]);
+
+  // ── Deep-link routing from notification taps (WARM — app already running) ──
+  useEffect(() => {
+    const unsubscribe = registerNotificationTapHandler(
+      (href) => { router.push(href as any); },
+      (data) => { markNotificationReadFromData(data).catch(() => {}); },
+    );
     return unsubscribe;
+  }, []);
+
+  // ── Part 53D: COLD-START deep link (app was closed, opened via push tap) ──
+  const coldStartHandled = useRef(false);
+  useEffect(() => {
+    if (coldStartHandled.current) return;
+    coldStartHandled.current = true;
+    (async () => {
+      try {
+        const res = await getInitialNotificationResponse();
+        if (res) {
+          // Clear this notification's unread state + reconcile the badge.
+          markNotificationReadFromData(res.data).catch(() => {});
+          if (res.href) {
+            // Small delay so the navigation tree is mounted before we push.
+            setTimeout(() => router.push(res.href as any), 350);
+          }
+        }
+      } catch {}
+    })();
   }, []);
 
   // ── Mini player bus — global subscriber ───────────────────────────────────
@@ -192,21 +236,8 @@ function AppLayoutInner() {
           <Stack.Screen name="workspace-shared-viewer"         options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-podcast-player" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="workspace-shared-debate"         options={{ animation: 'slide_from_right' }} />
-
-          {/*
-            Part 49: workspace-chat now powered by Stream Chat.
-            Same route name and params (id, name, role) as before —
-            workspace-detail.tsx does not need any changes.
-          */}
           <Stack.Screen name="workspace-chat"                  options={{ animation: 'slide_from_right' }} />
-
-          {/*
-            Part 50.6: workspace-ai-chat — personal "Ask DeepDive AI" screen.
-            Opened from the Team Chat top bar (sparkles button). Params: id, name, role.
-          */}
           <Stack.Screen name="workspace-ai-chat"               options={{ animation: 'slide_from_right' }} />
-
-          {/* Part 44: Workspace Shared Voice Debate Player */}
           <Stack.Screen name="workspace-shared-voice-debate-player" options={{ animation: 'slide_from_right' }} />
 
           {/* Credits */}
@@ -262,9 +293,12 @@ function AppLayoutInner() {
 // ─── Root export ───────────────────────────────────────────────────────────────
 
 export default function AppLayout() {
+  const { user } = useAuth();
   return (
-    <MiniPlayerProvider>
-      <AppLayoutInner />
-    </MiniPlayerProvider>
+    <NotificationsProvider userId={user?.id ?? null}>
+      <MiniPlayerProvider>
+        <AppLayoutInner />
+      </MiniPlayerProvider>
+    </NotificationsProvider>
   );
 }

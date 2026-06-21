@@ -1,11 +1,13 @@
 // src/hooks/useDebate.ts
 // Part 20 — Original (DebateConfigV2, reportContext support)
 // Part 22 — Added: autoCacheDebate() called inside onComplete
+// Part 53 — ADDED: fires a unified "debate ready" notification on completion.
 //
-// CHANGE LOG (Part 22 only):
-//   Line added: import { autoCacheDebate } from '../lib/autoCacheMiddleware';
-//   Line added inside onComplete callback: autoCacheDebate(session);
-//   Everything else is byte-for-byte identical to Part 20.
+// CHANGE LOG (Part 53 only):
+//   • import { notifyContentReady } from '../services/appNotificationService';
+//   • inside onComplete, after autoCacheDebate(session), call
+//       notifyContentReady({ kind: 'debate', contentId: session.id, title: session.topic });
+//   Everything else is byte-for-byte identical to Part 22.
 
 import { useState, useCallback, useRef } from 'react';
 import {
@@ -19,6 +21,8 @@ import { runDebatePipeline, DebateConfigV2 } from '../services/debateOrchestrato
 import { useAuth }                           from '../context/AuthContext';
 // ── Part 22: Auto-cache import ───────────────────────────────────────────────
 import { autoCacheDebate }                   from '../lib/autoCacheMiddleware';
+// ── Part 53: unified notification fire-point ─────────────────────────────────
+import { notifyContentReady }                from '../services/appNotificationService';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -46,6 +50,7 @@ export function useDebate() {
 
   // Prevents stale state updates after reset() is called
   const abortRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);   // Part 53G
 
   const patch = useCallback((partial: Partial<DebateGenerationState>) => {
     if (!abortRef.current) {
@@ -69,6 +74,7 @@ export function useDebate() {
       const roles = config.agentRoles?.length ? config.agentRoles : DEFAULT_ROLES;
 
       abortRef.current = false;
+      controllerRef.current = new AbortController();   // Part 53G
 
       // Reset to a clean generating state
       setState({
@@ -130,6 +136,13 @@ export function useDebate() {
           // ── Part 22: Auto-cache the completed debate ───────────────────
           // Fire-and-forget — never throws, never blocks the UI update above
           autoCacheDebate(session);
+
+          // ── Part 53: fire a "debate ready" notification ────────────────
+          notifyContentReady({
+            kind:      'debate',
+            contentId: session.id,
+            title:     session.topic,
+          }).catch(() => {});
         },
 
         // ── Pipeline error ──────────────────────────────────────────────────
@@ -144,7 +157,9 @@ export function useDebate() {
             progressMessage: '',
           });
         },
-      });
+      },
+      controllerRef.current?.signal,   // ── Part 53G: cancel signal ──
+      );
     },
     [user, patch],
   );
@@ -153,6 +168,8 @@ export function useDebate() {
 
   const reset = useCallback(() => {
     abortRef.current = true;
+    try { controllerRef.current?.abort(); } catch {}   // Part 53G
+    controllerRef.current = null;
     setState(INITIAL_STATE);
   }, []);
 

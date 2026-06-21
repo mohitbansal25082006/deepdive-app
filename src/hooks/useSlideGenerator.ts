@@ -2,12 +2,16 @@
 // Part 5 — Original (all stale-closure fixes FIX 1–4, ref guards, patch helper)
 // Part 22 — Added: autoCachePresentation() called after generate() saves to DB
 //            and also inside loadPresentation() on successful load.
+// Part 53 — ADDED: fires a unified "presentation ready" notification after a NEW
+//            presentation is generated (not on load).
 //
-// CHANGE LOG (Part 22 only):
-//   Line added: import { autoCachePresentation } from '../lib/autoCacheMiddleware';
-//   Line added inside generate()         after patch({ presentation, ... }): autoCachePresentation(presentation);
-//   Line added inside loadPresentation() after patch({ presentation, ... }): autoCachePresentation(pres);
-//   Everything else is byte-for-byte identical to Part 5.
+// CHANGE LOG (Part 53 only):
+//   • import { notifyContentReady } from '../services/appNotificationService';
+//   • inside generate(), after autoCachePresentation(presentation), call
+//       notifyContentReady({ kind: 'presentation', contentId: presentation.id,
+//                            reportId: presentation.reportId, title: presentation.title });
+//   Not fired inside loadPresentation() (loading an existing deck shouldn't notify).
+//   Everything else is byte-for-byte identical to Part 22.
 //
 // ─── FIXES (Part 5, carried forward unchanged) ────────────────────────────────
 //  FIX 1 — Stale closure in `generate`      → ref guard isGeneratingRef
@@ -35,6 +39,8 @@ import {
 } from '../types';
 // ── Part 22: Auto-cache import ───────────────────────────────────────────────
 import { autoCachePresentation } from '../lib/autoCacheMiddleware';
+// ── Part 53: unified notification fire-point ─────────────────────────────────
+import { notifyContentReady } from '../services/appNotificationService';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
@@ -60,6 +66,9 @@ export function useSlideGenerator(report: ResearchReport | null) {
   const isGeneratingRef  = useRef(false);
   const isExportingRef   = useRef(false);
   const presentationRef  = useRef<GeneratedPresentation | null>(null);
+  // Part 53F: set true by reset()/cancel so a finishing generate() is a no-op.
+  const cancelledRef     = useRef(false);
+  const controllerRef    = useRef<AbortController | null>(null);   // Part 53G
 
   // Keep refs in sync whenever state changes
   const patch = useCallback((partial: Partial<SlideGeneratorState>) => {
@@ -108,6 +117,7 @@ export function useSlideGenerator(report: ResearchReport | null) {
 
       // ── Part 22: Auto-cache the loaded presentation ────────────────────
       autoCachePresentation(pres);
+      // NOTE (Part 53): no notification on LOAD — only on fresh generation.
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       patch({ isGenerating: false, progress: '', error: msg });
@@ -120,11 +130,13 @@ export function useSlideGenerator(report: ResearchReport | null) {
     // FIX 1: Read from ref, not from stale closure over state
     if (!report || isGeneratingRef.current) return;
 
+    cancelledRef.current = false;  // Part 53F
+    controllerRef.current = new AbortController();   // Part 53G
     patch({ isGenerating: true, progress: 'AI is reading your report…', error: null });
 
     try {
       patch({ progress: 'Designing slide structure…' });
-      const agentOutput = await runSlideAgent(report, theme);
+      const agentOutput = await runSlideAgent(report, theme, controllerRef.current?.signal);   // Part 53G
 
       patch({ progress: 'Building presentation…' });
       const numberedSlides = agentOutput.slides.map((s, i) => ({
@@ -178,11 +190,25 @@ export function useSlideGenerator(report: ResearchReport | null) {
         exportCount:  0,
       };
 
+      // ── Part 53F: CANCEL GUARD ──
+      // If cancelled mid-generation, don't surface or notify.
+      if (cancelledRef.current) return;
+
       patch({ presentation, isGenerating: false, progress: '' });
 
       // ── Part 22: Auto-cache the generated presentation ─────────────────
-      // Fire-and-forget — never throws, never blocks the UI update above
       autoCachePresentation(presentation);
+
+      // ── Part 53: fire a "presentation ready" notification ──────────────
+      // Only when we have a real saved id (skip if the DB insert failed).
+      if (presentation.id) {
+        notifyContentReady({
+          kind:      'presentation',
+          contentId: presentation.id,
+          reportId:  presentation.reportId,
+          title:     presentation.title,
+        }).catch(() => {});
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to generate presentation.';
       patch({ isGenerating: false, progress: '', error: msg });
@@ -301,6 +327,9 @@ export function useSlideGenerator(report: ResearchReport | null) {
   // ── Reset local state ─────────────────────────────────────────────────────
 
   const reset = useCallback(() => {
+    cancelledRef.current    = true;   // Part 53F: cancel any in-flight generate()
+    try { controllerRef.current?.abort(); } catch {}   // Part 53G
+    controllerRef.current   = null;
     isGeneratingRef.current = false;
     isExportingRef.current  = false;
     presentationRef.current = null;

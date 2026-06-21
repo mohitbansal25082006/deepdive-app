@@ -1,5 +1,6 @@
 // src/types/social.ts
 // DeepDive AI — Part 36: Social & Discovery type definitions
+// Part 53D — added 'new_unfollower' to FollowNotificationType.
 
 // ─── Public Profile ───────────────────────────────────────────────────────────
 
@@ -75,7 +76,8 @@ export interface FeedItem {
 
 // ─── Follow Notification ─────────────────────────────────────────────────────
 
-export type FollowNotificationType = 'new_follower' | 'new_report';
+// Part 53D: 'new_unfollower' added.
+export type FollowNotificationType = 'new_follower' | 'new_unfollower' | 'new_report';
 
 export interface FollowNotification {
   id:               string;

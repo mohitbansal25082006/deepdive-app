@@ -1,5 +1,11 @@
 // src/services/researchOrchestrator.ts
 // Part 25 — Updated
+// Part 53 — UPDATED notification firing:
+//   • The final report-complete notification now uses the unified
+//     notifyContentReady('report', …) instead of notifyReportComplete().
+//   • When academic mode generates & saves an academic paper inside the
+//     orchestrator, it ALSO fires notifyContentReady('paper', …) so the paper
+//     shows up in the bell with a deep-link to the academic-paper viewer.
 //
 // CHANGES FROM PART 24:
 //   1. Step 2 (Web Search) now calls serpSearchDeep() instead of serpSearchBatch()
@@ -34,7 +40,8 @@ import { runAcademicPaperAgent }     from './agents/academicPaperAgent';
 import { runStreamingReportAgent, StreamingReportOutput } from './agents/streamingReportAgent';
 import { serpSearchDeep, serpSearchBatch, DeepSearchCallbacks } from './serpApiClient';
 import { extractSourceImages }       from './imageExtractor';
-import { notifyReportComplete }      from '../lib/notifications';
+// ── Part 53: unified notification service (replaces direct notifyReportComplete) ──
+// (Part 53F) notifyContentReady is no longer called here — the hook fires it.
 import { recordResearchCompletion }  from './homePersonalizationService';
 import { computeBatchTrustSummary }  from './sourceTrustScorer';
 
@@ -102,7 +109,12 @@ export async function runResearchPipeline(
   userId:    string,
   input:     ResearchInput,
   callbacks: OrchestratorCallbacks,
+  signal?:   AbortSignal,   // ── Part 53G: cancel support ──
 ): Promise<void> {
+
+  // Part 53G: helper — true once the user cancels. Checked between steps so we
+  // stop spending tokens and abort in-flight OpenAI calls immediately.
+  const aborted = () => signal?.aborted === true;
 
   const mode  = input.mode ?? 'standard';
   const steps = buildSteps(mode);
@@ -188,6 +200,7 @@ export async function runResearchPipeline(
   try {
     // ── STEP 1 — PLANNER ───────────────────────────────────────────────────
 
+    if (aborted()) return;
     setStepRunning('planner');
     callbacks.onStepDetail('planner', 'Decomposing query into research strategy…');
 
@@ -209,6 +222,7 @@ export async function runResearchPipeline(
 
     // ── STEP 2 — WEB SEARCH (Multi-round) ──────────────────────────────────
 
+    if (aborted()) return;
     setStepRunning('searcher');
 
     // Deep/Expert: use multi-round serpSearchDeep
@@ -292,6 +306,7 @@ export async function runResearchPipeline(
 
     // ── STEP 3 — ANALYSIS ──────────────────────────────────────────────────
 
+    if (aborted()) return;
     setStepRunning('analyst');
     callbacks.onStepDetail('analyst', `Extracting facts & statistics from ${totalUnique} sources…`);
 
@@ -306,6 +321,7 @@ export async function runResearchPipeline(
 
     // ── STEP 4 — FACT CHECK ────────────────────────────────────────────────
 
+    if (aborted()) return;
     setStepRunning('factchecker');
     callbacks.onStepDetail('factchecker', 'Cross-verifying claims with trust-weighted scoring…');
 
@@ -320,6 +336,7 @@ export async function runResearchPipeline(
 
     // ── STEP 5 — STREAMING REPORT GENERATION ──────────────────────────────
 
+    if (aborted()) return;
     setStepRunning('reporter');
     callbacks.onStepDetail('reporter', 'Starting live report generation…');
 
@@ -359,6 +376,7 @@ export async function runResearchPipeline(
           onError: (err) => {
             reject(err);
           },
+          signal,   // ── Part 53G: cancel streaming + all section calls ──
         },
       ).catch(reject);
     });
@@ -367,11 +385,13 @@ export async function runResearchPipeline(
       'reporter',
       `${reportOutput.sections.length} sections · ${reportOutput.citations.length} citations · ${totalUnique} sources`,
     );
+    if (aborted()) return;
     setStepDone('reporter');
     await updateStatus('visualizing');
 
     // ── STEP 6 — VISUALIZER ────────────────────────────────────────────────
 
+    if (aborted()) return;
     setStepRunning('visualizer');
     callbacks.onStepDetail('visualizer', 'Extracting source images…');
 
@@ -426,7 +446,7 @@ export async function runResearchPipeline(
 
     let academicPaper: AcademicPaper | null = null;
 
-    if (mode === 'academic') {
+    if (mode === 'academic' && !aborted()) {
       await updateStatus('writing_paper');
       setStepRunning('academic');
       callbacks.onStepDetail('academic', 'Structuring academic paper sections…');
@@ -448,7 +468,7 @@ export async function runResearchPipeline(
           pageEstimate,
         } = await runAcademicPaperAgent(
           input, plan, analysis, factCheck, searchBatches,
-          reportForAcademic, 'apa',
+          reportForAcademic, 'apa', signal,   // ── Part 53G ──
         );
 
         callbacks.onStepDetail(
@@ -501,6 +521,10 @@ export async function runResearchPipeline(
             'academic',
             `✓ Academic paper saved · ${wordCount.toLocaleString()} words · ${pageEstimate} pages`,
           );
+
+          // ── Part 53F: paper notification is now fired by the HOOK
+          //    (useResearch onComplete) so a CANCELLED research run does NOT
+          //    notify. The orchestrator no longer fires it here.
         }
         setStepDone('academic');
       } catch (academicError) {
@@ -510,6 +534,8 @@ export async function runResearchPipeline(
         callbacks.onStepDetail('academic', `⚠ Academic paper failed: ${academicMsg.slice(0, 80)}`);
       }
     }
+
+    if (aborted()) return;
 
     // ── SAVE COMPLETE REPORT ──────────────────────────────────────────────
 
@@ -572,10 +598,17 @@ export async function runResearchPipeline(
       console.warn('[Orchestrator] Personalization update error:', err);
     });
 
-    await notifyReportComplete(reportId, reportOutput.title);
+    // ── Part 53F: report/paper notifications are now fired by the HOOK
+    //    (useResearch onComplete), AFTER the abort check, so a CANCELLED run
+    //    does not notify. The orchestrator just hands back the final report.
     callbacks.onComplete(finalReport);
 
   } catch (error) {
+    // Part 53G: a user-cancel surfaces as an AbortError — treat as silent stop.
+    if ((error as { name?: string })?.name === 'AbortError' || aborted()) {
+      await updateStatus('cancelled').catch(() => {});
+      return;
+    }
     const message = error instanceof Error ? error.message : 'Unknown research error';
     console.error('[Orchestrator] Pipeline error:', error);
     const runningStep = steps.find(s => s.status === 'running');

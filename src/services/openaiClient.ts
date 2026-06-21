@@ -1,11 +1,12 @@
 // src/services/openaiClient.ts
 // FIXED: Reads EXPO_PUBLIC_OPENAI_API_KEY (required for Expo client bundle).
-// Variables without EXPO_PUBLIC_ prefix are invisible to the React Native app.
 //
-// ADDED: `openaiClient` named export — a lightweight shim that mirrors the
-// OpenAI SDK's `client.chat.completions.create` interface so that callers
-// (e.g. paperEditorService.ts) can import { openaiClient } without pulling
-// in the full openai npm package.
+// ── Part 53G: AbortSignal support ────────────────────────────────────────────
+// rawCreate/chatCompletion/chatCompletionJSON now accept an optional
+// AbortSignal. When the caller aborts (user cancels generation), the in-flight
+// fetch is cancelled so NO further tokens are spent and the request stops
+// immediately. AbortError is swallowed and surfaced as a lightweight
+// 'AbortError' so callers can detect cancellation and bail out of their loops.
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const MODEL = 'gpt-4o';
@@ -41,7 +42,6 @@ interface CreateChatCompletionResponse {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function getApiKey(): string {
-  // Must be EXPO_PUBLIC_ prefixed for Expo to bundle it into the app
   const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!key || key.trim() === '') {
     throw new Error(
@@ -52,10 +52,20 @@ function getApiKey(): string {
   return key.trim();
 }
 
+/** True if an error is an AbortError (user cancelled). */
+export function isAbortError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError';
+}
+
 async function rawCreate(
-  params: CreateChatCompletionParams & { jsonMode?: boolean },
+  params: CreateChatCompletionParams & { jsonMode?: boolean; signal?: AbortSignal },
 ): Promise<CreateChatCompletionResponse> {
   const apiKey = getApiKey();
+
+  // Part 53G: if already aborted before we even start, bail immediately.
+  if (params.signal?.aborted) {
+    const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+  }
 
   const body: Record<string, unknown> = {
     model:       params.model,
@@ -77,8 +87,12 @@ async function rawCreate(
         Authorization:  `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
+      // Part 53G: pass the abort signal so cancel kills the request.
+      signal: params.signal,
     });
   } catch (networkErr) {
+    // Part 53G: rethrow aborts as-is so callers can detect cancellation.
+    if (isAbortError(networkErr)) throw networkErr;
     throw new Error(`Network error reaching OpenAI: ${String(networkErr)}`);
   }
 
@@ -106,19 +120,19 @@ async function rawCreate(
 }
 
 // ─── Named export: openaiClient shim ─────────────────────────────────────────
-// Matches the subset of the OpenAI SDK used across the codebase:
-//   openaiClient.chat.completions.create({ model, max_tokens, temperature, messages })
 
 export const openaiClient = {
   chat: {
     completions: {
-      create: (params: CreateChatCompletionParams): Promise<CreateChatCompletionResponse> =>
+      create: (
+        params: CreateChatCompletionParams & { signal?: AbortSignal },
+      ): Promise<CreateChatCompletionResponse> =>
         rawCreate(params),
     },
   },
 } as const;
 
-// ─── Named exports: functional helpers (unchanged public API) ─────────────────
+// ─── Named exports: functional helpers ────────────────────────────────────────
 
 export async function chatCompletion(
   messages: ChatMessage[],
@@ -126,6 +140,7 @@ export async function chatCompletion(
     temperature?: number;
     maxTokens?:   number;
     jsonMode?:    boolean;
+    signal?:      AbortSignal;   // ← Part 53G
   } = {},
 ): Promise<string> {
   const result = await rawCreate({
@@ -134,6 +149,7 @@ export async function chatCompletion(
     temperature: options.temperature,
     max_tokens:  options.maxTokens,
     jsonMode:    options.jsonMode,
+    signal:      options.signal,
   });
 
   const content = result.choices?.[0]?.message?.content;
@@ -143,11 +159,10 @@ export async function chatCompletion(
 
 export async function chatCompletionJSON<T>(
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number } = {},
+  options: { temperature?: number; maxTokens?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   const raw = await chatCompletion(messages, { ...options, jsonMode: true });
 
-  // Strip markdown code fences if the model adds them despite json mode
   const cleaned = raw
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i,    '')
