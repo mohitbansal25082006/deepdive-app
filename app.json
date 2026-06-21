@@ -22,7 +22,8 @@
         "NSCameraUsageDescription": "DeepDive AI needs access to your camera for video meetings and profile photos.",
         "NSLocalNetworkUsageDescription": "DeepDive AI uses local network for WebRTC video calling in meetings.",
         "UIBackgroundModes": [
-          "voip"
+          "voip",
+          "remote-notification"
         ],
         "NSBonjourServices": [
           "_webrtc._tcp"
@@ -33,6 +34,7 @@
       ]
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",

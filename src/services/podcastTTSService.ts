@@ -1,26 +1,8 @@
 // src/services/podcastTTSService.ts
 // Part 39 FIX — Audio Quality now actually changes the OpenAI TTS model & format.
-//
-// ROOT CAUSE (Parts 8–39):
-//   generateTurnAudio() ALWAYS called the API with:
-//     model: 'tts-1'   ← hardcoded
-//     response_format: 'mp3'  ← hardcoded
-//   Even though AUDIO_QUALITY_CONFIG defined model/format per quality tier,
-//   and the orchestrator stored audioQuality in the DB row — it was never
-//   passed down to the actual API call. The selector was purely cosmetic.
-//
-// FIX SUMMARY:
-//   1. generateTurnAudio()      → new `quality: AudioQuality` param (default 'standard')
-//   2. generateAllTurnAudio()   → new `quality` param, forwarded per segment
-//   3. regenerateMissingSegments() → new `quality` param
-//   4. getSegmentPath()         → now returns .wav extension for lossless quality
-//      (expo-av needs the correct extension to select the right decoder)
-//   5. resolveQualityParams()   → reads AUDIO_QUALITY_CONFIG to pick model+format
-//
-// Quality tiers (from AUDIO_QUALITY_CONFIG in podcast_v2.ts):
-//   standard → tts-1    + mp3  (fast, ~128kbps, smallest files)
-//   high     → tts-1-hd + mp3  (richer voice, same container)
-//   lossless → tts-1-hd + wav  (studio quality, uncompressed, largest files)
+// Part 53G — AbortSignal support: generateTurnAudio passes the signal to fetch,
+//   and generateAllTurnAudio checks signal.aborted between batches so a cancelled
+//   podcast stops generating audio immediately (no further TTS token spend).
 
 import {
   documentDirectory,
@@ -35,32 +17,23 @@ import { PodcastTurn, PodcastVoice } from '../types';
 import { AUDIO_QUALITY_CONFIG }      from '../types/podcast_v2';
 import type { AudioQuality }         from '../types/podcast_v2';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
 const OPENAI_TTS_URL   = 'https://api.openai.com/v1/audio/speech';
 const PODCAST_BASE_DIR = (documentDirectory ?? '') + 'deepdive_podcasts/';
 const CONCURRENCY      = 3;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function getApiKey(): string {
   const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!key?.trim()) {
-    throw new Error(
-      'EXPO_PUBLIC_OPENAI_API_KEY is not set. Add it to your .env and restart.'
-    );
+    throw new Error('EXPO_PUBLIC_OPENAI_API_KEY is not set. Add it to your .env and restart.');
   }
   return key.trim();
 }
 
-/**
- * Resolves TTS model + response_format from an AudioQuality tier.
- * Falls back to standard if quality is undefined/invalid.
- *
- *   standard → { model: 'tts-1',    format: 'mp3' }
- *   high     → { model: 'tts-1-hd', format: 'mp3' }
- *   lossless → { model: 'tts-1-hd', format: 'wav' }
- */
+/** True if an error is an AbortError (user cancelled). */
+function isAbortError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError';
+}
+
 function resolveQualityParams(quality: AudioQuality = 'standard'): {
   model:  'tts-1' | 'tts-1-hd';
   format: 'mp3' | 'wav';
@@ -69,26 +42,18 @@ function resolveQualityParams(quality: AudioQuality = 'standard'): {
   return { model: cfg.model, format: cfg.format };
 }
 
-/**
- * Convert an ArrayBuffer to a base64 string.
- * Uses chunked processing (8 KB chunks) to avoid a stack overflow
- * when spreading large Uint8Arrays in String.fromCharCode.
- */
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes  = new Uint8Array(buffer);
   const CHUNK  = 8192;
   let   binary = '';
-
   for (let i = 0; i < bytes.length; i += CHUNK) {
     const end   = Math.min(i + CHUNK, bytes.length);
     const slice = bytes.subarray(i, end);
     binary += String.fromCharCode(...Array.from(slice));
   }
-
   return btoa(binary);
 }
 
-/** Estimate playback duration (ms) from word count at ~150 wpm */
 export function estimateSegmentDurationMs(text: string): number {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   return Math.round((words / 150) * 60 * 1000);
@@ -100,16 +65,6 @@ export function getPodcastDir(podcastId: string): string {
   return PODCAST_BASE_DIR + podcastId + '/';
 }
 
-/**
- * Returns the local filesystem path for a segment file.
- * Uses the correct extension for the quality tier:
- *   standard / high → .mp3
- *   lossless        → .wav
- *
- * expo-av (and iOS/Android audio decoders) require the correct file
- * extension to pick the right decoder — a WAV file saved as .mp3 will
- * fail or sound corrupted.
- */
 export function getSegmentPath(
   podcastId:    string,
   segmentIndex: number,
@@ -163,29 +118,21 @@ export async function deletePodcastAudio(podcastId: string): Promise<void> {
 
 // ─── Single-Segment TTS ───────────────────────────────────────────────────────
 
-/**
- * Generate audio for one dialogue turn via OpenAI TTS.
- *
- * @param text        Text to synthesize (prosody hints already stripped by agent).
- * @param voice       OpenAI voice name (alloy, nova, echo, etc.).
- * @param outputPath  Absolute local path to write the audio file.
- * @param retries     Retry attempts on transient API errors (default 2).
- * @param quality     Audio quality tier — drives model selection AND format:
- *                      'standard' → tts-1    + mp3   fastest, ~128 kbps
- *                      'high'     → tts-1-hd + mp3   richer voice, ~192 kbps
- *                      'lossless' → tts-1-hd + wav   studio, uncompressed PCM
- */
 export async function generateTurnAudio(
   text:       string,
   voice:      PodcastVoice,
   outputPath: string,
   retries     = 2,
   quality:    AudioQuality = 'standard',
+  signal?:    AbortSignal,          // ── Part 53G ──
 ): Promise<string> {
   const apiKey = getApiKey();
   const { model, format } = resolveQualityParams(quality);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) {           // ── Part 53G: stop before each attempt ──
+      const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+    }
     try {
       const response = await fetch(OPENAI_TTS_URL, {
         method:  'POST',
@@ -194,12 +141,13 @@ export async function generateTurnAudio(
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model,                   // ← FIX: was always 'tts-1', now quality-driven
+          model,
           input:           text,
           voice,
-          response_format: format, // ← FIX: was always 'mp3', now 'wav' for lossless
+          response_format: format,
           speed:           1.0,
         }),
+        signal,                       // ── Part 53G: abort the TTS fetch ──
       });
 
       if (!response.ok) {
@@ -210,7 +158,6 @@ export async function generateTurnAudio(
         } catch { /* ignore */ }
 
         if (response.status === 429 && attempt < retries) {
-          // Exponential back-off: 2 s, 4 s
           await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
           continue;
         }
@@ -221,20 +168,16 @@ export async function generateTurnAudio(
       }
 
       const arrayBuffer = await response.arrayBuffer();
-
       if (!arrayBuffer || arrayBuffer.byteLength < 100) {
         throw new Error('TTS returned an empty audio buffer');
       }
 
       const base64 = arrayBufferToBase64(arrayBuffer);
-
-      await writeAsStringAsync(outputPath, base64, {
-        encoding: EncodingType.Base64,
-      });
-
+      await writeAsStringAsync(outputPath, base64, { encoding: EncodingType.Base64 });
       return outputPath;
 
     } catch (err) {
+      if (isAbortError(err)) throw err;   // ── Part 53G: propagate cancellation ──
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
@@ -255,12 +198,6 @@ export interface BatchProgressCallback {
   onProgress?: (message: string) => void;
 }
 
-/**
- * Generate audio for all turns in a 2-speaker podcast.
- * Processes segments in batches of CONCURRENCY=3 to avoid rate limits.
- *
- * @param quality  Forwarded to every generateTurnAudio() call.
- */
 export async function generateAllTurnAudio(
   turns:      PodcastTurn[],
   podcastId:  string,
@@ -268,6 +205,7 @@ export async function generateAllTurnAudio(
   guestVoice: PodcastVoice,
   callbacks:  BatchProgressCallback,
   quality:    AudioQuality = 'standard',
+  signal?:    AbortSignal,          // ── Part 53G ──
 ): Promise<string[]> {
 
   await ensurePodcastDirectory(podcastId);
@@ -276,6 +214,11 @@ export async function generateAllTurnAudio(
   let completedCount = 0;
 
   for (let batchStart = 0; batchStart < turns.length; batchStart += CONCURRENCY) {
+    // ── Part 53G: stop spending TTS tokens the moment the user cancels ──
+    if (signal?.aborted) {
+      const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+    }
+
     const batch = turns.slice(batchStart, batchStart + CONCURRENCY);
 
     callbacks.onProgress?.(
@@ -284,16 +227,16 @@ export async function generateAllTurnAudio(
 
     await Promise.allSettled(
       batch.map(async (turn) => {
-        // Quality-aware path: .mp3 or .wav depending on quality tier
         const outputPath = getSegmentPath(podcastId, turn.segmentIndex, quality);
         const voice      = turn.speaker === 'host' ? hostVoice : guestVoice;
 
         try {
-          await generateTurnAudio(turn.text, voice, outputPath, 2, quality);
+          await generateTurnAudio(turn.text, voice, outputPath, 2, quality, signal);
           audioPaths[turn.segmentIndex] = outputPath;
           completedCount++;
           callbacks.onSegmentComplete(turn.segmentIndex, turns.length, outputPath, true);
         } catch (err) {
+          if (isAbortError(err)) { completedCount++; return; }  // cancelled — silent
           console.warn(
             `[PodcastTTS] Segment ${turn.segmentIndex} failed:`,
             err instanceof Error ? err.message : err
@@ -312,8 +255,6 @@ export async function generateAllTurnAudio(
   return audioPaths;
 }
 
-// ─── Regenerate Missing Segments ─────────────────────────────────────────────
-
 export async function regenerateMissingSegments(
   turns:      PodcastTurn[],
   podcastId:  string,
@@ -321,6 +262,7 @@ export async function regenerateMissingSegments(
   guestVoice: PodcastVoice,
   callbacks:  BatchProgressCallback,
   quality:    AudioQuality = 'standard',
+  signal?:    AbortSignal,          // ── Part 53G ──
 ): Promise<string[]> {
 
   await ensurePodcastDirectory(podcastId);
@@ -338,12 +280,7 @@ export async function regenerateMissingSegments(
   callbacks.onProgress?.(`Regenerating ${missingTurns.length} missing segments...`);
 
   const newPaths = await generateAllTurnAudio(
-    missingTurns,
-    podcastId,
-    hostVoice,
-    guestVoice,
-    callbacks,
-    quality,
+    missingTurns, podcastId, hostVoice, guestVoice, callbacks, quality, signal,
   );
 
   return turns.map((turn, i) => {

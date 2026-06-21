@@ -1,11 +1,10 @@
 // src/hooks/useResearch.ts
-// Part 21 — Original (streaming report generation, streaming sections/tokens)
-// Part 22 — Added: autoCacheReport() called inside onComplete
-//
-// CHANGE LOG (Part 22 only):
-//   Line added: import { autoCacheReport } from '../lib/autoCacheMiddleware';
-//   Line added inside onComplete callback: autoCacheReport(completedReport);
-//   Everything else is byte-for-byte identical to Part 21.
+// Part 21 — Original (streaming report generation)
+// Part 22 — Added autoCacheReport() in onComplete
+// Part 53F — Notifications now fire from the HOOK's onComplete (after the abort
+//   check), NOT from the orchestrator. This fixes the cancel bug: when the user
+//   cancels (reset() sets abortRef=true), onComplete returns early and NO
+//   notification is sent. Fires BOTH the report and (academic mode) paper.
 
 import { useState, useCallback, useRef } from 'react';
 import {
@@ -17,41 +16,35 @@ import {
 } from '../types';
 import { runResearchPipeline } from '../services/researchOrchestrator';
 import { useAuth }             from '../context/AuthContext';
-// ── Part 22: Auto-cache import ───────────────────────────────────────────────
 import { autoCacheReport }     from '../lib/autoCacheMiddleware';
+// ── Part 53F: fire content notifications from the hook (respects cancel) ──
+import { notifyContentReady }  from '../services/appNotificationService';
 
-export type ResearchPhase =
-  | 'idle'
-  | 'running'
-  | 'completed'
-  | 'error';
+export type ResearchPhase = 'idle' | 'running' | 'completed' | 'error';
 
-/** Which sub-phase of the running state we are in */
 export type StreamingPhase =
-  | 'agents'           // steps 1-4 (planner, search, analyst, factcheck)
-  | 'streaming_report' // step 5 — sections arriving one-by-one
-  | 'streaming_visuals'// step 6 — knowledge graph + infographics
+  | 'agents'
+  | 'streaming_report'
+  | 'streaming_visuals'
   | 'done';
 
 export interface PartialSection {
   index:      number;
   title:      string;
-  content:    string;   // accumulates as tokens arrive
+  content:    string;
   isComplete: boolean;
-  section?:   ReportSection; // set when complete
+  section?:   ReportSection;
 }
 
 export function useResearch() {
   const { user } = useAuth();
 
-  // ── Core state ────────────────────────────────────────────────────────────
   const [phase, setPhase]   = useState<ResearchPhase>('idle');
   const [steps, setSteps]   = useState<AgentStep[]>([]);
   const [stepDetails, setStepDetails] = useState<Record<string, string>>({});
   const [report, setReport] = useState<ResearchReport | null>(null);
   const [error, setError]   = useState<string | null>(null);
 
-  // ── Streaming state ───────────────────────────────────────────────────────
   const [streamingPhase, setStreamingPhase]       = useState<StreamingPhase>('agents');
   const [streamingSections, setStreamingSections] = useState<PartialSection[]>([]);
   const [streamingSectionIndex, setStreamingSectionIndex] = useState<number>(-1);
@@ -59,8 +52,8 @@ export function useResearch() {
   const [executiveSummary, setExecutiveSummary]   = useState<string>('');
 
   const abortRef = useRef(false);
-
-  // ── Start research ────────────────────────────────────────────────────────
+  // Part 53G: real cancellation — aborts in-flight OpenAI fetches.
+  const controllerRef = useRef<AbortController | null>(null);
 
   const startResearch = useCallback(
     async (input: ResearchInput) => {
@@ -70,6 +63,7 @@ export function useResearch() {
       }
 
       abortRef.current = false;
+      controllerRef.current = new AbortController();   // Part 53G
       setPhase('running');
       setSteps([]);
       setStepDetails({});
@@ -85,8 +79,6 @@ export function useResearch() {
         onStepUpdate: (updatedSteps) => {
           if (abortRef.current) return;
           setSteps(updatedSteps);
-
-          // Switch streaming phase based on current running step
           const runningStep = updatedSteps.find(s => s.status === 'running');
           if (runningStep?.agent === 'reporter') {
             setStreamingPhase('streaming_report');
@@ -101,8 +93,6 @@ export function useResearch() {
           if (abortRef.current) return;
           setStepDetails(prev => ({ ...prev, [agent]: detail }));
         },
-
-        // ── Streaming section callbacks ──────────────────────────────────
 
         onSectionStart: (index: number, title: string) => {
           if (abortRef.current) return;
@@ -145,17 +135,34 @@ export function useResearch() {
           setExecutiveSummary(summary);
         },
 
-        // ── Completion ────────────────────────────────────────────────────
-
         onComplete: (completedReport: ResearchReport) => {
+          // ── Part 53F: CANCEL GUARD ──
+          // If the user cancelled, do NOT update UI and do NOT notify.
           if (abortRef.current) return;
+
           setReport(completedReport);
           setStreamingPhase('done');
           setPhase('completed');
 
-          // ── Part 22: Auto-cache the completed report ───────────────────
-          // Fire-and-forget — never throws, never blocks the UI update above
           autoCacheReport(completedReport);
+
+          // ── Part 53F: fire notifications HERE (after the abort check) ──
+          notifyContentReady({
+            kind:      'report',
+            contentId: completedReport.id,
+            reportId:  completedReport.id,
+            title:     completedReport.title,
+          }).catch(() => {});
+
+          // Academic mode also produced a paper inside the orchestrator.
+          if (completedReport.academicPaperId) {
+            notifyContentReady({
+              kind:      'paper',
+              contentId: completedReport.academicPaperId,
+              reportId:  completedReport.id,
+              title:     completedReport.title,
+            }).catch(() => {});
+          }
         },
 
         onError: (message: string) => {
@@ -163,15 +170,18 @@ export function useResearch() {
           setError(message);
           setPhase('error');
         },
-      });
+      },
+      controllerRef.current.signal,   // ── Part 53G: cancel signal ──
+      );
     },
     [user],
   );
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
-
   const reset = useCallback(() => {
     abortRef.current = true;
+    // Part 53G: abort any in-flight OpenAI requests so generation truly stops.
+    try { controllerRef.current?.abort(); } catch {}
+    controllerRef.current = null;
     setPhase('idle');
     setSteps([]);
     setStepDetails({});
@@ -184,19 +194,15 @@ export function useResearch() {
     setExecutiveSummary('');
   }, []);
 
-  // ── Derived ───────────────────────────────────────────────────────────────
-
   const currentAgent   = steps.find(s => s.status === 'running')?.agent ?? null;
   const completedCount = steps.filter(s => s.status === 'completed').length;
   const totalSteps     = steps.length || 6;
   const progressPercent = Math.round((completedCount / totalSteps) * 100);
 
-  // Streaming report progress: 0-100 within the reporter step
   const sectionsCompleted = streamingSections.filter(s => s.isComplete).length;
   const reportStreamPercent = Math.round((sectionsCompleted / 6) * 100);
 
   return {
-    // Core
     phase,
     steps,
     stepDetails,
@@ -206,7 +212,6 @@ export function useResearch() {
     progressPercent,
     startResearch,
     reset,
-    // Streaming
     streamingPhase,
     streamingSections,
     streamingSectionIndex,

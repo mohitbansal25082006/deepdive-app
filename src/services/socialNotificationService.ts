@@ -2,10 +2,14 @@
 // DeepDive AI — Part 36: Social follow notifications + local push.
 // Part 36 FIX — Lazy-loads expo-notifications to prevent PushNotificationIOS
 // invariant violation crash in Expo Go.
+// Part 53C — pushNewFollower/pushNewReport fired from realtime handler.
+// Part 53D — ADDED pushNewUnfollower for unfollow notifications, and the local
+//            push gate now only blocks on EXPLICIT mute (matches notifications.ts
+//            Part 53 fix) so banners fire whenever OS permission is granted.
 
 import { Platform } from 'react-native';
 import { supabase } from '../lib/supabase';
-import { getNotificationsEnabled, getPermissionStatus } from '../lib/notifications';
+import { isExplicitlyMuted, getPermissionStatus } from '../lib/notifications';
 import type { FollowNotification } from '../types/social';
 
 // ─── Lazy loader ──────────────────────────────────────────────────────────────
@@ -43,11 +47,14 @@ async function ensureSocialChannel(): Promise<void> {
   }
 }
 
+// Part 53D: fire whenever OS permission is granted and the user hasn't EXPLICITLY
+// muted notifications in-app. (Previously this required the in-app flag to be
+// true, which is false on fresh installs — silently dropping every banner.)
 async function pushEnabled(): Promise<boolean> {
-  const [enabled, status] = await Promise.all([
-    getNotificationsEnabled(), getPermissionStatus(),
+  const [muted, status] = await Promise.all([
+    isExplicitlyMuted(), getPermissionStatus(),
   ]);
-  return enabled && status === 'granted';
+  return !muted && status === 'granted';
 }
 
 export async function pushNewFollower(params: {
@@ -63,16 +70,49 @@ export async function pushNewFollower(params: {
       content: {
         title: '👋 New Follower',
         body:  `${params.actorName} started following you`,
-        data:  { type: 'new_follower', username: params.actorUsername ?? '' },
+        data:  {
+          type:     'new_follower',
+          route:    '/(app)/user-profile',
+          params:   params.actorUsername ? { username: params.actorUsername } : {},
+          username: params.actorUsername ?? '',
+        },
         sound: true,
         ...(Platform.OS === 'android' ? { channelId: CH_SOCIAL } : {}),
       },
       trigger: null,
     });
-    const cur = await N.getBadgeCountAsync();
-    await N.setBadgeCountAsync(cur + 1);
   } catch (err) {
     console.warn('[SocialNotif] pushNewFollower error:', err);
+  }
+}
+
+// Part 53D: unfollow notification.
+export async function pushNewUnfollower(params: {
+  actorName:     string;
+  actorUsername: string | null;
+}): Promise<void> {
+  if (!await pushEnabled()) return;
+  const N = getNotifs();
+  if (!N) return;
+  await ensureSocialChannel();
+  try {
+    await N.scheduleNotificationAsync({
+      content: {
+        title: '👋 Unfollowed',
+        body:  `${params.actorName} unfollowed you`,
+        data:  {
+          type:     'new_unfollower',
+          route:    '/(app)/user-profile',
+          params:   params.actorUsername ? { username: params.actorUsername } : {},
+          username: params.actorUsername ?? '',
+        },
+        sound: true,
+        ...(Platform.OS === 'android' ? { channelId: CH_SOCIAL } : {}),
+      },
+      trigger: null,
+    });
+  } catch (err) {
+    console.warn('[SocialNotif] pushNewUnfollower error:', err);
   }
 }
 
@@ -90,14 +130,17 @@ export async function pushNewReport(params: {
       content: {
         title: `📄 ${params.actorName} published a report`,
         body:  params.reportTitle,
-        data:  { type: 'new_report', reportId: params.reportId },
+        data:  {
+          type:     'new_report',
+          route:    '/(app)/feed-report-view',
+          params:   { reportId: params.reportId },
+          reportId: params.reportId,
+        },
         sound: true,
         ...(Platform.OS === 'android' ? { channelId: CH_SOCIAL } : {}),
       },
       trigger: null,
     });
-    const cur = await N.getBadgeCountAsync();
-    await N.setBadgeCountAsync(cur + 1);
   } catch (err) {
     console.warn('[SocialNotif] pushNewReport error:', err);
   }

@@ -1,5 +1,13 @@
 // src/hooks/usePodcast.ts
 // Part 39 — UPDATED: V2 multi-speaker podcast generation
+// Part 53 — ADDED: fires a unified "podcast ready" notification on completion.
+//
+// CHANGE LOG (Part 53 only):
+//   • import { notifyContentReady } from '../services/appNotificationService';
+//   • inside onComplete, after autoCachePodcast(podcast), call
+//       notifyContentReady({ kind: 'podcast', contentId: podcast.id,
+//                            reportId: podcast.reportId ?? null, title: podcast.title });
+//   Everything else is byte-for-byte identical to Part 39.
 //
 // CHANGES from Part 22:
 //   1. generateFromPresetV2() — uses V2 script agent (3-speaker, advanced structure)
@@ -40,6 +48,8 @@ import {
 }                                           from '../constants/podcastV2';
 import { useAuth }                          from '../context/AuthContext';
 import { autoCachePodcast }                 from '../lib/autoCacheMiddleware';
+// ── Part 53: unified notification fire-point ─────────────────────────────────
+import { notifyContentReady }               from '../services/appNotificationService';
 
 // ─── Re-export for backward compat ────────────────────────────────────────────
 
@@ -89,6 +99,8 @@ export function usePodcast() {
   const { user } = useAuth();
   const [state, setState]   = useState<PodcastGenerationState>(INITIAL_STATE);
   const abortRef            = useRef(false);
+  // Part 53G: real cancellation for podcast generation.
+  const controllerRef       = useRef<AbortController | null>(null);
 
   const patch = useCallback((partial: Partial<PodcastGenerationState>) => {
     if (!abortRef.current) {
@@ -114,6 +126,7 @@ export function usePodcast() {
       }
 
       abortRef.current = false;
+      controllerRef.current = new AbortController();   // Part 53G
 
       const mergedConfig: PodcastConfig = {
         ...DEFAULT_PODCAST_CONFIG,
@@ -171,6 +184,12 @@ export function usePodcast() {
           },
 
           onComplete: (podcast: Podcast) => {
+            // ── Part 53F: CANCEL GUARD ──
+            // If the user cancelled (reset() set abortRef), do not update state
+            // and do not notify — the background pipeline finishing must be a
+            // no-op once cancelled.
+            if (abortRef.current) return;
+
             patch({
               podcast,
               isGeneratingScript: false,
@@ -179,6 +198,14 @@ export function usePodcast() {
             });
             // Auto-cache completed podcast
             autoCachePodcast(podcast);
+
+            // ── Part 53: fire a "podcast ready" notification ──────────────
+            notifyContentReady({
+              kind:      'podcast',
+              contentId: podcast.id,
+              reportId:  podcast.reportId ?? null,
+              title:     podcast.title,
+            }).catch(() => {});
           },
 
           onError: (message) => {
@@ -189,7 +216,8 @@ export function usePodcast() {
               progressMessage:    '',
             });
           },
-        }
+        },
+        controllerRef.current?.signal,   // ── Part 53G: cancel signal ──
       );
     },
     [user, patch]
@@ -267,6 +295,8 @@ export function usePodcast() {
   /** Reset all state */
   const reset = useCallback(() => {
     abortRef.current = true;
+    try { controllerRef.current?.abort(); } catch {}   // Part 53G
+    controllerRef.current = null;
     setState(INITIAL_STATE);
   }, []);
 

@@ -1,17 +1,7 @@
 // src/services/podcastOrchestrator.ts
-// Part 39 FIX — audioQuality is now passed through the full generation pipeline.
-//
-// ROOT CAUSE:
-//   Even though `input.audioQuality` was stored in the DB row, neither
-//   generateAllTurnAudioV2() nor generateAllTurnAudio() received it.
-//   Both functions called generateTurnAudio() without a quality param,
-//   which defaulted to 'standard' (tts-1 + mp3) every time.
-//
-// FIX:
-//   generateAllTurnAudioV2() now accepts and forwards `audioQuality`.
-//   Both V1 and V2 TTS generation paths pass `input.audioQuality ?? 'standard'`.
-//   getSegmentPath() calls now include the quality param so .wav files get
-//   the correct extension for lossless quality.
+// Part 39 FIX — audioQuality passed through the full generation pipeline.
+// Part 53G — AbortSignal threaded so cancelling a podcast stops script + audio
+//   generation immediately (no further OpenAI / TTS token spend).
 
 import { supabase }                    from '../lib/supabase';
 import type {
@@ -48,13 +38,25 @@ import type {
 }                                       from '../types/podcast_v2';
 import type { PodcastVoice }            from '../types';
 
-// ─── Input ────────────────────────────────────────────────────────────────────
+function isAbortError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError';
+}
+
+// Part 53G: mark a podcast row cancelled without throwing. supabase query
+// builders are thenable but NOT Promises, so they have no .catch() — we await
+// inside a try/catch instead.
+async function markPodcastCancelled(podcastId: string): Promise<void> {
+  try {
+    await supabase.from('podcasts').update({ status: 'cancelled' }).eq('id', podcastId);
+  } catch {
+    // non-fatal
+  }
+}
 
 export interface PodcastInput {
   topic:        string;
   report?:      ResearchReport | null;
   presetStyle?: VoicePresetStyle;
-  // V2 additions
   speakers?:      SpeakerConfig[];
   speakerCount?:  2 | 3;
   presetStyleV2?: VoicePresetStyleV2;
@@ -62,8 +64,6 @@ export interface PodcastInput {
   seriesId?:      string;
   episodeNumber?: number;
 }
-
-// ─── Voice resolution ─────────────────────────────────────────────────────────
 
 function getSpeakerVoiceForV2Turn(
   turn:     PodcastTurnV2,
@@ -75,8 +75,6 @@ function getSpeakerVoiceForV2Turn(
   return speakers[0]?.voice ?? config.hostVoice;
 }
 
-// ─── V2 Audio Generation (3-speaker aware + quality-aware) ───────────────────
-
 const CONCURRENCY = 3;
 
 interface BatchCallbacksV2 {
@@ -84,10 +82,6 @@ interface BatchCallbacksV2 {
   onProgress?: (msg: string) => void;
 }
 
-/**
- * Generate audio for all turns in a V2 (3-speaker) podcast.
- * FIX: now accepts and uses `audioQuality` to drive model + format selection.
- */
 async function generateAllTurnAudioV2(
   turns:        PodcastTurnV2[],
   podcastId:    string,
@@ -95,11 +89,15 @@ async function generateAllTurnAudioV2(
   config:       PodcastConfig,
   callbacks:    BatchCallbacksV2,
   audioQuality: AudioQuality = 'standard',
+  signal?:      AbortSignal,          // ── Part 53G ──
 ): Promise<string[]> {
   const audioPaths: string[] = new Array(turns.length).fill('');
   let completedCount = 0;
 
   for (let batchStart = 0; batchStart < turns.length; batchStart += CONCURRENCY) {
+    if (signal?.aborted) {            // ── Part 53G: stop on cancel ──
+      const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+    }
     const batch = turns.slice(batchStart, batchStart + CONCURRENCY);
 
     callbacks.onProgress?.(
@@ -108,17 +106,15 @@ async function generateAllTurnAudioV2(
 
     await Promise.allSettled(
       batch.map(async (turn) => {
-        // FIX: quality-aware path (.mp3 or .wav depending on quality)
         const outputPath = getSegmentPath(podcastId, turn.segmentIndex, audioQuality);
         const voice      = getSpeakerVoiceForV2Turn(turn, speakers, config);
-
         try {
-          // FIX: pass audioQuality so tts-1-hd / wav is used when selected
-          await generateTurnAudio(turn.text, voice, outputPath, 2, audioQuality);
+          await generateTurnAudio(turn.text, voice, outputPath, 2, audioQuality, signal);
           audioPaths[turn.segmentIndex] = outputPath;
           completedCount++;
           callbacks.onSegmentComplete(turn.segmentIndex, turns.length, outputPath);
         } catch (err) {
+          if (isAbortError(err)) { completedCount++; return; }
           console.warn(
             `[PodcastTTS V2] Segment ${turn.segmentIndex} failed:`,
             err instanceof Error ? err.message : err
@@ -133,9 +129,6 @@ async function generateAllTurnAudioV2(
   return audioPaths;
 }
 
-// ─── V2 turns → V1 PodcastTurn ───────────────────────────────────────────────
-// Preserves 'host'|'guest1'|'guest2' speaker roles.
-
 function v2TurnsToV1Compatible(turns: PodcastTurnV2[]): PodcastTurn[] {
   return turns.map(t => ({
     id:           t.id,
@@ -148,16 +141,15 @@ function v2TurnsToV1Compatible(turns: PodcastTurnV2[]): PodcastTurn[] {
   }));
 }
 
-// ─── Pipeline ─────────────────────────────────────────────────────────────────
-
 export async function runPodcastPipeline(
   userId:    string,
   input:     PodcastInput,
   config:    PodcastConfig,
   callbacks: PodcastGenerationCallbacks,
+  signal?:   AbortSignal,            // ── Part 53G ──
 ): Promise<void> {
 
-  // ── Pre-flight ──────────────────────────────────────────────────────────────
+  const aborted = () => signal?.aborted === true;
 
   const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!openaiKey?.trim()) {
@@ -171,12 +163,9 @@ export async function runPodcastPipeline(
     return;
   }
 
+  if (aborted()) return;             // ── Part 53G ──
+
   const useV2 = !!(input.speakers && input.speakers.length >= 2 && input.speakerCount);
-
-  const serpKey    = process.env.EXPO_PUBLIC_SERPAPI_KEY;
-  const hasSerpKey = !!(serpKey && serpKey.trim() && serpKey !== 'your_serpapi_key_here');
-
-  // Resolve audio quality — default to standard if not provided
   const audioQuality: AudioQuality = input.audioQuality ?? 'standard';
 
   const qualityLabel = audioQuality === 'lossless'
@@ -185,22 +174,13 @@ export async function runPodcastPipeline(
     ? '🎧 High quality (tts-1-hd)'
     : '🎙 Standard quality';
 
-  callbacks.onProgress(
-    hasSerpKey
-      ? `🔍 Searching the web for latest "${input.topic}" data...`
-      : `Writing podcast script with AI... (${qualityLabel})`
-  );
+  callbacks.onProgress(`Writing podcast script with AI... (${qualityLabel})`);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // STEP 1 — SCRIPT GENERATION
-  // ─────────────────────────────────────────────────────────────────────────
-
-  let script:         PodcastScript;
-  let scriptV2:       PodcastScriptV2 | null = null;
-  let title:          string;
-  let description:    string;
-  let teaser          = '';
-  let webSearchUsed   = false;
+  // ── STEP 1: SCRIPT ──
+  let script:     PodcastScript;
+  let scriptV2:   PodcastScriptV2 | null = null;
+  let title:      string;
+  let description: string;
 
   const speakers = input.speakers ?? [
     { name: config.hostName,  voice: config.hostVoice,  role: 'host'   as const },
@@ -218,28 +198,16 @@ export async function runPodcastPipeline(
         presetStyleV2:         input.presetStyleV2 ?? 'casual',
         config,
       };
-
       const result = await runPodcastScriptAgentV2(v2Input);
-
       scriptV2    = result.script;
       title       = result.title;
       description = result.description;
-      teaser      = result.teaser;
-      webSearchUsed = result.webSearchUsed;
-
       script = {
         turns: v2TurnsToV1Compatible(result.script.turns),
         totalWords: result.script.totalWords,
         estimatedDurationMinutes: result.script.estimatedDurationMinutes,
       };
-
       callbacks.onScriptGenerated(script);
-      callbacks.onProgress(
-        `Script ready — ${script.turns.length} turns · ~${script.estimatedDurationMinutes} min` +
-        (webSearchUsed ? ' · web-grounded' : '') +
-        (input.speakerCount === 3 ? ' · 3 speakers' : '') +
-        ` · ${qualityLabel}`
-      );
     } else {
       const result = await runPodcastScriptAgent({
         topic:       input.topic,
@@ -247,36 +215,26 @@ export async function runPodcastPipeline(
         config,
         presetStyle: input.presetStyle,
       });
-
       script        = result.script;
       title         = result.title;
       description   = result.description;
-      webSearchUsed = result.webSearchUsed;
-
       callbacks.onScriptGenerated(script);
-      callbacks.onProgress(
-        `Script ready — ${script.turns.length} turns · ~${script.estimatedDurationMinutes} min` +
-        (webSearchUsed ? ' · web-grounded' : '') +
-        ` · ${qualityLabel}`
-      );
     }
   } catch (err) {
+    if (isAbortError(err) || aborted()) return;   // ── Part 53G ──
     const msg = err instanceof Error ? err.message : 'Unknown script error';
     callbacks.onError(`Script generation failed: ${msg}`);
     return;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // STEP 2 — CREATE DATABASE ROW
-  // ─────────────────────────────────────────────────────────────────────────
+  if (aborted()) return;             // ── Part 53G: don't create a DB row if cancelled ──
 
+  // ── STEP 2: DB ROW ──
   const scriptToStore = scriptV2 ?? script;
-
   const insertPayload: Record<string, unknown> = {
     user_id:                 userId,
     report_id:               input.report?.id ?? null,
-    title,
-    description,
+    title, description,
     topic:                   input.topic,
     script:                  scriptToStore,
     host_voice:              config.hostVoice,
@@ -290,89 +248,75 @@ export async function runPodcastPipeline(
     audio_segment_paths:     [],
     speaker_count:           input.speakerCount ?? 2,
     speakers_config:         speakers,
-    audio_quality:           audioQuality,   // ← always the resolved value
+    audio_quality:           audioQuality,
     preset_style_v2:         input.presetStyleV2 ?? (input.presetStyle ?? 'casual'),
     ...(input.seriesId      ? { series_id:      input.seriesId      } : {}),
     ...(input.episodeNumber ? { episode_number: input.episodeNumber } : {}),
   };
 
   const { data: podcastRow, error: insertError } = await supabase
-    .from('podcasts')
-    .insert(insertPayload)
-    .select()
-    .single();
+    .from('podcasts').insert(insertPayload).select().single();
 
   if (insertError || !podcastRow) {
     callbacks.onError(`Database error: ${insertError?.message ?? 'Unknown error'}`);
     return;
   }
-
   const podcastId = podcastRow.id as string;
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // STEP 3 — TTS AUDIO GENERATION (FIX: quality now flows into every call)
-  // ─────────────────────────────────────────────────────────────────────────
+  if (aborted()) return;             // ── Part 53G ──
 
-  callbacks.onProgress(
-    `Generating audio: 0/${script.turns.length} voice segments (${qualityLabel})...`
-  );
+  // ── STEP 3: AUDIO ──
+  callbacks.onProgress(`Generating audio: 0/${script.turns.length} voice segments (${qualityLabel})...`);
 
   let audioPaths: string[];
-
   try {
     await ensurePodcastDirectory(podcastId);
-
     if (useV2 && scriptV2) {
-      // V2: per-turn voice mapping + quality-aware generation
       audioPaths = await generateAllTurnAudioV2(
-        scriptV2.turns,
-        podcastId,
-        speakers,
-        config,
+        scriptV2.turns, podcastId, speakers, config,
         {
           onSegmentComplete: (segmentIndex, totalSegments, audioPath) => {
             callbacks.onSegmentGenerated(segmentIndex, totalSegments, audioPath);
-            callbacks.onProgress(
-              `Generating audio: ${segmentIndex + 1}/${totalSegments} voice segments`
-            );
+            callbacks.onProgress(`Generating audio: ${segmentIndex + 1}/${totalSegments} voice segments`);
           },
           onProgress: (message) => callbacks.onProgress(message),
         },
-        audioQuality,  // ← FIX: was not passed before
+        audioQuality, signal,        // ── Part 53G ──
       );
     } else {
-      // V1: 2-speaker generation + quality-aware
       audioPaths = await generateAllTurnAudio(
-        script.turns,
-        podcastId,
-        config.hostVoice,
-        config.guestVoice,
+        script.turns, podcastId, config.hostVoice, config.guestVoice,
         {
           onSegmentComplete: (segmentIndex, totalSegments, audioPath) => {
             callbacks.onSegmentGenerated(segmentIndex, totalSegments, audioPath);
-            callbacks.onProgress(
-              `Generating audio: ${segmentIndex + 1}/${totalSegments} voice segments`
-            );
+            callbacks.onProgress(`Generating audio: ${segmentIndex + 1}/${totalSegments} voice segments`);
           },
           onProgress: (message) => callbacks.onProgress(message),
         },
-        audioQuality,  // ← FIX: was not passed before
+        audioQuality, signal,        // ── Part 53G ──
       );
     }
   } catch (err) {
+    if (isAbortError(err) || aborted()) {
+      // Cancelled — mark the row so it doesn't linger as "generating".
+      await markPodcastCancelled(podcastId);
+      return;
+    }
     const msg = err instanceof Error ? err.message : 'Audio generation failed';
-    await supabase
-      .from('podcasts')
-      .update({ status: 'failed', error_message: msg })
-      .eq('id', podcastId);
+    await supabase.from('podcasts').update({ status: 'failed', error_message: msg }).eq('id', podcastId);
     callbacks.onError(`Audio generation failed: ${msg}`);
+    return;
+  }
+
+  if (aborted()) {                   // ── Part 53G: cancelled after audio — stop ──
+    await markPodcastCancelled(podcastId);
     return;
   }
 
   const successCount = audioPaths.filter(Boolean).length;
   if (successCount < Math.ceil(script.turns.length * 0.5)) {
     await supabase.from('podcasts').update({
-      status:        'failed',
+      status: 'failed',
       error_message: `Only ${successCount}/${script.turns.length} audio segments generated.`,
     }).eq('id', podcastId);
     callbacks.onError(
@@ -382,42 +326,25 @@ export async function runPodcastPipeline(
     return;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // STEP 4 — FINALIZE
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // Build turnsWithAudio preserving V2 speaker roles
+  // ── STEP 4: FINALIZE ──
   const turnsWithAudio: PodcastTurn[] = useV2 && scriptV2
     ? scriptV2.turns.map((t, i) => ({
-        id:           t.id,
-        segmentIndex: t.segmentIndex,
-        speaker:      t.speaker,
-        speakerName:  t.speakerName,
-        text:         t.text,
-        audioPath:    audioPaths[i] ?? '',
-        durationMs:   estimateTTSDurationMs(t.text),
+        id: t.id, segmentIndex: t.segmentIndex, speaker: t.speaker,
+        speakerName: t.speakerName, text: t.text,
+        audioPath: audioPaths[i] ?? '', durationMs: estimateTTSDurationMs(t.text),
       }))
     : script.turns.map((turn, i) => ({
-        ...turn,
-        audioPath:  audioPaths[i] ?? '',
-        durationMs: estimateTTSDurationMs(turn.text),
+        ...turn, audioPath: audioPaths[i] ?? '', durationMs: estimateTTSDurationMs(turn.text),
       }));
 
   const totalDurationMs = turnsWithAudio.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
   const durationSeconds = Math.round(totalDurationMs / 1000);
 
   const finalScriptToStore = scriptV2
-    ? {
-        ...scriptV2,
-        turns: scriptV2.turns.map((t, i) => ({
-          ...t,
-          audioPath:  audioPaths[i] ?? '',
-          durationMs: estimateTTSDurationMs(t.text),
-        })),
-      }
+    ? { ...scriptV2, turns: scriptV2.turns.map((t, i) => ({
+        ...t, audioPath: audioPaths[i] ?? '', durationMs: estimateTTSDurationMs(t.text),
+      })) }
     : { ...script, turns: turnsWithAudio };
-
-  // ── Robust DB UPDATE ──────────────────────────────────────────────────────
 
   const { error: fullUpdateError } = await supabase
     .from('podcasts')
@@ -432,51 +359,39 @@ export async function runPodcastPipeline(
     .eq('id', podcastId);
 
   if (fullUpdateError) {
-    console.warn('[PodcastOrchestrator] Full update failed, trying minimal fallback:', fullUpdateError.message);
-    await supabase
-      .from('podcasts')
-      .update({
-        script:              finalScriptToStore,
-        audio_segment_paths: audioPaths,
-        status:              'completed',
-        completed_at:        new Date().toISOString(),
-      })
-      .eq('id', podcastId);
+    console.warn('[PodcastOrchestrator] Full update failed, minimal fallback:', fullUpdateError.message);
+    await supabase.from('podcasts').update({
+      script: finalScriptToStore, audio_segment_paths: audioPaths,
+      status: 'completed', completed_at: new Date().toISOString(),
+    }).eq('id', podcastId);
   }
 
   const finalPodcast: Podcast = {
-    id:                podcastId,
-    userId,
-    reportId:          input.report?.id,
-    title,
-    description,
-    topic:             input.topic,
+    id: podcastId, userId, reportId: input.report?.id,
+    title, description, topic: input.topic,
     script: {
-      turns:                    turnsWithAudio,
-      totalWords:               script.totalWords,
+      turns: turnsWithAudio,
+      totalWords: script.totalWords,
       estimatedDurationMinutes: script.estimatedDurationMinutes,
     },
-    config,
-    status:            'completed',
-    completedSegments: successCount,
-    durationSeconds,
-    wordCount:         script.totalWords,
-    audioSegmentPaths: audioPaths,
-    exportCount:       0,
-    createdAt:         podcastRow.created_at as string,
-    completedAt:       new Date().toISOString(),
+    config, status: 'completed', completedSegments: successCount,
+    durationSeconds, wordCount: script.totalWords,
+    audioSegmentPaths: audioPaths, exportCount: 0,
+    createdAt: podcastRow.created_at as string,
+    completedAt: new Date().toISOString(),
   };
+
+  // ── Part 53G: final cancel check before surfacing/notifying ──
+  if (aborted()) {
+    await markPodcastCancelled(podcastId);
+    return;
+  }
 
   callbacks.onComplete(finalPodcast);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // STEP 5 — BACKGROUND CLOUD UPLOAD (non-blocking)
-  // ─────────────────────────────────────────────────────────────────────────
-
+  // Background upload (only if not cancelled).
   uploadAudioToCloudBackground(podcastId, audioPaths);
 }
-
-// ─── Background Cloud Upload ──────────────────────────────────────────────────
 
 async function uploadAudioToCloudBackground(
   podcastId:  string,
@@ -484,25 +399,19 @@ async function uploadAudioToCloudBackground(
 ): Promise<void> {
   const localPaths = audioPaths.filter(p => p && (p.startsWith('file://') || p.startsWith('/')));
   if (localPaths.length === 0) return;
-
   try {
     const result = await uploadPodcastAudioToStorage(podcastId, audioPaths, undefined);
     if (result.successCount > 0) {
-      await supabase
-        .from('podcasts')
-        .update({
-          audio_storage_urls: result.uploadedUrls,
-          audio_all_uploaded: result.allSucceeded,
-          audio_uploaded_at:  new Date().toISOString(),
-        })
-        .eq('id', podcastId);
+      await supabase.from('podcasts').update({
+        audio_storage_urls: result.uploadedUrls,
+        audio_all_uploaded: result.allSucceeded,
+        audio_uploaded_at:  new Date().toISOString(),
+      }).eq('id', podcastId);
     }
   } catch (err) {
     console.warn('[PodcastOrchestrator] Background audio upload failed (non-fatal):', err);
   }
 }
-
-// ─── Map DB row → Podcast ─────────────────────────────────────────────────────
 
 export function mapRowToPodcast(row: Record<string, any>): Podcast {
   const config: PodcastConfig = {
@@ -512,17 +421,12 @@ export function mapRowToPodcast(row: Record<string, any>): Podcast {
     guestName:             row.guest_name  ?? 'Sam',
     targetDurationMinutes: row.target_duration_minutes ?? row.script?.estimatedDurationMinutes ?? 10,
   };
-
   return {
-    id:                row.id,
-    userId:            row.user_id,
-    reportId:          row.report_id  ?? undefined,
-    title:             row.title,
-    description:       row.description ?? '',
-    topic:             row.topic,
-    script:            row.script ?? { turns: [], totalWords: 0, estimatedDurationMinutes: 0 },
-    config,
-    status:            row.status,
+    id: row.id, userId: row.user_id,
+    reportId: row.report_id ?? undefined,
+    title: row.title, description: row.description ?? '', topic: row.topic,
+    script: row.script ?? { turns: [], totalWords: 0, estimatedDurationMinutes: 0 },
+    config, status: row.status,
     completedSegments: row.completed_segments ?? 0,
     durationSeconds:   row.duration_seconds   ?? 0,
     wordCount:         row.word_count         ?? 0,

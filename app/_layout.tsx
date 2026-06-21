@@ -2,21 +2,12 @@
 // Part 43 CORRECT FIX — clean layout, no Linking handler.
 // Part 49 UPDATE — Wraps app in Stream Chat's OverlayProvider.
 // Part 50 FIX — Removed invalid topInset/bottomInset/translucentStatusBar props
-//   from OverlayProvider. In stream-chat-expo v8 those props were MOVED to the
-//   Channel component (not OverlayProvider). The TypeScript error confirmed this:
-//
-//     "Property 'topInset' does not exist on type IntrinsicAttributes &
-//      ImageGalleryCustomComponents & ..."
-//
-//   OverlayProvider v8 only accepts:
-//     value              — theme object  ✓
-//     imageGalleryCustomComponents — gallery sub-component overrides
-//     autoPlayVideo      — bool
-//     giphyVersion       — string
-//
-//   The attachment picker insets (topInset, bottomInset) belong on <Channel>
-//   in workspace-chat.tsx — which already has them correctly set.
-//   That is the ONLY place they need to be in stream-chat-expo v8.
+//   from OverlayProvider (moved to <Channel> in stream-chat-expo v8).
+// Part 53 UPDATE — Calls initNotifications() once on startup so the SDK 54
+//   notification handler (foreground banner + list) is installed and the Android
+//   channels are created early. Without this, foreground notifications wouldn't
+//   present as banners and the very first content notification of a session
+//   might have no Android channel to land in.
 //
 // WHY OverlayProvider AT ROOT:
 //   Stream's OverlayProvider must sit ABOVE the navigation stack so the
@@ -35,6 +26,8 @@ import { NetworkProvider }        from '../src/context/NetworkContext';
 import { CreditsProvider }        from '../src/context/CreditsContext';
 import { streamChatTheme }        from '../src/constants/streamChatTheme';
 import { COLORS }                 from '../src/constants/theme';
+// ── Part 53: install the notification handler + Android channels at startup ──
+import { initNotifications }      from '../src/lib/notifications';
 
 // Required — closes the auth browser on Android when app resumes via deep link
 WebBrowser.maybeCompleteAuthSession();
@@ -45,6 +38,11 @@ export default function RootLayout() {
   useEffect(() => {
     WebBrowser.warmUpAsync().catch(() => {});
     return () => { WebBrowser.coolDownAsync().catch(() => {}); };
+  }, []);
+
+  // ── Part 53: initialise notifications once. Safe + no-op in Expo Go. ──
+  useEffect(() => {
+    initNotifications();
   }, []);
 
   return (
