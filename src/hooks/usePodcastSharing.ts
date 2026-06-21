@@ -1,7 +1,10 @@
 // src/hooks/usePodcastSharing.ts
 // Part 46 — Auto-reloads when realtime shared podcast events fire.
 // Part 51 UPDATE — Deferred loading via `enabled` (default true) + `hasLoaded`.
-//   Podcast section only fetches once the Shared tab is opened.
+// Part 52.2 FOLLOW-UP — Activity logging for podcast share/remove is now done
+//   server-side by DB triggers on shared_podcasts (see schema_part52_2.sql §9),
+//   so this hook no longer logs anything itself. One correct entry per action,
+//   regardless of which client path triggers the share/remove.
 //
 // All Part 15 behaviour preserved.
 
@@ -82,7 +85,7 @@ export function usePodcastSharing(
     }
   }, [sharedContentVersion, workspaceId, load, enabled]);
 
-  // ── Share a podcast ────────────────────────────────────────────────────
+  // ── Share a podcast (activity logged server-side via trigger) ──────────
   const share = useCallback(async (
     podcastId: string,
     reportId?: string,
@@ -96,7 +99,7 @@ export function usePodcastSharing(
     return { error };
   }, [workspaceId, patch, load]);
 
-  // ── Remove a shared podcast ────────────────────────────────────────────
+  // ── Remove a shared podcast (activity logged server-side via trigger) ──
   const remove = useCallback(async (
     podcastId: string,
   ): Promise<{ error: string | null }> => {
@@ -121,7 +124,7 @@ export function usePodcastSharing(
     isLoading:    state.isLoading,
     isSharing:    state.isSharing,
     error:        state.error,
-    hasLoaded,    // Part 51
+    hasLoaded,
     totalMinutes,
     load,
     share,

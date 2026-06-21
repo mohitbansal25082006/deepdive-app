@@ -1,5 +1,8 @@
 // src/services/workspaceService.ts
 // CRUD and business logic for workspaces & workspace reports.
+// Part 52.2 UPDATE — report_added / report_removed activity inserts now include
+//   the FULL report title + report_id in metadata so the Activity feed can show
+//   the untruncated name and make the entry tappable (Feature 1a).
 
 import { supabase } from '../lib/supabase';
 import {
@@ -249,14 +252,29 @@ export async function addReportToWorkspace(
 
     if (error) throw error;
 
-    // Log activity
-    await supabase.from('workspace_activity').insert({
-      workspace_id:  workspaceId,
-      user_id:       user.id,
-      action:        'report_added',
-      resource_type: 'report',
-      resource_id:   reportId,
-    });
+    // Log activity (Part 52.2: include full report title + report_id so the
+    // Activity feed can show the untruncated name and make it tappable).
+    {
+      let reportTitle = 'Untitled Report';
+      try {
+        const { data: rr } = await supabase
+          .from('research_reports')
+          .select('title, query')
+          .eq('id', reportId)
+          .single();
+        const r = rr as { title?: string; query?: string } | null;
+        reportTitle = r?.title || r?.query || 'Untitled Report';
+      } catch { /* non-fatal — fall back to default */ }
+
+      await supabase.from('workspace_activity').insert({
+        workspace_id:  workspaceId,
+        user_id:       user.id,
+        action:        'report_added',
+        resource_type: 'report',
+        resource_id:   reportId,
+        metadata:      { report_title: reportTitle, report_id: reportId },
+      });
+    }
 
     return {
       data: {
@@ -291,13 +309,28 @@ export async function removeReportFromWorkspace(
 
     if (error) throw error;
 
-    await supabase.from('workspace_activity').insert({
-      workspace_id:  workspaceId,
-      user_id:       user.id,
-      action:        'report_removed',
-      resource_type: 'report',
-      resource_id:   reportId,
-    });
+    // Log activity (Part 52.2: include full report title + report_id).
+    {
+      let reportTitle = 'Untitled Report';
+      try {
+        const { data: rr } = await supabase
+          .from('research_reports')
+          .select('title, query')
+          .eq('id', reportId)
+          .single();
+        const r = rr as { title?: string; query?: string } | null;
+        reportTitle = r?.title || r?.query || 'Untitled Report';
+      } catch { /* non-fatal */ }
+
+      await supabase.from('workspace_activity').insert({
+        workspace_id:  workspaceId,
+        user_id:       user.id,
+        action:        'report_removed',
+        resource_type: 'report',
+        resource_id:   reportId,
+        metadata:      { report_title: reportTitle, report_id: reportId },
+      });
+    }
 
     return { error: null };
   } catch (err) {

@@ -1,27 +1,15 @@
 // src/hooks/useEditAccessRequest.ts
 // Part 12 — Manages edit access request state for viewers and owners.
 // Part 13B — Added 'removed' status + viewer realtime banner.
-// Part 52 (FIX) — Feature 2 (realtime viewer→editor requests) NOW WORKS LIVE.
+// Part 52  — Realtime viewer→editor requests (await setAuth before subscribe).
+// Part 52.2 — Feature 1e: when an owner/editor APPROVES (or denies) a request,
+//   log it to the Activity feed with BOTH the approver's and the requester's
+//   full names so the entry reads "<approver> granted editor access to
+//   <requester>" with both names tappable to their profiles.
 //
-//   THE BUG (why the owner only saw a request after leaving & re-entering):
-//     Private Realtime channels require the socket to be authenticated FIRST.
-//     supabase.realtime.setAuth() returns a Promise, but the previous code
-//     called it fire-and-forget and immediately .subscribe()'d the private
-//     channel. The channel therefore subscribed BEFORE auth was applied, so
-//     Realtime Authorization (RLS on realtime.messages) REJECTED broadcast
-//     delivery — the owner received nothing. It only "worked" after navigating
-//     away and back because by then some OTHER channel had set the auth token
-//     on the socket, so the second subscribe succeeded.
-//
-//   THE FIX:
-//     await supabase.realtime.setAuth()  BEFORE  .subscribe() on every private
-//     channel, on BOTH the viewer side and the owner side. Now the broadcast
-//     reaches the owner instantly on the first mount.
-//
-//   Channels (from schema_part52.sql broadcast_access_request_change()):
-//     • owner feed:   "workspace_access_requests:{workspace_id}"  event "request_change"
-//     • viewer's own: "workspace_my_request:{workspace_id}:{user_id}" event "my_request_change"
-//   postgres_changes is kept as a secondary fallback.
+//   The requester's name comes from the pending request's joined profile; the
+//   approver's name is resolved from the current user's profile. Logging is
+//   fire-and-forget and never blocks the approve/deny action.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
@@ -36,7 +24,29 @@ import {
   subscribeToAccessRequests,
   subscribeToMyRequest,
 } from '../services/editAccessRequestService';
+import {
+  logAccessRequestApproved,
+  logAccessRequestDenied,
+} from '../services/activityService';
 import { WorkspaceRole } from '../types';
+
+// ─── Helper: resolve the current user's display name ──────────────────────────
+
+async function resolveCurrentUserName(): Promise<string> {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return 'A member';
+    const { data } = await supabase
+      .from('profiles')
+      .select('full_name, username')
+      .eq('id', user.id)
+      .single();
+    const p = data as { full_name?: string; username?: string } | null;
+    return p?.full_name ?? p?.username ?? 'A member';
+  } catch {
+    return 'A member';
+  }
+}
 
 // ─── Viewer-side hook ─────────────────────────────────────────────────────────
 
@@ -58,7 +68,6 @@ export function useMyAccessRequest(
     error:        null,
   });
 
-  // Only viewers need to track their own request
   const shouldLoad = userRole === 'viewer' && !!workspaceId;
   const pgUnsubRef   = useRef<(() => void) | null>(null);
   const bcChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -69,7 +78,6 @@ export function useMyAccessRequest(
     setState((s) => ({ ...s, myRequest: data }));
   }, [workspaceId]);
 
-  // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!shouldLoad) {
       setState((s) => ({ ...s, isLoading: false }));
@@ -80,7 +88,6 @@ export function useMyAccessRequest(
     });
   }, [workspaceId, shouldLoad]);
 
-  // ── Realtime broadcast (PRIMARY) + postgres_changes (fallback) ────────────
   useEffect(() => {
     if (!shouldLoad) return;
 
@@ -91,9 +98,6 @@ export function useMyAccessRequest(
       const user = session?.user;
       if (!user || !workspaceId || cancelled) return;
 
-      // CRITICAL: authenticate the realtime socket with the EXPLICIT access
-      // token BEFORE subscribing to the private channel, otherwise RLS rejects
-      // broadcast delivery ("permissions to read from this Topic").
       await supabase.realtime.setAuth(session!.access_token);
       if (cancelled) return;
 
@@ -105,7 +109,6 @@ export function useMyAccessRequest(
         .subscribe();
       bcChannelRef.current = bc;
 
-      // FALLBACK: postgres_changes (Part 13B behaviour)
       pgUnsubRef.current = subscribeToMyRequest(
         workspaceId,
         user.id,
@@ -122,7 +125,6 @@ export function useMyAccessRequest(
     };
   }, [workspaceId, shouldLoad, reloadMine]);
 
-  // ── Submit ────────────────────────────────────────────────────────────────
   const submit = useCallback(async (message?: string) => {
     if (!workspaceId) return { error: 'No workspace' };
     setState((s) => ({ ...s, isSubmitting: true, error: null }));
@@ -136,7 +138,6 @@ export function useMyAccessRequest(
     return { error };
   }, [workspaceId]);
 
-  // ── Retract ───────────────────────────────────────────────────────────────
   const retract = useCallback(async () => {
     if (!workspaceId) return;
     setState((s) => ({ ...s, isSubmitting: true }));
@@ -181,6 +182,11 @@ export function usePendingAccessRequests(
   const bcChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const shouldLoad   = (userRole === 'owner' || userRole === 'editor') && !!workspaceId;
 
+  // Keep a live ref to the current requests so action handlers can look up the
+  // requester's name + id without adding them to the callback deps.
+  const requestsRef = useRef<EditAccessRequest[]>([]);
+  useEffect(() => { requestsRef.current = state.requests; }, [state.requests]);
+
   const load = useCallback(async () => {
     if (!shouldLoad) return;
     setState((s) => ({ ...s, isLoading: true, error: null }));
@@ -188,7 +194,6 @@ export function usePendingAccessRequests(
     setState({ requests: data, isLoading: false, isActioning: false, error });
   }, [workspaceId, shouldLoad]);
 
-  // Reload only the list (no spinner) — used by realtime callbacks.
   const reloadSilent = useCallback(async () => {
     if (!shouldLoad) return;
     const { data } = await fetchPendingRequests(workspaceId!);
@@ -203,32 +208,22 @@ export function usePendingAccessRequests(
     load();
 
     (async () => {
-      // CRITICAL: authenticate the realtime socket with the EXPLICIT access
-      // token BEFORE subscribing to the private channel. Without this, the
-      // owner's private channel subscribes before auth is applied and RLS
-      // silently drops the broadcast — which is exactly why a new request only
-      // showed up after leaving and re-entering the workspace.
       const { data: { session } } = await supabase.auth.getSession();
       if (!session || cancelled) return;
       await supabase.realtime.setAuth(session.access_token);
       if (cancelled) return;
 
-      // PRIMARY: broadcast channel for this workspace's request feed
       const bc = supabase
         .channel(`workspace_access_requests:${workspaceId}`, { config: { private: true } })
         .on('broadcast', { event: 'request_change' }, () => {
-          // Any change (created / updated / deleted) — re-fetch the pending list.
           reloadSilent();
         })
         .subscribe();
       bcChannelRef.current = bc;
     })();
 
-    // FALLBACK: postgres_changes (Part 12 behaviour) — set up immediately.
     pgUnsubRef.current = subscribeToAccessRequests(workspaceId!, {
       onInsert: (req) => {
-        // A new request landed — re-fetch authoritative joined data so the
-        // requester's name/avatar are correct, then also optimistically add.
         reloadSilent();
         setState((s) => {
           if (s.requests.some((r) => r.id === req.id)) return s;
@@ -242,7 +237,6 @@ export function usePendingAccessRequests(
             ? s.requests.map((r) => (r.id === req.id ? req : r))
             : s.requests.filter((r) => r.id !== req.id),
         }));
-        // Re-sync to be safe (handles approve/deny from another device).
         reloadSilent();
       },
     });
@@ -254,8 +248,13 @@ export function usePendingAccessRequests(
     };
   }, [workspaceId, shouldLoad, load, reloadSilent]);
 
+  // ── Approve (Part 52.2: log to Activity feed with both names) ─────────────
   const approve = useCallback(async (requestId: string) => {
     setState((s) => ({ ...s, isActioning: true, error: null }));
+
+    // Capture the requester before the row leaves the list.
+    const req = requestsRef.current.find((r) => r.id === requestId);
+
     const { error } = await approveRequest(requestId);
     setState((s) => ({
       ...s,
@@ -263,11 +262,28 @@ export function usePendingAccessRequests(
       requests: error ? s.requests : s.requests.filter((r) => r.id !== requestId),
       error,
     }));
-    return { error };
-  }, []);
 
+    if (!error && req && workspaceId) {
+      const requesterName =
+        req.profile?.fullName ?? req.profile?.username ?? 'A member';
+      const approverName = await resolveCurrentUserName();
+      logAccessRequestApproved({
+        workspaceId,
+        requesterId:   req.userId,
+        requesterName,
+        approverName,
+      }).catch(() => {});
+    }
+
+    return { error };
+  }, [workspaceId]);
+
+  // ── Deny (Part 52.2: log to Activity feed with both names) ────────────────
   const deny = useCallback(async (requestId: string) => {
     setState((s) => ({ ...s, isActioning: true, error: null }));
+
+    const req = requestsRef.current.find((r) => r.id === requestId);
+
     const { error } = await denyRequest(requestId);
     setState((s) => ({
       ...s,
@@ -275,8 +291,21 @@ export function usePendingAccessRequests(
       requests: error ? s.requests : s.requests.filter((r) => r.id !== requestId),
       error,
     }));
+
+    if (!error && req && workspaceId) {
+      const requesterName =
+        req.profile?.fullName ?? req.profile?.username ?? 'A member';
+      const approverName = await resolveCurrentUserName();
+      logAccessRequestDenied({
+        workspaceId,
+        requesterId:   req.userId,
+        requesterName,
+        approverName,
+      }).catch(() => {});
+    }
+
     return { error };
-  }, []);
+  }, [workspaceId]);
 
   return {
     ...state,

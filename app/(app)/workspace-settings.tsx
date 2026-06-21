@@ -1,30 +1,14 @@
 // app/(app)/workspace-settings.tsx
 // Part 11 (patched) — Copy invite code, editor PDF export, etc.
 // Part 13A — Workspace Logo section (owner + editor) via update_workspace_logo RPC.
-// Part 52 UPDATE — Feature 1 (realtime settings + delete):
-//   • The name / description / logo fields now stay in sync with the LIVE
-//     workspace object from useWorkspace. When another editor/owner changes
-//     something, the broadcast patches `workspace` in the hook, and a
-//     useEffect here re-seeds the local form fields (only when the user isn't
-//     mid-edit, so we never clobber an in-progress edit). Logo always re-seeds.
-//   • Delete no longer manually navigates — the workspace delete broadcast
-//     trigger fires `isDeleted`/`isSelfRemoved`, and a useEffect here navigates
-//     out to the Teams tab. This guarantees the SAME exit path runs for the
-//     owner who deleted AND any member who happens to be on this screen.
-//   • Logo upload/remove now go through update_workspace_logo RPC (unchanged),
-//     which fires the broadcast trigger → other members' headers/cards update.
-//
-// Part 52.1 UPDATE — Feature 1 (advanced workspace export):
-//   • The old one-tap "Export as PDF Bundle" row (which merged every report into
-//     a single lossy summary PDF) is REPLACED with an "Export Bundle" row that
-//     opens the new ExportBundleModal. There the owner/editor can pick ANY mix
-//     of reports + shared content (presentations, papers, podcasts, debates,
-//     voice debates) and download them as a single .zip with each item in its
-//     own original full-fidelity format (PDF / PPTX / MP3).
-//   • exportWorkspaceAsPDF + the old handleExportPDF / isExporting state are
-//     removed (no original standalone export elsewhere is affected).
+// Part 52 — Feature 1 (realtime settings + delete).
+// Part 52.1 — Feature 1 (advanced workspace export via ExportBundleModal).
+// Part 52.2 — Feature 1f (Activity feed): log granular settings changes —
+//   workspace renamed (old → new), description changed (old → new), and logo
+//   set/removed — each with the actor's full name. These appear in the
+//   Activity tab in realtime.
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   Alert, ActivityIndicator, Image, ActionSheetIOS,
@@ -37,12 +21,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { useWorkspace } from '../../src/hooks/useWorkspace';
+import { useAuth } from '../../src/context/AuthContext';
+import { supabase } from '../../src/lib/supabase';
 import { ExportBundleModal } from '../../src/components/workspace/ExportBundleModal';
 import {
   pickAndUploadWorkspaceLogo,
   takeAndUploadWorkspaceLogo,
   removeWorkspaceLogo,
 } from '../../src/services/workspaceMediaService';
+import {
+  logWorkspaceRenamed,
+  logWorkspaceDescriptionChanged,
+  logWorkspaceLogoChanged,
+} from '../../src/services/activityService';
 import { WorkspaceRole } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 
@@ -58,6 +49,8 @@ export default function WorkspaceSettingsScreen() {
     workspace, reports, members, update, remove, refresh, isLoading,
     isSelfRemoved, isDeleted, // Part 52
   } = useWorkspace(id ?? null);
+
+  const { user } = useAuth();
 
   // General info fields (owner only)
   const [name,        setName]        = useState('');
@@ -75,6 +68,22 @@ export default function WorkspaceSettingsScreen() {
   // Part 52 — track whether the user is actively editing text so a live
   // broadcast from another member doesn't clobber their in-progress edit.
   const isEditingTextRef = useRef(false);
+
+  // ── Part 52.2: resolve the current user's display name for activity logs ──
+  const resolveActorName = useCallback(async (): Promise<string> => {
+    try {
+      if (!user) return 'A member';
+      const { data } = await supabase
+        .from('profiles')
+        .select('full_name, username')
+        .eq('id', user.id)
+        .single();
+      const p = data as { full_name?: string; username?: string } | null;
+      return p?.full_name ?? p?.username ?? 'A member';
+    } catch {
+      return 'A member';
+    }
+  }, [user]);
 
   // ── Seed local fields from the live workspace object ───────────────────────
   useEffect(() => {
@@ -105,15 +114,36 @@ export default function WorkspaceSettingsScreen() {
       description.trim() !== (workspace.description ?? ''));
 
   const handleSave = async () => {
-    if (!hasChanges) return;
+    if (!hasChanges || !workspace || !id) return;
     setIsSaving(true);
+
+    const prevName = workspace.name;
+    const prevDesc = workspace.description ?? '';
+    const nextName = name.trim();
+    const nextDesc = description.trim();
+
     const { error } = await update({
-      name: name.trim(),
-      description: description.trim(),
+      name:        nextName,
+      description: nextDesc,
     } as any);
+
     setIsSaving(false);
     isEditingTextRef.current = false; // edit committed
-    if (error) Alert.alert('Error', error);
+
+    if (error) { Alert.alert('Error', error); return; }
+
+    // Part 52.2 (Feature 1f) — log granular changes with old → new + actor name.
+    const actorName = await resolveActorName();
+    if (nextName !== prevName) {
+      logWorkspaceRenamed({
+        workspaceId: id, oldName: prevName, newName: nextName, actorName,
+      }).catch(() => {});
+    }
+    if (nextDesc !== prevDesc) {
+      logWorkspaceDescriptionChanged({
+        workspaceId: id, oldDescription: prevDesc, newDescription: nextDesc, actorName,
+      }).catch(() => {});
+    }
   };
 
   // ── Logo upload ────────────────────────────────────────────────────────────
@@ -140,6 +170,10 @@ export default function WorkspaceSettingsScreen() {
       // members' headers/cards update automatically. Local refresh keeps this
       // screen authoritative.
       await refresh?.(true);
+
+      // Part 52.2 (Feature 1f) — log logo set.
+      const actorName = await resolveActorName();
+      logWorkspaceLogoChanged({ workspaceId: id, actorName, removed: false }).catch(() => {});
     }
   };
 
@@ -184,6 +218,10 @@ export default function WorkspaceSettingsScreen() {
           else {
             setLogoUrl(null);
             await refresh?.(true);
+
+            // Part 52.2 (Feature 1f) — log logo removed.
+            const actorName = await resolveActorName();
+            logWorkspaceLogoChanged({ workspaceId: id, actorName, removed: true }).catch(() => {});
           }
         },
       },

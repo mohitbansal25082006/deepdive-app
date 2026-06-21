@@ -1,14 +1,18 @@
 // app/(app)/workspace-detail.tsx
 // Part 46 / 50.5 / 50.9 / 51 — see prior history.
 // Part 51 REVISION — Shared content loads only when the Shared tab is opened.
-// Part 52 UPDATE — Feature 1 (realtime delete + settings):
-//   • isDeleted (from useWorkspace) navigates the member out to the Teams tab
-//     when the owner deletes the workspace — distinct from isSelfRemoved which
-//     covers remove/block. Both exit to the Teams tab.
-//   • The header name + role pill already read from the live `workspace` /
-//     `userRole` returned by useWorkspace, which Part 52's settings broadcast
-//     now patches in place — so a rename by any editor/owner shows here live
-//     with no extra code in this screen.
+// Part 52 — Feature 1 (realtime delete + settings).
+// Part 52.2 — Activity Feed v2 wiring: the Activity tab passes navigation
+//   callbacks to ActivityItem so actor/target NAMES open member profiles and
+//   report / shared-content TITLES open the resource.
+// Part 52.3B — Activity tab refinements:
+//   • Removed the dead `logSharedContentAdded` import (share logging is owned
+//     by DB triggers since 52.2; the symbol was imported but never used).
+//   • `resourceRemoved` is now TYPE-AWARE: it keys the removed-set by
+//     `${kind}:${resourceId}` built from *_unshared entries, and a *_shared
+//     entry is considered removed only when ITS OWN kind+id matches. Previously
+//     a flat resourceId set could disable an unrelated share entry's tap target
+//     if two content types happened to share an id.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -44,7 +48,7 @@ import { SharedContentCard }         from '../../src/components/workspace/Shared
 import { SharedPodcastCard }         from '../../src/components/workspace/SharedPodcastCard';
 import { SharedDebateCard }          from '../../src/components/workspace/SharedDebateCard';
 import { SharedVoiceDebateCard }     from '../../src/components/workspace/SharedVoiceDebateCard';
-import { logPinToggled, logSharedContentAdded } from '../../src/services/activityService';
+import { logPinToggled, logMemberLeft, resolveActorName } from '../../src/services/activityService';
 import {
   exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
 } from '../../src/services/podcastExport';
@@ -56,7 +60,7 @@ import { sharedDebateToSession }     from '../../src/services/debateSharingServi
 import { VOICE_PERSONAS }            from '../../src/constants/voiceDebate';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
-  SharedPodcast, SharedDebate,
+  SharedPodcast, SharedDebate, ActivityResourceKind, WorkspaceActivityAction,
 } from '../../src/types';
 import type { SharedVoiceDebate }    from '../../src/types/voiceDebateSharing';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
@@ -73,6 +77,24 @@ const TABS: { id: TabId; label: string; icon: keyof typeof Ionicons.glyphMap }[]
 ];
 
 const SCROLL_REVEAL_THRESHOLD = 360;
+
+// Part 52.3B — map a share/unshare action to its content "kind" so the
+// removed-set can be keyed by `${kind}:${resourceId}` (type-aware).
+function shareKindOf(action: WorkspaceActivityAction): ActivityResourceKind | null {
+  switch (action) {
+    case 'presentation_shared':
+    case 'presentation_unshared':   return 'presentation';
+    case 'academic_paper_shared':
+    case 'academic_paper_unshared': return 'academic_paper';
+    case 'podcast_shared':
+    case 'podcast_unshared':        return 'podcast';
+    case 'debate_shared':
+    case 'debate_unshared':         return 'debate';
+    case 'voice_debate_shared':
+    case 'voice_debate_unshared':   return 'voice_debate';
+    default:                         return null;
+  }
+}
 
 function formatJoined(raw: string | undefined | null): string {
   if (!raw) return 'Unknown date';
@@ -156,13 +178,11 @@ export default function WorkspaceDetailScreen() {
     if ((isSelfRemoved || isDeleted) && !exitedRef.current) {
       exitedRef.current = true;
       if (isDeleted) {
-        // Brief toast-style notice then navigate out.
         Alert.alert(
           'Workspace Deleted',
           'This workspace was deleted by the owner.',
           [{ text: 'OK', onPress: () => router.replace('/(app)/(tabs)/workspace' as any) }],
         );
-        // Safety navigate if the alert is dismissed another way.
         setTimeout(() => router.replace('/(app)/(tabs)/workspace' as any), 50);
       } else {
         router.replace('/(app)/(tabs)/workspace' as any);
@@ -215,6 +235,85 @@ export default function WorkspaceDetailScreen() {
     setProfileMember(member);
     setShowProfile(true);
   }, []);
+
+  // ── Part 52.2: Activity feed navigation handlers ─────────────────────────
+  const handleOpenActivityMember = useCallback((userId: string, fallback?: MiniProfile) => {
+    const fromMembers = members.find(m => m.userId === userId)?.profile;
+    const profile: MiniProfile =
+      fromMembers ??
+      fallback ??
+      { id: userId, username: null, fullName: null, avatarUrl: null };
+    setProfileMember(profile);
+    setShowProfile(true);
+  }, [members]);
+
+  const handleOpenActivityResource = useCallback(async (
+    kind:       ActivityResourceKind,
+    resourceId: string,
+    reportId?:  string,
+    title?:     string,
+  ) => {
+    if (!id) return;
+    switch (kind) {
+      case 'report':
+        openReport(reportId ?? resourceId);
+        break;
+
+      case 'presentation':
+      case 'academic_paper':
+        router.push({
+          pathname: '/(app)/workspace-shared-viewer' as any,
+          params: { contentType: kind, contentId: resourceId, workspaceId: id, sharerName: '', sharedAt: '' },
+        });
+        break;
+
+      // podcast / debate / voice players expect the SHARED-ROW id (sharedId),
+      // but activity stores the SOURCE content id. Resolve the shared-row id
+      // from the loaded sharing lists (loading on demand), then navigate.
+      case 'podcast': {
+        let row = podcastSharing.podcasts.find(p => p.podcastId === resourceId);
+        if (!row) { await podcastSharing.load(); row = podcastSharing.podcasts.find(p => p.podcastId === resourceId); }
+        if (row) {
+          router.push({
+            pathname: '/(app)/workspace-shared-podcast-player' as any,
+            params: { workspaceId: id, sharedId: row.id, contentTitle: row.title ?? title ?? '' },
+          });
+        } else {
+          setActiveTab('shared'); setActiveFilter('podcast');
+        }
+        break;
+      }
+      case 'debate': {
+        let row = debateSharing.debates.find(d => d.debateId === resourceId);
+        if (!row) { await debateSharing.load(); row = debateSharing.debates.find(d => d.debateId === resourceId); }
+        if (row) {
+          router.push({
+            pathname: '/(app)/workspace-shared-debate' as any,
+            params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' },
+          });
+        } else {
+          setActiveTab('shared'); setActiveFilter('debate');
+        }
+        break;
+      }
+      case 'voice_debate': {
+        let row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === resourceId);
+        if (!row) { await voiceDebateSharing.load(); row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === resourceId); }
+        if (row) {
+          router.push({
+            pathname: '/(app)/workspace-shared-voice-debate-player' as any,
+            params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' },
+          });
+        } else {
+          setActiveTab('shared'); setActiveFilter('voice_debate');
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }, [id, openReport, podcastSharing, debateSharing, voiceDebateSharing]);
 
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({ pathname: '/(app)/workspace-shared-viewer' as any, params: { contentType: item.contentType, contentId: item.contentId, workspaceId: item.workspaceId, sharerName: item.sharerName ?? '', sharedAt: item.sharedAt ?? '' } });
@@ -286,6 +385,17 @@ export default function WorkspaceDetailScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Leave', style: 'destructive', onPress: async () => {
         if (!id) return;
+
+        // Fix 3: log "left the workspace" BEFORE leaving — once we leave, RLS
+        // blocks the insert. Best-effort; never blocks the leave.
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            const leftName = await resolveActorName();
+            await logMemberLeft({ workspaceId: id, userId: user.id, leftName });
+          }
+        } catch { /* non-fatal */ }
+
         const { error } = await leaveWorkspace(id);
         if (!error) router.replace('/(app)/(tabs)/workspace' as any);
         else Alert.alert('Error', error);
@@ -701,12 +811,50 @@ export default function WorkspaceDetailScreen() {
           {activeTab === 'activity' && (
             activities.length === 0 ? (
               <View style={styles.emptyState}>
-                <Ionicons name="pulse-outline" size={40} color={COLORS.textMuted} />
+                <View style={styles.activityEmptyIcon}>
+                  <Ionicons name="pulse-outline" size={34} color={COLORS.primary} />
+                </View>
                 <Text style={styles.emptyTitle}>No activity yet</Text>
-                <Text style={styles.emptyDesc}>All workspace actions are logged here in real-time.</Text>
+                <Text style={styles.emptyDesc}>
+                  Reports, shares, pins, members, and settings changes appear here in real time.
+                </Text>
               </View>
             ) : (
-              activities.map(a => <ActivityItem key={a.id} activity={a} />)
+              <View style={styles.activityList}>
+                {(() => {
+                  // Part 52.3B — TYPE-AWARE removed-set. A shared-content add
+                  // entry whose content was later removed (a matching *_unshared
+                  // exists for the SAME kind + resource_id) must be non-tappable.
+                  // Keying by `${kind}:${resourceId}` prevents a removed podcast
+                  // from accidentally disabling a presentation that happens to
+                  // share an id.
+                  const removedKeys = new Set<string>();
+                  for (const a of activities) {
+                    if (typeof a.action === 'string' && a.action.endsWith('_unshared') && a.resourceId) {
+                      const kind = shareKindOf(a.action as WorkspaceActivityAction);
+                      if (kind) removedKeys.add(`${kind}:${a.resourceId}`);
+                    }
+                  }
+                  const isShareRemoved = (a: typeof activities[number]): boolean => {
+                    if (!a.resourceId) return false;
+                    if (typeof a.action !== 'string' || !a.action.endsWith('_shared')) return false;
+                    const kind = shareKindOf(a.action as WorkspaceActivityAction);
+                    if (!kind) return false;
+                    return removedKeys.has(`${kind}:${a.resourceId}`);
+                  };
+
+                  return activities.map((a, i) => (
+                    <ActivityItem
+                      key={a.id}
+                      activity={a}
+                      isLast={i === activities.length - 1}
+                      resourceRemoved={isShareRemoved(a)}
+                      onOpenMember={handleOpenActivityMember}
+                      onOpenResource={handleOpenActivityResource}
+                    />
+                  ));
+                })()}
+              </View>
             )
           )}
 
@@ -911,6 +1059,9 @@ const styles = StyleSheet.create({
   emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21, maxWidth: 290 },
   emptyAddBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4 },
   emptyAddBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  // Part 52.2 — Activity tab
+  activityList:      { paddingTop: SPACING.sm },
+  activityEmptyIcon: { width: 72, height: 72, borderRadius: 20, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
   manageMembersBtn:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30` },
   manageMembersBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 },
   memberRow:        { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },

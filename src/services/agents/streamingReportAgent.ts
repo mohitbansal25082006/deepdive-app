@@ -1,19 +1,11 @@
 // src/services/agents/streamingReportAgent.ts
 // Part 21 — Streaming Report Agent.
-//
-// Streams each of the 6 report sections independently via chatCompletionStream.
-// Each section gets its own GPT-4o call so content is rich and focused.
-//
-// FIXES in this version:
-//   • maxTokens raised to 2500 per section (was 1200 — caused thin content)
-//   • System prompt enforces MINIMUM length: "at least 5 substantial paragraphs"
-//   • BULLETS format removed — bullets are extracted by AI in a separate
-//     mini-call instead of inline tagging (avoids confusion mid-stream)
-//   • Full search snippets injected per section (not just facts/stats)
-//   • Section-specific search results injected to ground content in real data
+// Part 53G — Abort signal now threaded into EVERY OpenAI call (extractBullets,
+//   sync fallback, metadata) so cancelling research stops all token spend
+//   immediately, not just between sections.
 
 import { chatCompletionStream } from '../openaiStreamClient';
-import { chatCompletionJSON }   from '../openaiClient';
+import { chatCompletionJSON, isAbortError }   from '../openaiClient';
 import {
   ResearchInput,
   ResearchPlan,
@@ -148,7 +140,6 @@ function buildCitations(searchBatches: SearchBatch[]): Citation[] {
   return Array.from(map.values()).slice(0, 20);
 }
 
-/** Returns a compact block of search snippets relevant to a given section */
 function buildSectionContext(
   sectionIndex: number,
   plan:         ResearchPlan,
@@ -162,8 +153,6 @@ function buildSectionContext(
   const companies = Array.isArray(analysis?.companies)      ? analysis.companies      : [];
   const themes    = Array.isArray(analysis?.keyThemes)      ? analysis.keyThemes      : [];
 
-  // Pull search snippets from batches relevant to this section
-  // Each section gets 2-3 batches of search results to ground it
   const startBatch = sectionIndex * 2;
   const snippets: string[] = [];
   for (let b = startBatch; b < Math.min(startBatch + 3, searchBatches.length); b++) {
@@ -195,8 +184,13 @@ function buildSectionContext(
 }
 
 /** Extracts bullet points from section prose using a fast GPT call */
-async function extractBullets(sectionTitle: string, prose: string): Promise<string[]> {
+async function extractBullets(
+  sectionTitle: string,
+  prose: string,
+  signal?: AbortSignal,            // ← Part 53G
+): Promise<string[]> {
   if (!prose || prose.length < 100) return [];
+  if (signal?.aborted) return [];
   try {
     const result = await chatCompletionJSON<{ bullets: string[] }>(
       [
@@ -213,11 +207,11 @@ async function extractBullets(sectionTitle: string, prose: string): Promise<stri
           content: `Section: "${sectionTitle}"\n\nText:\n${prose.slice(0, 3000)}`,
         },
       ],
-      { temperature: 0.2, maxTokens: 400 },
+      { temperature: 0.2, maxTokens: 400, signal },   // ← Part 53G
     );
     return (result?.bullets ?? []).slice(0, 4).filter(b => b.length > 10);
-  } catch {
-    // Fallback: split prose into sentences and take first 3
+  } catch (err) {
+    if (isAbortError(err)) return [];
     const sentences = prose.split(/[.!?]+/).filter(s => s.trim().length > 30);
     return sentences.slice(0, 3).map(s => s.trim());
   }
@@ -285,7 +279,6 @@ export async function runStreamingReportAgent(
           sectionText = fullText.trim();
         },
         onError: (err) => {
-          // Log but don't stop pipeline — use fallback content
           console.warn(`[StreamingReport] Section ${i} streaming error:`, err.message);
         },
         signal: callbacks.signal,
@@ -295,8 +288,9 @@ export async function runStreamingReportAgent(
 
     if (callbacks.signal?.aborted) return;
 
-    // If streaming produced no content (shouldn't happen with fallback), generate synchronously
+    // Sync fallback if streaming produced nothing
     if (!sectionText || sectionText.length < 100) {
+      if (callbacks.signal?.aborted) return;
       try {
         const { chatCompletion: syncChat } = await import('../openaiClient');
         sectionText = await syncChat(
@@ -310,17 +304,20 @@ export async function runStreamingReportAgent(
                 `CONTEXT:\n${sectionContext}`,
             },
           ],
-          { temperature: 0.5, maxTokens: 800 },
+          { temperature: 0.5, maxTokens: 800, signal: callbacks.signal },  // ← Part 53G
         );
-        // Re-emit via token for UI consistency
         callbacks.onSectionToken(i, sectionText);
       } catch (syncErr) {
+        if (isAbortError(syncErr)) return;       // ← Part 53G: cancelled, bail
         sectionText = `Analysis of ${def.title} for ${plan.topic} based on gathered research data.`;
       }
     }
 
-    // Extract bullets with a separate fast call
-    const bullets = await extractBullets(def.title, sectionText);
+    if (callbacks.signal?.aborted) return;
+
+    const bullets = await extractBullets(def.title, sectionText, callbacks.signal);
+
+    if (callbacks.signal?.aborted) return;
 
     const citationIds = citations.slice(i * 2, i * 2 + 3).map(c => c.id);
 
@@ -340,7 +337,7 @@ export async function runStreamingReportAgent(
 
   if (callbacks.signal?.aborted) return;
 
-  // ── Final metadata (non-streaming — fast) ─────────────────────────────────
+  // ── Final metadata (non-streaming) ────────────────────────────────────────
 
   interface MetadataOutput {
     title:             string;
@@ -378,9 +375,10 @@ export async function runStreamingReportAgent(
             '}',
         },
       ],
-      { temperature: 0.35, maxTokens: 1500 },
+      { temperature: 0.35, maxTokens: 1500, signal: callbacks.signal },   // ← Part 53G
     );
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) return;                // ← Part 53G: cancelled, bail
     metadata = {
       title:            `${plan.topic}: Comprehensive Research Report ${new Date().getFullYear()}`,
       executiveSummary: `This report provides a comprehensive analysis of ${plan.topic}, covering current state, key players, market data, challenges, and future outlook based on ${completedSections.length} in-depth sections.`,
@@ -388,6 +386,8 @@ export async function runStreamingReportAgent(
       futurePredictions: ['Continued growth expected over the next 5 years.'],
     };
   }
+
+  if (callbacks.signal?.aborted) return;
 
   callbacks.onSummaryReady(metadata.executiveSummary);
 

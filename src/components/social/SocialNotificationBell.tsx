@@ -1,13 +1,30 @@
 // src/components/social/SocialNotificationBell.tsx
-// DeepDive AI — Part 36: Bell icon with unread badge + notification drawer.
-// Part 37 FIX:
-//   1. new_report notifications now open feed-report-view (view-only) instead of
-//      research-report (owner screen) — passes authorName, authorUsername,
-//      authorAvatarUrl as params so the viewer sees the author chip.
-//   2. Modal bottom sheet opens higher (75% → up to 88% of screen) so it
-//      doesn't feel cramped on shorter phones.
-//   3. Empty-state "Browse Researchers" button navigates to explore-researchers.
-//   4. Notification rows have a minimum touch target height of 56 dp.
+// DeepDive AI — Part 53: UNIFIED notification bell.
+//
+// WHAT CHANGED
+//   Previously this component showed ONLY social notifications (follows + new
+//   reports from people you follow) via useSocialNotifications. It now shows
+//   EVERY notification type via the unified useAppNotifications hook:
+//
+//     • report_ready        — your research report finished
+//     • podcast_ready        — your podcast finished
+//     • debate_ready         — your debate finished
+//     • paper_ready          — your academic paper finished
+//     • presentation_ready   — your slides finished
+//     • new_follower         — someone followed you      (social, preserved)
+//     • new_report           — a followee published       (social, preserved)
+//
+//   Tapping ANY row deep-links straight to that content using the row's
+//   pre-resolved { route, params } (built in appNotificationService /
+//   useAppNotifications). No per-type branching needed in the UI.
+//
+// BACK-COMPAT
+//   The export name `SocialNotificationBell` and its `{ userId }` prop are kept
+//   identical so profile.tsx (and anything else) needs no import change — though
+//   we also export it as `NotificationBell` for clarity going forward.
+//
+//   The modal bottom-sheet styling (drag handle, scrim, ~88% height, empty
+//   state) is preserved from the Part 37 version.
 
 import React, { useState }               from 'react';
 import {
@@ -25,10 +42,10 @@ import { LinearGradient }                 from 'expo-linear-gradient';
 import { Ionicons }                       from '@expo/vector-icons';
 import { useSafeAreaInsets }              from 'react-native-safe-area-context';
 import { router }                         from 'expo-router';
-import { useSocialNotifications }         from '../../hooks/useSocialNotifications';
+import { useNotifications }               from '../../context/NotificationsContext';
 import { Avatar }                         from '../common/Avatar';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
-import type { FollowNotification }         from '../../types/social';
+import type { AppNotification }           from '../../types/notifications';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -44,16 +61,53 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+// ─── Per-type icon + accent fallback ──────────────────────────────────────────
+// Most notifications already carry icon/accent (from CONTENT_KIND_CONFIG or the
+// social mapper). This is a safety net for any row missing them.
+
+const TYPE_ICON: Record<string, string> = {
+  report_ready:       'document-text',
+  podcast_ready:      'radio',
+  debate_ready:       'people',
+  paper_ready:        'school',
+  presentation_ready: 'easel',
+  new_follower:       'person-add',
+  new_unfollower:     'person-remove',
+  new_report:         'document-text',
+};
+
+const TYPE_ACCENT: Record<string, string> = {
+  report_ready:       '#6C63FF',
+  podcast_ready:      '#A78BFA',
+  debate_ready:       '#FB7185',
+  paper_ready:        '#34D399',
+  presentation_ready: '#FBBF24',
+  new_follower:       '#6C63FF',
+  new_unfollower:     '#94A3B8',
+  new_report:         '#43E97B',
+};
+
+function iconFor(n: AppNotification): string {
+  return n.icon ?? TYPE_ICON[n.type] ?? 'notifications';
+}
+function accentFor(n: AppNotification): string {
+  return n.accent ?? TYPE_ACCENT[n.type] ?? COLORS.primary;
+}
+
 // ─── Single notification row ──────────────────────────────────────────────────
 
 function NotificationRow({
   notif,
   onPress,
 }: {
-  notif:   FollowNotification;
+  notif:   AppNotification;
   onPress: () => void;
 }) {
-  const actorName = notif.actor_full_name ?? notif.actor_username ?? 'Someone';
+  const accent  = accentFor(notif);
+  const icon    = iconFor(notif);
+  const isSocial = notif.source === 'social';
+  const actorName =
+    notif.actorFullName ?? notif.actorUsername ?? 'Someone';
 
   return (
     <TouchableOpacity
@@ -64,13 +118,13 @@ function NotificationRow({
         alignItems:         'flex-start',
         paddingHorizontal:  SPACING.md,
         paddingVertical:    SPACING.sm + 2,
-        minHeight:          56,          // ← Part 37: minimum tap target
+        minHeight:          56,
         borderBottomWidth:  1,
         borderBottomColor:  COLORS.border,
-        backgroundColor:    notif.read ? 'transparent' : `${COLORS.primary}08`,
+        backgroundColor:    notif.read ? 'transparent' : `${accent}0D`,
       }}
     >
-      {/* Unread indicator dot */}
+      {/* Unread dot */}
       {!notif.read && (
         <View style={{
           position:        'absolute',
@@ -80,7 +134,7 @@ function NotificationRow({
           width:           8,
           height:          8,
           borderRadius:    4,
-          backgroundColor: COLORS.primary,
+          backgroundColor: accent,
         }} />
       )}
 
@@ -91,47 +145,60 @@ function NotificationRow({
         marginLeft:    notif.read ? 0 : 14,
         alignItems:    'center',
       }}>
-        {/* Actor avatar */}
-        <Avatar
-          url={notif.actor_avatar_url}
-          name={actorName}
-          size={42}
-        />
+        {/* Leading visual: social → actor avatar; content → coloured icon tile */}
+        {isSocial ? (
+          <Avatar
+            url={notif.actorAvatarUrl ?? null}
+            name={actorName}
+            size={42}
+          />
+        ) : (
+          <View style={{
+            width:           42,
+            height:          42,
+            borderRadius:    13,
+            backgroundColor: `${accent}1F`,
+            alignItems:      'center',
+            justifyContent:  'center',
+            borderWidth:     1,
+            borderColor:     `${accent}40`,
+          }}>
+            <Ionicons name={icon as any} size={19} color={accent} />
+          </View>
+        )}
 
         {/* Text */}
         <View style={{ flex: 1 }}>
           <Text style={{
             color:      COLORS.textPrimary,
             fontSize:   FONTS.sizes.sm,
-            lineHeight: 20,
-          }}>
-            <Text style={{ fontWeight: '700' }}>{actorName}</Text>
-            {notif.type === 'new_follower' ? (
-              ' started following you'
-            ) : (
-              <>
-                {' published: '}
-                <Text style={{ color: COLORS.primary, fontWeight: '600' }}>
-                  {(notif.report_title ?? 'a new report').slice(0, 55)}
-                  {(notif.report_title?.length ?? 0) > 55 ? '…' : ''}
-                </Text>
-              </>
-            )}
+            fontWeight: '700',
+            lineHeight: 19,
+          }} numberOfLines={1}>
+            {notif.title}
+          </Text>
+          <Text style={{
+            color:      COLORS.textSecondary,
+            fontSize:   FONTS.sizes.sm,
+            lineHeight: 19,
+            marginTop:  1,
+          }} numberOfLines={2}>
+            {notif.body}
           </Text>
           <Text style={{
             color:     COLORS.textMuted,
             fontSize:  FONTS.sizes.xs,
             marginTop: 3,
           }}>
-            {timeAgo(notif.created_at)}
+            {timeAgo(notif.createdAt)}
           </Text>
         </View>
 
-        {/* Type icon */}
+        {/* Trailing chevron */}
         <Ionicons
-          name={notif.type === 'new_follower' ? 'person' : 'document-text'}
-          size={17}
-          color={notif.type === 'new_follower' ? COLORS.primary : COLORS.success}
+          name="chevron-forward"
+          size={15}
+          color={COLORS.textMuted}
           style={{ marginTop: 2, flexShrink: 0 }}
         />
       </View>
@@ -141,54 +208,42 @@ function NotificationRow({
 
 // ─── Bell button + drawer ─────────────────────────────────────────────────────
 
-interface SocialNotificationBellProps {
+interface NotificationBellProps {
   userId: string | null;
 }
 
-export function SocialNotificationBell({ userId }: SocialNotificationBellProps) {
+export function NotificationBell({ userId }: NotificationBellProps) {
   const insets = useSafeAreaInsets();
-  const { notifications, unreadCount, isLoading, markAsRead } =
-    useSocialNotifications(userId);
+  // Part 53D: shared context so the bell + profile tab badge read the same
+  // realtime unread count. `userId` is accepted for back-compat but the
+  // provider already scopes to the signed-in user.
+  const { notifications, unreadCount, isLoading, markAllRead, markOneRead } =
+    useNotifications();
 
   const [visible, setVisible] = useState(false);
 
   const handleOpen = async () => {
     setVisible(true);
-    await markAsRead();
+    await markAllRead();
   };
 
   const handleClose = () => setVisible(false);
 
-  // ── Part 37 FIX: new_report navigates to feed-report-view (view-only) ───────
-  const handleRowPress = (notif: FollowNotification) => {
+  // Deep-link straight to the content using the row's pre-resolved route+params.
+  const handleRowPress = (notif: AppNotification) => {
     handleClose();
 
-    if (notif.type === 'new_follower' && notif.actor_username) {
-      // Follower notification → user profile screen
-      router.push({
-        pathname: '/(app)/user-profile' as any,
-        params:   { username: notif.actor_username },
-      });
-      return;
-    }
+    // Mark this single row read (context updates the shared badge too).
+    markOneRead(notif).catch(() => {});
 
-    if (notif.type === 'new_report' && notif.report_id) {
-      // ★ Part 37 FIX: open feed-report-view (view-only) NOT research-report
-      //   Pass author info so the view-only screen shows the author chip.
+    if (notif.route) {
       router.push({
-        pathname: '/(app)/feed-report-view' as any,
-        params:   {
-          reportId:         notif.report_id,
-          authorName:       notif.actor_full_name  ?? notif.actor_username ?? '',
-          authorUsername:   notif.actor_username   ?? '',
-          authorAvatarUrl:  notif.actor_avatar_url ?? '',
-        },
+        pathname: notif.route as any,
+        params:   (notif.params ?? {}) as any,
       });
     }
   };
 
-  // Part 37: modal height — use a larger fraction so it opens higher on screen
-  // Max height is 88% of screen (vs the old 78%) so content is not truncated.
   const MODAL_MAX_HEIGHT = SCREEN_HEIGHT * 0.88;
 
   return (
@@ -233,7 +288,6 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
         statusBarTranslucent={Platform.OS === 'android'}
         onRequestClose={handleClose}
       >
-        {/* Scrim — tap outside to dismiss */}
         <Pressable
           style={{
             flex:            1,
@@ -242,14 +296,12 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
           }}
           onPress={handleClose}
         >
-          {/* Sheet — stop propagation so tap inside doesn't close */}
           <Pressable onPress={e => e.stopPropagation()}>
             <LinearGradient
               colors={['#1A1A35', '#0A0A1A']}
               style={{
                 borderTopLeftRadius:  28,
                 borderTopRightRadius: 28,
-                // Part 37: increased max height so drawer opens higher on screen
                 maxHeight:            MODAL_MAX_HEIGHT,
                 borderTopWidth:       1,
                 borderTopColor:       COLORS.border,
@@ -296,13 +348,13 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
                       fontSize:   FONTS.sizes.base,
                       fontWeight: '700',
                     }}>
-                      Social Notifications
+                      Notifications
                     </Text>
                     <Text style={{
                       color:    COLORS.textMuted,
                       fontSize: FONTS.sizes.xs,
                     }}>
-                      Follows &amp; new reports from people you follow
+                      Reports, podcasts, debates, papers, slides &amp; social
                     </Text>
                   </View>
                 </View>
@@ -314,14 +366,14 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
                 </TouchableOpacity>
               </View>
 
-              {/* ── Notification list ── */}
+              {/* ── List ── */}
               <ScrollView showsVerticalScrollIndicator={false}>
                 {isLoading && notifications.length === 0 ? (
                   <View style={{ alignItems: 'center', padding: SPACING.xl * 2 }}>
                     <ActivityIndicator color={COLORS.primary} />
                   </View>
                 ) : notifications.length === 0 ? (
-                  // ── Empty state ──────────────────────────────────────────
+                  // ── Empty state ──
                   <View style={{
                     alignItems:        'center',
                     paddingTop:        SPACING.xl * 1.5,
@@ -349,14 +401,14 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
                       lineHeight: 22,
                     }}>
                       No notifications yet.{'\n'}
-                      Follow researchers to see their activity here.
+                      Generate a report, podcast, debate, paper or slides{'\n'}
+                      and you&apos;ll be notified the moment it&apos;s ready.
                     </Text>
 
-                    {/* Part 37: button goes to explore-researchers */}
                     <TouchableOpacity
                       onPress={() => {
                         handleClose();
-                        router.push('/(app)/explore-researchers' as any);
+                        router.push('/(app)/(tabs)/home' as any);
                       }}
                       style={{
                         marginTop:         SPACING.lg,
@@ -373,7 +425,7 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
                         fontWeight: '700',
                         fontSize:   FONTS.sizes.sm,
                       }}>
-                        Explore Researchers →
+                        Start Researching →
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -395,3 +447,6 @@ export function SocialNotificationBell({ userId }: SocialNotificationBellProps) 
     </>
   );
 }
+
+// Back-compat alias: existing imports of `SocialNotificationBell` keep working.
+export const SocialNotificationBell = NotificationBell;

@@ -1,9 +1,10 @@
 // app/(app)/(tabs)/_layout.tsx
 // Part 36B — 7 tabs: Research | History | Feed | Teams | Podcast | Debate | Profile
-//
-// Part 39 Fix (final) — No changes needed in this file.
-//   MiniPlayer is rendered in app/(app)/_layout.tsx (the parent), not here.
-//   All tab styling, BlurView, badgeDot logic, and tab order preserved exactly.
+// Part 39 Fix — MiniPlayer rendered in parent layout.
+// Part 53D — Profile tab now shows a LIVE unread notification count badge, read
+//            from the shared NotificationsContext (same value as the bell). It
+//            clears the instant the user opens the bell (markAllRead) because
+//            both read the same context state.
 
 import { Tabs }                   from 'expo-router';
 import { View, Text, Platform }   from 'react-native';
@@ -12,6 +13,7 @@ import { BlurView }               from 'expo-blur';
 import { useSafeAreaInsets }      from 'react-native-safe-area-context';
 import { useAuth }                from '../../../src/context/AuthContext';
 import { useFollowingFeed }       from '../../../src/hooks/useFollowingFeed';
+import { useNotifications }       from '../../../src/context/NotificationsContext';
 import { COLORS, FONTS }          from '../../../src/constants/theme';
 
 // ─── Tab icon ─────────────────────────────────────────────────────────────────
@@ -21,12 +23,16 @@ function TabIcon({
   focused,
   label,
   badgeDot,
+  badgeCount,
 }: {
-  name:      keyof typeof Ionicons.glyphMap;
-  focused:   boolean;
-  label:     string;
-  badgeDot?: boolean;
+  name:        keyof typeof Ionicons.glyphMap;
+  focused:     boolean;
+  label:       string;
+  badgeDot?:   boolean;
+  badgeCount?: number;
 }) {
+  const showCount = typeof badgeCount === 'number' && badgeCount > 0;
+
   return (
     <View style={{
       alignItems:     'center',
@@ -47,15 +53,35 @@ function TabIcon({
         <View style={{ height: 8 }} />
       )}
 
-      {/* Icon with optional unread dot */}
+      {/* Icon with optional unread dot / count */}
       <View style={{ position: 'relative' }}>
         <Ionicons
           name={focused ? name : (`${name}-outline` as any)}
           size={20}
           color={focused ? COLORS.primary : COLORS.textMuted}
         />
-        {/* Unread dot — only when tab is not focused */}
-        {badgeDot && !focused && (
+
+        {/* Numeric unread badge (takes priority over the plain dot) */}
+        {showCount ? (
+          <View style={{
+            position:          'absolute',
+            top:               -6,
+            right:             -10,
+            minWidth:          16,
+            height:            16,
+            borderRadius:      8,
+            backgroundColor:   COLORS.error,
+            alignItems:        'center',
+            justifyContent:    'center',
+            paddingHorizontal: 3,
+            borderWidth:       1.5,
+            borderColor:       COLORS.background,
+          }}>
+            <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '800' }}>
+              {badgeCount! > 99 ? '99+' : badgeCount}
+            </Text>
+          </View>
+        ) : badgeDot && !focused ? (
           <View style={{
             position:        'absolute',
             top:             -2,
@@ -67,7 +93,7 @@ function TabIcon({
             borderWidth:     1.5,
             borderColor:     COLORS.background,
           }} />
-        )}
+        ) : null}
       </View>
 
       <Text
@@ -93,8 +119,12 @@ export default function TabsLayout() {
   const tabBarHeight = 64 + insets.bottom;
   const { user }     = useAuth();
 
-  // Feed "hasNew" — drives the unread dot on the Feed tab
-  const { hasNew } = useFollowingFeed(user?.id ?? null);
+  // Feed "hasNew" — drives the unread dot on the Feed tab.
+  // markFeedSeen clears it when the Feed tab is tapped (Part 53F).
+  const { hasNew, markFeedSeen } = useFollowingFeed(user?.id ?? null);
+
+  // Part 53D — live unread notification count (shared with the bell)
+  const { unreadCount } = useNotifications();
 
   return (
     <Tabs
@@ -153,7 +183,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── 3. Feed (Part 36) ── */}
+      {/* ── 3. Feed (Part 36) — clears its unread dot on tap (Part 53F) ── */}
       <Tabs.Screen
         name="feed"
         options={{
@@ -165,6 +195,9 @@ export default function TabsLayout() {
               badgeDot={hasNew}
             />
           ),
+        }}
+        listeners={{
+          tabPress: () => { markFeedSeen().catch(() => {}); },
         }}
       />
 
@@ -198,12 +231,17 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* ── 7. Profile ── */}
+      {/* ── 7. Profile — live unread notification badge (Part 53D) ── */}
       <Tabs.Screen
         name="profile"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon name="person" focused={focused} label="Profile" />
+            <TabIcon
+              name="person"
+              focused={focused}
+              label="Profile"
+              badgeCount={unreadCount}
+            />
           ),
         }}
       />
