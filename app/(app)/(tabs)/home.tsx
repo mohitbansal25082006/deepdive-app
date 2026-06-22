@@ -14,6 +14,26 @@
 //  • Animated section accent lines
 //
 // All existing functionality (voice, personalization, depth routing, KB nav) preserved exactly.
+//
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   Symptom: the search input area blinked/flashed for a moment when the keyboard
+//   was dismissed.
+//
+//   ROOT CAUSE:
+//     The animated placeholder <Animated.Text> overlay was conditionally MOUNTED
+//     with `{query.length === 0 && !isRecording && (...)}`. On blur (keyboard
+//     dismiss) Android re-runs layout; the conditional remount of that overlay —
+//     combined with the `inputFocused` state flip re-rendering the whole search
+//     card — produced a one-frame flash on the elevated input background.
+//
+//   THE FIX:
+//     • The placeholder overlay is now ALWAYS mounted. Its visibility is driven
+//       purely by an animated opacity (0 when typing / recording, animated cycle
+//       otherwise). No mount/unmount on focus or blur → no relayout flash.
+//     • `onFocus`/`onBlur` now only drive a Reanimated shared value (UI-thread),
+//       not React state, so dismissing the keyboard no longer re-renders the card.
+//     • The orbs' entrance opacity animation runs once on mount only (guarded),
+//       so it never re-plays on a parent re-render.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -136,6 +156,7 @@ function FloatingOrb({
     return () => {
       cancelAnimation(translateX);
       cancelAnimation(translateY);
+      cancelAnimation(opacity);
     };
   }, []);
 
@@ -186,6 +207,10 @@ function BreathingDot({ color = COLORS.accent }: { color?: string }) {
       ),
       -1, false,
     );
+    return () => {
+      cancelAnimation(scale);
+      cancelAnimation(opacity);
+    };
   }, []);
 
   const style = useAnimatedStyle(() => ({
@@ -212,6 +237,7 @@ function SkeletonCard({ delay }: { delay: number }) {
       delay,
       withRepeat(withTiming(1, { duration: 1200 }), -1, false),
     );
+    return () => cancelAnimation(shimmer);
   }, []);
 
   const shimStyle = useAnimatedStyle(() => ({
@@ -252,6 +278,7 @@ function SectionLabel({ text, delay = 0 }: { text: string; delay?: number }) {
 
   useEffect(() => {
     lineW.value = withDelay(delay + 200, withSpring(24, { damping: 12, stiffness: 120 }));
+    return () => cancelAnimation(lineW);
   }, []);
 
   const lineStyle = useAnimatedStyle(() => ({ width: lineW.value }));
@@ -335,7 +362,6 @@ export default function HomeScreen() {
   const [recordingMs,      setRecordingMs]      = useState(0);
   const [transcribing,     setTranscribing]     = useState(false);
   const [cachedCount,      setCachedCount]      = useState(0);
-  const [inputFocused,     setInputFocused]     = useState(false);
   const [placeholderIdx,   setPlaceholderIdx]   = useState(0);
 
   const firstName = profile?.full_name?.split(' ')[0] || 'Researcher';
@@ -348,9 +374,13 @@ export default function HomeScreen() {
   } = usePersonalization();
 
   // ── Shared values ──────────────────────────────────────────────────────────
-  const inputBorderGlow = useSharedValue(0);
-  const micPulse        = useSharedValue(1);
+  // FIX: inputFocused is now a SHARED VALUE only (UI thread). Focus/blur no longer
+  // triggers a React re-render of the search card, eliminating the dismiss blink.
+  const inputBorderGlow    = useSharedValue(0);
+  const micPulse           = useSharedValue(1);
   const placeholderOpacity = useSharedValue(1);
+  // Drives the placeholder visibility (typing/recording hides it) without remount.
+  const placeholderVisible = useSharedValue(1);
 
   // ── Cached count ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -370,8 +400,16 @@ export default function HomeScreen() {
     return () => clearInterval(cycle);
   }, []);
 
+  // FIX: placeholder is hidden whenever the user has typed text or is recording.
+  // This replaces the old conditional MOUNT with an animated opacity, so there is
+  // no remount-driven relayout flash on keyboard dismiss.
+  useEffect(() => {
+    const shouldShow = query.length === 0 && !isRecording;
+    placeholderVisible.value = withTiming(shouldShow ? 1 : 0, { duration: 120 });
+  }, [query.length, isRecording]);
+
   const placeholderStyle = useAnimatedStyle(() => ({
-    opacity: placeholderOpacity.value,
+    opacity: placeholderOpacity.value * placeholderVisible.value,
   }));
 
   // ── Mic pulse ──────────────────────────────────────────────────────────────
@@ -387,25 +425,50 @@ export default function HomeScreen() {
     }
   }, [isRecording]);
 
-  // ── Input glow on focus ────────────────────────────────────────────────────
-  useEffect(() => {
-    inputBorderGlow.value = withSpring(inputFocused ? 1 : 0, {
-      damping: 14, stiffness: 120,
-    });
-  }, [inputFocused]);
-
   const inputWrapStyle = useAnimatedStyle(() => ({
     borderColor:   `rgba(108, 99, 255, ${interpolate(inputBorderGlow.value, [0, 1], [0.18, 0.85])})`,
     shadowColor:   '#6C63FF',
     shadowOpacity: interpolate(inputBorderGlow.value, [0, 1], [0, 0.5]),
     shadowRadius:  interpolate(inputBorderGlow.value, [0, 1], [0, 20]),
     shadowOffset:  { width: 0, height: 0 },
-    elevation:     interpolate(inputBorderGlow.value, [0, 1], [0, 12]),
+    // FIX (issue 1): do NOT animate `elevation`. On Android, changing elevation
+    // every frame forces the view's hardware layer to be re-composited, which
+    // flickers the input's border AND the text inside it. The iOS shadow above
+    // gives the glow; Android keeps a static elevation set in the base style.
   }));
 
   const micStyle = useAnimatedStyle(() => ({
     transform: [{ scale: micPulse.value }],
   }));
+
+  // Search-icon color must react to focus without React state. Track focus in a
+  // tiny piece of state ONLY for the icon tint; this does not affect the
+  // placeholder overlay (which is always mounted) so there is no blink.
+  //
+  // FIX (issue 1 follow-up): the search ICON tint was previously an `iconFocused`
+  // React state that flipped on BOTH focus AND blur — and the blur flip caused a
+  // full re-render of the search card at the exact frame the keyboard closed,
+  // which still produced a one-frame blink. The icon tint is now driven entirely
+  // by the `inputBorderGlow` shared value (UI thread): two pre-coloured icons are
+  // cross-faded via animated opacity. NO React state changes on focus/blur, so
+  // there is no re-render and no blink at all.
+  const searchIconActiveStyle = useAnimatedStyle(() => ({
+    opacity: inputBorderGlow.value,
+  }));
+  const searchIconIdleStyle = useAnimatedStyle(() => ({
+    opacity: 1 - inputBorderGlow.value,
+  }));
+
+  const handleInputFocus = useCallback(() => {
+    // FIX (issue 1): use withTiming, NOT withSpring. A spring OVERSHOOTS and
+    // oscillates as it settles, so the glow + cross-faded icon visibly bounced
+    // 3-4 times when the keyboard closed. withTiming is monotonic — the glow
+    // fades in/out smoothly once, with no flicker.
+    inputBorderGlow.value = withTiming(1, { duration: 200 });
+  }, []);
+  const handleInputBlur = useCallback(() => {
+    inputBorderGlow.value = withTiming(0, { duration: 200 });
+  }, []);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleSearch = useCallback((searchQuery?: string) => {
@@ -507,6 +570,7 @@ export default function HomeScreen() {
           contentContainerStyle={{ paddingHorizontal: SPACING.xl, paddingBottom: TAB_H + SPACING.xl }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           refreshControl={
             <RefreshControl
               refreshing={suggestionsLoading}
@@ -679,16 +743,25 @@ export default function HomeScreen() {
                   inputWrapStyle,
                 ]}
               >
-                <Ionicons name="search-outline" size={19} color={inputFocused ? COLORS.primary : COLORS.textMuted} />
+                <View style={{ width: 19, height: 19, justifyContent: 'center', alignItems: 'center' }}>
+                  {/* Two pre-coloured icons cross-faded by inputBorderGlow (UI thread).
+                      No React state → no re-render → no blink on keyboard close. */}
+                  <Animated.View style={[{ position: 'absolute' }, searchIconIdleStyle]}>
+                    <Ionicons name="search-outline" size={19} color={COLORS.textMuted} />
+                  </Animated.View>
+                  <Animated.View style={[{ position: 'absolute' }, searchIconActiveStyle]}>
+                    <Ionicons name="search-outline" size={19} color={COLORS.primary} />
+                  </Animated.View>
+                </View>
 
-                <View style={{ flex: 1, marginLeft: 10, position: 'relative' }}>
+                <View style={{ flex: 1, marginLeft: 10, position: 'relative', justifyContent: 'center' }}>
                   <TextInput
                     placeholder=""
                     placeholderTextColor="transparent"
                     value={query}
                     onChangeText={setQuery}
-                    onFocus={() => setInputFocused(true)}
-                    onBlur={() => setInputFocused(false)}
+                    onFocus={handleInputFocus}
+                    onBlur={handleInputBlur}
                     onSubmitEditing={() => handleSearch()}
                     returnKeyType="search"
                     style={{
@@ -699,24 +772,27 @@ export default function HomeScreen() {
                     }}
                     editable={!isRecording && !transcribing}
                   />
-                  {/* Animated placeholder */}
-                  {query.length === 0 && !isRecording && (
-                    <Animated.Text
-                      style={[
-                        {
-                          position:  'absolute',
-                          color:     COLORS.textMuted,
-                          fontSize:  FONTS.sizes.sm,
-                          top: Platform.OS === 'ios' ? 0 : 2,
-                          pointerEvents: 'none',
-                        },
-                        placeholderStyle,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {PLACEHOLDERS[placeholderIdx]}
-                    </Animated.Text>
-                  )}
+                  {/* FIX: Animated placeholder is now ALWAYS mounted. Its visibility
+                      is driven purely by animated opacity (placeholderStyle), which
+                      multiplies the cycle opacity by placeholderVisible. No conditional
+                      mount/unmount on focus/blur → no relayout blink when the keyboard
+                      is dismissed. */}
+                  <Animated.Text
+                    style={[
+                      {
+                        position:  'absolute',
+                        left:      0,
+                        right:     0,
+                        color:     COLORS.textMuted,
+                        fontSize:  FONTS.sizes.sm,
+                        pointerEvents: 'none',
+                      },
+                      placeholderStyle,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {PLACEHOLDERS[placeholderIdx]}
+                  </Animated.Text>
                 </View>
 
                 {/* Mic button */}

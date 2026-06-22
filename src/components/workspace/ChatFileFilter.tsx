@@ -8,6 +8,15 @@
 //   GIFs (type='image', mime_type='image/gif') and stickers (type='sticker')
 //   are conversational media — they clutter the Files & Media panel and
 //   are better browsed in the chat itself. Both are now filtered out.
+//
+// ── Part 50.10 — ANDROID UI FIX (production · issue 8) ────────────────────────
+//   The Files & Media panel's result list now dismisses the keyboard when the
+//   user drags/scrolls it. The search TextInput opens the keyboard; previously,
+//   on Android, scrolling the results did not close it (keyboardShouldPersistTaps
+//   keeps taps working but does not dismiss on scroll). Adding
+//   keyboardDismissMode="on-drag" makes dragging the list close the keyboard,
+//   matching the team-chat behaviour. The sheet already pads its bottom by
+//   Math.max(insets.bottom, 16) so it clears the Android nav/gesture bar.
 
 import React, {
   useState,
@@ -373,6 +382,7 @@ export function ChatFileFilter({ visible, messages, onClose, onScrollToMessage }
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterScrollContent}
           style={styles.filterScroll}
+          keyboardShouldPersistTaps="handled"
         >
           {FILTERS.map(f => {
             const count  = counts[f.type];
@@ -421,6 +431,9 @@ export function ChatFileFilter({ visible, messages, onClose, onScrollToMessage }
             contentContainerStyle={[styles.list, selectedEntry && { paddingBottom: 110 }]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
+            // Part 50.10 (issue 8): dragging/scrolling the list dismisses the
+            // search keyboard on Android (taps on cards still register).
+            keyboardDismissMode="on-drag"
           />
         )}
 

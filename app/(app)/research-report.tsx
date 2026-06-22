@@ -3,14 +3,18 @@
 // Research Report — Detail Screen
 //
 // Part 50.8 — BOOKMARK SUPPORT ADDED
-//   • Loads `is_pinned` into the mapped report (was previously dropped here too).
-//   • New bookmark action button in the header action strip. Toggling writes
-//     `is_pinned` to Supabase (the same field History + Bookmarks read), with an
-//     optimistic update and rollback on failure. This keeps the bookmark state
-//     and the History "saved" count consistent everywhere.
+//   • Loads `is_pinned` into the mapped report.
+//   • Bookmark action button writes `is_pinned` to Supabase (optimistic).
 //
-// Everything else (data loading, field mapping, handlers, tabs, visual mode,
-// AI chat, publish/unpublish, all modals) behaves exactly as before.
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   (Issue 4) The embedded AI Research Assistant chat input could sit under the
+//     Android nav bar. We pass `bottomInset={insets.bottom}` to
+//     <ResearchAssistantChat> so its input row clears the nav/gesture bar, and
+//     drag-to-dismiss keyboard is handled inside that component.
+//   (Issue 5) The top "Report Details" bottom-sheet modal now pads its scroll
+//     content by `insets.bottom` so the last detail card isn't hidden behind the
+//     Android nav bar (SDK 54 edge-to-edge draws behind it). The chat overlay's
+//     bottom spacer also uses insets.bottom.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -61,7 +65,10 @@ import { cacheReport, getCachedReport }    from '../../src/lib/cacheStorage';
 const SCREEN_W  = Dimensions.get('window').width;
 const SCREEN_H  = Dimensions.get('window').height;
 const PANEL_W   = SCREEN_W - SPACING.lg * 2;
-const SHEET_MAX_H  = SCREEN_H * 0.72;
+// FIX (issue 2): the Report Details sheet opens to a taller, fixed height so all
+// detail cards are reachable. 0.72 left it feeling cut off on taller content;
+// 0.85 gives the sheet room while still showing the dimmed backdrop above it.
+const SHEET_MAX_H  = SCREEN_H * 0.85;
 const SCROLL_MAX_H = SHEET_MAX_H - 90;
 
 const DEPTH_LABELS: Record<string, string> = { quick: 'Quick', deep: 'Deep Dive', expert: 'Expert' };
@@ -679,7 +686,13 @@ export default function ResearchReportScreen() {
           </LinearGradient>
         </View>
 
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
+        {/* FIX (issue 3 — chat broken on Android): behavior="height" on Android
+            shrank the whole container (header, tabs, chat) and double-compensated
+            against SDK 54 'pan', breaking the embedded AI chat layout and leaving
+            a gap. Android now uses behavior={undefined} so the OS 'pan' handles
+            the keyboard; iOS keeps 'padding'. The chat is a flex column
+            (message list + input row) that lays out correctly under 'pan'. */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
           {hasVisuals && (
             <View style={{
               flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -763,9 +776,7 @@ export default function ResearchReportScreen() {
                         </View>
                         <RichText
                           content={report.executiveSummary}
-                          highlightStats
-                          lead
-                          dropCap
+                          highlightStats lead dropCap
                           accent={COLORS.primaryLight}
                           size={FONTS.sizes.base}
                           color={COLORS.textSecondary}
@@ -960,8 +971,11 @@ export default function ResearchReportScreen() {
                 </View>
                 <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
               </Pressable>
-              <ResearchAssistantChat assistant={assistant} reportTitle={report.title} />
-              <View style={{ height: insets.bottom }} />
+              {/* FIX (issue 4): pass bottomInset so the chat input clears the
+                  Android nav/gesture bar. The chat handles drag-to-dismiss keyboard
+                  internally. The previous height:insets.bottom spacer is removed
+                  because the inset now lives inside the chat's input row. */}
+              <ResearchAssistantChat assistant={assistant} reportTitle={report.title} bottomInset={insets.bottom} />
             </Animated.View>
           )}
         </KeyboardAvoidingView>
@@ -987,7 +1001,7 @@ export default function ResearchReportScreen() {
 
       <Modal visible={showReportDetails} transparent animationType="slide" onRequestClose={() => setShowReportDetails(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={() => setShowReportDetails(false)}>
-          <Pressable onPress={e => e.stopPropagation()} style={{ maxHeight: SHEET_MAX_H }}>
+          <Pressable onPress={e => e.stopPropagation()} style={{ height: SHEET_MAX_H }}>
             <View style={{ borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden', borderTopWidth: 1, borderColor: COLORS.border }}>
               <LinearGradient colors={['#1A1A38', '#0A0A1A']} style={{ paddingTop: SPACING.sm }}>
                 <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
@@ -1006,10 +1020,22 @@ export default function ResearchReportScreen() {
                   </Pressable>
                 </View>
 
-                <View style={{ flexDirection: 'row', maxHeight: SCROLL_MAX_H }}>
+                {/* FIX (issue 2): use a fixed height (not maxHeight) so the sheet
+                    always opens to its full size and every detail card is
+                    scrollable into view, instead of collapsing to content height
+                    and appearing "not fully open". */}
+                <View style={{ height: SCROLL_MAX_H }}>
                   <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}
-                    contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xs, paddingBottom: SPACING.lg, gap: SPACING.sm }}
+                    contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xs, paddingBottom: SPACING.lg + insets.bottom, gap: SPACING.sm }}
                     scrollEventThrottle={16}
+                    nestedScrollEnabled
+                    keyboardShouldPersistTaps="handled"
+                    // FIX: lock to vertical so diagonal/imprecise drags that begin
+                    // on a card still scroll, and make sure the ScrollView always
+                    // owns the vertical gesture from any child component.
+                    directionalLockEnabled
+                    alwaysBounceVertical
+                    canCancelContentTouches
                     onScroll={RNAnimated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
                     onContentSizeChange={(_, h) => setContentH(h)}
                     onLayout={e => setScrollerH(e.nativeEvent.layout.height)}>
@@ -1043,7 +1069,15 @@ export default function ResearchReportScreen() {
                       ))}
                     </View>
 
+                    {/* FIX: unstable_pressDelay lets a vertical drag that starts ON
+                        this card become a scroll instead of being captured
+                        immediately by the Pressable. Without it, starting a swipe
+                        on this card (or the tiles) felt "dead" — the press handler
+                        grabbed the touch before the ScrollView could claim it.
+                        (Pressable uses unstable_pressDelay; delayPressIn is a
+                        TouchableOpacity-only prop and not valid here.) */}
                     <Pressable onPress={() => { setShowReportDetails(false); setTimeout(() => setShowPublicShare(true), 300); }}
+                      unstable_pressDelay={120}
                       style={[detailCard(publicShare.isActive ? `${COLORS.success}33` : COLORS.border), { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
                       <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={16} color={publicShare.isActive ? COLORS.success : COLORS.textMuted} />
                       <View style={{ flex: 1 }}>
@@ -1098,8 +1132,10 @@ export default function ResearchReportScreen() {
                     </View>
                   </ScrollView>
 
+                  {/* Custom progress scrollbar — overlaid absolutely on the right
+                      so it no longer narrows the ScrollView's draggable area. */}
                   {contentH > scrollerH && (
-                    <View style={{ width: 4, marginRight: 6, marginVertical: SPACING.sm, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' }}>
+                    <View pointerEvents="none" style={{ position: 'absolute', top: SPACING.sm, bottom: SPACING.sm, right: 4, width: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' }}>
                       <RNAnimated.View style={{ width: 4, borderRadius: 2, backgroundColor: COLORS.primary, height: scrollerH > 0 ? Math.max(32, (scrollerH / contentH) * scrollerH) : 32, transform: [{ translateY: scrollerH > 0 && contentH > scrollerH ? scrollY.interpolate({ inputRange: [0, contentH - scrollerH], outputRange: [0, scrollerH - Math.max(32, (scrollerH / contentH) * scrollerH)], extrapolate: 'clamp' }) : 0 }] }} />
                     </View>
                   )}

@@ -16,18 +16,22 @@
 //             uses KeyboardAvoidingView behavior="padding".
 //
 // ─── DISMISS FIX (Part 50.9.1) ───────────────────────────────────────────────
-//   Problem: on Android the keyboard could not be closed by tapping outside the
-//   input — tapping the message list / empty area / privacy bar did nothing.
-//   keyboardDismissMode="interactive" is iOS-only behaviour and does not dismiss
-//   on a plain tap on Android.
+//   Every tappable non-input surface dismisses the keyboard (Pressable wrappers,
+//   FlatList keyboardShouldPersistTaps="handled" + onScrollBeginDrag → dismiss).
 //
-//   Fix: every tappable non-input surface now dismisses the keyboard:
-//     • The whole content area is wrapped so background taps call Keyboard.dismiss().
-//     • The FlatList uses keyboardShouldPersistTaps="handled" (taps on bubbles still
-//       work; taps on blank list space dismiss) + onScrollBeginDrag → dismiss.
-//     • The empty-state and privacy bar are wrapped in a dismiss handler.
-//   Because the wrapper uses Pressable with no visual feedback, normal touches on
-//   children (buttons, chips, the input) still work; only "background" taps dismiss.
+// ─── Part 50.10 — ANDROID NAV-BAR FIX (production · issue 9) ──────────────────
+//   Symptom: the bottom input bar sat BEHIND the Android navigation / gesture bar
+//   when the keyboard was closed (SDK 54 edge-to-edge draws content behind the
+//   system bars and cannot be disabled).
+//   Cause: the input bar only padded its bottom by the inset inline, but the
+//   floor (10) was too small for tall gesture bars and there was no explicit
+//   safe-area handling on the root, so on some devices the bar still overlapped.
+//   Fix:
+//     • inputBottomPad now floors at SPACING.sm and uses the real inset, so the
+//       resting bar always clears the nav/gesture bar.
+//     • The bar keeps a base paddingTop; the inset is added to paddingBottom.
+//   (When the keyboard is open, softwareKeyboardLayoutMode:'pan' lifts the whole
+//    window so the inset padding simply sits above the keyboard — no overlap.)
 
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
@@ -293,7 +297,10 @@ export default function WorkspaceAIChatScreen() {
 
   const isEmpty = loaded && messages.length === 0;
 
-  const inputBottomPad = Math.max(insets.bottom, 10);
+  // Part 50.10 (issue 9): floor the bottom pad at SPACING.sm and add the real
+  // safe-area inset so the resting input bar always clears the Android
+  // nav/gesture bar under SDK 54 edge-to-edge.
+  const inputBottomPad = insets.bottom + SPACING.sm;
 
   return (
     <View style={styles.root}>
@@ -369,7 +376,8 @@ export default function WorkspaceAIChatScreen() {
           />
         )}
 
-        {/* Input bar */}
+        {/* Input bar — FIX (issue 9): paddingBottom = insets.bottom + SPACING.sm
+            so the resting bar clears the Android nav/gesture bar. */}
         <View style={[styles.inputBar, { paddingBottom: inputBottomPad }]}>
           <View style={styles.inputWrap}>
             <TextInput

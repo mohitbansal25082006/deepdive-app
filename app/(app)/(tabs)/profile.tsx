@@ -12,7 +12,18 @@
 //      in the JSX tree (both at the root level of the return), never nested.
 //   5. CacheManagerModal no longer imports or renders SelectiveCacheSheet itself.
 //
-// All other code is identical to Part 36C.
+// ── Part 50.10 — ANDROID UI FIX (production · issue 6) ────────────────────────
+//   The Edit Profile modal was redesigned to be COMPACT so all fields are
+//   visible without scrolling, with full Android compatibility:
+//     • Avatar reduced to 68px (was 90) and spacing tightened so the avatar +
+//       3 inputs + Save button fit on screen without an inner ScrollView.
+//     • The inner ScrollView was removed (no scrolling needed).
+//     • Bottom padding now uses the safe-area inset
+//       (Math.max(insets.bottom, SPACING.md)) so the Save button clears the
+//       Android nav/gesture bar under SDK 54 edge-to-edge.
+//     • KeyboardAvoidingView retained (padding on iOS, height on Android) so the
+//       keyboard never covers the inputs.
+//   All other code is identical to Part 45.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -28,12 +39,15 @@ import {
   Image,
   KeyboardAvoidingView,
   BackHandler,
+  Keyboard,
+  Pressable,
 } from 'react-native';
 import { LinearGradient }     from 'expo-linear-gradient';
 import { Ionicons }           from '@expo/vector-icons';
 import * as ImagePicker       from 'expo-image-picker';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import { SafeAreaView }       from 'react-native-safe-area-context';
+// Part 50.10 (issue 6): useSafeAreaInsets added for Edit Profile bottom inset.
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router }             from 'expo-router';
 
 import { useAuth }            from '../../../src/context/AuthContext';
@@ -338,6 +352,9 @@ export default function ProfileScreen() {
   const { stats, loading: statsLoading }            = useStats();
   const { updateProfile, uploadAvatar, updating, uploading } = useProfile();
 
+  // Part 50.10 (issue 6): safe-area insets for the Edit Profile modal bottom pad.
+  const insets = useSafeAreaInsets();
+
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notifLoading,         setNotifLoading]         = useState(false);
   const [cacheSummary,         setCacheSummary]         = useState<CacheSummary | null>(null);
@@ -628,46 +645,87 @@ export default function ProfileScreen() {
         </SafeAreaView>
       </LinearGradient>
 
-      {/* Edit Profile Modal */}
+      {/* ── Edit Profile Modal — Part 50.10 (issue 6): COMPACT, no-scroll, Android-safe ──
+          Redesigned so the avatar + 3 inputs + Save button all fit on screen
+          WITHOUT an inner ScrollView. Avatar shrunk to 68px, vertical spacing
+          tightened, and the sheet's bottom padding uses the safe-area inset so
+          the Save button clears the Android nav/gesture bar. KeyboardAvoidingView
+          keeps the inputs above the keyboard on both platforms. */}
       <Modal visible={editModalVisible} animationType="slide" transparent statusBarTranslucent onRequestClose={() => setEditModalVisible(false)}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.75)', justifyContent: 'flex-end' }}>
-          <KeyboardAvoidingView behavior={IS_IOS ? 'padding' : 'height'} keyboardVerticalOffset={IS_IOS ? 0 : 20}>
-            <View style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: SPACING.xl, paddingBottom: IS_IOS ? SPACING.xl + 34 : SPACING.xl, borderTopWidth: 1, borderTopColor: COLORS.border, maxHeight: '90%' }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.xl }}>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>Edit Profile</Text>
-                <TouchableOpacity onPress={() => setEditModalVisible(false)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}>
-                  <Ionicons name="close" size={24} color={COLORS.textSecondary} />
+        {/* FIX (issue 3): tapping the dimmed backdrop dismisses the keyboard first
+            (if open) and otherwise closes the sheet. */}
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.75)', justifyContent: 'flex-end' }}
+          onPress={() => setEditModalVisible(false)}
+        >
+          {/* FIX (issue 5): a bottom-pinned sheet must use behavior="padding" on
+              BOTH platforms. behavior="height" only shrinks the KAV's own height
+              and does NOT lift a sheet that is pinned to the bottom, so on Android
+              the keyboard covered the Bio/Occupation inputs and you couldn't see
+              what you were typing. With "padding", the KAV adds bottom padding
+              equal to the keyboard height, pushing the ENTIRE sheet up above the
+              keyboard so every field (and the cursor) stays visible. */}
+          <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={0}>
+            {/* FIX (issue 3): tapping anywhere on the sheet body (outside an input
+                or button) dismisses the keyboard. stopPropagation keeps the
+                backdrop's close handler from firing when you tap the sheet itself.
+                Inputs and buttons are children, so their own presses take priority
+                and still work normally. */}
+            <Pressable
+              onPress={() => Keyboard.dismiss()}
+              style={{
+                backgroundColor: COLORS.backgroundCard,
+                borderTopLeftRadius: 30, borderTopRightRadius: 30,
+                paddingHorizontal: SPACING.xl,
+                paddingTop: SPACING.lg,
+                // FIX (issue 6): safe-area bottom inset so Save clears the nav bar.
+                paddingBottom: Math.max(insets.bottom, SPACING.md) + SPACING.md,
+                borderTopWidth: 1, borderTopColor: COLORS.border,
+              }}
+            >
+              {/* Header */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>Edit Profile</Text>
+                <TouchableOpacity onPress={() => setEditModalVisible(false)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+                  style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+                  <Ionicons name="close" size={18} color={COLORS.textSecondary} />
                 </TouchableOpacity>
               </View>
-              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" overScrollMode={IS_ANDROID ? 'never' : 'auto'}>
-                <View style={{ alignItems: 'center', marginBottom: SPACING.xl }}>
-                  <TouchableOpacity onPress={pickImage} activeOpacity={0.85}>
-                    {editAvatarUri ? (
-                      <View>
-                        <Image source={{ uri: editAvatarUri }} style={{ width: 90, height: 90, borderRadius: 45, borderWidth: 2, borderColor: COLORS.primary }} />
-                        <View style={{ position: 'absolute', bottom: 0, right: 0, backgroundColor: COLORS.primary, borderRadius: 16, padding: 6 }}>
-                          <Ionicons name="camera" size={14} color="#FFF" />
-                        </View>
+
+              {/* Avatar — compact 68px, inline with a hint to the right */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md, marginBottom: SPACING.md }}>
+                <TouchableOpacity onPress={pickImage} activeOpacity={0.85}>
+                  {editAvatarUri ? (
+                    <View>
+                      <Image source={{ uri: editAvatarUri }} style={{ width: 68, height: 68, borderRadius: 34, borderWidth: 2, borderColor: COLORS.primary }} />
+                      <View style={{ position: 'absolute', bottom: -2, right: -2, backgroundColor: COLORS.primary, borderRadius: 14, padding: 5, borderWidth: 2, borderColor: COLORS.backgroundCard }}>
+                        <Ionicons name="camera" size={12} color="#FFF" />
                       </View>
-                    ) : (
-                      <View>
-                        <Avatar url={profile?.avatar_url} name={profile?.full_name} size={90} />
-                        <View style={{ position: 'absolute', bottom: 0, right: 0, backgroundColor: COLORS.primary, borderRadius: 16, padding: 6 }}>
-                          <Ionicons name="camera" size={14} color="#FFF" />
-                        </View>
+                    </View>
+                  ) : (
+                    <View>
+                      <Avatar url={profile?.avatar_url} name={profile?.full_name} size={68} />
+                      <View style={{ position: 'absolute', bottom: -2, right: -2, backgroundColor: COLORS.primary, borderRadius: 14, padding: 5, borderWidth: 2, borderColor: COLORS.backgroundCard }}>
+                        <Ionicons name="camera" size={12} color="#FFF" />
                       </View>
-                    )}
-                  </TouchableOpacity>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 8 }}>Tap to change photo</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Profile Photo</Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>Tap the photo to change it</Text>
                 </View>
-                <AnimatedInput label="Full Name" value={editName} onChangeText={setEditName} leftIcon="person-outline" />
-                <AnimatedInput label="Occupation" value={editOccupation} onChangeText={setEditOccupation} leftIcon="briefcase-outline" />
-                <AnimatedInput label="Bio" value={editBio} onChangeText={setEditBio} leftIcon="document-text-outline" multiline numberOfLines={3} />
-                <GradientButton title="Save Changes" onPress={handleSaveProfile} loading={updating || uploading} style={{ marginTop: SPACING.md }} />
-              </ScrollView>
-            </View>
+              </View>
+
+              {/* Inputs — no inner ScrollView; everything fits */}
+              <AnimatedInput label="Full Name" value={editName} onChangeText={setEditName} leftIcon="person-outline" />
+              <AnimatedInput label="Occupation" value={editOccupation} onChangeText={setEditOccupation} leftIcon="briefcase-outline" />
+              <AnimatedInput label="Bio" value={editBio} onChangeText={setEditBio} leftIcon="document-text-outline" multiline numberOfLines={3} />
+
+              <GradientButton title="Save Changes" onPress={handleSaveProfile} loading={updating || uploading} style={{ marginTop: SPACING.sm }} />
+            </Pressable>
           </KeyboardAvoidingView>
-        </View>
+        </Pressable>
       </Modal>
 
       {/* ── Cache Manager — FIX: passes onOpenSelectiveCache, no longer nests SelectiveCacheSheet inside */}

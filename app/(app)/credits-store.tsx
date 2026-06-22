@@ -3,6 +3,13 @@
 // CHANGE from original: added 'cancelled' phase display, updated 'polling'
 // phase label to say "Verifying payment..." instead of "Confirming Payment..."
 // Everything else identical to Part 24B credits-store.tsx.
+//
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   The sticky "Buy Now" bottom bar slipped BEHIND the Android navigation /
+//   gesture bar because its bottom padding was hardcoded (`SPACING.xl + 4`).
+//   Under SDK 54 edge-to-edge, content draws behind the system nav bar, so the
+//   bar now pads with the real safe-area inset (`insets.bottom`). The ScrollView
+//   bottom padding also accounts for the inset so the last content isn't hidden.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -12,7 +19,7 @@ import {
 import { LinearGradient }          from 'expo-linear-gradient';
 import { Ionicons }                from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, useSharedValue, useAnimatedStyle, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
-import { SafeAreaView }            from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router }                  from 'expo-router';
 import { useCredits }              from '../../src/context/CreditsContext';
 import { PurchaseSuccessToast }    from '../../src/components/credits/PurchaseSuccessToast';
@@ -142,6 +149,8 @@ export default function CreditsStoreScreen() {
     purchaseState, refresh, loadTransactions, purchasePack, resetPurchase,
   } = useCredits();
 
+  const insets = useSafeAreaInsets();
+
   const [selectedPack,     setSelectedPack]     = useState<CreditPack | null>(CREDIT_PACKS[1]);
   const [showTxHistory,    setShowTxHistory]    = useState(false);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
@@ -185,6 +194,9 @@ export default function CreditsStoreScreen() {
 
   const accentColor = isEmpty ? COLORS.error : isLow ? COLORS.warning : COLORS.primary;
 
+  // FIX: the sticky bar is ~150px tall; pad scroll content for bar height + inset.
+  const BUY_BAR_H = 150;
+
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
@@ -204,7 +216,11 @@ export default function CreditsStoreScreen() {
         </Animated.View>
 
         <ScrollView
-          contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 140 }}
+          contentContainerStyle={{
+            padding: SPACING.xl,
+            // FIX: account for the sticky Buy bar height + the bottom safe-area inset.
+            paddingBottom: BUY_BAR_H + insets.bottom,
+          }}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={refresh} tintColor={COLORS.primary} colors={[COLORS.primary]} />}
         >
@@ -338,8 +354,11 @@ export default function CreditsStoreScreen() {
         </ScrollView>
 
         {/* Sticky Buy Button */}
+        {/* FIX: bottom padding now uses the safe-area inset so the bar clears the
+            Android nav/gesture bar under SDK 54 edge-to-edge. A minimum keeps
+            spacing on devices reporting a 0 inset. */}
         {!isPurchasing && selectedPack && (
-          <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.xl + 4, backgroundColor: 'rgba(10,10,26,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
+          <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: Math.max(insets.bottom, SPACING.md), backgroundColor: 'rgba(10,10,26,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Ionicons name="flash" size={14} color={COLORS.primary} />

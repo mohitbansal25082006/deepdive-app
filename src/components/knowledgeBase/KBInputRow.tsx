@@ -1,6 +1,14 @@
 // src/components/knowledgeBase/KBInputRow.tsx
 // Part 43 — REDESIGNED: matches research-input.tsx aesthetic.
 // No floating animations. All logic/exports unchanged.
+//
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   The input container now accepts a `bottomInset` prop. On Android (SDK 54
+//   edge-to-edge), the bottom message box was rendering BEHIND the navigation /
+//   gesture bar. We add `bottomInset` to the container's bottom padding so the
+//   resting input always clears the system nav bar. When the keyboard opens the
+//   parent KeyboardAvoidingView lifts the whole bar above the keyboard, and the
+//   extra inset is harmless (it just becomes a small gap, consistent with the OS).
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
@@ -88,11 +96,14 @@ interface InputRowProps {
   value: string; onChange: (text: string) => void; onSend: () => void;
   onFocus?: () => void; isSending: boolean; disabled: boolean;
   indexedCount: number; inputRef?: React.RefObject<TextInput | null>;
+  /** Android nav-bar safe-area inset, added to the container's bottom padding. */
+  bottomInset?: number;
 }
 
 export function KBInputRow({
   value, onChange, onSend, onFocus,
   isSending, disabled, indexedCount, inputRef,
+  bottomInset = 0,
 }: InputRowProps) {
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
   const placeholderAnim = useRef(new RNAnimated.Value(1)).current;
@@ -147,7 +158,9 @@ export function KBInputRow({
   const inputBusy = isSending || isRecording || isTranscribing;
 
   return (
-    <View style={styles.container}>
+    // FIX: add bottomInset to the container's bottom padding so the bar clears the
+    // Android navigation / gesture bar in edge-to-edge mode.
+    <View style={[styles.container, { paddingBottom: SPACING.sm + bottomInset }]}>
       {/* Recording banner */}
       {isRecording && (
         <View style={styles.recordingBanner}>

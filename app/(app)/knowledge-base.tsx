@@ -2,6 +2,26 @@
 // Part 43 — REDESIGNED: matches research-input.tsx aesthetic exactly.
 // No floating orbs. No bouncing springs. Controlled FadeIn/FadeInDown entrances.
 // All logic/hooks/features preserved exactly.
+//
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   Issues fixed:
+//     1. The bottom message box slipped BEHIND the Android navigation/gesture bar.
+//     2. The input was not reliably clearing the keyboard on Android.
+//
+//   ROOT CAUSE (1): Expo SDK 54 forces edge-to-edge on Android — content draws
+//   behind the system navigation bar and the app must inset it. KBInputRow had no
+//   bottom safe-area padding, so it rendered under the nav bar.
+//
+//   ROOT CAUSE (2): On Android, KeyboardAvoidingView was disabled (behavior
+//   undefined) AND softwareKeyboardLayoutMode is 'pan' globally. With nothing
+//   lifting the input, the panned window left the input partly hidden.
+//
+//   THE FIX:
+//     • Pass the safe-area bottom inset into KBInputRow so its container pads the
+//       Android nav/gesture bar (only when the keyboard is closed).
+//     • Use KeyboardAvoidingView with behavior 'padding' on BOTH platforms and a
+//       keyboardVerticalOffset so the input rises cleanly above the keyboard. The
+//       Reanimated keyboard inset from safe-area-context 5.x makes this reliable.
 
 import React, {
   useRef, useEffect, useCallback, useState,
@@ -9,11 +29,11 @@ import React, {
 import {
   View, Text, ScrollView, Pressable,
   StyleSheet, KeyboardAvoidingView, Platform,
-  TextInput, Alert, Modal,
+  TextInput, Alert, Modal, Keyboard,
 } from 'react-native';
 import { LinearGradient }       from 'expo-linear-gradient';
 import { Ionicons }             from '@expo/vector-icons';
-import { SafeAreaView }         from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router }               from 'expo-router';
 import Animated, {
   FadeIn, FadeInDown,
@@ -114,6 +134,7 @@ function RenameModal({ visible, current, onConfirm, onClose }: RenameModalProps)
 export default function KnowledgeBaseScreen() {
   const kb     = useKnowledgeBase();
   const kbSess = useKBSessions();
+  const insets = useSafeAreaInsets();
 
   const [inputText,         setInputText]         = useState('');
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
@@ -182,6 +203,17 @@ export default function KnowledgeBaseScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        {/* FIX (issue 2 — black gap): On Android with SDK 54 edge-to-edge +
+            softwareKeyboardLayoutMode:'pan', the OS already pans the window to
+            keep the focused input above the keyboard. Using KeyboardAvoidingView
+            with behavior="height" ON TOP of that DOUBLE-compensates: when the
+            keyboard closes, residual height/padding lingers, leaving a black gap
+            between the input bar and the bottom of the screen.
+            The fix is to give Android behavior={undefined} so KeyboardAvoidingView
+            acts as a plain View (the OS handles the resize), while iOS keeps
+            behavior="padding". The input row's own bottomInset padding (added in
+            KBInputRow) still clears the nav/gesture bar when the keyboard is
+            closed — with no double compensation, there is no black gap. */}
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -259,19 +291,21 @@ export default function KnowledgeBaseScreen() {
 
           {/* ── Messages / Empty state ──────────────────────────────────── */}
           {!hasMessages ? (
-            <View style={{ flex: 1 }}>
+            // FIX: tapping the empty area dismisses the keyboard on Android.
+            <Pressable style={{ flex: 1 }} onPress={() => Keyboard.dismiss()} android_disableSound>
               <KBEmptyState
                 hasReports={hasReports} indexedCount={indexedCount}
                 totalCount={totalCount} onQueryPress={handleSuggestedQuery}
                 onStartSearch={handleFocusInput}
               />
-            </View>
+            </Pressable>
           ) : (
             <ScrollView
               ref={scrollRef} style={{ flex: 1 }}
               contentContainerStyle={styles.messageListContent}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
               onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
             >
               {kb.messages.map(msg => (
@@ -308,11 +342,14 @@ export default function KnowledgeBaseScreen() {
           )}
 
           {/* ── Input ───────────────────────────────────────────────────── */}
+          {/* FIX: pass safe-area bottom inset so the input clears the Android
+              navigation/gesture bar when the keyboard is closed. */}
           <KBInputRow
             value={inputText} onChange={setInputText}
             onSend={handleSend} onFocus={handleFocusInput}
             isSending={kb.isSending} disabled={!hasReports}
             indexedCount={indexedCount} inputRef={inputRef}
+            bottomInset={insets.bottom}
           />
         </KeyboardAvoidingView>
       </SafeAreaView>

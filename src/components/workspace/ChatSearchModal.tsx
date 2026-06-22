@@ -11,6 +11,15 @@
 //     which causes Stream to scroll to and highlight the message.
 //   • Search: tries channel.search() (Stream server-side full-text) first,
 //     falls back to scanning channel.state.messages locally (instant, offline).
+//
+// ── Part 50.10 — ANDROID UI FIX (production · issue 8) ────────────────────────
+//   The results list already dismisses the keyboard on drag
+//   (keyboardDismissMode="on-drag") and keeps taps working
+//   (keyboardShouldPersistTaps="handled"). What was missing: tapping the empty /
+//   initial / no-results area did NOT dismiss the keyboard on Android. Those
+//   center views are now wrapped in a Pressable that calls Keyboard.dismiss(), so
+//   a background tap anywhere in the body closes the keyboard. The screen already
+//   insets the top by insets.bottom-safe `insets.top`.
 
 import React, {
   useState,
@@ -30,6 +39,7 @@ import {
   Keyboard,
   StatusBar,
   Platform,
+  Pressable,
 } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { Ionicons }         from '@expo/vector-icons';
@@ -132,6 +142,9 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
 
   const inputRef    = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Part 50.10 (issue 8): background tap on the body dismisses the keyboard.
+  const dismissKeyboard = useCallback(() => Keyboard.dismiss(), []);
 
   // Auto-focus search input when modal opens
   useEffect(() => {
@@ -310,20 +323,23 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
 
         {/* ── Body ── */}
         {error ? (
-          <View style={styles.center}>
+          // Part 50.10: background tap dismisses the keyboard
+          <Pressable style={styles.center} onPress={dismissKeyboard} android_disableSound>
             <Ionicons name="alert-circle-outline" size={32} color={COLORS.error} />
             <Text style={styles.centerText}>{error}</Text>
             <TouchableOpacity onPress={() => performSearch(query)} style={styles.retryBtn}>
               <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
-          </View>
+          </Pressable>
 
         ) : hasSearched && results.length === 0 ? (
-          <Animated.View entering={FadeIn.duration(200)} style={styles.center}>
-            <Ionicons name="search-outline" size={36} color={`${COLORS.textMuted}60`} />
-            <Text style={styles.centerTitle}>No results</Text>
-            <Text style={styles.centerText}>No messages found for "{query}"</Text>
-          </Animated.View>
+          <Pressable style={{ flex: 1 }} onPress={dismissKeyboard} android_disableSound>
+            <Animated.View entering={FadeIn.duration(200)} style={styles.center}>
+              <Ionicons name="search-outline" size={36} color={`${COLORS.textMuted}60`} />
+              <Text style={styles.centerTitle}>No results</Text>
+              <Text style={styles.centerText}>No messages found for "{query}"</Text>
+            </Animated.View>
+          </Pressable>
 
         ) : results.length > 0 ? (
           <>
@@ -348,8 +364,9 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
           </>
 
         ) : (
-          // Initial empty state — shown before user types anything
-          <View style={styles.center}>
+          // Initial empty state — shown before user types anything.
+          // Part 50.10: background tap dismisses the keyboard.
+          <Pressable style={styles.center} onPress={dismissKeyboard} android_disableSound>
             <View style={styles.emptyIcon}>
               <Ionicons name="search-outline" size={32} color={COLORS.textMuted} />
             </View>
@@ -371,7 +388,7 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
                 <Text style={styles.tipText}>Images</Text>
               </View>
             </View>
-          </View>
+          </Pressable>
         )}
       </View>
     </Modal>

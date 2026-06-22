@@ -35,6 +35,28 @@
 //         so the resting input clears the Android navigation/gesture bar.
 //     iOS:
 //       • KeyboardAvoidingView behavior="padding" with the top-bar offset.
+//
+// ── Part 50.10 — ANDROID UI FIXES (production) ────────────────────────────────
+//   (Issue 8) Tap-anywhere / scroll-to-dismiss the keyboard + allow scrolling the
+//     chat while the keyboard is open while writing:
+//       • <Channel dismissKeyboardOnMessageTouch> (default true, set explicitly)
+//         dismisses the keyboard when a message is touched.
+//       • <MessageList additionalFlatListProps={{ keyboardShouldPersistTaps:
+//         'handled', keyboardDismissMode: 'on-drag' }} /> — taps on bubbles still
+//         work, taps on blank list space dismiss, and dragging the list while the
+//         keyboard is open both scrolls AND dismisses. This is the Stream-endorsed
+//         way to pass FlatList props to the underlying MessageList.
+//
+//   (Issue 10b) Stickers not rendering on Android in DEV / PREVIEW builds (they
+//     worked in Expo Go):
+//       ROOT CAUSE — React Native's built-in <Image> does NOT support WebP /
+//       animated-WebP on custom Android builds unless the Fresco animated-webp /
+//       webpsupport modules are compiled in. Expo Go bundles those modules, so
+//       stickers (GIPHY WebP URLs) rendered there; a dev/preview build does not,
+//       so the same WebP URL silently failed to render.
+//       THE FIX — render stickers with `expo-image` (Glide on Android), which has
+//       built-in WebP + animated-WebP support across ALL build types. No native
+//       config changes required.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -52,6 +74,9 @@ import {
   KeyboardAvoidingView,
   Image,
 } from 'react-native';
+// Part 50.10: expo-image for robust WebP/animated sticker rendering on Android
+// dev/preview builds (RN's <Image> can't render WebP without extra Fresco modules).
+import { Image as ExpoImage } from 'expo-image';
 import { Ionicons }          from '@expo/vector-icons';
 import Animated, {
   FadeIn,
@@ -142,6 +167,8 @@ const MESSAGE_ACTIONS_NO_THREAD = (params: any) => {
 };
 
 // ─── Part 50.X: Sticker Attachment Component ─────────────────────────────────
+// Part 50.10 FIX: render with expo-image (Glide) so WebP / animated-WebP stickers
+// display on Android dev/preview builds, not just in Expo Go.
 
 const STICKER_SIZE = 160;
 
@@ -150,14 +177,21 @@ function StickerAttachment({ attachment }: { attachment: any }) {
     attachment.image_url ?? attachment.asset_url ?? attachment.url ?? '';
   if (!url) return null;
   return (
-    <Image
+    <ExpoImage
       source={{ uri: url }}
       style={{
         width:           STICKER_SIZE,
         height:          STICKER_SIZE,
         backgroundColor: 'transparent',
       }}
-      resizeMode="contain"
+      // contentFit="contain" preserves aspect ratio + transparent background.
+      contentFit="contain"
+      // Animated WebP/GIF stickers should play.
+      autoplay
+      // Transparent placeholder colour avoids a flash of solid background.
+      placeholderContentFit="contain"
+      transition={120}
+      cachePolicy="memory-disk"
     />
   );
 }
@@ -764,6 +798,9 @@ export default function WorkspaceChatScreen() {
             messageActions={MESSAGE_ACTIONS_NO_THREAD}
             doSendMessageRequest={doSendMessageRequest}
             Attachment={CustomAttachment}
+            // Part 50.10 (issue 8): touching a message dismisses the keyboard.
+            // (Stream's default is true; set explicitly so the behaviour is pinned.)
+            dismissKeyboardOnMessageTouch
             AttachButton={() => (
               <CustomAttachButtonInner
                 onPollPress={() => setShowPollCreator(true)}
@@ -779,7 +816,20 @@ export default function WorkspaceChatScreen() {
             // the nav bar. NOT disabled now → correct positioning above the nav bar.
             audioRecordingEnabled
           >
-            <MessageList targetedMessage={targetMsgId} />
+            {/* Part 50.10 (issue 8): pass FlatList props to the underlying message
+                list so that:
+                  • keyboardShouldPersistTaps="handled" — taps on bubbles work,
+                    taps on blank list space dismiss the keyboard.
+                  • keyboardDismissMode="on-drag" — dragging/scrolling the chat
+                    while the keyboard is open both scrolls AND dismisses it.
+                This is the Stream-endorsed way to attach FlatList props. */}
+            <MessageList
+              targetedMessage={targetMsgId}
+              additionalFlatListProps={{
+                keyboardShouldPersistTaps: 'handled',
+                keyboardDismissMode: 'on-drag',
+              }}
+            />
             <MessageInput />
           </Channel>
         </Chat>

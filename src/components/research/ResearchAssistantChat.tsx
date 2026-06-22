@@ -16,11 +16,20 @@
 // Props:
 //   assistant    — return value of useResearchAssistant()
 //   reportTitle  — used in empty state
+//   bottomInset  — Android nav-bar safe-area inset (added to input row padding)
+//
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   1. The chat input row had no bottom safe-area padding; under SDK 54 edge-to-
+//      edge it could sit under the Android nav bar. We now accept `bottomInset`
+//      and pad the input row's bottom with it.
+//   2. Scrolling the message list now dismisses the keyboard (keyboardDismissMode)
+//      and taps on bubbles still work (keyboardShouldPersistTaps="handled").
 
 import React, { useRef, useEffect, useState } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView,
   ActivityIndicator, StyleSheet, Animated as RNAnimated,
+  Platform,
 } from 'react-native';
 import { LinearGradient }   from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
@@ -36,6 +45,8 @@ import type { UseResearchAssistantReturn } from '../../hooks/useResearchAssistan
 interface Props {
   assistant:   UseResearchAssistantReturn;
   reportTitle: string;
+  /** Android nav-bar safe-area inset, added to the input row's bottom padding. */
+  bottomInset?: number;
 }
 
 // ─── Confidence Badge ─────────────────────────────────────────────────────────
@@ -344,7 +355,7 @@ function QuickActionsRow({ onSend }: { onSend: (q: string, mode: AssistantMode) 
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function ResearchAssistantChat({ assistant, reportTitle }: Props) {
+export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 }: Props) {
   const {
     messages,
     isEmbedding,
@@ -417,6 +428,8 @@ export function ResearchAssistantChat({ assistant, reportTitle }: Props) {
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        // FIX: dragging the message list dismisses the keyboard on Android too.
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
       >
         {/* Empty state */}
@@ -451,7 +464,9 @@ export function ResearchAssistantChat({ assistant, reportTitle }: Props) {
       </ScrollView>
 
       {/* ── Input row ───────────────────────────────────────────────────── */}
-      <View style={styles.inputRow}>
+      {/* FIX: bottomInset added to the input row's bottom padding so it clears
+          the Android nav/gesture bar in edge-to-edge mode. */}
+      <View style={[styles.inputRow, { paddingBottom: SPACING.sm + bottomInset }]}>
         {/* Active mode indicator pill */}
         <View style={[styles.inputModePill, { backgroundColor: modeCfg.color + '18', borderColor: modeCfg.color + '40' }]}>
           <Ionicons name={modeCfg.icon as any} size={11} color={modeCfg.color} />

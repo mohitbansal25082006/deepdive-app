@@ -15,6 +15,13 @@
 //   • Academic hint card redesigned with icon orb
 //   • Launch button with dynamic gradient matching selected depth color
 //   • Animated entrance for every section using spring physics
+//
+// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
+//   The sticky bottom launch bar slipped BEHIND the Android navigation / gesture
+//   bar because its bottom padding was hardcoded (`ios ? 28 : SPACING.md`) instead
+//   of using the real safe-area inset. Under SDK 54 edge-to-edge, content draws
+//   behind the system nav bar, so we now pad with `insets.bottom`. The scroll
+//   content's bottom padding also accounts for the inset so nothing is hidden.
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -29,7 +36,7 @@ import Animated, {
   withRepeat, withSequence, withTiming, withSpring,
   interpolate,
 }                            from 'react-native-reanimated';
-import { SafeAreaView }      from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { GradientButton }    from '../../src/components/common/GradientButton';
 import { CreditBalance }     from '../../src/components/credits/CreditBalance';
@@ -186,6 +193,7 @@ function RecordingDot() {
 export default function ResearchInputScreen() {
   // ── Part 43 FIX: read BOTH query AND depth from route params ──────────────
   const params = useLocalSearchParams<{ query?: string; depth?: string }>();
+  const insets = useSafeAreaInsets();
 
   // Validate the depth param — must be one of the three valid values
   const initialDepth: ResearchDepth =
@@ -291,13 +299,15 @@ export default function ResearchInputScreen() {
     });
   };
 
-  // ── Tab bar height ─────────────────────────────────────────────────────────
-  const TAB_H = Platform.OS === 'ios' ? 90 : 80;
+  // FIX: bottom safe-area inset for the sticky launch bar + scroll padding.
+  // The launch bar is ~140px tall; pad the scroll content so the last card and
+  // the academic hint are never hidden behind it.
+  const LAUNCH_BAR_H = 140;
 
   // ──────────────────────────────────────────────────────────────────────────
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      <SafeAreaView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <Animated.View
@@ -348,10 +358,12 @@ export default function ResearchInputScreen() {
           contentContainerStyle={{
             paddingHorizontal: SPACING.xl,
             paddingTop:        SPACING.lg,
-            paddingBottom:     TAB_H + 80,
+            // FIX: pad for the sticky bar height + the bottom safe-area inset.
+            paddingBottom:     LAUNCH_BAR_H + insets.bottom + SPACING.md,
           }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
         >
 
           {/* ── Research Topic ──────────────────────────────────────────── */}
@@ -722,12 +734,15 @@ export default function ResearchInputScreen() {
         </ScrollView>
 
         {/* ── Launch Button ───────────────────────────────────────────────── */}
+        {/* FIX: use insets.bottom for the sticky bar's bottom padding so it clears
+            the Android nav/gesture bar under SDK 54 edge-to-edge. A small minimum
+            keeps spacing on devices that report a 0 inset. */}
         <View style={{
           position:        'absolute',
           bottom:          0, left: 0, right: 0,
           paddingHorizontal: SPACING.xl,
           paddingTop:      SPACING.md,
-          paddingBottom:   Platform.OS === 'ios' ? 28 : SPACING.md,
+          paddingBottom:   Math.max(insets.bottom, SPACING.md),
           backgroundColor: 'rgba(10,10,26,0.97)',
           borderTopWidth:  1,
           borderTopColor:  `${selectedDepthOpt.color}20`,

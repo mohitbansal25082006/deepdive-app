@@ -7,6 +7,23 @@
 //
 // The `onSelect` callback now receives a third argument `isSticker: boolean`
 // so the caller (workspace-chat.tsx) can send the correct attachment type.
+//
+// ── Part 50.10 — ANDROID UI FIXES (production) ────────────────────────────────
+//   (Issue 10a) The picker UI went OFF-SCREEN on Android:
+//       ROOT CAUSE — <Modal presentationStyle="pageSheet"> is an iOS sheet style.
+//       On Android it is not supported and produces a mis-sized / off-screen
+//       surface. THE FIX — only use pageSheet on iOS; on Android present a plain
+//       full-screen slide Modal and inset the top by the status-bar / safe-area
+//       height. The grid already pads the bottom by insets.bottom.
+//
+//   (Issue 10b) Stickers / GIFs not rendering on Android DEV / PREVIEW builds
+//   (they worked in Expo Go):
+//       ROOT CAUSE — RN's built-in <Image> can't decode WebP / animated-WebP on
+//       custom Android builds without extra Fresco modules (Expo Go bundles them).
+//       THE FIX — render every cell with `expo-image` (Glide on Android), which
+//       supports WebP + animated-WebP across all build types. The sticker SEND
+//       URL also prefers the animated GIF original over WebP as an extra-safe
+//       fallback, while display uses expo-image either way.
 
 import React, {
   useCallback,
@@ -17,11 +34,9 @@ import React, {
 } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   Dimensions,
   FlatList,
   Modal,
-  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -30,6 +45,9 @@ import {
   Platform,
   StatusBar,
 } from 'react-native';
+// Part 50.10: expo-image (Glide on Android) decodes WebP / animated-WebP reliably
+// in dev/preview builds, unlike RN's <Image>.
+import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
@@ -110,17 +128,8 @@ const GifCell = memo(function GifCell({ item, colIndex, contentTab, onPress }: G
     ? Math.max(80, scaledH)
     : Math.max(80, scaledH * 0.92);
 
-  const opacity = useRef(new Animated.Value(0)).current;
-
-  const onLoad = useCallback(() => {
-    Animated.timing(opacity, {
-      toValue:         1,
-      duration:        200,
-      useNativeDriver: true,
-    }).start();
-  }, [opacity]);
-
-  // Stickers: prefer WebP for transparency; GIFs: use regular URL
+  // Stickers: prefer WebP for transparency; GIFs: use regular animated URL.
+  // expo-image renders both reliably on Android (Glide).
   const displayUrl = contentTab === 'stickers'
     ? (fw.webp ?? fw.url)
     : fw.url;
@@ -135,14 +144,13 @@ const GifCell = memo(function GifCell({ item, colIndex, contentTab, onPress }: G
         contentTab === 'stickers' && gifCellStyles.stickerContainer,
       ]}
     >
-      {contentTab === 'gifs' && (
-        <View style={[gifCellStyles.skeleton, { height: displayH }]} />
-      )}
-      <Animated.Image
+      <ExpoImage
         source={{ uri: displayUrl }}
-        style={[gifCellStyles.image, { height: displayH, opacity }]}
-        onLoad={onLoad}
-        resizeMode={contentTab === 'stickers' ? 'contain' : 'cover'}
+        style={[gifCellStyles.image, { height: displayH }]}
+        contentFit={contentTab === 'stickers' ? 'contain' : 'cover'}
+        autoplay
+        transition={150}
+        cachePolicy="memory-disk"
       />
       {/* Sticker transparent bg indicator */}
       {contentTab === 'stickers' && (
@@ -167,10 +175,6 @@ const gifCellStyles = StyleSheet.create({
     borderColor:     `${COLORS.border}50`,
     borderRadius:    RADIUS.md,
     overflow:        'hidden',
-  },
-  skeleton: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: COLORS.backgroundElevated,
   },
   image: {
     width:        '100%',
@@ -304,8 +308,11 @@ export function ChatGifPicker({
 
     let url: string;
     if (isSticker) {
-      // Stickers: use original WebP (transparent) → fallback original GIF URL
-      url = gif.images.original.webp ?? gif.images.original.url;
+      // Stickers: prefer the animated GIF original (most broadly decodable on
+      // Android) and fall back to WebP. Display uses expo-image either way, so
+      // both render; the GIF-first order is an extra safety net for any consumer
+      // that still uses RN <Image>.
+      url = gif.images.original.url ?? gif.images.original.webp ?? '';
     } else {
       // GIFs: use original animated GIF
       url = gif.images.original.url;
@@ -389,14 +396,19 @@ export function ChatGifPicker({
   if (!visible) return null;
 
   return (
+    // FIX (issue 10a): pageSheet is an iOS-only presentation. On Android it
+    // renders off-screen / mis-sized, so we only set it on iOS. Android uses a
+    // plain full-screen slide modal.
     <Modal
       visible={visible}
       animationType="slide"
-      presentationStyle="pageSheet"
+      presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : undefined}
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <View style={[styles.root, { paddingTop: Platform.OS === 'ios' ? insets.top : 0 }]}>
+      {/* FIX (issue 10a): inset the top by the safe-area on BOTH platforms so the
+          header is never under the status bar / notch on Android full-screen. */}
+      <View style={[styles.root, { paddingTop: insets.top }]}>
         <StatusBar barStyle="light-content" />
 
         {/* Header */}
@@ -508,6 +520,8 @@ export function ChatGifPicker({
             renderItem={renderItem}
             contentContainerStyle={[
               gridStyles.list,
+              // FIX: pad bottom by the safe-area inset so the last row clears the
+              // Android nav/gesture bar.
               { paddingBottom: insets.bottom + 16 },
             ]}
             columnWrapperStyle={gridStyles.row}
