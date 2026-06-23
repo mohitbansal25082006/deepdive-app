@@ -69,6 +69,7 @@ import { AnimatedInput }      from '../../../src/components/common/AnimatedInput
 import { GradientButton }     from '../../../src/components/common/GradientButton';
 import { LoadingOverlay }     from '../../../src/components/common/LoadingOverlay';
 import { StatsCard }          from '../../../src/components/profile/StatsCard';
+import { ThemeSettingsCard }  from '../../../src/components/profile/ThemeSettingsCard';
 import { CacheManagerModal }  from '../../../src/components/profile/CacheManagerModal';
 import { ReferralCard }       from '../../../src/components/profile/ReferralCard';
 import { ManageCollectionsSheet } from '../../../src/components/collections/ManageCollectionsSheet';
@@ -838,6 +839,12 @@ export default function ProfileScreen() {
             <SectionHeader label="Social & Discovery" icon="people-outline" accent={COLORS.primary} />
             <Animated.View entering={FadeInDown.duration(400).delay(70)}>
               <SocialDiscoveryCard userId={user?.id ?? ''} username={profile?.username ?? null} isPublic={isPublic} followerCount={followerCount} followingCount={followingCount} onTogglePublic={handleTogglePublic} isTogglingPublic={isTogglingPublic} />
+            </Animated.View>
+
+            {/* Appearance */}
+            <SectionHeader label="Appearance" icon="color-palette-outline" accent={COLORS.primary} />
+            <Animated.View entering={FadeInDown.duration(400).delay(75)}>
+              <ThemeSettingsCard />
             </Animated.View>
 
             {/* Collections */}

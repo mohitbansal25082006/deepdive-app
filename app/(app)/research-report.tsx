@@ -391,16 +391,23 @@ function PublicShareModal({
   );
 }
 
+// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
 const closeBtn = {
   width: 32, height: 32, borderRadius: 10,
   backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center' as const, justifyContent: 'center' as const,
-  borderWidth: 1, borderColor: COLORS.border,
+  borderWidth: 1,
+  get borderColor() { return COLORS.border; },
 };
+
+// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
 const secondaryBtn = {
   flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
   gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-  backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: COLORS.border,
+  backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1,
+  get borderColor() { return COLORS.border; },
 };
+
+// primaryBtn is already a function — it re-reads COLORS every time, so leave it.
 function primaryBtn(bg: string) {
   return {
     flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
@@ -1164,8 +1171,9 @@ export default function ResearchReportScreen() {
   );
 }
 
+// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
 const sectionLabel = {
-  color: COLORS.textMuted,
+  get color() { return COLORS.textMuted; },
   fontSize: FONTS.sizes.xs,
   fontWeight: '700' as const,
   letterSpacing: 1,
@@ -1173,14 +1181,16 @@ const sectionLabel = {
   marginBottom: SPACING.md,
 };
 
+// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
 const detailLabel = {
-  color: COLORS.textMuted,
+  get color() { return COLORS.textMuted; },
   fontSize: FONTS.sizes.xs,
   fontWeight: '700' as const,
   letterSpacing: 0.8,
   textTransform: 'uppercase' as const,
 };
 
+// detailCard is already a function — it re-reads COLORS every time, so leave it.
 function detailCard(border: string) {
   return {
     backgroundColor: COLORS.backgroundCard,

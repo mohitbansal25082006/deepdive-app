@@ -1,10 +1,13 @@
 // app/(app)/(tabs)/_layout.tsx
 // Part 36B — 7 tabs: Research | History | Feed | Teams | Podcast | Debate | Profile
 // Part 39 Fix — MiniPlayer rendered in parent layout.
-// Part 53D — Profile tab now shows a LIVE unread notification count badge, read
-//            from the shared NotificationsContext (same value as the bell). It
-//            clears the instant the user opens the bell (markAllRead) because
-//            both read the same context state.
+// Part 53D — Profile tab shows a LIVE unread notification count badge.
+// Part 55 — THEME SYSTEM:
+//   The tab bar's BlurView backdrop hardcoded a dark rgba() tint and tint="dark",
+//   so on LIGHT themes the bar stayed dark. It now subscribes to useTheme() and
+//   computes the BlurView tint + backdrop from the active theme. All other colors
+//   in this file are read inline from COLORS and recolor automatically when the
+//   ThemeProvider bumps its version counter.
 
 import { Tabs }                   from 'expo-router';
 import { View, Text, Platform }   from 'react-native';
@@ -14,7 +17,8 @@ import { useSafeAreaInsets }      from 'react-native-safe-area-context';
 import { useAuth }                from '../../../src/context/AuthContext';
 import { useFollowingFeed }       from '../../../src/hooks/useFollowingFeed';
 import { useNotifications }       from '../../../src/context/NotificationsContext';
-import { COLORS, FONTS }          from '../../../src/constants/theme';
+import { useTheme }               from '../../../src/context/ThemeContext';
+import { COLORS, FONTS, isLightTheme } from '../../../src/constants/theme';
 
 // ─── Tab icon ─────────────────────────────────────────────────────────────────
 
@@ -120,11 +124,18 @@ export default function TabsLayout() {
   const { user }     = useAuth();
 
   // Feed "hasNew" — drives the unread dot on the Feed tab.
-  // markFeedSeen clears it when the Feed tab is tapped (Part 53F).
   const { hasNew, markFeedSeen } = useFollowingFeed(user?.id ?? null);
 
   // Part 53D — live unread notification count (shared with the bell)
   const { unreadCount } = useNotifications();
+
+  // Part 55 — subscribe to theme changes so the tab bar backdrop recolors.
+  useTheme();
+  const light       = isLightTheme();
+  const barTint: 'light' | 'dark' = light ? 'light' : 'dark';
+  const barBackdrop = Platform.OS === 'android'
+    ? (light ? 'rgba(255,255,255,0.96)' : 'rgba(10, 10, 26, 0.96)')
+    : (light ? 'rgba(255,255,255,0.80)' : 'rgba(10, 10, 26, 0.80)');
 
   return (
     <Tabs
@@ -143,12 +154,10 @@ export default function TabsLayout() {
         tabBarBackground: () => (
           <BlurView
             intensity={70}
-            tint="dark"
+            tint={barTint}
             style={{
               flex:            1,
-              backgroundColor: Platform.OS === 'android'
-                ? 'rgba(10, 10, 26, 0.96)'
-                : 'rgba(10, 10, 26, 0.80)',
+              backgroundColor: barBackdrop,
               borderTopWidth:  1,
               borderTopColor:  COLORS.border,
             }}

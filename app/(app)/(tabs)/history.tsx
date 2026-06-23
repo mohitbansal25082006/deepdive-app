@@ -362,11 +362,13 @@ function ReportCard({
   );
 }
 
+// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
 const iconBtn = {
   width: 32, height: 32, borderRadius: 9,
   backgroundColor: 'rgba(255,255,255,0.05)',
   alignItems: 'center' as const, justifyContent: 'center' as const,
-  borderWidth: 1, borderColor: COLORS.border,
+  borderWidth: 1,
+  get borderColor() { return COLORS.border; },
 };
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────

@@ -1,13 +1,13 @@
 // app/(app)/(tabs)/workspace.tsx
-// Part 46 UPDATE — useWorkspaceList now integrates useWorkspaceListRealtime
-// internally, so workspace cards appear/disappear in real time when the
-// current user joins, is removed, or is blocked — with no refresh needed.
-//
-// The screen itself has no additional changes beyond consuming the
-// now-reactive useWorkspaceList hook. All Part 14 UI, join error messages,
-// create/join modals, and navigation are preserved exactly.
+// Part 46 UPDATE — useWorkspaceList integrates realtime internally.
+// Part 55 UPDATE — THEME SYSTEM:
+//   The module-level `const styles = StyleSheet.create({...})` captured COLORS at
+//   import time, so it would NOT recolor on a runtime theme switch. It is now
+//   built inside the component via `useThemedStyles()` (a useMemo keyed on the
+//   theme `version`), so every theme change rebuilds the StyleSheet with fresh
+//   COLORS. All JSX/usage is unchanged.
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ import Animated, { FadeIn, FadeInDown, SlideInDown } from 'react-native-reanimat
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useAuth } from '../../../src/context/AuthContext';
+import { useTheme } from '../../../src/context/ThemeContext';
 import { useWorkspaceList } from '../../../src/hooks/useWorkspaceList';
 import { WorkspaceCard } from '../../../src/components/workspace/WorkspaceCard';
 import { joinWorkspaceByCode, previewWorkspaceByCode } from '../../../src/services/workspaceService';
@@ -61,8 +62,61 @@ function joinErrorColor(kind: JoinErrorKind): string {
   }
 }
 
+// ─── Part 55: themed StyleSheet factory ───────────────────────────────────────
+// Built fresh whenever the theme `version` changes so colors track the active
+// theme. Identical contents to the previous module-level styles.
+function makeStyles() {
+  return StyleSheet.create({
+    header:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md },
+    headerTitle:   { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
+    headerSub:     { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 2 },
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+    headerBtn:     { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
+    scroll:        { paddingHorizontal: SPACING.xl, paddingBottom: 120, flexGrow: 1 },
+    sectionLabel:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm, marginTop: SPACING.md },
+    createCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginTop: SPACING.sm },
+    createCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+    loadingWrap:   { alignItems: 'center', paddingTop: 80, gap: 12 },
+    loadingText:   { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+    errorWrap:     { alignItems: 'center', paddingTop: 80, gap: 12 },
+    errorText:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center' },
+    retryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
+    retryText:     { color: '#FFF', fontWeight: '700' },
+    emptyWrap:     { alignItems: 'center', paddingTop: 60, paddingHorizontal: SPACING.xl },
+    emptyIcon:     { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg },
+    emptyTitle:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm },
+    emptySub:      { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, marginBottom: SPACING.xl },
+    emptyCreateBtn:     { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, width: '100%', justifyContent: 'center' },
+    emptyCreateBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
+    emptyJoinBtn:       { borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: `${COLORS.primary}40`, width: '100%', justifyContent: 'center' },
+    emptyJoinBtnText:   { color: COLORS.primary, fontSize: FONTS.sizes.base, fontWeight: '600' },
+    modalBackdrop:   { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
+    sheet:           { backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.xl },
+    sheetHandle:     { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.lg },
+    sheetHeader:     { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: SPACING.lg },
+    sheetTitle:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+    sheetSub:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 3 },
+    sheetCloseBtn:   { width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, marginLeft: SPACING.md },
+    input:           { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 13, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
+    inputMultiline:  { height: 88, textAlignVertical: 'top' },
+    inputCode:       { textAlign: 'center', letterSpacing: 4, fontSize: FONTS.sizes.xl, fontWeight: '800' },
+    primaryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, alignItems: 'center', marginTop: SPACING.sm },
+    primaryBtnText:  { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
+    joinErrorBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1 },
+    joinErrorText:   { fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 },
+    joinPreview:     { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: `${COLORS.success}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.success}30` },
+    joinPreviewName: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
+    joinPreviewDesc: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, marginTop: 2 },
+    joinPreviewMeta: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 },
+  });
+}
+
 export default function WorkspaceTab() {
   const { user } = useAuth();
+  // Part 55: rebuild themed styles whenever the theme version changes.
+  const { version } = useTheme();
+  const styles = useMemo(() => makeStyles(), [version]);
+
   // Part 46: useWorkspaceList now auto-reacts to realtime events internally
   const { workspaces, isLoading, error, refresh, create } = useWorkspaceList();
 
@@ -201,7 +255,7 @@ export default function WorkspaceTab() {
               </TouchableOpacity>
             </View>
           ) : workspaces.length === 0 ? (
-            <EmptyState onCreate={() => setShowCreate(true)} onJoin={() => setShowJoin(true)} />
+            <EmptyState styles={styles} onCreate={() => setShowCreate(true)} onJoin={() => setShowJoin(true)} />
           ) : (
             <>
               {personalWs.length > 0 && (
@@ -339,7 +393,7 @@ export default function WorkspaceTab() {
   );
 }
 
-function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => void }) {
+function EmptyState({ styles, onCreate, onJoin }: { styles: ReturnType<typeof makeStyles>; onCreate: () => void; onJoin: () => void }) {
   return (
     <Animated.View entering={FadeInDown.duration(600)} style={styles.emptyWrap}>
       <View style={styles.emptyIcon}>
@@ -361,47 +415,3 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
     </Animated.View>
   );
 }
-
-const styles = StyleSheet.create({
-  header:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md },
-  headerTitle:   { color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
-  headerSub:     { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 2 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  headerBtn:     { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
-  scroll:        { paddingHorizontal: SPACING.xl, paddingBottom: 120, flexGrow: 1 },
-  sectionLabel:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm, marginTop: SPACING.md },
-  createCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginTop: SPACING.sm },
-  createCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-  loadingWrap:   { alignItems: 'center', paddingTop: 80, gap: 12 },
-  loadingText:   { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
-  errorWrap:     { alignItems: 'center', paddingTop: 80, gap: 12 },
-  errorText:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center' },
-  retryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
-  retryText:     { color: '#FFF', fontWeight: '700' },
-  emptyWrap:     { alignItems: 'center', paddingTop: 60, paddingHorizontal: SPACING.xl },
-  emptyIcon:     { width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg },
-  emptyTitle:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm },
-  emptySub:      { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22, marginBottom: SPACING.xl },
-  emptyCreateBtn:     { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, width: '100%', justifyContent: 'center' },
-  emptyCreateBtnText: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
-  emptyJoinBtn:       { borderRadius: RADIUS.lg, paddingVertical: 14, paddingHorizontal: SPACING.xl, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: `${COLORS.primary}40`, width: '100%', justifyContent: 'center' },
-  emptyJoinBtnText:   { color: COLORS.primary, fontSize: FONTS.sizes.base, fontWeight: '600' },
-  modalBackdrop:   { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
-  sheet:           { backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.xl },
-  sheetHandle:     { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.lg },
-  sheetHeader:     { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: SPACING.lg },
-  sheetTitle:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  sheetSub:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, marginTop: 3 },
-  sheetCloseBtn:   { width: 32, height: 32, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, marginLeft: SPACING.md },
-  input:           { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 13, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md },
-  inputMultiline:  { height: 88, textAlignVertical: 'top' },
-  inputCode:       { textAlign: 'center', letterSpacing: 4, fontSize: FONTS.sizes.xl, fontWeight: '800' },
-  primaryBtn:      { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, alignItems: 'center', marginTop: SPACING.sm },
-  primaryBtnText:  { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '700' },
-  joinErrorBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1 },
-  joinErrorText:   { fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 },
-  joinPreview:     { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: `${COLORS.success}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.success}30` },
-  joinPreviewName: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
-  joinPreviewDesc: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, marginTop: 2 },
-  joinPreviewMeta: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 },
-});

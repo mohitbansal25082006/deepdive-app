@@ -3,6 +3,13 @@
 // Research report section card  (REDESIGN)
 // Glassy expandable card · gradient index marker · refined stat & bullet styling.
 // Drop-in compatible: export `ReportSectionCard`, props { section, citations, index }.
+//
+// Part 55 UPDATE — THEME SYSTEM:
+//   The module-level `const labelStyle = {...COLORS...}` captured COLORS at import
+//   time and would not recolor on a runtime theme switch. It is now produced by
+//   `labelStyle()` (a function that reads the live COLORS) and called inside the
+//   render. The component also subscribes to useTheme()'s `version` so it
+//   re-renders on theme change. Everything else is unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState } from 'react';
@@ -15,6 +22,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { ReportSection as ReportSectionType, Citation } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 import { RichText } from './RichText';
 
 interface Props {
@@ -24,6 +32,9 @@ interface Props {
 }
 
 export function ReportSectionCard({ section, citations, index }: Props) {
+  // Part 55: subscribe to theme version so this card re-renders on theme change.
+  useTheme();
+
   const [expanded, setExpanded] = useState(index === 0);
   const [showCitations, setShowCitations] = useState(false);
 
@@ -116,7 +127,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
             {/* Statistics */}
             {section.statistics && section.statistics.length > 0 && (
               <View style={{ marginBottom: SPACING.md }}>
-                <Text style={labelStyle}>Key Statistics</Text>
+                <Text style={labelStyle()}>Key Statistics</Text>
                 {section.statistics.map((stat, i) => (
                   <View key={i} style={{
                     borderRadius: RADIUS.md, marginBottom: 8, overflow: 'hidden',
@@ -193,11 +204,14 @@ export function ReportSectionCard({ section, citations, index }: Props) {
   );
 }
 
-const labelStyle = {
-  color: COLORS.textMuted,
-  fontSize: FONTS.sizes.xs,
-  fontWeight: '700' as const,
-  letterSpacing: 0.9,
-  textTransform: 'uppercase' as const,
-  marginBottom: SPACING.sm,
-};
+// Part 55: labelStyle is now a function so it reads the live COLORS each render.
+function labelStyle() {
+  return {
+    color: COLORS.textMuted,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '700' as const,
+    letterSpacing: 0.9,
+    textTransform: 'uppercase' as const,
+    marginBottom: SPACING.sm,
+  };
+}
