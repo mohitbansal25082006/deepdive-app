@@ -5,6 +5,12 @@
 //      Author name, username and avatarUrl are passed as params so the
 //      view-only screen can show an author chip immediately without
 //      waiting for a DB call.
+//
+// Part 54B — FEATURE 5: Tapping your OWN author row in the feed now only opens
+//   your public profile when your profile is public (is_public === true). If
+//   your profile is private, we don't route to an empty/blocked public page —
+//   instead we show a gentle hint with a shortcut to your Profile tab where the
+//   public toggle lives. Other people's author rows behave exactly as before.
 
 import React, { useCallback } from 'react';
 import {
@@ -15,6 +21,7 @@ import {
   RefreshControl,
   ActivityIndicator,
   Pressable,
+  Alert,
 } from 'react-native';
 import { LinearGradient }   from 'expo-linear-gradient';
 import { Ionicons }         from '@expo/vector-icons';
@@ -64,10 +71,61 @@ function openFeedReport(item: FeedItem) {
 }
 
 // ─── Feed Card ────────────────────────────────────────────────────────────────
+//
+// Part 54B (Feature 5): `currentUserId` + `isProfilePublic` are passed down so
+// the author-row tap can decide whether to open the current user's own public
+// profile. The decision lives in `handleAuthorPress`.
 
-function FeedCard({ item, index }: { item: FeedItem; index: number }) {
+function FeedCard({
+  item,
+  index,
+  currentUserId,
+  isProfilePublic,
+}: {
+  item:            FeedItem;
+  index:           number;
+  currentUserId:   string | null;
+  isProfilePublic: boolean;
+}) {
   const depthColor = DEPTH_COLOR[item.depth] ?? COLORS.primary;
   const authorName = item.author_full_name ?? item.author_username ?? 'Researcher';
+
+  const isOwnAuthor = !!currentUserId && item.author_id === currentUserId;
+
+  // ── Part 54B (Feature 5): author-row tap handler ──────────────────────────
+  const handleAuthorPress = () => {
+    if (isOwnAuthor) {
+      // Tapping your OWN author row: only open the public profile if it's public.
+      if (isProfilePublic && item.author_username) {
+        router.push({
+          pathname: '/(app)/user-profile' as any,
+          params:   { username: item.author_username },
+        });
+      } else {
+        // Private profile → don't route to a blocked/empty public page.
+        Alert.alert(
+          'Your profile is private',
+          'Turn on a public profile to view it the way others do. You can enable it from your Profile tab.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            {
+              text: 'Go to Profile',
+              onPress: () => router.push('/(app)/(tabs)/profile' as any),
+            },
+          ],
+        );
+      }
+      return;
+    }
+
+    // Someone else's author row → unchanged behaviour.
+    if (item.author_username) {
+      router.push({
+        pathname: '/(app)/user-profile' as any,
+        params:   { username: item.author_username },
+      });
+    }
+  };
 
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(index * 60)}>
@@ -89,14 +147,7 @@ function FeedCard({ item, index }: { item: FeedItem; index: number }) {
         <View style={{ padding: SPACING.md }}>
           {/* Author row */}
           <Pressable
-            onPress={() => {
-              if (item.author_username) {
-                router.push({
-                  pathname: '/(app)/user-profile' as any,
-                  params:   { username: item.author_username },
-                });
-              }
-            }}
+            onPress={handleAuthorPress}
             style={{
               flexDirection:  'row',
               alignItems:     'center',
@@ -106,13 +157,28 @@ function FeedCard({ item, index }: { item: FeedItem; index: number }) {
           >
             <Avatar url={item.author_avatar_url} name={authorName} size={34} />
             <View style={{ flex: 1 }}>
-              <Text style={{
-                color:      COLORS.textPrimary,
-                fontSize:   FONTS.sizes.sm,
-                fontWeight: '700',
-              }}>
-                {authorName}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={{
+                  color:      COLORS.textPrimary,
+                  fontSize:   FONTS.sizes.sm,
+                  fontWeight: '700',
+                }}>
+                  {authorName}
+                </Text>
+                {/* Part 54B: subtle "You" tag on your own author row */}
+                {isOwnAuthor && (
+                  <View style={{
+                    backgroundColor:  `${COLORS.primary}18`,
+                    borderRadius:     RADIUS.full,
+                    paddingHorizontal: 6,
+                    paddingVertical:  1,
+                    borderWidth:      1,
+                    borderColor:      `${COLORS.primary}33`,
+                  }}>
+                    <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '800' }}>YOU</Text>
+                  </View>
+                )}
+              </View>
               {item.author_username && (
                 <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginTop: 1 }}>
                   @{item.author_username}
@@ -331,6 +397,32 @@ export default function FeedScreen() {
     refresh, loadMore, markFeedSeen,
   } = useFollowingFeed(user?.id ?? null);
 
+  const isProfilePublic = profile?.is_public === true;
+
+  // ── Part 54 update (Update #2): tapping the top-right header avatar opens
+  //   YOUR OWN public profile — but only when your public profile toggle is on.
+  //   If it's off, we show a gentle hint with a shortcut to the Profile tab
+  //   (same guard as the feed author-row tap in Feature 5). Mirrors that flow so
+  //   the avatar never routes to a blocked/empty public page.
+  const handleHeaderAvatarPress = useCallback(() => {
+    const myUsername = profile?.username ?? null;
+    if (isProfilePublic && myUsername) {
+      router.push({
+        pathname: '/(app)/user-profile' as any,
+        params:   { username: myUsername },
+      });
+    } else {
+      Alert.alert(
+        'Your profile is private',
+        'Turn on a public profile to view it the way others do. You can enable it from your Profile tab.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Go to Profile', onPress: () => router.push('/(app)/(tabs)/profile' as any) },
+        ],
+      );
+    }
+  }, [isProfilePublic, profile?.username]);
+
   useFocusEffect(
     useCallback(() => {
       markFeedSeen();
@@ -389,7 +481,14 @@ export default function FeedScreen() {
             </Text>
           </TouchableOpacity>
 
-          <Avatar url={profile?.avatar_url} name={profile?.full_name} size={40} />
+          {/* Part 54 update (Update #2): tappable — opens your own public
+              profile when public, else a gentle hint. */}
+          <Pressable
+            onPress={handleHeaderAvatarPress}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Avatar url={profile?.avatar_url} name={profile?.full_name} size={40} />
+          </Pressable>
         </Animated.View>
 
         {/* Loading skeleton */}
@@ -442,7 +541,13 @@ export default function FeedScreen() {
             {items.length === 0 && !isLoading && <EmptyNotFollowing />}
 
             {items.map((item, i) => (
-              <FeedCard key={item.share_id} item={item} index={i} />
+              <FeedCard
+                key={item.share_id}
+                item={item}
+                index={i}
+                currentUserId={user?.id ?? null}
+                isProfilePublic={isProfilePublic}
+              />
             ))}
 
             {items.length > 0 && (

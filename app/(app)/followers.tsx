@@ -2,10 +2,26 @@
 // DeepDive AI — Part 36B: Followers & Following list screen.
 //
 // Shared screen for both "Followers" and "Following" tabs.
+//
+// Part 54B — FEATURE 8: When viewing ANOTHER user's profile, the list is
+//   "mutual-gated" — it only shows people who ALSO follow the current user.
+//   The owner sees their full list as before.
+//
+//   • New param `gated` ('1' | 'true') turns on mutual gating. user-profile.tsx
+//     passes it when the viewed profile is not the current user's own.
+//   • When gated, we call getMutualUserFollowers / getMutualUserFollowing
+//     (server-side SECURITY DEFINER RPCs) instead of the ungated fetchers.
+//   • Header subtitle + empty-state copy explain the "mutual" context.
+//
+//   PARAM NORMALISATION: this screen historically read `mode`, while
+//   user-profile.tsx navigates with `tab`. We now accept EITHER (`mode` wins,
+//   then `tab`) so both call sites work.
+//
 // URL params:
-//   userId   — whose followers/following to show
-//   mode     — 'followers' | 'following'
-//   username — shown in header subtitle
+//   userId        — whose followers/following to show
+//   mode | tab    — 'followers' | 'following'
+//   username      — shown in header subtitle
+//   gated         — '1'/'true' to enable mutual gating (other users' profiles)
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -28,6 +44,8 @@ import { FollowButton }     from '../../src/components/social/FollowButton';
 import {
   getUserFollowers,
   getUserFollowing,
+  getMutualUserFollowers,
+  getMutualUserFollowing,
 } from '../../src/services/followService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 import type { FollowListItem } from '../../src/types/social';
@@ -115,7 +133,37 @@ function PersonRow({
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
-function EmptyList({ mode, username }: { mode: string; username: string }) {
+function EmptyList({
+  mode, username, gated,
+}: {
+  mode: string; username: string; gated: boolean;
+}) {
+  // Part 54B: gated empty copy explains why a list might look short.
+  if (gated) {
+    return (
+      <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: SPACING.xl }}>
+        <View style={{
+          width: 72, height: 72, borderRadius: 20,
+          backgroundColor: COLORS.backgroundElevated,
+          alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg,
+        }}>
+          <Ionicons name="people-circle-outline" size={34} color={COLORS.border} />
+        </View>
+        <Text style={{
+          color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700',
+          textAlign: 'center', marginBottom: SPACING.sm,
+        }}>
+          No mutual connections here
+        </Text>
+        <Text style={{
+          color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22,
+        }}>
+          You can only see the people in @{username}&apos;s {mode} who also follow you.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: SPACING.xl }}>
       <View style={{
@@ -151,28 +199,48 @@ function EmptyList({ mode, username }: { mode: string; username: string }) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function FollowersScreen() {
-  const { userId, mode, username } = useLocalSearchParams<{
+  const params = useLocalSearchParams<{
     userId:   string;
-    mode:     'followers' | 'following';
+    mode?:    'followers' | 'following';
+    tab?:     'followers' | 'following';
     username: string;
+    gated?:   string;
   }>();
+
+  const { userId, username } = params;
   const { user } = useAuth();
+
+  // Part 54B: accept either `mode` or `tab`.
+  const resolvedMode: 'followers' | 'following' =
+    (params.mode ?? params.tab ?? 'followers') === 'following' ? 'following' : 'followers';
+
+  // Gating is on when the `gated` flag is set AND we're not viewing our own list.
+  const gatedFlag    = params.gated === '1' || params.gated === 'true';
+  const isOwnList    = !!user && !!userId && user.id === userId;
+  const isGated      = gatedFlag && !isOwnList;
 
   const [items,        setItems]        = useState<FollowListItem[]>([]);
   const [isLoading,    setIsLoading]    = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery,  setSearchQuery]  = useState('');
 
-  const isFollowersMode = mode !== 'following';
+  const isFollowersMode = resolvedMode !== 'following';
 
   // ── Fetch ────────────────────────────────────────────────────────────────
 
   const fetch = useCallback(async () => {
     if (!userId) return;
     try {
-      const result = isFollowersMode
-        ? await getUserFollowers(userId, 100, 0)
-        : await getUserFollowing(userId, 100, 0);
+      let result: FollowListItem[];
+      if (isGated) {
+        result = isFollowersMode
+          ? await getMutualUserFollowers(userId, 100, 0)
+          : await getMutualUserFollowing(userId, 100, 0);
+      } else {
+        result = isFollowersMode
+          ? await getUserFollowers(userId, 100, 0)
+          : await getUserFollowing(userId, 100, 0);
+      }
       setItems(result);
     } catch (err) {
       console.warn('[FollowersScreen] fetch error:', err);
@@ -180,7 +248,7 @@ export default function FollowersScreen() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [userId, isFollowersMode]);
+  }, [userId, isFollowersMode, isGated]);
 
   useEffect(() => { fetch(); }, [fetch]);
 
@@ -205,9 +273,13 @@ export default function FollowersScreen() {
   // ── Tab title ───────────────────────────────────────────────────────────
 
   const title   = isFollowersMode ? 'Followers' : 'Following';
-  const subtitle = username
+  const baseSubtitle = username
     ? `@${username} · ${items.length} ${title.toLowerCase()}`
     : `${items.length} ${title.toLowerCase()}`;
+  // Part 54B: hint that the gated list is filtered to mutuals.
+  const subtitle = isGated
+    ? `${items.length} mutual · also follow you`
+    : baseSubtitle;
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -244,13 +316,27 @@ export default function FollowersScreen() {
           </TouchableOpacity>
 
           <View style={{ flex: 1 }}>
-            <Text style={{
-              color:      COLORS.textPrimary,
-              fontSize:   FONTS.sizes.lg,
-              fontWeight: '800',
-            }}>
-              {title}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{
+                color:      COLORS.textPrimary,
+                fontSize:   FONTS.sizes.lg,
+                fontWeight: '800',
+              }}>
+                {title}
+              </Text>
+              {/* Part 54B: mutual badge when gated */}
+              {isGated && (
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 4,
+                  backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.full,
+                  paddingHorizontal: 8, paddingVertical: 2,
+                  borderWidth: 1, borderColor: `${COLORS.success}30`,
+                }}>
+                  <Ionicons name="swap-horizontal" size={10} color={COLORS.success} />
+                  <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '800' }}>MUTUAL</Text>
+                </View>
+              )}
+            </View>
             <Text style={{
               color:    COLORS.textMuted,
               fontSize: FONTS.sizes.xs,
@@ -260,6 +346,22 @@ export default function FollowersScreen() {
             </Text>
           </View>
         </Animated.View>
+
+        {/* Part 54B: gated context banner */}
+        {isGated && (
+          <View style={{
+            flexDirection: 'row', alignItems: 'center', gap: 8,
+            marginHorizontal: SPACING.lg, marginTop: SPACING.sm,
+            backgroundColor: `${COLORS.info}10`, borderRadius: RADIUS.md,
+            paddingHorizontal: SPACING.md, paddingVertical: 8,
+            borderWidth: 1, borderColor: `${COLORS.info}22`,
+          }}>
+            <Ionicons name="lock-closed-outline" size={14} color={COLORS.info} />
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 16 }}>
+              Showing only people here who also follow you.
+            </Text>
+          </View>
+        )}
 
         {/* ── Search bar ── */}
         {items.length > 5 && (
@@ -322,7 +424,11 @@ export default function FollowersScreen() {
             }
           >
             {filtered.length === 0 ? (
-              <EmptyList mode={isFollowersMode ? 'followers' : 'following'} username={username ?? ''} />
+              <EmptyList
+                mode={isFollowersMode ? 'followers' : 'following'}
+                username={username ?? ''}
+                gated={isGated}
+              />
             ) : (
               filtered.map(item => (
                 <PersonRow

@@ -1,5 +1,10 @@
 // src/services/appNotificationService.ts
 // DeepDive AI — Part 53: Unified in-app notification service.
+// Part 54A — Added:
+//   • buildParams() now carries `sessionId` for the voice_debate kind so the
+//     voice-debate-player opens with both voiceDebateId + sessionId.
+//   • notifyPaymentResult() — fires a DB row + local OS banner for a payment
+//     success/failure, deep-linked to /(app)/transaction-history.
 //
 // This service is the ONE place every generation flow calls when content is
 // ready. It does two things, in order, and never throws:
@@ -15,11 +20,13 @@
 // DEEP LINKING
 //   Each notification carries a resolved { route, params } payload built from
 //   CONTENT_KIND_CONFIG, so a tap navigates straight to the exact content:
-//     report        → /(app)/research-report   { reportId }
+//     report         → /(app)/research-report   { reportId }
 //     podcast        → /(app)/podcast-player     { podcastId }
 //     debate         → /(app)/debate-detail      { sessionId }
-//     academic paper → /(app)/academic-paper      { reportId, paperId }
-//     presentation   → /(app)/slide-preview       { reportId, presentationId }
+//     academic paper → /(app)/academic-paper     { reportId, paperId }
+//     presentation   → /(app)/slide-preview      { reportId, presentationId }
+//     voice debate   → /(app)/voice-debate-player { voiceDebateId, sessionId }   (Part 54A)
+//     payment        → /(app)/transaction-history {}                              (Part 54A)
 
 import { supabase } from '../lib/supabase';
 import {
@@ -40,16 +47,18 @@ import {
 // Returns the params object used both for in-app router.push (Part 53B bell) and
 // for the OS notification deep-link payload.
 //
-//   report        → { reportId: contentId }
+//   report         → { reportId: contentId }
 //   podcast        → { podcastId: contentId }
 //   debate         → { sessionId: contentId }
 //   paper          → { reportId, paperId: contentId }
 //   presentation   → { reportId, presentationId: contentId }
+//   voice_debate   → { voiceDebateId: contentId, sessionId }   (Part 54A)
 
 function buildParams(
   kind:      ContentKind,
   contentId: string,
   reportId?: string | null,
+  sessionId?: string | null,
 ): Record<string, string> {
   const cfg = CONTENT_KIND_CONFIG[kind];
   const params: Record<string, string> = {};
@@ -62,8 +71,14 @@ function buildParams(
     // (academic-paper accepts paperId, slide-preview accepts presentationId).
     if (cfg.extraParamKey) params[cfg.extraParamKey] = contentId;
   } else {
-    // Viewer is reached directly via its own id param (podcastId / sessionId).
+    // Viewer is reached directly via its own id param (podcastId / sessionId /
+    // voiceDebateId).
     params[cfg.idParam] = contentId;
+  }
+
+  // Part 54A — voice-debate-player additionally needs the parent sessionId.
+  if (cfg.usesSessionId && sessionId) {
+    params.sessionId = sessionId;
   }
 
   return params;
@@ -77,7 +92,7 @@ function buildParams(
 export async function notifyContentReady(
   input: ContentReadyInput,
 ): Promise<string | null> {
-  const { kind, contentId, reportId, title } = input;
+  const { kind, contentId, reportId, title, sessionId } = input;
 
   if (!contentId) {
     console.warn('[AppNotif] notifyContentReady called without contentId — skipping');
@@ -85,7 +100,7 @@ export async function notifyContentReady(
   }
 
   const cfg    = CONTENT_KIND_CONFIG[kind];
-  const params = buildParams(kind, contentId, reportId);
+  const params = buildParams(kind, contentId, reportId, sessionId);
   const safeTitle = (title ?? '').trim() || 'your content';
   const body   = cfg.body.replace('{title}', safeTitle);
 
@@ -137,6 +152,91 @@ export async function notifyContentReady(
     }
   } catch (err) {
     console.warn('[AppNotif] local fallback notification threw:', err);
+  }
+
+  return notifId;
+}
+
+// ─── Part 54A: Fire a payment-result notification ─────────────────────────────
+//
+// Deep-links to the Transaction History screen. Safe to call from the credits
+// purchase flow on both success and failure. Never throws.
+//
+//   success → "✅ Payment Successful — N credits added"
+//   failure → "❌ Payment Failed — no charges were made"
+//
+// route: /(app)/transaction-history (no params needed)
+
+export interface PaymentNotificationInput {
+  success:       boolean;
+  /** credits added on success (ignored on failure) */
+  creditsAdded?: number;
+  /** pack name shown in the body, e.g. "Popular" */
+  packName?:     string;
+  /** optional override message shown on failure */
+  failureReason?: string;
+}
+
+export async function notifyPaymentResult(
+  input: PaymentNotificationInput,
+): Promise<string | null> {
+  const ROUTE = '/(app)/transaction-history';
+
+  const isSuccess = input.success;
+  const type      = isSuccess ? 'payment_success' : 'payment_failed';
+  const icon      = isSuccess ? 'checkmark-circle' : 'close-circle';
+  const accent    = isSuccess ? '#43E97B' : '#FF4757';
+  const nTitle    = isSuccess ? '✅ Payment Successful' : '❌ Payment Failed';
+
+  const packLabel = input.packName ? ` (${input.packName})` : '';
+  const body = isSuccess
+    ? `${input.creditsAdded ?? 0} credits${packLabel} have been added to your account.`
+    : (input.failureReason?.trim()
+        || 'Your payment did not go through. No charges were made.');
+
+  // Empty params — the route takes none.
+  const params: Record<string, string> = {};
+
+  // 1) DB row.
+  let notifId: string | null = null;
+  try {
+    const { data, error } = await supabase.rpc('create_app_notification', {
+      p_type:       type,
+      p_title:      nTitle,
+      p_body:       body,
+      p_content_id: null,
+      p_report_id:  null,
+      p_route:      ROUTE,
+      p_params:     params,
+      p_icon:       icon,
+      p_accent:     accent,
+    });
+    if (error) {
+      console.warn('[AppNotif] payment create_app_notification failed:', error.message);
+    } else if (typeof data === 'string') {
+      notifId = data;
+    }
+  } catch (err) {
+    console.warn('[AppNotif] payment create_app_notification threw:', err);
+  }
+
+  // 2) OS banner fallback (same dedup rule as notifyContentReady).
+  try {
+    const hasToken = await hasUsablePushToken();
+    if (!hasToken && isAppForeground()) {
+      await scheduleLocalNotification({
+        title: nTitle,
+        body,
+        data: {
+          type,
+          route:  ROUTE,
+          params,
+        },
+        channel: 'content',
+      });
+    }
+  } catch (err) {
+    console.warn('[AppNotif] payment local fallback threw:', err);
   }
 
   return notifId;

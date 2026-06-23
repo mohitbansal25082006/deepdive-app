@@ -1,5 +1,11 @@
 // src/hooks/useVoiceDebate.ts
 // Part 40 + Part 41.2 + Part 44 + CREDIT GATE UPDATE
+// Part 54A — Fires a "voice debate ready" notification when generation
+//   completes. Mirrors useResearch.ts: the notification is fired inside
+//   onComplete AFTER the abort guard, so a cancelled run never notifies.
+//   notifyContentReady carries the voiceDebateId (contentId) AND the parent
+//   debate sessionId so the bell/push deep-links straight into the
+//   voice-debate-player.
 //
 // FIX: COST is now derived from FEATURE_COSTS['voice_debate'] at the top of
 // this file. Previously COST was only defined in VoiceDebateCard.tsx, causing
@@ -27,6 +33,8 @@ import {
 import {
   updateSharedDebateVoiceAudio,
 }                                                    from '../services/voiceDebateSharingService';
+// ── Part 54A: fire a "voice debate ready" notification (respects cancel) ──
+import { notifyContentReady }                        from '../services/appNotificationService';
 import { supabase }                                  from '../lib/supabase';
 import type { DebateSession }                        from '../types';
 import type {
@@ -424,7 +432,10 @@ export function useVoiceDebate(session: DebateSession | null) {
       },
 
       onComplete: async (voiceDebate: VoiceDebate) => {
+        // ── Part 54A: CANCEL GUARD ──
+        // If the user cancelled, do NOT update UI and do NOT notify.
         if (abortRef.current) return;
+
         generatingRef.current = false;
         setIsCancelling(false);
         patch({
@@ -435,6 +446,15 @@ export function useVoiceDebate(session: DebateSession | null) {
           activeAgentName: '',
           error:           null,
         });
+
+        // ── Part 54A: fire the "voice debate ready" notification ──
+        // Carries the parent debate sessionId so a tap opens the player.
+        notifyContentReady({
+          kind:      'voice_debate',
+          contentId: voiceDebate.id,
+          sessionId: voiceDebate.debateSessionId ?? session.id,
+          title:     session.topic,
+        }).catch(() => {});
 
         // Part 41.2: cache audio locally
         cacheAudioBackground(voiceDebate);

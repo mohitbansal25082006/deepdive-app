@@ -1,5 +1,12 @@
 // src/context/CreditsContext.tsx
 // Part 43 CRASH FIX — handles missing user_credits row for new OAuth users.
+// Part 54A — Fires payment-result notifications (deep-linked to Transaction
+//   History) on both payment SUCCESS and FAILURE via notifyPaymentResult():
+//     • success  → fired inside pollCheckOrder when the order is confirmed paid
+//     • failure  → fired inside purchasePack when polling returns 'failed'
+//   These are in addition to the existing in-screen purchaseState UI, so the
+//   user is alerted (and can deep-link to their history) even after leaving the
+//   credits store.
 //
 // ROOT CAUSE OF CRASH:
 //   New OAuth users (Google/GitHub) don't go through the normal sign-up flow
@@ -43,6 +50,8 @@ import {
   clearBalanceCache,
 } from '../lib/creditStorage';
 import { FEATURE_COSTS }  from '../constants/credits';
+// ── Part 54A: payment-result notification (→ Transaction History) ──
+import { notifyPaymentResult } from '../services/appNotificationService';
 import { supabase }       from '../lib/supabase';
 import type {
   CreditTransaction,
@@ -379,6 +388,16 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
               ? creditsAdded
               : (pack.credits + (pack.bonusCredits ?? 0)),
           }));
+
+          // ── Part 54A: fire a payment-success notification ──
+          notifyPaymentResult({
+            success:      true,
+            creditsAdded: creditsAdded > 0
+              ? creditsAdded
+              : (pack.credits + (pack.bonusCredits ?? 0)),
+            packName:     pack.name,
+          }).catch(() => {});
+
           return 'paid';
         }
 
@@ -404,6 +423,12 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not create order';
       setPurchaseState(prev => ({ ...prev, phase: 'failed', error: msg }));
+      // ── Part 54A: notify failure (order could not be created) ──
+      notifyPaymentResult({
+        success:       false,
+        packName:      pack.name,
+        failureReason: 'We could not start your payment. No charges were made.',
+      }).catch(() => {});
       return;
     }
 
@@ -413,6 +438,12 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Checkout URL error';
       setPurchaseState(prev => ({ ...prev, phase: 'failed', error: msg }));
+      // ── Part 54A: notify failure (checkout URL error) ──
+      notifyPaymentResult({
+        success:       false,
+        packName:      pack.name,
+        failureReason: 'We could not open the payment page. No charges were made.',
+      }).catch(() => {});
       return;
     }
 
@@ -436,6 +467,12 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
         phase: 'failed',
         error: 'Your payment was declined.\n\nNo charges were made. Please try again with a different payment method (UPI / Card / Netbanking).',
       }));
+      // ── Part 54A: fire a payment-failure notification ──
+      notifyPaymentResult({
+        success:       false,
+        packName:      pack.name,
+        failureReason: 'Your payment was declined. No charges were made.',
+      }).catch(() => {});
     } else if (pollResult === 'timeout') {
       setPurchaseState(prev => ({
         ...prev,
@@ -445,6 +482,10 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
           'If your payment went through, credits will be added to your account automatically within 1–2 minutes. ' +
           'Pull down to refresh your balance here, or check back shortly.',
       }));
+      // NOTE: We deliberately do NOT fire a failure notification on timeout —
+      // the payment may still succeed via the webhook backup, and a "failed"
+      // banner would be misleading. The success notification fires from the
+      // webhook/poll path if/when the credits land.
       setTimeout(() => { if (user) loadBalance(false); }, 20_000);
       setTimeout(() => { if (user) loadBalance(false); }, 60_000);
     }

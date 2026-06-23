@@ -1,5 +1,12 @@
 // src/lib/notifications.ts
 // DeepDive AI — Part 53D (supersedes the Part 53 rewrite)
+// Part 54A — hrefFromData gains explicit fallbacks for the new notification
+//   types so cold/warm taps still route even when a row lacks the resolved
+//   `route` field:
+//     • voice_debate_ready → /(app)/voice-debate-player?voiceDebateId&sessionId
+//     • payment_success / payment_failed → /(app)/transaction-history
+//   (The primary path is still the generic route+params payload set by the
+//    notification services; these are pure safety nets.)
 //
 // CHANGES IN PART 53D (on top of the earlier projectId/local-notification fixes)
 //
@@ -445,10 +452,11 @@ function buildHref(route: string, params?: Record<string, unknown>): string {
 }
 
 // Resolve a notification's data payload to an href (preferred route+params,
-// then legacy per-type fallbacks). Returns null if nothing routable.
+// then legacy/Part-54A per-type fallbacks). Returns null if nothing routable.
 function hrefFromData(data: Record<string, unknown> | undefined | null): string | null {
   if (!data) return null;
 
+  // Preferred: resolved route + params payload (set by the notification services).
   if (typeof data.route === 'string' && data.route.length > 0) {
     const params =
       data.params && typeof data.params === 'object'
@@ -457,12 +465,32 @@ function hrefFromData(data: Record<string, unknown> | undefined | null): string 
     return buildHref(data.route, params);
   }
 
+  // ── Per-type fallbacks (used only when `route` is missing) ────────────────
+
   if (
     (data.type === 'research_complete' || data.type === 'report_ready') &&
     typeof data.reportId === 'string'
   ) {
     return `/(app)/research-report?reportId=${data.reportId}`;
   }
+
+  // Part 54A — voice debate
+  if (data.type === 'voice_debate_ready') {
+    const vid = typeof data.contentId === 'string' ? data.contentId : null;
+    const sid = typeof data.sessionId === 'string' ? data.sessionId : null;
+    if (vid) {
+      return buildHref('/(app)/voice-debate-player', {
+        voiceDebateId: vid,
+        ...(sid ? { sessionId: sid } : {}),
+      });
+    }
+  }
+
+  // Part 54A — payment success / failure
+  if (data.type === 'payment_success' || data.type === 'payment_failed') {
+    return '/(app)/transaction-history';
+  }
+
   if (
     (data.type === 'new_follower' || data.type === 'new_unfollower') &&
     typeof data.username === 'string' &&

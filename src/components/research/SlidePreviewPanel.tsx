@@ -5,6 +5,12 @@
 //   • Slide counter + layout label
 //   • Speaker notes toggle
 //
+// Part 54 UPDATE — The header close control is now a BACK ARROW (was a
+//   chevron-down "drop" icon). The parent screen (slide-preview.tsx) wires its
+//   onClose to navigate STRAIGHT back to the research-report screen, so pressing
+//   it moves directly from the presentation preview to the report — instead of
+//   dropping back to the slide-generator/setup screen.
+//
 // ─── FIXES APPLIED ────────────────────────────────────────────────────────────
 //
 //  FIX 1 — All TouchableOpacity → Pressable
@@ -176,7 +182,10 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <Ionicons name="chevron-down" size={20} color={COLORS.textSecondary} />
+            {/* Part 54 update: back arrow (was chevron-down "drop"). The parent
+                wires onClose to navigate straight back to the research-report
+                screen, so this moves directly from preview → report. */}
+            <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
           </Pressable>
         )}
 

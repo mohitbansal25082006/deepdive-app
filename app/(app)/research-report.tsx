@@ -2,6 +2,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Research Report — Detail Screen
 //
+// Part 54A — NAVIGATION FIX (Feature 3)
+//   The Row-1 back button now navigates to the HISTORY tab
+//   (/(app)/(tabs)/history) instead of the Home tab. A report is opened from
+//   History (and from notifications), so returning to History — where the
+//   report list lives — is the expected behaviour. We use router.replace so the
+//   back stack doesn't accumulate report→home→report chains.
+//
 // Part 50.8 — BOOKMARK SUPPORT ADDED
 //   • Loads `is_pinned` into the mapped report.
 //   • Bookmark action button writes `is_pinned` to Supabase (optimistic).
@@ -432,6 +439,14 @@ export default function ResearchReportScreen() {
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
 
+  // ── Part 54A (Feature 3): back button → History tab ──────────────────────
+  // A report is reached from History (or a notification), so "back" returns to
+  // the History tab where the report list lives — not Home. router.replace keeps
+  // the back stack from accumulating report→home→report chains.
+  const handleBackToHistory = () => {
+    router.replace('/(app)/(tabs)/history' as any);
+  };
+
   const loadReport = async () => {
     setLoading(true);
     try {
@@ -607,7 +622,7 @@ export default function ResearchReportScreen() {
             {/* Row 1 */}
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: 6, gap: SPACING.sm }}>
               <Pressable
-                onPress={() => router.push('/(app)/(tabs)/home' as any)}
+                onPress={handleBackToHistory}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={({ pressed }) => [{
                   width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',

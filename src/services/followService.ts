@@ -2,6 +2,13 @@
 // Part 36 — Follow/unfollow, profile lookup, social stats.
 // Part 37 FIX 2 — getPublicProfileWithFallback handles new users whose
 //                 username is still NULL in the profiles table.
+// Part 54B (Feature 8) — Added "mutual-with-me" gated list fetchers:
+//   getMutualUserFollowers / getMutualUserFollowing / getMutualFollowersCount.
+//   These call the SECURITY DEFINER RPCs in schema_part54.sql, which return only
+//   the people in another user's followers/following who ALSO follow the caller.
+//   Used when viewing ANOTHER user's profile so we never reveal users who don't
+//   follow us. The caller's OWN profile keeps using the unfiltered getUserFollowers
+//   / getUserFollowing below.
 
 import { supabase } from '../lib/supabase';
 import type {
@@ -97,7 +104,7 @@ export async function getPublicReportsForUser(
   } catch { return []; }
 }
 
-// ─── Followers / Following ────────────────────────────────────────────────────
+// ─── Followers / Following (UNFILTERED — own profile) ─────────────────────────
 
 export async function getUserFollowers(userId: string, limit = 50, offset = 0): Promise<FollowListItem[]> {
   try {
@@ -117,6 +124,63 @@ export async function getUserFollowing(userId: string, limit = 50, offset = 0): 
     if (error || !data) return [];
     return Array.isArray(data) ? (data as FollowListItem[]) : [];
   } catch { return []; }
+}
+
+// ─── Part 54B (Feature 8): Mutual-with-me gated lists ─────────────────────────
+//
+// When viewing ANOTHER user's profile, only reveal the people in their
+// followers/following who ALSO follow the CURRENT user. Filtering happens
+// server-side (SECURITY DEFINER RPCs in schema_part54.sql) so non-matching
+// rows never reach the device and pagination stays correct.
+
+export async function getMutualUserFollowers(
+  userId: string, limit = 50, offset = 0,
+): Promise<FollowListItem[]> {
+  try {
+    const { data, error } = await supabase.rpc('get_mutual_user_followers', {
+      p_user_id: userId, p_limit: limit, p_offset: offset,
+    });
+    if (error || !data) {
+      if (error) console.warn('[followService] getMutualUserFollowers:', error.message);
+      return [];
+    }
+    return Array.isArray(data) ? (data as FollowListItem[]) : [];
+  } catch (err) {
+    console.warn('[followService] getMutualUserFollowers exception:', err);
+    return [];
+  }
+}
+
+export async function getMutualUserFollowing(
+  userId: string, limit = 50, offset = 0,
+): Promise<FollowListItem[]> {
+  try {
+    const { data, error } = await supabase.rpc('get_mutual_user_following', {
+      p_user_id: userId, p_limit: limit, p_offset: offset,
+    });
+    if (error || !data) {
+      if (error) console.warn('[followService] getMutualUserFollowing:', error.message);
+      return [];
+    }
+    return Array.isArray(data) ? (data as FollowListItem[]) : [];
+  } catch (err) {
+    console.warn('[followService] getMutualUserFollowing exception:', err);
+    return [];
+  }
+}
+
+export async function getMutualFollowersCount(
+  userId: string, mode: 'followers' | 'following',
+): Promise<number> {
+  try {
+    const { data, error } = await supabase.rpc('get_mutual_followers_count', {
+      p_user_id: userId, p_mode: mode,
+    });
+    if (error || data === null || data === undefined) return 0;
+    return Number(data) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ─── Social stats ─────────────────────────────────────────────────────────────

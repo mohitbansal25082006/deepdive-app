@@ -13,6 +13,13 @@
 //
 // FIX: Routes to feed-report-view for other users' reports to avoid the
 // expo-notifications crash chain from research-report.tsx.
+//
+// Part 54B — FEATURE 8: When viewing ANOTHER user's profile, the Followers /
+//   Following stat tiles open the list in "mutual-gated" mode — only people who
+//   also follow YOU are shown. We pass `gated: '1'` + `username` + `mode` to the
+//   followers screen. For your OWN profile, the list stays ungated (full list).
+//   (`mode` is passed alongside the legacy `tab` so the followers screen reads
+//    the correct value either way.)
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -334,12 +341,24 @@ export default function UserProfileScreen() {
     setLoadingMore(false);
   }, [hasMore, loadingMore, profile?.id, isOwnProfile]);
 
+  // ── Part 54B (Feature 8): open followers/following with mutual gating ──────
+  // Own profile → ungated full list. Other profiles → gated (mutual-with-me).
+  const openFollowList = useCallback(
+    (mode: 'followers' | 'following') => {
+      if (!profile) return;
+      const params: Record<string, string> = {
+        userId:   profile.id,
+        mode,                 // followers.tsx reads `mode` (and `tab` legacy)
+        tab:      mode,       // keep legacy param populated too
+        username: profile.username ?? '',
+      };
+      if (!isOwnProfile) params.gated = '1';
+      router.push({ pathname: '/(app)/followers' as any, params });
+    },
+    [profile, isOwnProfile],
+  );
+
   // ── Share — FIX: link no longer duplicated ─────────────────────────────────
-  // Root cause: passing both `message` (with URL embedded) AND `url` caused
-  // iOS to append the URL after the message, showing it twice.
-  // Fix: `message` = human text only, `url` = link (iOS uses url separately).
-  // On Android, `url` is often ignored, so we append the link to message only
-  // on Android.
 
   const handleShare = async () => {
     if (!profile?.username) return;
@@ -348,13 +367,11 @@ export default function UserProfileScreen() {
 
     try {
       if (Platform.OS === 'ios') {
-        // iOS: pass message (no URL) + url separately — system shows them once
         await Share.share({
           message: `Check out ${displayName}'s research on DeepDive AI`,
           url:     profileUrl,
         });
       } else {
-        // Android: url field is usually ignored — embed link in message
         await Share.share({
           message: `Check out ${displayName}'s research on DeepDive AI\n${profileUrl}`,
         });
@@ -515,9 +532,9 @@ export default function UserProfileScreen() {
                 {[
                   { label: 'Reports',   value: String(reports.length),         icon: 'document-text-outline', color: COLORS.primary, onPress: undefined as (() => void) | undefined },
                   { label: 'Followers', value: String(profile.follower_count),  icon: 'people-outline',        color: COLORS.info,
-                    onPress: () => router.push({ pathname: '/(app)/followers' as any, params: { userId: profile.id, tab: 'followers' } }) },
+                    onPress: () => openFollowList('followers') },
                   { label: 'Following', value: String(profile.following_count), icon: 'person-add-outline',    color: COLORS.success,
-                    onPress: () => router.push({ pathname: '/(app)/followers' as any, params: { userId: profile.id, tab: 'following' } }) },
+                    onPress: () => openFollowList('following') },
                 ].map(stat => (
                   <Pressable
                     key={stat.label} onPress={stat.onPress}

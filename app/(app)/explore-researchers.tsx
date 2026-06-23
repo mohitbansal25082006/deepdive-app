@@ -1,17 +1,19 @@
 // app/(app)/explore-researchers.tsx
 // DeepDive AI — Part 36: Explore Researchers screen.
 //
-// FIX (Issue 4): When the user follows someone in the main researcher list,
-// the same person's card in the "Suggested for You" section now reflects the
-// updated follow state immediately — without a refetch.
+// Part 54B — FEATURE 7: Added a SECOND segmented control — "AI Suggested" / "All"
+//   — directly below the existing Followers / Active / Newest sort bar.
+//     • "AI Suggested" tab renders the interest-overlap suggestions
+//       (getSuggestedResearchers). The old inline "Suggested for You" section is
+//       folded into this tab. The sort bar + search are hidden here (they don't
+//       apply to suggestions).
+//     • "All" tab renders the existing explore list. The sort bar + search apply
+//       only here.
+//   Both tabs share the same `followStateMap`, so following someone in one tab
+//   updates their card in the other instantly (no refetch).
 //
-// Implementation:
-//   • A shared `followState` map (Record<userId, { isFollowing, followerCount }>)
-//     is held in component state.
-//   • Both the main list cards AND the suggested cards read from this map.
-//   • `handleFollowToggle` writes back into the map, triggering a single
-//     React re-render that updates BOTH sections simultaneously.
-//   • Optimistic update + rollback on error (same behaviour as before).
+// FIX (Issue 4, preserved): A shared `followState` map keeps follow state in
+//   sync across both lists. Optimistic update + rollback on error.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -22,7 +24,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
-  Pressable,
 } from 'react-native';
 import { LinearGradient }   from 'expo-linear-gradient';
 import { Ionicons }         from '@expo/vector-icons';
@@ -39,7 +40,7 @@ import {
   type ExploreResearcher,
   type ExploreSortKey,
 } from '../../src/services/exploreService';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 
 // ─── Sort options ──────────────────────────────────────────────────────────────
 
@@ -49,6 +50,13 @@ const SORT_OPTIONS: { key: ExploreSortKey; label: string; icon: string }[] = [
   { key: 'newest',    label: 'Newest',    icon: 'time-outline'     },
 ];
 
+// Part 54B: how many suggestions to load for the dedicated "AI Suggested" tab.
+const SUGGESTED_LIMIT = 30;
+
+// ─── List mode (Part 54B) ──────────────────────────────────────────────────────
+
+type ListMode = 'suggested' | 'all';
+
 // ─── Shared follow state ───────────────────────────────────────────────────────
 
 interface FollowState {
@@ -57,12 +65,12 @@ interface FollowState {
   isLoading:     boolean;
 }
 
-// ─── Follow button (inline, no external hook — reads from shared map) ─────────
+// ─── Follow button (inline, reads from shared map) ────────────────────────────
 
 interface FollowBtnProps {
-  researcher:        ExploreResearcher;
-  followState:       FollowState;
-  onToggle:          (researcher: ExploreResearcher) => Promise<void>;
+  researcher:  ExploreResearcher;
+  followState: FollowState;
+  onToggle:    (researcher: ExploreResearcher) => Promise<void>;
 }
 
 function FollowBtn({ researcher, followState, onToggle }: FollowBtnProps) {
@@ -233,94 +241,7 @@ function ResearcherCard({
   );
 }
 
-// ─── Suggested section ────────────────────────────────────────────────────────
-
-interface SuggestedSectionProps {
-  suggestions:    ExploreResearcher[];
-  currentUserId:  string | null;
-  followStateMap: Record<string, FollowState>;
-  onToggle:       (researcher: ExploreResearcher) => Promise<void>;
-}
-
-function SuggestedSection({
-  suggestions, currentUserId, followStateMap, onToggle,
-}: SuggestedSectionProps) {
-  if (suggestions.length === 0) return null;
-
-  return (
-    <Animated.View entering={FadeInDown.duration(400)} style={{ marginBottom: SPACING.lg }}>
-      {/* Header */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
-        <LinearGradient
-          colors={[COLORS.success, `${COLORS.success}BB`]}
-          style={{
-            width:          28,
-            height:         28,
-            borderRadius:   8,
-            alignItems:     'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Ionicons name="sparkles" size={13} color="#FFF" />
-        </LinearGradient>
-        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>
-          Suggested for You
-        </Text>
-        <View style={{
-          backgroundColor:  `${COLORS.success}15`,
-          borderRadius:     RADIUS.full,
-          paddingHorizontal: 8,
-          paddingVertical:  2,
-          borderWidth:      1,
-          borderColor:      `${COLORS.success}25`,
-        }}>
-          <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>
-            BASED ON YOUR INTERESTS
-          </Text>
-        </View>
-      </View>
-
-      {/* Cards — each reads from the shared followStateMap */}
-      {suggestions.map((r, i) => (
-        <ResearcherCard
-          key={r.id}
-          researcher={r}
-          currentUserId={currentUserId}
-          followState={
-            followStateMap[r.id] ?? {
-              isFollowing:   r.is_following,
-              followerCount: r.follower_count,
-              isLoading:     false,
-            }
-          }
-          onToggle={onToggle}
-          index={i}
-        />
-      ))}
-
-      {/* Divider */}
-      <View style={{
-        height:         1,
-        backgroundColor: COLORS.border,
-        marginVertical: SPACING.md,
-        opacity:        0.5,
-      }} />
-
-      <Text style={{
-        color:         COLORS.textMuted,
-        fontSize:      FONTS.sizes.xs,
-        fontWeight:    '600',
-        letterSpacing: 0.8,
-        textTransform: 'uppercase',
-        marginBottom:  SPACING.sm,
-      }}>
-        All Researchers
-      </Text>
-    </Animated.View>
-  );
-}
-
-// ─── Empty state ──────────────────────────────────────────────────────────────
+// ─── Empty states ──────────────────────────────────────────────────────────────
 
 function EmptyState({ isSearching }: { isSearching: boolean }) {
   return (
@@ -363,6 +284,50 @@ function EmptyState({ isSearching }: { isSearching: boolean }) {
   );
 }
 
+// Part 54B: empty state specific to the AI Suggested tab.
+function EmptySuggested({ hasInterests }: { hasInterests: boolean }) {
+  return (
+    <View style={{ alignItems: 'center', paddingTop: 50, paddingHorizontal: SPACING.xl }}>
+      <LinearGradient
+        colors={[COLORS.success, `${COLORS.success}AA`]}
+        style={{
+          width: 64, height: 64, borderRadius: 18,
+          alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg,
+        }}
+      >
+        <Ionicons name="sparkles" size={28} color="#FFF" />
+      </LinearGradient>
+      <Text style={{
+        color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700',
+        textAlign: 'center', marginBottom: SPACING.sm,
+      }}>
+        {hasInterests ? 'No suggestions right now' : 'Add interests to get suggestions'}
+      </Text>
+      <Text style={{
+        color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22,
+      }}>
+        {hasInterests
+          ? "We couldn't find researchers matching your interests yet. Try the All tab to browse everyone."
+          : 'Add a few interests to your profile and we\'ll suggest researchers who share them.'}
+      </Text>
+      <TouchableOpacity
+        onPress={() => router.push('/(app)/(tabs)/profile' as any)}
+        activeOpacity={0.85}
+        style={{
+          marginTop: SPACING.lg,
+          backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
+          paddingHorizontal: 18, paddingVertical: 10,
+          borderWidth: 1, borderColor: `${COLORS.primary}30`,
+        }}
+      >
+        <Text style={{ color: COLORS.primary, fontWeight: '700', fontSize: FONTS.sizes.sm }}>
+          {hasInterests ? 'Edit Interests' : 'Add Interests'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ExploreResearchersScreen() {
@@ -371,6 +336,7 @@ export default function ExploreResearchersScreen() {
   const [researchers,    setResearchers]    = useState<ExploreResearcher[]>([]);
   const [suggestions,    setSuggestions]    = useState<ExploreResearcher[]>([]);
   const [isLoading,      setIsLoading]      = useState(true);
+  const [isLoadingSug,   setIsLoadingSug]   = useState(true);
   const [isRefreshing,   setIsRefreshing]   = useState(false);
   const [isLoadingMore,  setIsLoadingMore]  = useState(false);
   const [hasMore,        setHasMore]        = useState(true);
@@ -378,9 +344,10 @@ export default function ExploreResearchersScreen() {
   const [search,         setSearch]         = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  // ── Shared follow state map ────────────────────────────────────────────────
-  // Keyed by researcher.id.  Both the main list AND the suggested section read
-  // from here, so toggling in one section immediately updates the other.
+  // Part 54B: which list to show — AI Suggested vs All.
+  const [listMode, setListMode] = useState<ListMode>('all');
+
+  // ── Shared follow state map (keyed by researcher.id) ───────────────────────
   const [followStateMap, setFollowStateMap] = useState<Record<string, FollowState>>({});
 
   const fetchingRef = useRef(false);
@@ -389,14 +356,13 @@ export default function ExploreResearchersScreen() {
   const isSearching      = debouncedSearch.trim().length > 0;
   const userHasInterests = (profile?.interests?.length ?? 0) > 0;
 
-  // ── Initialise follow state from a list of researchers ────────────────────
+  // ── Seed follow state from a list ──────────────────────────────────────────
 
   const seedFollowState = useCallback(
     (list: ExploreResearcher[]) => {
       setFollowStateMap(prev => {
         const next = { ...prev };
         list.forEach(r => {
-          // Only write if not already tracked (preserves in-flight optimistic)
           if (!next[r.id]) {
             next[r.id] = {
               isFollowing:   r.is_following,
@@ -426,7 +392,6 @@ export default function ExploreResearchersScreen() {
       const wasFollowing = current.isFollowing;
       const prevCount    = current.followerCount;
 
-      // Optimistic
       setFollowStateMap(prev => ({
         ...prev,
         [researcher.id]: {
@@ -447,17 +412,12 @@ export default function ExploreResearchersScreen() {
 
         if (!result.success) throw new Error(result.error ?? 'Action failed');
 
-        // Confirm (keep optimistic, clear loading)
         setFollowStateMap(prev => ({
           ...prev,
-          [researcher.id]: {
-            ...prev[researcher.id],
-            isLoading: false,
-          },
+          [researcher.id]: { ...prev[researcher.id], isLoading: false },
         }));
       } catch (err) {
         console.warn('[ExploreResearchers] follow toggle error:', err);
-        // Rollback
         setFollowStateMap(prev => ({
           ...prev,
           [researcher.id]: {
@@ -481,16 +441,18 @@ export default function ExploreResearchersScreen() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [search]);
 
-  // ── Load suggestions (once) ────────────────────────────────────────────────
+  // ── Load suggestions (once) — now full list for the AI Suggested tab ───────
 
   useEffect(() => {
-    if (!user || !userHasInterests) return;
-    getSuggestedResearchers(5)
+    if (!user) { setIsLoadingSug(false); return; }
+    setIsLoadingSug(true);
+    getSuggestedResearchers(SUGGESTED_LIMIT)
       .then(data => {
         setSuggestions(data);
         seedFollowState(data);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setIsLoadingSug(false));
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Fetch main list ────────────────────────────────────────────────────────
@@ -534,16 +496,42 @@ export default function ExploreResearchersScreen() {
     fetchResearchers(true);
   }, [sort, debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const refreshSuggestions = useCallback(async () => {
+    try {
+      const data = await getSuggestedResearchers(SUGGESTED_LIMIT);
+      setSuggestions(data);
+      seedFollowState(data);
+    } catch { /* ignore */ }
+  }, [seedFollowState]);
+
   const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
-    fetchResearchers(true);
-  }, [fetchResearchers]);
+    if (listMode === 'suggested') {
+      refreshSuggestions().finally(() => setIsRefreshing(false));
+    } else {
+      fetchResearchers(true);
+    }
+  }, [listMode, fetchResearchers, refreshSuggestions]);
 
   const handleLoadMore = useCallback(() => {
+    // Only the "All" list paginates; suggestions are a single fetch.
+    if (listMode !== 'all') return;
     if (!hasMore || isLoadingMore || fetchingRef.current) return;
     setIsLoadingMore(true);
     fetchResearchers(false);
-  }, [hasMore, isLoadingMore, fetchResearchers]);
+  }, [listMode, hasMore, isLoadingMore, fetchResearchers]);
+
+  // ── Derived: the list currently shown ──────────────────────────────────────
+
+  const showingSuggested = listMode === 'suggested';
+  const activeLoading     = showingSuggested ? isLoadingSug : isLoading;
+
+  const getFollowState = (r: ExploreResearcher): FollowState =>
+    followStateMap[r.id] ?? {
+      isFollowing:   r.is_following,
+      followerCount: r.follower_count,
+      isLoading:     false,
+    };
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -591,102 +579,167 @@ export default function ExploreResearchersScreen() {
           </View>
         </Animated.View>
 
-        {/* Search bar */}
+        {/* Search bar — only in "All" mode */}
+        {!showingSuggested && (
+          <Animated.View
+            entering={FadeInDown.duration(400).delay(60)}
+            style={{
+              paddingHorizontal: SPACING.lg,
+              paddingTop:        SPACING.md,
+              paddingBottom:     SPACING.sm,
+            }}
+          >
+            <View style={{
+              flexDirection:    'row',
+              alignItems:       'center',
+              backgroundColor:  COLORS.backgroundElevated,
+              borderRadius:     RADIUS.lg,
+              paddingHorizontal: SPACING.md,
+              paddingVertical:  10,
+              borderWidth:      1,
+              borderColor:      search.length > 0 ? `${COLORS.primary}50` : COLORS.border,
+              gap:              SPACING.sm,
+            }}>
+              <Ionicons
+                name="search"
+                size={17}
+                color={search.length > 0 ? COLORS.primary : COLORS.textMuted}
+              />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search by name, username or interest…"
+                placeholderTextColor={COLORS.textMuted}
+                style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm }}
+                returnKeyType="search"
+                clearButtonMode="while-editing"
+              />
+              {search.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => setSearch('')}
+                  hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                >
+                  <Ionicons name="close-circle" size={17} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </Animated.View>
+        )}
+
+        {/* Sort tabs — only in "All" mode */}
+        {!showingSuggested && (
+          <Animated.View
+            entering={FadeInDown.duration(400).delay(100)}
+            style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm }}
+          >
+            <View style={{
+              flexDirection:   'row',
+              backgroundColor: COLORS.backgroundElevated,
+              borderRadius:    RADIUS.lg,
+              padding:         3,
+              borderWidth:     1,
+              borderColor:     COLORS.border,
+            }}>
+              {SORT_OPTIONS.map(opt => {
+                const active = sort === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    onPress={() => setSort(opt.key)}
+                    activeOpacity={0.75}
+                    style={{
+                      flex:            1,
+                      flexDirection:   'row',
+                      alignItems:      'center',
+                      justifyContent:  'center',
+                      gap:             5,
+                      paddingVertical: 8,
+                      borderRadius:    RADIUS.md,
+                      backgroundColor: active ? COLORS.primary : 'transparent',
+                    }}
+                  >
+                    <Ionicons
+                      name={opt.icon as any}
+                      size={12}
+                      color={active ? '#FFF' : COLORS.textMuted}
+                    />
+                    <Text style={{
+                      color:      active ? '#FFF' : COLORS.textMuted,
+                      fontSize:   FONTS.sizes.xs,
+                      fontWeight: active ? '700' : '500',
+                    }}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Animated.View>
+        )}
+
+        {/* ── Part 54B: AI Suggested / All segmented bar ── */}
         <Animated.View
-          entering={FadeInDown.duration(400).delay(60)}
+          entering={FadeInDown.duration(400).delay(showingSuggested ? 60 : 140)}
           style={{
             paddingHorizontal: SPACING.lg,
-            paddingTop:        SPACING.md,
+            paddingTop:        showingSuggested ? SPACING.md : 0,
             paddingBottom:     SPACING.sm,
           }}
         >
           <View style={{
-            flexDirection:    'row',
-            alignItems:       'center',
-            backgroundColor:  COLORS.backgroundElevated,
-            borderRadius:     RADIUS.lg,
-            paddingHorizontal: SPACING.md,
-            paddingVertical:  10,
-            borderWidth:      1,
-            borderColor:      search.length > 0 ? `${COLORS.primary}50` : COLORS.border,
-            gap:              SPACING.sm,
-          }}>
-            <Ionicons
-              name="search"
-              size={17}
-              color={search.length > 0 ? COLORS.primary : COLORS.textMuted}
-            />
-            <TextInput
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Search by name, username or interest…"
-              placeholderTextColor={COLORS.textMuted}
-              style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm }}
-              returnKeyType="search"
-              clearButtonMode="while-editing"
-            />
-            {search.length > 0 && (
-              <TouchableOpacity
-                onPress={() => setSearch('')}
-                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-              >
-                <Ionicons name="close-circle" size={17} color={COLORS.textMuted} />
-              </TouchableOpacity>
-            )}
-          </View>
-        </Animated.View>
-
-        {/* Sort tabs */}
-        <Animated.View
-          entering={FadeInDown.duration(400).delay(100)}
-          style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm }}
-        >
-          <View style={{
             flexDirection:   'row',
-            backgroundColor: COLORS.backgroundElevated,
-            borderRadius:    RADIUS.lg,
-            padding:         3,
+            backgroundColor: 'rgba(255,255,255,0.04)',
+            borderRadius:    RADIUS.full,
+            padding:         4,
             borderWidth:     1,
             borderColor:     COLORS.border,
           }}>
-            {SORT_OPTIONS.map(opt => {
-              const active = sort === opt.key;
+            {([
+              { key: 'suggested', label: 'AI Suggested', icon: 'sparkles' },
+              { key: 'all',       label: 'All',          icon: 'planet-outline' },
+            ] as { key: ListMode; label: string; icon: string }[]).map(opt => {
+              const active = listMode === opt.key;
+              const isSug  = opt.key === 'suggested';
               return (
                 <TouchableOpacity
                   key={opt.key}
-                  onPress={() => setSort(opt.key)}
-                  activeOpacity={0.75}
-                  style={{
-                    flex:            1,
-                    flexDirection:   'row',
-                    alignItems:      'center',
-                    justifyContent:  'center',
-                    gap:             5,
-                    paddingVertical: 8,
-                    borderRadius:    RADIUS.md,
-                    backgroundColor: active ? COLORS.primary : 'transparent',
-                  }}
+                  onPress={() => setListMode(opt.key)}
+                  activeOpacity={0.8}
+                  style={{ flex: 1, borderRadius: RADIUS.full, overflow: 'hidden' }}
                 >
-                  <Ionicons
-                    name={opt.icon as any}
-                    size={12}
-                    color={active ? '#FFF' : COLORS.textMuted}
-                  />
-                  <Text style={{
-                    color:      active ? '#FFF' : COLORS.textMuted,
-                    fontSize:   FONTS.sizes.xs,
-                    fontWeight: active ? '700' : '500',
-                  }}>
-                    {opt.label}
-                  </Text>
+                  {active ? (
+                    <LinearGradient
+                      colors={isSug ? [COLORS.success, `${COLORS.success}BB`] : COLORS.gradientPrimary}
+                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, ...SHADOWS.small }}
+                    >
+                      <Ionicons name={opt.icon as any} size={13} color="#FFF" />
+                      <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '800' }}>{opt.label}</Text>
+                    </LinearGradient>
+                  ) : (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9 }}>
+                      <Ionicons name={opt.icon as any} size={13} color={COLORS.textMuted} />
+                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{opt.label}</Text>
+                    </View>
+                  )}
                 </TouchableOpacity>
               );
             })}
           </View>
+
+          {/* Sub-caption for the suggested tab */}
+          {showingSuggested && (
+            <Text style={{
+              color: COLORS.textMuted, fontSize: 11, marginTop: SPACING.sm,
+              marginLeft: 4, fontWeight: '500',
+            }}>
+              Researchers matched to your interests
+            </Text>
+          )}
         </Animated.View>
 
         {/* Loading skeletons */}
-        {isLoading && (
+        {activeLoading && (
           <ScrollView
             contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 110 }}
             showsVerticalScrollIndicator={false}
@@ -709,7 +762,7 @@ export default function ExploreResearchersScreen() {
         )}
 
         {/* Content */}
-        {!isLoading && (
+        {!activeLoading && (
           <ScrollView
             contentContainerStyle={{
               paddingHorizontal: SPACING.lg,
@@ -733,66 +786,71 @@ export default function ExploreResearchersScreen() {
             }}
             scrollEventThrottle={400}
           >
-            {/* Suggested section — only when not searching */}
-            {!isSearching && userHasInterests && suggestions.length > 0 && (
-              <SuggestedSection
-                suggestions={suggestions}
-                currentUserId={user?.id ?? null}
-                followStateMap={followStateMap}
-                onToggle={handleFollowToggle}
-              />
+            {/* ══ AI SUGGESTED TAB ══ */}
+            {showingSuggested && (
+              <>
+                {suggestions.length === 0 ? (
+                  <EmptySuggested hasInterests={userHasInterests} />
+                ) : (
+                  suggestions.map((r, i) => (
+                    <ResearcherCard
+                      key={r.id}
+                      researcher={r}
+                      currentUserId={user?.id ?? null}
+                      followState={getFollowState(r)}
+                      onToggle={handleFollowToggle}
+                      index={i}
+                    />
+                  ))
+                )}
+              </>
             )}
 
-            {/* Empty state */}
-            {researchers.length === 0 && (
-              <EmptyState isSearching={isSearching} />
-            )}
+            {/* ══ ALL TAB ══ */}
+            {!showingSuggested && (
+              <>
+                {researchers.length === 0 && (
+                  <EmptyState isSearching={isSearching} />
+                )}
 
-            {/* Main list */}
-            {researchers.map((researcher, i) => (
-              <ResearcherCard
-                key={researcher.id}
-                researcher={researcher}
-                currentUserId={user?.id ?? null}
-                followState={
-                  followStateMap[researcher.id] ?? {
-                    isFollowing:   researcher.is_following,
-                    followerCount: researcher.follower_count,
-                    isLoading:     false,
-                  }
-                }
-                onToggle={handleFollowToggle}
-                index={i}
-              />
-            ))}
+                {researchers.map((researcher, i) => (
+                  <ResearcherCard
+                    key={researcher.id}
+                    researcher={researcher}
+                    currentUserId={user?.id ?? null}
+                    followState={getFollowState(researcher)}
+                    onToggle={handleFollowToggle}
+                    index={i}
+                  />
+                ))}
 
-            {/* Load more */}
-            {isLoadingMore && (
-              <View style={{ paddingVertical: SPACING.lg, alignItems: 'center' }}>
-                <ActivityIndicator color={COLORS.primary} />
-              </View>
-            )}
+                {isLoadingMore && (
+                  <View style={{ paddingVertical: SPACING.lg, alignItems: 'center' }}>
+                    <ActivityIndicator color={COLORS.primary} />
+                  </View>
+                )}
 
-            {/* End of list */}
-            {!hasMore && researchers.length > 0 && (
-              <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
-                <View style={{
-                  flexDirection:    'row',
-                  alignItems:       'center',
-                  gap:              8,
-                  backgroundColor:  COLORS.backgroundElevated,
-                  borderRadius:     RADIUS.full,
-                  paddingHorizontal: 16,
-                  paddingVertical:  8,
-                  borderWidth:      1,
-                  borderColor:      COLORS.border,
-                }}>
-                  <Ionicons name="checkmark-circle-outline" size={14} color={COLORS.textMuted} />
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                    All researchers loaded
-                  </Text>
-                </View>
-              </View>
+                {!hasMore && researchers.length > 0 && (
+                  <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
+                    <View style={{
+                      flexDirection:    'row',
+                      alignItems:       'center',
+                      gap:              8,
+                      backgroundColor:  COLORS.backgroundElevated,
+                      borderRadius:     RADIUS.full,
+                      paddingHorizontal: 16,
+                      paddingVertical:  8,
+                      borderWidth:      1,
+                      borderColor:      COLORS.border,
+                    }}>
+                      <Ionicons name="checkmark-circle-outline" size={14} color={COLORS.textMuted} />
+                      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                        All researchers loaded
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </>
             )}
           </ScrollView>
         )}

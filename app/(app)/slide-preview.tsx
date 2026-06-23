@@ -1,6 +1,17 @@
 // app/(app)/slide-preview.tsx
 // Part 41.6 — Screenshot-based export
 //
+// Part 54A — NAVIGATION + LABEL FIX (Feature 4)
+//   1. handleBack now routes to the research-report screen when a presentation
+//      EXISTS (i.e. one was generated / loaded). When NO presentation exists yet
+//      (still on the setup screen with nothing generated), it keeps the old
+//      router.back() behaviour. This means: after generating slides, pressing
+//      back returns you to the report you generated them from — not the previous
+//      arbitrary screen. We use router.replace so back-stack chains don't grow.
+//   2. The initial screen loading overlay now reads "Loading presentation…"
+//      instead of "Loading report…", since this screen is the slide/presentation
+//      flow (the label was misleading when entering the slide screen).
+//
 // CHANGES from Part 30:
 //   1. Added SlideExportRenderer (off-screen) + SlideExportRendererRef
 //   2. handleExportPPTX / handleExportPDF / handleExportHTML now:
@@ -252,7 +263,20 @@ export default function SlidePreviewScreen() {
     }
   };
 
-  const handleBack       = useCallback(() => router.back(), []);
+  // ── Part 54A (Feature 4): smart back ──────────────────────────────────────
+  // When a presentation EXISTS (generated or loaded), back returns to the
+  // research-report it belongs to. Otherwise (nothing generated yet) keep the
+  // original router.back() behaviour. router.replace avoids back-stack chains.
+  const handleBack = useCallback(() => {
+    const pres = freshPresentation ?? generatedPresentation;
+    const rid  = report?.id ?? reportId ?? pres?.reportId;
+    if (pres && rid) {
+      router.replace({ pathname: '/(app)/research-report' as any, params: { reportId: rid } });
+      return;
+    }
+    router.back();
+  }, [freshPresentation, generatedPresentation, report?.id, reportId]);
+
   const handleOpenEditor = useCallback(() => {
     if (!presentation) return;
     const params: Record<string, string> = { presentationId: presentation.id };
@@ -377,7 +401,8 @@ export default function SlidePreviewScreen() {
     ]);
   }, [generate, selectedTheme, deletePresentation, guardedConsume]);
 
-  if (loadingReport) return <LoadingOverlay visible message="Loading report…" />;
+  // ── Part 54A (Feature 4): initial loading label → "Loading presentation…" ──
+  if (loadingReport) return <LoadingOverlay visible message="Loading presentation…" />;
 
   // ── PREVIEW MODE ──────────────────────────────────────────────────────────
 
@@ -403,10 +428,14 @@ export default function SlidePreviewScreen() {
             onProgress={(done, total) => setCaptureProgress({ done, total })}
           />
 
+          {/* Part 54 update: the panel's back button now goes STRAIGHT to the
+              research-report screen (via handleBack) instead of dropping back to
+              the slide-generator/setup screen. handleBack routes to
+              research-report whenever a presentation exists. */}
           <SlidePreviewPanel
             key={refreshKey}
             presentation={presentation}
-            onClose={() => setScreenPhase('setup')}
+            onClose={handleBack}
           />
 
           <View style={{

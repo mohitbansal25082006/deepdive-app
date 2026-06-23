@@ -1,7 +1,9 @@
 // src/components/social/SocialNotificationBell.tsx
 // DeepDive AI — Part 53: UNIFIED notification bell.
+// Part 54A — Added fallback icon/accent for new notification types:
+//   voice_debate_ready, payment_success, payment_failed.
 //
-// WHAT CHANGED
+// WHAT CHANGED (Part 53)
 //   Previously this component showed ONLY social notifications (follows + new
 //   reports from people you follow) via useSocialNotifications. It now shows
 //   EVERY notification type via the unified useAppNotifications hook:
@@ -11,6 +13,9 @@
 //     • debate_ready         — your debate finished
 //     • paper_ready          — your academic paper finished
 //     • presentation_ready   — your slides finished
+//     • voice_debate_ready   — your voice debate finished      (Part 54A)
+//     • payment_success      — a credit purchase succeeded      (Part 54A)
+//     • payment_failed       — a credit purchase failed         (Part 54A)
 //     • new_follower         — someone followed you      (social, preserved)
 //     • new_report           — a followee published       (social, preserved)
 //
@@ -71,6 +76,9 @@ const TYPE_ICON: Record<string, string> = {
   debate_ready:       'people',
   paper_ready:        'school',
   presentation_ready: 'easel',
+  voice_debate_ready: 'mic',               // Part 54A
+  payment_success:    'checkmark-circle',  // Part 54A
+  payment_failed:     'close-circle',      // Part 54A
   new_follower:       'person-add',
   new_unfollower:     'person-remove',
   new_report:         'document-text',
@@ -82,6 +90,9 @@ const TYPE_ACCENT: Record<string, string> = {
   debate_ready:       '#FB7185',
   paper_ready:        '#34D399',
   presentation_ready: '#FBBF24',
+  voice_debate_ready: '#F472B6',  // Part 54A
+  payment_success:    '#43E97B',  // Part 54A
+  payment_failed:     '#FF4757',  // Part 54A
   new_follower:       '#6C63FF',
   new_unfollower:     '#94A3B8',
   new_report:         '#43E97B',
@@ -354,7 +365,7 @@ export function NotificationBell({ userId }: NotificationBellProps) {
                       color:    COLORS.textMuted,
                       fontSize: FONTS.sizes.xs,
                     }}>
-                      Reports, podcasts, debates, papers, slides &amp; social
+                      Content, payments &amp; social updates
                     </Text>
                   </View>
                 </View>

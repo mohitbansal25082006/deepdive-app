@@ -1,5 +1,10 @@
 // src/types/notifications.ts
 // DeepDive AI — Part 53: Unified in-app notification system.
+// Part 54A — Added:
+//   • ContentKind 'voice_debate' + CONTENT_KIND_CONFIG.voice_debate
+//     → deep-links to /(app)/voice-debate-player with { voiceDebateId, sessionId }
+//   • AppNotificationType 'payment_success' | 'payment_failed'
+//     → deep-link to /(app)/transaction-history (handled by the bell + lib router)
 //
 // These types describe the rows produced by schema_part53.sql's
 // `app_notifications` table and surfaced through the notification bell.
@@ -13,8 +18,8 @@
 
 // ─── Notification kinds ────────────────────────────────────────────────────────
 //
-// The five content-ready kinds requested for Part 53, plus the two legacy social
-// kinds so a single list/component can render everything.
+// The content-ready kinds, the two legacy social kinds, plus Part 54A payment
+// kinds — so a single list/component can render everything.
 
 export type AppNotificationType =
   // Part 53 — content generation complete
@@ -23,6 +28,11 @@ export type AppNotificationType =
   | 'debate_ready'
   | 'paper_ready'
   | 'presentation_ready'
+  // Part 54A — voice debate generation complete
+  | 'voice_debate_ready'
+  // Part 54A — payment outcome
+  | 'payment_success'
+  | 'payment_failed'
   // Part 36 — social (merged in for a single unified bell)
   | 'new_follower'
   | 'new_unfollower'
@@ -104,7 +114,9 @@ export type ContentKind =
   | 'podcast'
   | 'debate'
   | 'paper'
-  | 'presentation';
+  | 'presentation'
+  // Part 54A
+  | 'voice_debate';
 
 export interface ContentReadyInput {
   kind:        ContentKind;
@@ -114,6 +126,12 @@ export interface ContentReadyInput {
   reportId?:   string | null;
   /** the title shown in the notification body, e.g. the report/episode title */
   title:       string;
+  /**
+   * Part 54A — voice debate is opened via the voice-debate-player which needs
+   * BOTH the voiceDebateId (contentId) AND the parent debate sessionId. Pass it
+   * here so buildParams can carry it as `sessionId`.
+   */
+  sessionId?:  string | null;
 }
 
 // ─── Per-kind presentation + routing config ───────────────────────────────────
@@ -152,6 +170,11 @@ export interface ContentKindConfig {
    * (e.g. presentation/ paper viewers also accept a specific id alongside reportId).
    */
   extraParamKey?: string;
+  /**
+   * Part 54A — when true, buildParams also carries the parent debate sessionId
+   * as `sessionId` (required by the voice-debate-player route).
+   */
+  usesSessionId?: boolean;
 }
 
 // Accent colours align with src/constants/theme.ts COLORS where practical.
@@ -205,5 +228,18 @@ export const CONTENT_KIND_CONFIG: Record<ContentKind, ContentKindConfig> = {
     idParam: 'presentationId',
     usesReportId:  true,   // opened via reportId; presentationId carried as extra
     extraParamKey: 'presentationId',
+  },
+  // ── Part 54A: Voice debate ──────────────────────────────────────────────────
+  // Opened via the full-screen voice-debate-player, which needs the
+  // voiceDebateId (contentId) AND the parent debate sessionId.
+  voice_debate: {
+    type:    'voice_debate_ready',
+    icon:    'mic',
+    accent:  '#F472B6',
+    title:   '🎧 Voice Debate Ready',
+    body:    'The voice debate on "{title}" is ready to listen.',
+    route:   '/(app)/voice-debate-player',
+    idParam: 'voiceDebateId',
+    usesSessionId: true,
   },
 };
