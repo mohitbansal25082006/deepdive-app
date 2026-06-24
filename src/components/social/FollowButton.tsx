@@ -5,6 +5,11 @@
 //  • Not following  → gradient purple "Follow" button
 //  • Following      → grey outlined "Following" button (tap to unfollow)
 //  • Loading        → spinner replaces icon
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.3 — Theme compatibility: Replaced all hardcoded colors with
+//             theme-aware values from COLORS. Button states now follow the
+//             active theme palette dynamically.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
 import {
@@ -71,7 +76,13 @@ export function FollowButton({
         disabled={isLoading}
         style={[
           styles.outlineBtn,
-          { paddingHorizontal: px, paddingVertical: py, opacity: isLoading ? 0.5 : 1 },
+          {
+            paddingHorizontal: px,
+            paddingVertical: py,
+            opacity: isLoading ? 0.5 : 1,
+            backgroundColor: COLORS.backgroundElevated,
+            borderColor: COLORS.border,
+          }
         ]}
       >
         {isLoading ? (
@@ -79,7 +90,9 @@ export function FollowButton({
         ) : (
           <Ionicons name="checkmark" size={icon} color={COLORS.textMuted} />
         )}
-        <Text style={[styles.outlineText, { fontSize: fs }]}>Following</Text>
+        <Text style={[styles.outlineText, { fontSize: fs, color: COLORS.textMuted }]}>
+          Following
+        </Text>
       </TouchableOpacity>
     );
   }
@@ -116,26 +129,23 @@ export function FollowButton({
 
 const styles = StyleSheet.create({
   outlineBtn: {
-    flexDirection:  'row',
-    alignItems:     'center',
-    gap:            6,
-    borderRadius:   RADIUS.full,
-    backgroundColor: COLORS.backgroundElevated,
-    borderWidth:    1,
-    borderColor:    COLORS.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: RADIUS.full,
+    borderWidth: 1,
   },
   outlineText: {
-    color:      COLORS.textMuted,
     fontWeight: '600',
   },
   fillBtn: {
     flexDirection: 'row',
-    alignItems:    'center',
-    gap:           6,
-    borderRadius:  RADIUS.full,
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: RADIUS.full,
   },
   fillText: {
-    color:      '#FFF',
+    color: '#FFF',
     fontWeight: '700',
   },
 });

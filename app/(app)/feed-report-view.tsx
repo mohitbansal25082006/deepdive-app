@@ -22,6 +22,22 @@
 //   Strategy 1 — SECURITY DEFINER RPC `get_published_report_by_id` (published).
 //   Strategy 2 — direct .maybeSingle() fallback (owner / permissive RLS).
 //   Both null → friendly "not available" screen.
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.3 — Theme compatibility: Replaced all hardcoded gradients and colors
+//             with theme-aware values from COLORS. All surfaces, text, and
+//             interactive elements now follow the active theme palette.
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX: ScrollView now properly contains all content with correct flex layout.
+//      The scroll container now uses flex: 1 on the parent and proper
+//      contentContainerStyle to ensure scrolling works correctly.
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 2: Smooth scrolling - Added scrollEventThrottle, decelerationRate, and
+//        proper nested scroll handling for a buttery smooth experience.
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 3: Removed FlatList-specific props (maxToRenderPerBatch, 
+//        updateCellsBatchingPeriod, initialNumToRender) that are not valid
+//        for ScrollView components.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -35,6 +51,7 @@ import {
   Switch,
   Animated as RNAnimated,
   LayoutChangeEvent,
+  StyleSheet,
 } from 'react-native';
 import { LinearGradient }      from 'expo-linear-gradient';
 import { Ionicons }            from '@expo/vector-icons';
@@ -120,7 +137,9 @@ interface SegTab { key: 'report' | 'findings' | 'sources'; label: string; }
 
 function SegmentedTabs({
   tabs, active, onChange,
-}: { tabs: SegTab[]; active: string; onChange: (k: SegTab['key']) => void }) {
+}: {
+  tabs: SegTab[]; active: string; onChange: (k: SegTab['key']) => void;
+}) {
   const [w, setW] = useState(0);
   const indicatorX = useRef(new RNAnimated.Value(0)).current;
   const pad = 4;
@@ -128,10 +147,14 @@ function SegmentedTabs({
   const activeIndex = Math.max(0, tabs.findIndex(t => t.key === active));
 
   useEffect(() => {
-    RNAnimated.spring(indicatorX, {
-      toValue: pad + activeIndex * tabW,
-      useNativeDriver: true, friction: 9, tension: 80,
-    }).start();
+    if (tabW > 0) {
+      RNAnimated.spring(indicatorX, {
+        toValue: pad + activeIndex * tabW,
+        useNativeDriver: true,
+        friction: 9,
+        tension: 80,
+      }).start();
+    }
   }, [activeIndex, tabW]);
 
   const onLayout = (e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width);
@@ -139,25 +162,42 @@ function SegmentedTabs({
   return (
     <View
       onLayout={onLayout}
-      style={{
-        flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.04)',
-        borderRadius: RADIUS.full, padding: pad, borderWidth: 1, borderColor: COLORS.border,
-        position: 'relative', overflow: 'hidden',
-      }}
+      style={[
+        styles.tabsContainer,
+        {
+          backgroundColor: `${COLORS.textPrimary}08`,
+          borderColor: COLORS.border,
+        }
+      ]}
     >
       {tabW > 0 && (
-        <RNAnimated.View style={{
-          position: 'absolute', top: pad, bottom: pad, left: 0, width: tabW,
-          transform: [{ translateX: indicatorX }],
-        }}>
-          <LinearGradient colors={COLORS.gradientPrimary} style={{ flex: 1, borderRadius: RADIUS.full, ...SHADOWS.small }} />
+        <RNAnimated.View 
+          style={[
+            styles.tabIndicator,
+            { 
+              width: tabW,
+              transform: [{ translateX: indicatorX }],
+            }
+          ]}
+        >
+          <LinearGradient colors={COLORS.gradientPrimary} style={styles.tabIndicatorGradient} />
         </RNAnimated.View>
       )}
       {tabs.map(tab => {
         const isActive = tab.key === active;
         return (
-          <Pressable key={tab.key} onPress={() => onChange(tab.key)} style={{ flex: 1, paddingVertical: 9, alignItems: 'center', zIndex: 1 }}>
-            <Text style={{ color: isActive ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: isActive ? '800' : '600' }}>
+          <Pressable 
+            key={tab.key} 
+            onPress={() => onChange(tab.key)} 
+            style={styles.tabPressable}
+          >
+            <Text style={[
+              styles.tabText,
+              {
+                color: isActive ? '#FFF' : COLORS.textMuted,
+                fontWeight: isActive ? '800' : '600',
+              }
+            ]}>
               {tab.label}
             </Text>
           </Pressable>
@@ -187,26 +227,21 @@ function AuthorChip({
         }
       }}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      style={{
-        flexDirection:    'row',
-        alignItems:       'center',
-        gap:              8,
-        backgroundColor:  COLORS.backgroundElevated,
-        borderRadius:     RADIUS.full,
-        paddingHorizontal: SPACING.md,
-        paddingVertical:  6,
-        borderWidth:      1,
-        borderColor:      `${COLORS.primary}30`,
-        alignSelf:        'flex-start',
-      }}
+      style={[
+        styles.authorChip,
+        {
+          backgroundColor: COLORS.backgroundElevated,
+          borderColor: `${COLORS.primary}30`,
+        }
+      ]}
     >
       <Avatar url={avatarUrl} name={authorName} size={22} />
       <View>
-        <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+        <Text style={[styles.authorName, { color: COLORS.textPrimary }]}>
           {authorName}
         </Text>
         {authorUsername && (
-          <Text style={{ color: COLORS.primary, fontSize: 10, marginTop: 1 }}>
+          <Text style={[styles.authorUsername, { color: COLORS.primary }]}>
             @{authorUsername}
           </Text>
         )}
@@ -220,18 +255,19 @@ function AuthorChip({
 
 function LoadingSkeleton() {
   return (
-    <View style={{ padding: SPACING.lg, gap: SPACING.md }}>
+    <View style={styles.skeletonContainer}>
       {[200, 120, 160, 140, 180].map((h, i) => (
         <View
           key={i}
-          style={{
-            height:          h,
-            backgroundColor: COLORS.backgroundCard,
-            borderRadius:    RADIUS.xl,
-            borderWidth:     1,
-            borderColor:     COLORS.border,
-            opacity:         1 - i * 0.16,
-          }}
+          style={[
+            styles.skeletonItem,
+            {
+              height: h,
+              backgroundColor: COLORS.backgroundCard,
+              borderColor: COLORS.border,
+              opacity: 1 - i * 0.16,
+            }
+          ]}
         />
       ))}
     </View>
@@ -242,41 +278,23 @@ function LoadingSkeleton() {
 
 function NotAvailable() {
   return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl }}>
+    <View style={styles.notAvailableContainer}>
       <Ionicons name="lock-closed-outline" size={48} color={COLORS.textMuted} />
-      <Text style={{
-        color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700',
-        marginTop: SPACING.md, textAlign: 'center',
-      }}>
+      <Text style={[styles.notAvailableTitle, { color: COLORS.textPrimary }]}>
         Report not available
       </Text>
-      <Text style={{
-        color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center',
-        marginTop: SPACING.sm, lineHeight: 22,
-      }}>
+      <Text style={[styles.notAvailableSubtitle, { color: COLORS.textMuted }]}>
         This report may have been unpublished or removed by the author.
       </Text>
       <Pressable
         onPress={() => router.back()}
-        style={{
-          marginTop: SPACING.xl, backgroundColor: COLORS.primary,
-          borderRadius: RADIUS.full, paddingHorizontal: SPACING.xl, paddingVertical: 12,
-        }}
+        style={[styles.goBackButton, { backgroundColor: COLORS.primary }]}
       >
-        <Text style={{ color: '#FFF', fontWeight: '700' }}>Go Back</Text>
+        <Text style={styles.goBackButtonText}>Go Back</Text>
       </Pressable>
     </View>
   );
 }
-
-const sectionLabel = {
-  color: COLORS.textMuted,
-  fontSize: FONTS.sizes.xs,
-  fontWeight: '700' as const,
-  letterSpacing: 1,
-  textTransform: 'uppercase' as const,
-  marginBottom: SPACING.md,
-};
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -300,6 +318,9 @@ export default function FeedReportViewScreen() {
   const [notFound,   setNotFound]   = useState(false);
   const [activeTab,  setActiveTab]  = useState<'report' | 'findings' | 'sources'>('report');
   const [visualMode, setVisualMode] = useState(true);
+  
+  // Refs for scroll views
+  const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     if (reportId) loadReport();
@@ -410,72 +431,69 @@ export default function FeedReportViewScreen() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
         {/* ══ Header ══ */}
-        <View style={{ zIndex: 10 }}>
-          <LinearGradient colors={['#16162F', '#0E0E22']} style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+        <View style={styles.headerWrapper}>
+          <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={[styles.headerGradient, { borderBottomColor: COLORS.border }]}>
             {/* Row 1 */}
-            <View style={{
-              flexDirection: 'row', alignItems: 'center',
-              paddingHorizontal: SPACING.md, paddingTop: SPACING.sm,
-              paddingBottom: 6, gap: SPACING.sm,
-            }}>
+            <View style={styles.headerRow}>
               <Pressable
                 onPress={() => router.back()}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                style={({ pressed }) => [{
-                  width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
-                  alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border,
-                  flexShrink: 0, opacity: pressed ? 0.7 : 1,
-                }]}
+                style={({ pressed }) => [
+                  styles.backButton,
+                  {
+                    backgroundColor: `${COLORS.textPrimary}08`,
+                    borderColor: COLORS.border,
+                    opacity: pressed ? 0.7 : 1,
+                  }
+                ]}
               >
                 <Ionicons name="arrow-back" size={19} color={COLORS.textSecondary} />
               </Pressable>
 
               <Text
-                style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', letterSpacing: -0.2 }}
+                style={[styles.headerTitle, { color: COLORS.textPrimary }]}
                 numberOfLines={1}
                 ellipsizeMode="tail"
               >
                 {loading ? 'Loading…' : (report?.title ?? 'Report')}
               </Text>
 
-              <View style={{
-                backgroundColor: `${COLORS.info}18`, borderRadius: RADIUS.full,
-                paddingHorizontal: 10, paddingVertical: 5,
-                borderWidth: 1, borderColor: `${COLORS.info}33`, flexShrink: 0,
-                flexDirection: 'row', alignItems: 'center', gap: 4,
-              }}>
+              <View style={[
+                styles.viewOnlyBadge,
+                {
+                  backgroundColor: `${COLORS.info}18`,
+                  borderColor: `${COLORS.info}33`,
+                }
+              ]}>
                 <Ionicons name="eye-outline" size={11} color={COLORS.info} />
-                <Text style={{ color: COLORS.info, fontSize: 10, fontWeight: '800' }}>VIEW ONLY</Text>
+                <Text style={[styles.viewOnlyText, { color: COLORS.info }]}>VIEW ONLY</Text>
               </View>
             </View>
 
             {/* Row 2 — meta chips + author */}
             {report && (
-              <View style={{
-                flexDirection: 'row', alignItems: 'center',
-                paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm,
-                gap: SPACING.sm, flexWrap: 'wrap',
-              }}>
-                <View style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 4,
-                  paddingHorizontal: 9, paddingVertical: 5,
-                  backgroundColor: `${depthColor}1A`, borderRadius: RADIUS.full,
-                  borderWidth: 1, borderColor: `${depthColor}40`,
-                }}>
+              <View style={styles.metaRow}>
+                <View style={[
+                  styles.depthChip,
+                  {
+                    backgroundColor: `${depthColor}1A`,
+                    borderColor: `${depthColor}40`,
+                  }
+                ]}>
                   <Ionicons
                     name={report.depth === 'expert' ? 'star' : report.depth === 'deep' ? 'layers' : 'flash'}
                     size={10} color={depthColor}
                   />
-                  <Text style={{ color: depthColor, fontSize: 10, fontWeight: '800' }}>
+                  <Text style={[styles.depthText, { color: depthColor }]}>
                     {DEPTH_LABELS[report.depth]}
                   </Text>
                 </View>
 
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                <Text style={[styles.dateText, { color: COLORS.textMuted }]}>
                   {formatDate(report.createdAt)}
                 </Text>
 
@@ -495,33 +513,42 @@ export default function FeedReportViewScreen() {
         {!loading && notFound  && <NotAvailable />}
 
         {!loading && !notFound && report && (
-          <>
+          <View style={styles.contentContainer}>
             {/* Visual Mode toggle (only when visuals exist) */}
             {hasVisuals && (
-              <View style={{
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
-                backgroundColor: visualMode ? `${COLORS.primary}0A` : 'transparent',
-                borderBottomWidth: 1, borderBottomColor: visualMode ? `${COLORS.primary}18` : COLORS.border,
-              }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
-                  <LinearGradient colors={visualMode ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
+              <View style={[
+                styles.visualToggleContainer,
+                {
+                  backgroundColor: visualMode ? `${COLORS.primary}0A` : 'transparent',
+                  borderBottomColor: visualMode ? `${COLORS.primary}18` : COLORS.border,
+                }
+              ]}>
+                <View style={styles.visualToggleLeft}>
+                  <LinearGradient 
+                    colors={visualMode ? COLORS.gradientPrimary : [COLORS.backgroundElevated, COLORS.backgroundCard]} 
+                    style={styles.visualToggleIcon}
+                  >
                     <Ionicons name="bar-chart" size={15} color="#FFF" />
                   </LinearGradient>
                   <View>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Visual Mode</Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{visualMode ? 'Charts & images shown' : 'Text-only view'}</Text>
+                    <Text style={[styles.visualToggleTitle, { color: COLORS.textPrimary }]}>Visual Mode</Text>
+                    <Text style={[styles.visualToggleSubtitle, { color: COLORS.textMuted }]}>
+                      {visualMode ? 'Charts & images shown' : 'Text-only view'}
+                    </Text>
                   </View>
                 </View>
-                <Switch value={visualMode} onValueChange={setVisualMode}
+                <Switch 
+                  value={visualMode} 
+                  onValueChange={setVisualMode}
                   trackColor={{ false: COLORS.backgroundElevated, true: `${COLORS.primary}50` }}
                   thumbColor={visualMode ? COLORS.primary : COLORS.textMuted}
-                  ios_backgroundColor={COLORS.backgroundElevated} />
+                  ios_backgroundColor={COLORS.backgroundElevated} 
+                />
               </View>
             )}
 
             {/* Tabs */}
-            <View style={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm }}>
+            <View style={styles.tabsOuter}>
               <SegmentedTabs
                 tabs={[
                   { key: 'report', label: 'Report' },
@@ -533,24 +560,36 @@ export default function FeedReportViewScreen() {
               />
             </View>
 
+            {/* ─── SCROLLVIEW ─── */}
+            {/* Smooth scrolling with proper flex behavior and performance optimizations */}
             <ScrollView
-              style={{ flex: 1 }}
-              contentContainerStyle={{
-                paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm,
-                paddingBottom: insets.bottom + 40,
-              }}
-              showsVerticalScrollIndicator={false}
+              ref={scrollViewRef}
+              style={styles.scrollView}
+              contentContainerStyle={[
+                styles.scrollContent,
+                { paddingBottom: insets.bottom + 40 }
+              ]}
+              showsVerticalScrollIndicator={true}
+              indicatorStyle="white"
+              // ── Smooth scrolling props (valid for ScrollView) ──
+              scrollEventThrottle={16}
+              decelerationRate="normal"
+              nestedScrollEnabled={true}
+              overScrollMode="always"
+              bounces={true}
+              alwaysBounceVertical={true}
+              removeClippedSubviews={true}
             >
               {/* Stat tiles (gradient — matches research-report) */}
-              <Animated.View entering={FadeInDown.duration(400)} style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
+              <Animated.View entering={FadeInDown.duration(400)} style={styles.statTilesRow}>
                 {statTiles.map(stat => (
-                  <View key={stat.label} style={{ flex: 1, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${stat.color}33` }}>
-                    <LinearGradient colors={['#1A1A38', '#12122A']} style={{ padding: SPACING.sm, alignItems: 'center' }}>
-                      <LinearGradient colors={[stat.color, `${stat.color}99`]} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 6 }}>
+                  <View key={stat.label} style={[styles.statTile, { borderColor: `${stat.color}33` }]}>
+                    <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={styles.statTileContent}>
+                      <LinearGradient colors={[stat.color, `${stat.color}99`]} style={styles.statTileIcon}>
                         <Ionicons name={stat.icon as any} size={15} color="#FFF" />
                       </LinearGradient>
-                      <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '900' }}>{stat.value}</Text>
-                      <Text style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 2, textAlign: 'center', fontWeight: '600' }}>{stat.label}</Text>
+                      <Text style={[styles.statTileValue, { color: stat.color }]}>{stat.value}</Text>
+                      <Text style={[styles.statTileLabel, { color: COLORS.textMuted }]}>{stat.label}</Text>
                     </LinearGradient>
                   </View>
                 ))}
@@ -560,19 +599,19 @@ export default function FeedReportViewScreen() {
               {activeTab === 'report' && (
                 <>
                   {visualMode && report.infographicData && (
-                    <Animated.View entering={FadeInDown.duration(400)} style={{ marginBottom: SPACING.lg }}>
+                    <Animated.View entering={FadeInDown.duration(400)} style={styles.infographicWrapper}>
                       <InfographicsPanel data={report.infographicData} availableWidth={PANEL_W} />
                     </Animated.View>
                   )}
 
                   <Animated.View entering={FadeInDown.duration(400).delay(80)}>
-                    <View style={{ borderRadius: RADIUS.xl, marginBottom: SPACING.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}2A` }}>
-                      <LinearGradient colors={['#1B1B3C', '#121228']} style={{ padding: SPACING.lg }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
-                          <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
+                    <View style={[styles.executiveSummaryWrapper, { borderColor: `${COLORS.primary}2A` }]}>
+                      <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={styles.executiveSummaryContent}>
+                        <View style={styles.executiveSummaryHeader}>
+                          <LinearGradient colors={COLORS.gradientPrimary} style={styles.executiveSummaryIcon}>
                             <Ionicons name="newspaper" size={16} color="#FFF" />
                           </LinearGradient>
-                          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Executive Summary</Text>
+                          <Text style={[styles.executiveSummaryTitle, { color: COLORS.textPrimary }]}>Executive Summary</Text>
                         </View>
                         <RichText
                           content={report.executiveSummary}
@@ -602,14 +641,14 @@ export default function FeedReportViewScreen() {
                 <>
                   {report.keyFindings.length > 0 && (
                     <>
-                      <Text style={sectionLabel}>Key Findings</Text>
+                      <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>Key Findings</Text>
                       {report.keyFindings.map((finding, i) => (
-                        <Animated.View key={i} entering={FadeInDown.duration(350).delay(i * 50)} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}>
-                          <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start', borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
-                            <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
-                              <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '900' }}>{i + 1}</Text>
+                        <Animated.View key={i} entering={FadeInDown.duration(350).delay(i * 50)} style={[styles.findingCard, { borderColor: COLORS.border }]}>
+                          <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={[styles.findingContent, { borderLeftColor: COLORS.primary }]}>
+                            <LinearGradient colors={COLORS.gradientPrimary} style={styles.findingNumber}>
+                              <Text style={styles.findingNumberText}>{i + 1}</Text>
                             </LinearGradient>
-                            <RichText inline content={finding} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} weight="500" lineHeight={21} style={{ flex: 1 }} />
+                            <RichText inline content={finding} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} weight="500" lineHeight={21} style={styles.findingRichText} />
                           </LinearGradient>
                         </Animated.View>
                       ))}
@@ -618,12 +657,12 @@ export default function FeedReportViewScreen() {
 
                   {report.futurePredictions.length > 0 && (
                     <>
-                      <Text style={[sectionLabel, { marginTop: SPACING.lg }]}>Future Predictions</Text>
+                      <Text style={[styles.sectionLabel, { color: COLORS.textMuted, marginTop: SPACING.lg }]}>Future Predictions</Text>
                       {report.futurePredictions.map((pred, i) => (
-                        <View key={i} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.warning}2A` }}>
-                          <LinearGradient colors={[`${COLORS.warning}14`, `${COLORS.warning}06`]} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start' }}>
-                            <Ionicons name="telescope" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
-                            <RichText inline content={pred} highlightStats accent={COLORS.warning} size={FONTS.sizes.sm} color={COLORS.textSecondary} lineHeight={21} style={{ flex: 1 }} />
+                        <View key={i} style={[styles.predictionCard, { borderColor: `${COLORS.warning}2A` }]}>
+                          <LinearGradient colors={[`${COLORS.warning}14`, `${COLORS.warning}06`]} style={styles.predictionContent}>
+                            <Ionicons name="telescope" size={16} color={COLORS.warning} style={styles.predictionIcon} />
+                            <RichText inline content={pred} highlightStats accent={COLORS.warning} size={FONTS.sizes.sm} color={COLORS.textSecondary} lineHeight={21} style={styles.predictionRichText} />
                           </LinearGradient>
                         </View>
                       ))}
@@ -632,13 +671,13 @@ export default function FeedReportViewScreen() {
 
                   {report.statistics.length > 0 && (
                     <>
-                      <Text style={[sectionLabel, { marginTop: SPACING.lg }]}>Key Statistics</Text>
+                      <Text style={[styles.sectionLabel, { color: COLORS.textMuted, marginTop: SPACING.lg }]}>Key Statistics</Text>
                       {report.statistics.slice(0, 10).map((stat, i) => (
-                        <View key={i} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}22` }}>
-                          <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md }}>
-                            <Text style={{ color: COLORS.primaryLight, fontSize: FONTS.sizes.lg, fontWeight: '900' }}>{stat.value}</Text>
-                            <RichText inline content={stat.context} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} lineHeight={19} style={{ marginTop: 4 }} />
-                            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Source: {stat.source}</Text>
+                        <View key={i} style={[styles.statCard, { borderColor: `${COLORS.primary}22` }]}>
+                          <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={styles.statCardContent}>
+                            <Text style={[styles.statCardValue, { color: COLORS.primaryLight }]}>{stat.value}</Text>
+                            <RichText inline content={stat.context} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} lineHeight={19} style={styles.statCardContext} />
+                            <Text style={[styles.statCardSource, { color: COLORS.textMuted }]}>Source: {stat.source}</Text>
                           </LinearGradient>
                         </View>
                       ))}
@@ -657,13 +696,13 @@ export default function FeedReportViewScreen() {
                   {sortedCitations.length > 0 && (
                     <Animated.View entering={FadeInDown.duration(400)}>
                       <SourceTrustSummaryBanner results={sortedCitations} />
-                      <View style={{ marginBottom: SPACING.md }}>
+                      <View style={styles.distributionWrapper}>
                         <TrustDistributionBar results={sortedCitations} />
                       </View>
                     </Animated.View>
                   )}
 
-                  <Text style={sectionLabel}>
+                  <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>
                     {sortedCitations.length} Sources · Sorted by Trust
                   </Text>
 
@@ -671,43 +710,43 @@ export default function FeedReportViewScreen() {
                     <Pressable
                       key={c.id ?? i}
                       onPress={() => openURL(c.url)}
-                      style={{
-                        borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1,
-                        borderColor:
-                          c.trustScore?.tier === 1 ? `${COLORS.success}33`
-                          : c.trustScore?.tier === 2 ? `${COLORS.primary}2A`
-                          : COLORS.border,
-                      }}
+                      style={[
+                        styles.sourceCard,
+                        {
+                          borderColor:
+                            c.trustScore?.tier === 1 ? `${COLORS.success}33`
+                            : c.trustScore?.tier === 2 ? `${COLORS.primary}2A`
+                            : COLORS.border,
+                        }
+                      ]}
                     >
-                      <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
-                          <View style={{
-                            width: 24, height: 24, borderRadius: 7,
-                            backgroundColor: c.trustScore?.tier === 1 ? `${COLORS.success}22` : `${COLORS.primary}22`,
-                            alignItems: 'center', justifyContent: 'center',
-                            marginRight: 9, flexShrink: 0,
-                          }}>
-                            <Text style={{
-                              color: c.trustScore?.tier === 1 ? COLORS.success : COLORS.primary,
-                              fontSize: 10, fontWeight: '900',
-                            }}>{i + 1}</Text>
+                      <LinearGradient colors={[COLORS.backgroundCard, COLORS.background]} style={styles.sourceCardContent}>
+                        <View style={styles.sourceHeader}>
+                          <View style={[
+                            styles.sourceIndex,
+                            {
+                              backgroundColor: c.trustScore?.tier === 1 ? `${COLORS.success}22` : `${COLORS.primary}22`,
+                            }
+                          ]}>
+                            <Text style={[
+                              styles.sourceIndexText,
+                              {
+                                color: c.trustScore?.tier === 1 ? COLORS.success : COLORS.primary,
+                              }
+                            ]}>{i + 1}</Text>
                           </View>
-                          <Text style={{
-                            color: COLORS.textPrimary, fontSize: FONTS.sizes.sm,
-                            fontWeight: '700', flex: 1, lineHeight: 20,
-                          }}>{c.title}</Text>
-                          <Ionicons name="open-outline" size={16} color={COLORS.primary}
-                            style={{ marginLeft: 6, flexShrink: 0, marginTop: 2 }} />
+                          <Text style={[styles.sourceTitle, { color: COLORS.textPrimary }]}>{c.title}</Text>
+                          <Ionicons name="open-outline" size={16} color={COLORS.primary} style={styles.sourceOpenIcon} />
                         </View>
-                        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 6 }}>
+                        <Text style={[styles.sourceMeta, { color: COLORS.primary }]}>
                           {c.source}{c.date ? ` · ${c.date}` : ''}
                         </Text>
                         {c.trustScore && (
-                          <View style={{ marginBottom: 6 }}>
+                          <View style={styles.sourceTrustWrapper}>
                             <SourceTrustBadge score={c.trustScore} size="sm" showBias showScore />
                           </View>
                         )}
-                        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
+                        <Text style={[styles.sourceSnippet, { color: COLORS.textMuted }]}>
                           {c.snippet}
                         </Text>
                       </LinearGradient>
@@ -715,21 +754,20 @@ export default function FeedReportViewScreen() {
                   ))}
 
                   {report.searchQueries.length > 0 && (
-                    <View style={{ marginTop: SPACING.lg }}>
-                      <Text style={sectionLabel}>
+                    <View style={styles.searchQueriesWrapper}>
+                      <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>
                         {report.searchQueries.length} Search Queries Used
                       </Text>
                       {report.searchQueries.map((q, i) => (
-                        <View key={i} style={{
-                          backgroundColor: 'rgba(255,255,255,0.04)',
-                          borderRadius: RADIUS.md,
-                          paddingHorizontal: SPACING.md, paddingVertical: 9,
-                          marginBottom: 6, flexDirection: 'row', alignItems: 'center',
-                          borderWidth: 1, borderColor: COLORS.border,
-                        }}>
-                          <Ionicons name="search-outline" size={14} color={COLORS.textMuted}
-                            style={{ marginRight: 9 }} />
-                          <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1 }}>
+                        <View key={i} style={[
+                          styles.searchQueryItem,
+                          {
+                            backgroundColor: `${COLORS.textPrimary}04`,
+                            borderColor: COLORS.border,
+                          }
+                        ]}>
+                          <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={styles.searchQueryIcon} />
+                          <Text style={[styles.searchQueryText, { color: COLORS.textSecondary }]}>
                             {q}
                           </Text>
                         </View>
@@ -739,10 +777,451 @@ export default function FeedReportViewScreen() {
                 </>
               )}
             </ScrollView>
-          </>
+          </View>
         )}
 
       </SafeAreaView>
     </LinearGradient>
   );
 }
+
+// ─── Styles ────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  // Header
+  headerWrapper: {
+    zIndex: 10,
+  },
+  headerGradient: {
+    borderBottomWidth: 1,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.sm,
+    paddingBottom: 6,
+    gap: SPACING.sm,
+  },
+  backButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    flexShrink: 0,
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: FONTS.sizes.base,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  viewOnlyBadge: {
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  viewOnlyText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.sm,
+    gap: SPACING.sm,
+    flexWrap: 'wrap',
+  },
+  depthChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: RADIUS.full,
+    borderWidth: 1,
+  },
+  depthText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  dateText: {
+    fontSize: FONTS.sizes.xs,
+  },
+
+  // Author chip
+  authorChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+    borderWidth: 1,
+    alignSelf: 'flex-start',
+  },
+  authorName: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '700',
+  },
+  authorUsername: {
+    fontSize: 10,
+    marginTop: 1,
+  },
+
+  // Skeleton
+  skeletonContainer: {
+    padding: SPACING.lg,
+    gap: SPACING.md,
+  },
+  skeletonItem: {
+    borderRadius: RADIUS.xl,
+    borderWidth: 1,
+  },
+
+  // Not available
+  notAvailableContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: SPACING.xl,
+  },
+  notAvailableTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: '700',
+    marginTop: SPACING.md,
+    textAlign: 'center',
+  },
+  notAvailableSubtitle: {
+    fontSize: FONTS.sizes.sm,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    lineHeight: 22,
+  },
+  goBackButton: {
+    marginTop: SPACING.xl,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: SPACING.xl,
+    paddingVertical: 12,
+  },
+  goBackButtonText: {
+    color: '#FFF',
+    fontWeight: '700',
+  },
+
+  // Content container
+  contentContainer: {
+    flex: 1,
+  },
+
+  // ScrollView
+  scrollView: {
+    flex: 1,
+    flexGrow: 1,
+  },
+
+  // Tabs
+  tabsContainer: {
+    flexDirection: 'row',
+    borderRadius: RADIUS.full,
+    padding: 4,
+    borderWidth: 1,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  tabIndicator: {
+    position: 'absolute',
+    top: 4,
+    bottom: 4,
+    left: 0,
+  },
+  tabIndicatorGradient: {
+    flex: 1,
+    borderRadius: RADIUS.full,
+  },
+  tabPressable: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  tabText: {
+    fontSize: FONTS.sizes.xs,
+  },
+
+  // Visual toggle
+  visualToggleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+  },
+  visualToggleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+  visualToggleIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  visualToggleTitle: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '700',
+  },
+  visualToggleSubtitle: {
+    fontSize: FONTS.sizes.xs,
+  },
+
+  // Tabs outer
+  tabsOuter: {
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+  },
+
+  // Scroll content
+  scrollContent: {
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.sm,
+    flexGrow: 1,
+  },
+
+  // Stat tiles
+  statTilesRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginBottom: SPACING.lg,
+  },
+  statTile: {
+    flex: 1,
+    borderRadius: RADIUS.lg,
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
+  statTileContent: {
+    padding: SPACING.sm,
+    alignItems: 'center',
+  },
+  statTileIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  statTileValue: {
+    fontSize: FONTS.sizes.md,
+    fontWeight: '900',
+  },
+  statTileLabel: {
+    fontSize: 10,
+    marginTop: 2,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+
+  // Infographic
+  infographicWrapper: {
+    marginBottom: SPACING.lg,
+  },
+
+  // Executive summary
+  executiveSummaryWrapper: {
+    borderRadius: RADIUS.xl,
+    marginBottom: SPACING.lg,
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
+  executiveSummaryContent: {
+    padding: SPACING.lg,
+  },
+  executiveSummaryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  executiveSummaryIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: SPACING.sm,
+  },
+  executiveSummaryTitle: {
+    fontSize: FONTS.sizes.base,
+    fontWeight: '800',
+  },
+
+  // Section label
+  sectionLabel: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: SPACING.md,
+  },
+
+  // Findings
+  findingCard: {
+    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.sm,
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
+  findingContent: {
+    padding: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    borderLeftWidth: 3,
+  },
+  findingNumber: {
+    width: 26,
+    height: 26,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: SPACING.sm,
+    flexShrink: 0,
+  },
+  findingNumberText: {
+    color: '#FFF',
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '900',
+  },
+  findingRichText: {
+    flex: 1,
+  },
+
+  // Predictions
+  predictionCard: {
+    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.sm,
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
+  predictionContent: {
+    padding: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  predictionIcon: {
+    marginRight: SPACING.sm,
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  predictionRichText: {
+    flex: 1,
+  },
+
+  // Statistics
+  statCard: {
+    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.sm,
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
+  statCardContent: {
+    padding: SPACING.md,
+  },
+  statCardValue: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: '900',
+  },
+  statCardContext: {
+    marginTop: 4,
+  },
+  statCardSource: {
+    fontSize: FONTS.sizes.xs,
+    marginTop: 4,
+  },
+
+  // Sources
+  distributionWrapper: {
+    marginBottom: SPACING.md,
+  },
+  sourceCard: {
+    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.sm,
+    overflow: 'hidden',
+    borderWidth: 1,
+  },
+  sourceCardContent: {
+    padding: SPACING.md,
+  },
+  sourceHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 6,
+  },
+  sourceIndex: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 9,
+    flexShrink: 0,
+  },
+  sourceIndexText: {
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  sourceTitle: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '700',
+    flex: 1,
+    lineHeight: 20,
+  },
+  sourceOpenIcon: {
+    marginLeft: 6,
+    flexShrink: 0,
+    marginTop: 2,
+  },
+  sourceMeta: {
+    fontSize: FONTS.sizes.xs,
+    marginBottom: 6,
+  },
+  sourceTrustWrapper: {
+    marginBottom: 6,
+  },
+  sourceSnippet: {
+    fontSize: FONTS.sizes.xs,
+    lineHeight: 16,
+  },
+
+  // Search queries
+  searchQueriesWrapper: {
+    marginTop: SPACING.lg,
+  },
+  searchQueryItem: {
+    borderRadius: RADIUS.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 9,
+    marginBottom: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  searchQueryIcon: {
+    marginRight: 9,
+  },
+  searchQueryText: {
+    fontSize: FONTS.sizes.xs,
+    flex: 1,
+  },
+});
