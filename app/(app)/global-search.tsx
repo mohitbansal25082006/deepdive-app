@@ -3,6 +3,7 @@
 // Part 37 — Community tab, researcher search, action choice modal
 // Part 37 FIX 2 — Web browser no longer blocks/freezes navigation.
 // Part 50.8 — UI UPGRADE (visual only)
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
 //
 // ⚠️ NAVIGATION / FREEZE FIX IS PRESERVED EXACTLY:
 //   • openUrlNonBlocking() still uses Linking.openURL (fire-and-forget) inside
@@ -13,9 +14,8 @@
 //   • SearchResultCard navigation is still via the onPress callback (no
 //     router.push inside the card).
 //
-// Visual changes only: gradient header, animated sliding scope toggle,
-// glassmorphic community + researcher cards, gradient empty/no-results states,
-// shimmer skeleton loaders, restyled results bar + action modal.
+// Part 55.2 changes: ALL hardcoded dark hex literals replaced with live
+// COLORS tokens. Every text color now uses theme-aware tokens.
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
 import {
@@ -47,7 +47,10 @@ import {
   CONTENT_TYPE_META, SEARCH_MODE_META, SEARCH_SCOPE_META,
   COMMUNITY_SEARCH_PLACEHOLDER_EXAMPLES, PUBLIC_REPORTS_BASE_URL,
 }                                   from '../../src/constants/search';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
+import { 
+  COLORS, FONTS, SPACING, RADIUS, SHADOWS,
+  getAuroraGradient,
+} from '../../src/constants/theme';
 
 const SCREEN_W = Dimensions.get('window').width;
 
@@ -64,12 +67,8 @@ const DEPTH_LABELS: Record<string, string> = {
 };
 
 // ─── Open URL — FIRE AND FORGET, never blocks JS thread ──────────────────────
-// This is the key fix. We use Linking.openURL which is non-blocking.
-// We NEVER await it, so the JS thread stays free for navigation + animations.
 
 function openUrlNonBlocking(url: string): void {
-  // Use requestAnimationFrame to yield after modal close animation starts,
-  // then open the URL. This prevents any frame-drop or freeze.
   requestAnimationFrame(() => {
     Linking.openURL(url).catch(() => {
       Alert.alert('Cannot open', 'Unable to open this link.');
@@ -134,12 +133,11 @@ function openCommunityReportInApp(result: CommunitySearchResult): void {
 
 function openResearcherInApp(r: PublicResearcherResult): void {
   if (!r.username && !r.id) { Alert.alert('Cannot open', 'This researcher has no profile URL.'); return; }
-  // If username is null (new user), pass the userId so user-profile screen can fall back
   router.push({
     pathname: '/(app)/user-profile' as any,
     params:   r.username
       ? { username: r.username }
-      : { username: r.id },   // user-profile screen will use UUID fallback
+      : { username: r.id },
   });
 }
 
@@ -170,8 +168,6 @@ function ActionChoiceModal({
         ?? (target.result as PublicResearcherResult).username
         ?? 'Researcher');
 
-  // FIX: Close modal FIRST, then open URL on next frame.
-  // This prevents the JS thread from blocking while the modal is still mounted.
   const handleInApp = () => {
     onClose();
     requestAnimationFrame(() => {
@@ -182,7 +178,6 @@ function ActionChoiceModal({
 
   const handleOnWeb = () => {
     onClose();
-    // FIX: fire-and-forget, no await — Linking.openURL is non-blocking
     requestAnimationFrame(() => {
       if (isReport) openCommunityReportInBrowser(target.result as CommunitySearchResult);
       else          openResearcherOnWeb(target.result as PublicResearcherResult);
@@ -197,13 +192,13 @@ function ActionChoiceModal({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <Pressable style={styles.modalScrim} onPress={onClose}>
+      <Pressable style={[styles.modalScrim, { backgroundColor: getModalBackdrop(0.6) }]} onPress={onClose}>
         <Pressable onPress={e => e.stopPropagation()} style={styles.modalSheetOuter}>
           <LinearGradient
-            colors={['#1A1A38', '#0A0A1A']}
-            style={styles.modalSheet}
+            colors={COLORS.gradientCard as [string, string]}
+            style={[styles.modalSheet, { borderTopColor: `${COLORS.primary}30` }]}
           >
-            <View style={styles.modalHandle} />
+            <View style={[styles.modalHandle, { backgroundColor: COLORS.border }]} />
 
             <View style={styles.modalTitleRow}>
               <LinearGradient
@@ -213,8 +208,8 @@ function ActionChoiceModal({
                 <Ionicons name={isReport ? 'document-text' : 'person'} size={16} color="#FFF" />
               </LinearGradient>
               <View style={{ flex: 1 }}>
-                <Text style={styles.modalTitle} numberOfLines={2}>{title}</Text>
-                <Text style={styles.modalSubtitle}>
+                <Text style={[styles.modalTitle, { color: COLORS.textPrimary }]} numberOfLines={2}>{title}</Text>
+                <Text style={[styles.modalSubtitle, { color: COLORS.textMuted }]}>
                   {isReport ? 'How would you like to open this report?' : 'How would you like to view this profile?'}
                 </Text>
               </View>
@@ -225,10 +220,10 @@ function ActionChoiceModal({
               <LinearGradient colors={COLORS.gradientPrimary} style={styles.modalOptionGradient}>
                 <Ionicons name="phone-portrait-outline" size={20} color="#FFF" />
                 <View style={styles.modalOptionText}>
-                  <Text style={styles.modalOptionLabel}>
+                  <Text style={[styles.modalOptionLabel, { color: '#FFF' }]}>
                     {isReport ? 'Open in App' : 'View Profile in App'}
                   </Text>
-                  <Text style={styles.modalOptionDesc}>
+                  <Text style={[styles.modalOptionDesc, { color: 'rgba(255,255,255,0.6)' }]}>
                     {isReport
                       ? 'Read the full report inside DeepDive'
                       : 'View researcher profile inside DeepDive'}
@@ -239,7 +234,7 @@ function ActionChoiceModal({
             </TouchableOpacity>
 
             {/* Open in Browser */}
-            <TouchableOpacity onPress={handleOnWeb} activeOpacity={0.8} style={styles.modalOptionSecondary}>
+            <TouchableOpacity onPress={handleOnWeb} activeOpacity={0.8} style={[styles.modalOptionSecondary, { borderColor: COLORS.border }]}>
               <View style={[styles.modalOptionSecondaryIcon, { backgroundColor: `${COLORS.success}18`, borderColor: `${COLORS.success}35` }]}>
                 <Ionicons name="globe-outline" size={18} color={COLORS.success} />
               </View>
@@ -257,7 +252,7 @@ function ActionChoiceModal({
             </TouchableOpacity>
 
             <TouchableOpacity onPress={onClose} style={styles.modalCancel} activeOpacity={0.7}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
+              <Text style={[styles.modalCancelText, { color: COLORS.textMuted }]}>Cancel</Text>
             </TouchableOpacity>
           </LinearGradient>
         </Pressable>
@@ -285,40 +280,40 @@ function CommunityResultCard({
         style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
       >
         <View style={[styles.communityCard, { borderColor: `${dc}33` }]}>
-          <LinearGradient colors={['#16162F', '#101024']} style={styles.communityCardGradient}>
+          <LinearGradient colors={COLORS.gradientCard as [string, string]} style={styles.communityCardGradient}>
             <LinearGradient colors={[dc, `${dc}44`]} style={styles.communityAccentBar} />
             <View style={styles.communityCardBody}>
               <View style={styles.communityTitleRow}>
-                <Text style={styles.communityTitle} numberOfLines={2}>
+                <Text style={[styles.communityTitle, { color: COLORS.textPrimary }]} numberOfLines={2}>
                   {result.title || 'Untitled Report'}
                 </Text>
-                <View style={styles.openChip}>
+                <View style={[styles.openChip, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}>
                   <Ionicons name="apps-outline" size={10} color={COLORS.primary} />
-                  <Text style={styles.openChipText}>Open</Text>
+                  <Text style={[styles.openChipText, { color: COLORS.primary }]}>Open</Text>
                 </View>
               </View>
               {!!result.executiveSummary && (
-                <Text style={styles.communityPreview} numberOfLines={2}>
+                <Text style={[styles.communityPreview, { color: COLORS.textSecondary }]} numberOfLines={2}>
                   {result.executiveSummary}
                 </Text>
               )}
               {result.tags.length > 0 && (
                 <View style={styles.communityTagRow}>
                   {result.tags.slice(0, 3).map(t => (
-                    <View key={t} style={styles.communityTag}>
-                      <Text style={styles.communityTagText}>#{t}</Text>
+                    <View key={t} style={[styles.communityTag, { backgroundColor: `${COLORS.primary}10`, borderColor: `${COLORS.primary}20` }]}>
+                      <Text style={[styles.communityTagText, { color: COLORS.primary }]}>#{t}</Text>
                     </View>
                   ))}
                   {result.tags.length > 3 && (
-                    <Text style={styles.communityTagMore}>+{result.tags.length - 3}</Text>
+                    <Text style={[styles.communityTagMore, { color: COLORS.textMuted }]}>+{result.tags.length - 3}</Text>
                   )}
                 </View>
               )}
               <View style={styles.communityFooter}>
                 {(result.authorUsername || result.authorFullName) && (
-                  <View style={styles.communityAuthorChip}>
+                  <View style={[styles.communityAuthorChip, { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: COLORS.border }]}>
                     <Avatar url={result.authorAvatarUrl} name={authorName} size={16} />
-                    <Text style={styles.communityAuthorText} numberOfLines={1}>
+                    <Text style={[styles.communityAuthorText, { color: COLORS.textSecondary }]} numberOfLines={1}>
                       {result.authorUsername ? `@${result.authorUsername}` : authorName}
                     </Text>
                   </View>
@@ -329,7 +324,7 @@ function CommunityResultCard({
                 {result.viewCount > 0 && (
                   <View style={styles.viewCount}>
                     <Ionicons name="eye-outline" size={11} color={COLORS.textMuted} />
-                    <Text style={styles.viewCountText}>
+                    <Text style={[styles.viewCountText, { color: COLORS.textMuted }]}>
                       {result.viewCount >= 1000
                         ? `${(result.viewCount / 1000).toFixed(1)}k`
                         : result.viewCount}
@@ -337,9 +332,9 @@ function CommunityResultCard({
                   </View>
                 )}
                 {(result.semanticScore ?? 0) > 0 && (
-                  <View style={styles.semanticDot}>
+                  <View style={[styles.semanticDot, { backgroundColor: `${COLORS.success}12`, borderColor: `${COLORS.success}25` }]}>
                     <Ionicons name="git-network-outline" size={9} color={COLORS.success} />
-                    <Text style={styles.semanticDotText}>
+                    <Text style={[styles.semanticDotText, { color: COLORS.success }]}>
                       {Math.round((result.semanticScore ?? 0) * 100)}%
                     </Text>
                   </View>
@@ -368,20 +363,20 @@ function ResearcherResultCard({
         onPress={() => onPress(researcher)}
         style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
       >
-        <View style={styles.researcherCard}>
-          <LinearGradient colors={['#16162F', '#101024']} style={styles.researcherCardGradient}>
-            <View style={styles.researcherAvatarRing}>
+        <View style={[styles.researcherCard, { borderColor: COLORS.border }]}>
+          <LinearGradient colors={COLORS.gradientCard as [string, string]} style={styles.researcherCardGradient}>
+            <View style={[styles.researcherAvatarRing, { borderColor: `${COLORS.primary}40` }]}>
               <Avatar url={researcher.avatar_url} name={name} size={44} />
             </View>
             <View style={styles.researcherInfo}>
-              <Text style={styles.researcherName} numberOfLines={1}>{name}</Text>
+              <Text style={[styles.researcherName, { color: COLORS.textPrimary }]} numberOfLines={1}>{name}</Text>
               {researcher.username && (
-                <Text style={styles.researcherUsername}>@{researcher.username}</Text>
+                <Text style={[styles.researcherUsername, { color: COLORS.primary }]}>@{researcher.username}</Text>
               )}
               <View style={styles.researcherStats}>
                 <View style={styles.researcherStat}>
                   <Ionicons name="people-outline" size={10} color={COLORS.textMuted} />
-                  <Text style={styles.researcherStatText}>
+                  <Text style={[styles.researcherStatText, { color: COLORS.textMuted }]}>
                     {researcher.follower_count >= 1000
                       ? `${(researcher.follower_count / 1000).toFixed(1)}k`
                       : researcher.follower_count} followers
@@ -389,15 +384,15 @@ function ResearcherResultCard({
                 </View>
                 <View style={styles.researcherStat}>
                   <Ionicons name="document-text-outline" size={10} color={COLORS.textMuted} />
-                  <Text style={styles.researcherStatText}>
+                  <Text style={[styles.researcherStatText, { color: COLORS.textMuted }]}>
                     {researcher.public_report_count} public reports
                   </Text>
                 </View>
               </View>
             </View>
-            <View style={styles.openChip}>
+            <View style={[styles.openChip, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}>
               <Ionicons name="apps-outline" size={10} color={COLORS.primary} />
-              <Text style={styles.openChipText}>Open</Text>
+              <Text style={[styles.openChipText, { color: COLORS.primary }]}>Open</Text>
             </View>
           </LinearGradient>
         </View>
@@ -424,7 +419,7 @@ function ScopeToggle({ scope, onChange }: { scope: SearchScope; onChange: (s: Se
   const onLayout = (e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width);
 
   return (
-    <View onLayout={onLayout} style={styles.scopeToggleWrap}>
+    <View onLayout={onLayout} style={[styles.scopeToggleWrap, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
       {segW > 0 && (
         <Animated.View style={[{ position: 'absolute', top: pad, bottom: pad, left: 0, width: segW }, indStyle]}>
           <LinearGradient
@@ -442,7 +437,7 @@ function ScopeToggle({ scope, onChange }: { scope: SearchScope; onChange: (s: Se
             style={styles.scopeTab}
           >
             <Ionicons name={meta.icon as any} size={13} color={active ? '#FFF' : COLORS.textMuted} />
-            <Text style={[styles.scopeTabText, active && { color: '#FFF' }]}>{meta.label}</Text>
+            <Text style={[styles.scopeTabText, { color: active ? '#FFF' : COLORS.textMuted }]}>{meta.label}</Text>
           </TouchableOpacity>
         );
       })}
@@ -457,20 +452,23 @@ function EmptySearchState({ scope, onSuggest }: { scope: SearchScope; onSuggest:
   const suggs = isCom ? COMMUNITY_SEARCH_PLACEHOLDER_EXAMPLES : SUGGESTED_QUERIES;
   return (
     <Animated.View entering={FadeIn.duration(400)} style={styles.emptyWrap}>
-      <LinearGradient colors={['#1A1A35', '#12122A']} style={[styles.emptyCard, { borderColor: isCom ? `${COLORS.success}25` : `${COLORS.primary}25` }]}>
+      <LinearGradient 
+        colors={COLORS.gradientCard as [string, string]} 
+        style={[styles.emptyCard, { borderColor: isCom ? `${COLORS.success}25` : `${COLORS.primary}25` }]}
+      >
         <LinearGradient colors={isCom ? [COLORS.success, `${COLORS.success}AA`] : COLORS.gradientPrimary} style={styles.emptyIconCircle}>
           <Ionicons name={isCom ? 'globe-outline' : 'search'} size={28} color="#FFF" />
         </LinearGradient>
-        <Text style={styles.emptyTitle}>{isCom ? 'Search All Research' : 'Search Everything'}</Text>
-        <Text style={styles.emptySubtext}>
+        <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>{isCom ? 'Search All Research' : 'Search Everything'}</Text>
+        <Text style={[styles.emptySubtext, { color: COLORS.textMuted }]}>
           {isCom
             ? 'Discover public reports & researchers from the DeepDive community'
             : 'Search across all your reports, podcasts, debates, slides, and papers'}
         </Text>
         {isCom && (
-          <View style={styles.communityInfoRow}>
+          <View style={[styles.communityInfoRow, { backgroundColor: `${COLORS.success}10` }]}>
             <Ionicons name="shield-checkmark-outline" size={12} color={COLORS.success} />
-            <Text style={styles.communityInfoText}>Only public reports & verified researchers</Text>
+            <Text style={[styles.communityInfoText, { color: COLORS.success }]}>Only public reports & verified researchers</Text>
           </View>
         )}
         {!isCom && (
@@ -487,7 +485,7 @@ function EmptySearchState({ scope, onSuggest }: { scope: SearchScope; onSuggest:
           </View>
         )}
       </LinearGradient>
-      <Text style={styles.suggestLabel}>{isCom ? 'Popular searches' : 'Try searching for'}</Text>
+      <Text style={[styles.suggestLabel, { color: COLORS.textMuted }]}>{isCom ? 'Popular searches' : 'Try searching for'}</Text>
       <View style={styles.suggestRow}>
         {suggs.map(q => (
           <TouchableOpacity key={q} onPress={() => onSuggest(q)} activeOpacity={0.75} style={[styles.suggestChip, { borderColor: isCom ? `${COLORS.success}25` : `${COLORS.primary}25` }]}>
@@ -496,7 +494,7 @@ function EmptySearchState({ scope, onSuggest }: { scope: SearchScope; onSuggest:
               size={11}
               color={isCom ? COLORS.success : COLORS.primary}
             />
-            <Text style={styles.suggestChipText}>{q}</Text>
+            <Text style={[styles.suggestChipText, { color: COLORS.textSecondary }]}>{q}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -507,11 +505,14 @@ function EmptySearchState({ scope, onSuggest }: { scope: SearchScope; onSuggest:
 function NoResultsState({ query, scope }: { query: string; scope: SearchScope }) {
   return (
     <Animated.View entering={FadeIn.duration(400)} style={styles.emptyWrap}>
-      <LinearGradient colors={['#1C1C40', '#14142E']} style={styles.noResultsIcon}>
+      <LinearGradient 
+        colors={[COLORS.backgroundElevated, COLORS.background]} 
+        style={[styles.noResultsIcon, { borderColor: `${COLORS.primary}30` }]}
+      >
         <Ionicons name="search-outline" size={40} color={`${COLORS.primary}AA`} />
       </LinearGradient>
-      <Text style={styles.noResultsTitle}>No results found</Text>
-      <Text style={styles.noResultsSubtext}>
+      <Text style={[styles.noResultsTitle, { color: COLORS.textPrimary }]}>No results found</Text>
+      <Text style={[styles.noResultsSubtext, { color: COLORS.textMuted }]}>
         No {scope === 'community' ? 'public content' : 'content'} matched{' '}
         <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>"{query}"</Text>
         {scope === 'personal'
@@ -519,9 +520,9 @@ function NoResultsState({ query, scope }: { query: string; scope: SearchScope })
           : '\nTry different keywords — the community is growing every day'}
       </Text>
       {scope === 'community' && (
-        <TouchableOpacity onPress={() => router.push('/(app)/explore-researchers' as any)} style={styles.exploreBtn}>
+        <TouchableOpacity onPress={() => router.push('/(app)/explore-researchers' as any)} style={[styles.exploreBtn, { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}30` }]}>
           <Ionicons name="people-outline" size={14} color={COLORS.primary} />
-          <Text style={styles.exploreBtnText}>Explore Researchers</Text>
+          <Text style={[styles.exploreBtnText, { color: COLORS.primary }]}>Explore Researchers</Text>
         </TouchableOpacity>
       )}
     </Animated.View>
@@ -533,7 +534,7 @@ function ResultsBar({ count, isSemanticReady, searchMode, query, scope }: {
 }) {
   return (
     <Animated.View entering={FadeIn.duration(300)} style={styles.resultsBar}>
-      <Text style={styles.resultsCount} numberOfLines={1}>
+      <Text style={[styles.resultsCount, { color: COLORS.textMuted }]} numberOfLines={1}>
         <Text style={{ color: COLORS.primary, fontWeight: '800' }}>{count}</Text>
         {' '}{scope === 'community' ? 'public result' : 'result'}{count !== 1 ? 's' : ''} for{' '}
         <Text style={{ color: COLORS.textPrimary, fontWeight: '600' }}>"{query}"</Text>
@@ -546,9 +547,9 @@ function ResultsBar({ count, isSemanticReady, searchMode, query, scope }: {
           </View>
         )}
         {scope === 'personal' && searchMode !== 'keyword' && isSemanticReady && (
-          <View style={styles.semanticBadge}>
+          <View style={[styles.semanticBadge, { backgroundColor: `${COLORS.success}12`, borderColor: `${COLORS.success}30` }]}>
             <Ionicons name="git-network-outline" size={10} color={COLORS.success} />
-            <Text style={styles.semanticBadgeText}>Semantic</Text>
+            <Text style={[styles.semanticBadgeText, { color: COLORS.success }]}>Semantic</Text>
           </View>
         )}
       </View>
@@ -589,19 +590,22 @@ function SuggestionsOverlay({ suggestions, communityRecentQueries, scope, onSele
   if (!items.length) return null;
   return (
     <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={styles.suggestionsOverlayOuter}>
-      <LinearGradient colors={['#1A1A38', '#13132B']} style={styles.suggestionsOverlay}>
+      <LinearGradient 
+        colors={[COLORS.backgroundElevated, COLORS.backgroundCard]} 
+        style={[styles.suggestionsOverlay, { borderColor: `${COLORS.primary}25` }]}
+      >
         <View style={styles.suggestionsHeader}>
-          <Text style={styles.suggestionsTitle}>{isCom ? 'Recent community searches' : 'Recent Searches'}</Text>
+          <Text style={[styles.suggestionsTitle, { color: COLORS.textMuted }]}>{isCom ? 'Recent community searches' : 'Recent Searches'}</Text>
           {!isCom && (
             <TouchableOpacity onPress={onClearHistory} hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-              <Text style={styles.clearHistoryText}>Clear</Text>
+              <Text style={[styles.clearHistoryText, { color: COLORS.error }]}>Clear</Text>
             </TouchableOpacity>
           )}
         </View>
         {items.slice(0, 6).map((item, i) => (
-          <TouchableOpacity key={item.query + i} onPress={() => onSelect(item.query)} activeOpacity={0.75} style={styles.suggestionRow}>
+          <TouchableOpacity key={item.query + i} onPress={() => onSelect(item.query)} activeOpacity={0.75} style={[styles.suggestionRow, { borderBottomColor: `${COLORS.border}60` }]}>
             <Ionicons name={isCom ? 'globe-outline' : 'time-outline'} size={15} color={COLORS.textMuted} />
-            <Text style={styles.suggestionText} numberOfLines={1}>{item.query}</Text>
+            <Text style={[styles.suggestionText, { color: COLORS.textSecondary }]} numberOfLines={1}>{item.query}</Text>
             <Ionicons name="arrow-up-outline" size={14} color={COLORS.textMuted} style={{ transform: [{ rotate: '45deg' }] }} />
           </TouchableOpacity>
         ))}
@@ -623,9 +627,9 @@ function SkeletonCard({ index }: { index: number }) {
     transform: [{ translateX: -SCREEN_W + shimmer.value * (SCREEN_W * 2) }],
   }));
   return (
-    <View style={[styles.skeleton, { opacity: 1 - index * 0.18, height: 96 + (index % 2) * 18 }]}>
+    <View style={[styles.skeleton, { opacity: 1 - index * 0.18, height: 96 + (index % 2) * 18, backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
       <Animated.View style={[{ position: 'absolute', top: 0, bottom: 0, width: SCREEN_W }, sweep]}>
-        <LinearGradient colors={['transparent', 'rgba(108,99,255,0.08)', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ flex: 1 }} />
+        <LinearGradient colors={['transparent', `${COLORS.primary}08`, 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ flex: 1 }} />
       </Animated.View>
       <View style={{ padding: SPACING.md, gap: 10, flexDirection: 'row' }}>
         <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundElevated }} />
@@ -735,18 +739,18 @@ export default function GlobalSearchScreen() {
   const communityDisplayTotal = communityTotalCount + researcherResults.length;
 
   return (
-    <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={[COLORS.background, ...getAuroraGradient()] as [string, string, string]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
         {/* Header */}
-        <LinearGradient colors={['#15152F', '#0D0D22']} style={styles.header}>
+        <LinearGradient colors={COLORS.gradientCard as [string, string]} style={[styles.header, { borderBottomColor: COLORS.border }]}>
           <View style={styles.headerRow}>
             <Pressable onPress={() => router.back()}
               hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-              style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.7 : 1 }]}>
+              style={({ pressed }) => [styles.backBtn, { opacity: pressed ? 0.7 : 1, backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
               <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
             </Pressable>
-            <View style={[styles.inputWrap, { borderColor: query ? (isCommunity ? `${COLORS.success}50` : `${COLORS.primary}50`) : COLORS.border }]}>
+            <View style={[styles.inputWrap, { backgroundColor: COLORS.backgroundElevated, borderColor: query ? (isCommunity ? `${COLORS.success}50` : `${COLORS.primary}50`) : COLORS.border }]}>
               <Ionicons
                 name={isCommunity ? 'globe-outline' : 'search'}
                 size={18}
@@ -763,7 +767,7 @@ export default function GlobalSearchScreen() {
                 placeholder={isCommunity ? 'Search public research & researchers…' : 'Search all your content…'}
                 placeholderTextColor={COLORS.textMuted}
                 returnKeyType="search"
-                style={styles.input}
+                style={[styles.input, { color: COLORS.textPrimary }]}
                 autoCapitalize="none"
                 autoCorrect={false}
               />
@@ -789,7 +793,7 @@ export default function GlobalSearchScreen() {
 
         {/* Filter bar — personal only */}
         {!isCommunity && (
-          <View style={styles.filterBarWrap}>
+          <View style={[styles.filterBarWrap, { borderBottomColor: COLORS.border }]}>
             <SearchFilterBar
               filters={filters} onChange={setFilters}
               onOpenAdvanced={() => setShowAdvanced(true)}
@@ -800,12 +804,12 @@ export default function GlobalSearchScreen() {
 
         {/* Community info strip */}
         {isCommunity && (
-          <View style={styles.communityInfoStrip}>
+          <View style={[styles.communityInfoStrip, { backgroundColor: `${COLORS.success}08`, borderBottomColor: `${COLORS.success}20` }]}>
             <Ionicons name="globe-outline" size={12} color={COLORS.success} />
-            <Text style={styles.communityInfoStripText}>Searching public reports & researchers</Text>
+            <Text style={[styles.communityInfoStripText, { color: COLORS.textMuted }]}>Searching public reports & researchers</Text>
             <TouchableOpacity onPress={() => router.push('/(app)/explore-researchers' as any)}
               hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-              <Text style={styles.communityInfoStripLink}>Browse →</Text>
+              <Text style={[styles.communityInfoStripLink, { color: COLORS.success }]}>Browse →</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -823,9 +827,9 @@ export default function GlobalSearchScreen() {
 
         {/* Error */}
         {activeError && !activeIsSearching && (
-          <Animated.View entering={FadeIn.duration(300)} style={styles.errorBanner}>
+          <Animated.View entering={FadeIn.duration(300)} style={[styles.errorBanner, { backgroundColor: `${COLORS.error}10`, borderColor: `${COLORS.error}30` }]}>
             <Ionicons name="alert-circle-outline" size={15} color={COLORS.error} />
-            <Text style={styles.errorText}>{activeError}</Text>
+            <Text style={[styles.errorText, { color: COLORS.error }]}>{activeError}</Text>
           </Animated.View>
         )}
 
@@ -864,8 +868,8 @@ export default function GlobalSearchScreen() {
                         <View style={styles.researcherSection}>
                           <View style={styles.sectionHeader}>
                             <Ionicons name="people-outline" size={14} color={COLORS.primary} />
-                            <Text style={styles.sectionHeaderText}>Researchers</Text>
-                            <Text style={styles.sectionHeaderCount}>{researcherResults.length}</Text>
+                            <Text style={[styles.sectionHeaderText, { color: COLORS.textMuted }]}>Researchers</Text>
+                            <Text style={[styles.sectionHeaderCount, { backgroundColor: `${COLORS.primary}15`, color: COLORS.primary }]}>{researcherResults.length}</Text>
                           </View>
                           {researcherResults.map((r, i) => (
                             <ResearcherResultCard
@@ -874,11 +878,11 @@ export default function GlobalSearchScreen() {
                           ))}
                           {communityResults.length > 0 && (
                             <View style={styles.sectionDivider}>
-                              <View style={styles.sectionDividerLine} />
+                              <View style={[styles.sectionDividerLine, { backgroundColor: COLORS.border }]} />
                               <View style={styles.sectionHeader}>
                                 <Ionicons name="document-text-outline" size={14} color={COLORS.primary} />
-                                <Text style={styles.sectionHeaderText}>Public Reports</Text>
-                                <Text style={styles.sectionHeaderCount}>{communityResults.length}</Text>
+                                <Text style={[styles.sectionHeaderText, { color: COLORS.textMuted }]}>Public Reports</Text>
+                                <Text style={[styles.sectionHeaderCount, { backgroundColor: `${COLORS.primary}15`, color: COLORS.primary }]}>{communityResults.length}</Text>
                               </View>
                             </View>
                           )}
@@ -886,8 +890,8 @@ export default function GlobalSearchScreen() {
                       ) : communityResults.length > 0 ? (
                         <View style={styles.sectionHeader}>
                           <Ionicons name="document-text-outline" size={14} color={COLORS.primary} />
-                          <Text style={styles.sectionHeaderText}>Public Reports</Text>
-                          <Text style={styles.sectionHeaderCount}>{communityResults.length}</Text>
+                          <Text style={[styles.sectionHeaderText, { color: COLORS.textMuted }]}>Public Reports</Text>
+                          <Text style={[styles.sectionHeaderCount, { backgroundColor: `${COLORS.primary}15`, color: COLORS.primary }]}>{communityResults.length}</Text>
                         </View>
                       ) : null
                     }
@@ -937,11 +941,23 @@ export default function GlobalSearchScreen() {
   );
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getModalBackdrop(opacity: number = 0.6): string {
+  const bg = COLORS.background;
+  const hex = bg.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16) || 0;
+  const g = parseInt(hex.substring(2, 4), 16) || 0;
+  const b = parseInt(hex.substring(4, 6), 16) || 0;
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   header: {
     paddingBottom: SPACING.sm,
+    borderBottomWidth: 1,
   },
   headerRow: {
     flexDirection: 'row', alignItems: 'center',
@@ -950,73 +966,72 @@ const styles = StyleSheet.create({
   },
   backBtn: {
     width: 40, height: 40, borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, flexShrink: 0,
   },
   inputWrap: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.lg,
+    borderRadius: RADIUS.lg,
     paddingHorizontal: SPACING.md, height: 46,
     borderWidth: 1, gap: 8,
   },
   inputIcon: { flexShrink: 0 },
-  input: { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, paddingVertical: 0 },
+  input: { flex: 1, fontSize: FONTS.sizes.base, paddingVertical: 0 },
   scopeRow: {
     paddingHorizontal: SPACING.lg, paddingTop: 2,
   },
   scopeToggleWrap: {
-    flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.04)',
+    flexDirection: 'row',
     borderRadius: RADIUS.lg, padding: 3, gap: 3,
-    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
+    borderWidth: 1, overflow: 'hidden',
   },
   scopeTab: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, paddingVertical: 9, borderRadius: RADIUS.md, zIndex: 1,
   },
-  scopeTabText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  scopeTabText: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
   filterBarWrap: {
-    paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border,
+    paddingVertical: SPACING.sm, borderBottomWidth: 1,
   },
   communityInfoStrip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: SPACING.lg, paddingVertical: 8,
-    backgroundColor: `${COLORS.success}08`,
-    borderBottomWidth: 1, borderBottomColor: `${COLORS.success}20`,
+    borderBottomWidth: 1,
   },
-  communityInfoStripText: { flex: 1, color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  communityInfoStripLink: { color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  communityInfoStripText: { flex: 1, fontSize: FONTS.sizes.xs },
+  communityInfoStripLink: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
   suggestionsOverlayOuter: {
     position: 'absolute', top: 140, left: SPACING.lg, right: SPACING.lg, zIndex: 100,
     borderRadius: RADIUS.xl, overflow: 'hidden',
     shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 20, elevation: 10,
   },
   suggestionsOverlay: {
-    borderWidth: 1, borderColor: `${COLORS.primary}25`, padding: SPACING.md,
+    borderWidth: 1, padding: SPACING.md,
   },
   suggestionsHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.sm,
   },
   suggestionsTitle: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase',
+    fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase',
   },
-  clearHistoryText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  clearHistoryText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
   suggestionRow: {
     flexDirection: 'row', alignItems: 'center', gap: SPACING.sm,
-    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: `${COLORS.border}60`,
+    paddingVertical: 10, borderBottomWidth: 1,
   },
-  suggestionText: { flex: 1, color: COLORS.textSecondary, fontSize: FONTS.sizes.sm },
+  suggestionText: { flex: 1, fontSize: FONTS.sizes.sm },
   resultsBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, gap: SPACING.sm,
   },
-  resultsCount: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, flex: 1 },
+  resultsCount: { fontSize: FONTS.sizes.sm, flex: 1 },
   resultsRight: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   semanticBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.success}12`,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
     borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3,
-    borderWidth: 1, borderColor: `${COLORS.success}30`,
+    borderWidth: 1,
   },
-  semanticBadgeText: { color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  semanticBadgeText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
   breakdownBar: {
     flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: SPACING.lg, gap: 6, paddingBottom: SPACING.sm,
   },
@@ -1029,37 +1044,36 @@ const styles = StyleSheet.create({
   researcherSection: { marginBottom: SPACING.sm },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: SPACING.sm },
   sectionHeaderText: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8,
+    fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8,
   },
   sectionHeaderCount: {
-    backgroundColor: `${COLORS.primary}15`, color: COLORS.primary,
     fontSize: 10, fontWeight: '700', paddingHorizontal: 6, paddingVertical: 2,
     borderRadius: RADIUS.full, overflow: 'hidden',
   },
   sectionDivider: { marginTop: SPACING.md },
-  sectionDividerLine: { height: 1, backgroundColor: COLORS.border, marginBottom: SPACING.sm },
+  sectionDividerLine: { height: 1, marginBottom: SPACING.sm },
   researcherCard: {
-    borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', ...SHADOWS.small,
+    borderRadius: RADIUS.xl, borderWidth: 1, overflow: 'hidden', ...SHADOWS.small,
   },
   researcherCardGradient: {
     flexDirection: 'row', alignItems: 'center',
     padding: SPACING.md, gap: SPACING.sm,
   },
   researcherAvatarRing: {
-    borderRadius: 24, borderWidth: 2, borderColor: `${COLORS.primary}40`, padding: 2, flexShrink: 0,
+    borderRadius: 24, borderWidth: 2, padding: 2, flexShrink: 0,
   },
   researcherInfo: { flex: 1, minWidth: 0 },
-  researcherName: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 20 },
-  researcherUsername: { color: COLORS.primary, fontSize: FONTS.sizes.xs, marginTop: 1 },
+  researcherName: { fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 20 },
+  researcherUsername: { fontSize: FONTS.sizes.xs, marginTop: 1 },
   researcherStats: { flexDirection: 'row', gap: 10, marginTop: 4, flexWrap: 'wrap' },
   researcherStat: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  researcherStatText: { color: COLORS.textMuted, fontSize: 10 },
+  researcherStatText: { fontSize: 10 },
   openChip: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
-    paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}25`, flexShrink: 0,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1, flexShrink: 0,
   },
-  openChipText: { color: COLORS.primary, fontSize: 10, fontWeight: '700' },
+  openChipText: { fontSize: 10, fontWeight: '700' },
   communityCard: {
     borderRadius: RADIUS.xl, borderWidth: 1, overflow: 'hidden', ...SHADOWS.small,
   },
@@ -1071,75 +1085,75 @@ const styles = StyleSheet.create({
   },
   communityCardBody: { padding: SPACING.md, gap: SPACING.sm },
   communityTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
-  communityTitle: { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 22, letterSpacing: -0.2 },
-  communityPreview: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, lineHeight: 20 },
+  communityTitle: { fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 22, letterSpacing: -0.2 },
+  communityPreview: { fontSize: FONTS.sizes.sm, lineHeight: 20 },
   communityTagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, alignItems: 'center' },
   communityTag: {
-    backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.full,
-    paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}20`,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1,
   },
-  communityTagText: { color: COLORS.primary, fontSize: 10, fontWeight: '600' },
-  communityTagMore: { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
+  communityTagText: { fontSize: 10, fontWeight: '600' },
+  communityTagMore: { fontSize: 10, fontWeight: '600' },
   communityFooter: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   communityAuthorChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.05)',
+    flexDirection: 'row', alignItems: 'center', gap: 5,
     borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 3,
-    borderWidth: 1, borderColor: COLORS.border, maxWidth: 140,
+    borderWidth: 1, maxWidth: 140,
   },
-  communityAuthorText: { color: COLORS.textSecondary, fontSize: 10, fontWeight: '600', flexShrink: 1 },
+  communityAuthorText: { fontSize: 10, fontWeight: '600', flexShrink: 1 },
   depthBadge: { borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1 },
   depthBadgeText: { fontSize: 10, fontWeight: '700' },
   viewCount: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  viewCountText: { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
+  viewCountText: { fontSize: 10, fontWeight: '600' },
   semanticDot: {
-    flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: `${COLORS.success}12`,
+    flexDirection: 'row', alignItems: 'center', gap: 3,
     borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 2,
-    borderWidth: 1, borderColor: `${COLORS.success}25`,
+    borderWidth: 1,
   },
-  semanticDotText: { color: COLORS.success, fontSize: 9, fontWeight: '700' },
-  modalScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  semanticDotText: { fontSize: 9, fontWeight: '700' },
+  modalScrim: { flex: 1, justifyContent: 'flex-end' },
   modalSheetOuter: { borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
   modalSheet: {
     paddingHorizontal: SPACING.lg, paddingBottom: 36, paddingTop: SPACING.sm,
-    borderTopWidth: 1, borderTopColor: `${COLORS.primary}30`,
+    borderTopWidth: 1,
   },
   modalHandle: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border,
+    width: 40, height: 4, borderRadius: 2,
     alignSelf: 'center', marginBottom: SPACING.lg,
   },
   modalTitleRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, marginBottom: SPACING.lg },
   modalTitleIcon: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  modalTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 22 },
-  modalSubtitle: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  modalTitle: { fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 22 },
+  modalSubtitle: { fontSize: FONTS.sizes.xs, marginTop: 2 },
   modalOptionPrimary: { borderRadius: RADIUS.xl, overflow: 'hidden', marginBottom: SPACING.sm },
   modalOptionGradient: { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, padding: SPACING.md },
   modalOptionSecondary: {
     flexDirection: 'row', alignItems: 'center', gap: SPACING.md, padding: SPACING.md,
-    borderRadius: RADIUS.xl, backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.sm,
+    borderRadius: RADIUS.xl,
+    borderWidth: 1, marginBottom: SPACING.sm,
   },
   modalOptionSecondaryIcon: {
     width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, flexShrink: 0,
   },
   modalOptionText: { flex: 1 },
-  modalOptionLabel: { color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' },
-  modalOptionDesc: { color: 'rgba(255,255,255,0.6)', fontSize: FONTS.sizes.xs, marginTop: 2 },
+  modalOptionLabel: { fontSize: FONTS.sizes.base, fontWeight: '800' },
+  modalOptionDesc: { fontSize: FONTS.sizes.xs, marginTop: 2 },
   modalCancel: { alignItems: 'center', paddingVertical: SPACING.md, marginTop: SPACING.xs },
-  modalCancelText: { color: COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '600' },
+  modalCancelText: { fontSize: FONTS.sizes.base, fontWeight: '600' },
   emptyWrap: { flex: 1, padding: SPACING.xl, paddingTop: SPACING.lg },
   emptyCard: {
     borderRadius: RADIUS.xl, padding: SPACING.xl, alignItems: 'center',
     borderWidth: 1, marginBottom: SPACING.xl, gap: SPACING.sm,
   },
   emptyIconCircle: { width: 64, height: 64, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.sm, ...SHADOWS.medium },
-  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '900', textAlign: 'center' },
-  emptySubtext: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 20 },
+  emptyTitle: { fontSize: FONTS.sizes.xl, fontWeight: '900', textAlign: 'center' },
+  emptySubtext: { fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 20 },
   communityInfoRow: {
     flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.xs,
-    backgroundColor: `${COLORS.success}10`, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 5,
+    borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 5,
   },
-  communityInfoText: { color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  communityInfoText: { fontSize: FONTS.sizes.xs, fontWeight: '600' },
   modeInfoRow: { flexDirection: 'row', gap: 8, marginTop: SPACING.sm, flexWrap: 'wrap', justifyContent: 'center' },
   modeInfoChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: RADIUS.full,
@@ -1147,37 +1161,37 @@ const styles = StyleSheet.create({
   },
   modeInfoLabel: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
   suggestLabel: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700',
+    fontSize: FONTS.sizes.xs, fontWeight: '700',
     letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.md,
   },
   suggestRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   suggestChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.04)',
+    flexDirection: 'row', alignItems: 'center', gap: 5,
     borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 8,
     borderWidth: 1,
   },
-  suggestChipText: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm },
+  suggestChipText: { fontSize: FONTS.sizes.sm },
   noResultsIcon: {
     width: 92, height: 92, borderRadius: 28,
     alignItems: 'center', justifyContent: 'center', alignSelf: 'center',
     marginBottom: SPACING.md, marginTop: SPACING.xl * 2,
-    borderWidth: 1, borderColor: `${COLORS.primary}30`,
+    borderWidth: 1,
   },
-  noResultsTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center', marginBottom: SPACING.sm },
-  noResultsSubtext: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22 },
+  noResultsTitle: { fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center', marginBottom: SPACING.sm },
+  noResultsSubtext: { fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 22 },
   exploreBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.lg, alignSelf: 'center',
-    backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full,
-    paddingHorizontal: 18, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.primary}30`,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 18, paddingVertical: 9, borderWidth: 1,
   },
-  exploreBtnText: { color: COLORS.primary, fontWeight: '700', fontSize: FONTS.sizes.sm },
+  exploreBtnText: { fontWeight: '700', fontSize: FONTS.sizes.sm },
   loadingWrap: { padding: SPACING.lg, gap: SPACING.sm },
-  skeleton: { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
+  skeleton: { borderRadius: RADIUS.xl, borderWidth: 1, overflow: 'hidden' },
   errorBanner: {
     flexDirection: 'row', alignItems: 'center', gap: SPACING.sm,
     marginHorizontal: SPACING.lg, marginVertical: SPACING.sm,
-    backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg,
-    padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30`,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md, borderWidth: 1,
   },
-  errorText: { flex: 1, color: COLORS.error, fontSize: FONTS.sizes.sm },
+  errorText: { flex: 1, fontSize: FONTS.sizes.sm },
 });

@@ -1,14 +1,11 @@
 // src/components/search/SearchFilters.tsx
 // Part 35 — Global Search: Filter bar + advanced filter sheet
 // Part 50.8 — UI UPGRADE (visual only)
-//   Restyled the content-type chips, advanced-filter sheet (gradient surface),
-//   search-mode cards, sort chips and date presets into the gradient/glass
-//   system. Both exports, all props, the daysAgo() helper and every constant
-//   usage (CONTENT_TYPE_META / SORT_OPTIONS / SEARCH_MODE_META) are unchanged.
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
 //
-// Two parts:
-//   <SearchFilterBar />      — horizontal scrollable content-type chips
-//   <SearchAdvancedFilters/> — bottom sheet with sort, date range, search mode
+// Part 55.2 changes: ALL hardcoded dark hex literals replaced with live
+// COLORS tokens. Every text color uses theme-aware tokens.
+// Background colors now use COLORS.background/COLORS.backgroundElevated.
 
 import React, { useState, memo } from 'react';
 import {
@@ -36,6 +33,23 @@ import {
   SEARCH_MODE_META,
 } from '../../constants/search';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getModalBackdrop(opacity: number = 0.70): string {
+  const bg = COLORS.background;
+  const hex = bg.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16) || 0;
+  const g = parseInt(hex.substring(2, 4), 16) || 0;
+  const b = parseInt(hex.substring(4, 6), 16) || 0;
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString();
+}
 
 // ─── Horizontal content-type chips ───────────────────────────────────────────
 
@@ -82,7 +96,7 @@ export function SearchFilterBar({
                   </Text>
                 </LinearGradient>
               ) : (
-                <View style={[styles.chip, { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: COLORS.border }]}>
+                <View style={[styles.chip, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
                   <Ionicons name={meta.icon as any} size={13} color={COLORS.textMuted} />
                   <Text style={[styles.chipText, { color: COLORS.textMuted }]}>
                     {meta.label}
@@ -99,9 +113,9 @@ export function SearchFilterBar({
         onPress={onOpenAdvanced}
         style={[
           styles.advancedBtn,
-          activeFilterCount > 0 && {
-            backgroundColor: `${COLORS.primary}20`,
-            borderColor:     `${COLORS.primary}50`,
+          {
+            backgroundColor: activeFilterCount > 0 ? `${COLORS.primary}20` : COLORS.backgroundElevated,
+            borderColor: activeFilterCount > 0 ? `${COLORS.primary}50` : COLORS.border,
           },
         ]}
         activeOpacity={0.8}
@@ -112,7 +126,7 @@ export function SearchFilterBar({
           color={activeFilterCount > 0 ? COLORS.primary : COLORS.textMuted}
         />
         {activeFilterCount > 0 && (
-          <View style={styles.filterBadge}>
+          <View style={[styles.filterBadge, { backgroundColor: COLORS.primary }]}>
             <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
           </View>
         )}
@@ -143,15 +157,15 @@ function SearchModeRow({
             activeOpacity={0.8}
             style={[
               styles.modeCard,
-              isActive && {
-                backgroundColor: `${meta.color}18`,
-                borderColor:     `${meta.color}50`,
+              {
+                backgroundColor: isActive ? `${meta.color}18` : COLORS.backgroundElevated,
+                borderColor: isActive ? `${meta.color}50` : COLORS.border,
               },
             ]}
           >
             <View style={[
               styles.modeIcon,
-              { backgroundColor: isActive ? `${meta.color}25` : 'rgba(255,255,255,0.05)' },
+              { backgroundColor: isActive ? `${meta.color}25` : COLORS.backgroundElevated },
             ]}>
               <Ionicons
                 name={meta.icon as any}
@@ -165,7 +179,7 @@ function SearchModeRow({
             ]}>
               {meta.label}
             </Text>
-            <Text style={styles.modeDesc} numberOfLines={2}>
+            <Text style={[styles.modeDesc, { color: COLORS.textMuted }]} numberOfLines={2}>
               {meta.description}
             </Text>
             {isActive && (
@@ -225,14 +239,15 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
     >
       <BlurView
         intensity={20}
-        style={styles.overlay}
+        tint={COLORS.background === '#FFFFFF' || COLORS.background === '#F5F6FB' ? 'light' : 'dark'}
+        style={[styles.overlay, { backgroundColor: getModalBackdrop(0.70) }]}
       >
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
 
         <View style={styles.sheetOuter}>
-          <LinearGradient colors={['#1A1A38', '#0D0D20']} style={styles.sheet}>
+          <LinearGradient colors={COLORS.gradientCard as [string, string]} style={[styles.sheet, { borderTopColor: `${COLORS.primary}30` }]}>
             {/* Handle */}
-            <View style={styles.handle} />
+            <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
 
             {/* Header */}
             <View style={styles.sheetHeader}>
@@ -240,23 +255,23 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
                 <LinearGradient colors={COLORS.gradientPrimary} style={styles.sheetHeaderIcon}>
                   <Ionicons name="options" size={16} color="#FFF" />
                 </LinearGradient>
-                <Text style={styles.sheetTitle}>Search Filters</Text>
+                <Text style={[styles.sheetTitle, { color: COLORS.textPrimary }]}>Search Filters</Text>
               </View>
-              <TouchableOpacity onPress={onReset} style={styles.resetBtn}>
+              <TouchableOpacity onPress={onReset} style={[styles.resetBtn, { backgroundColor: `${COLORS.error}15`, borderColor: `${COLORS.error}30` }]}>
                 <Ionicons name="refresh" size={12} color={COLORS.error} />
-                <Text style={styles.resetText}>Reset</Text>
+                <Text style={[styles.resetText, { color: COLORS.error }]}>Reset</Text>
               </TouchableOpacity>
             </View>
 
             {/* Search Mode */}
-            <Text style={styles.sectionLabel}>SEARCH MODE</Text>
+            <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>SEARCH MODE</Text>
             <SearchModeRow
               selected={filters.searchMode}
               onSelect={mode => onChange({ searchMode: mode })}
             />
 
             {/* Sort By */}
-            <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>SORT BY</Text>
+            <Text style={[styles.sectionLabel, { color: COLORS.textMuted, marginTop: SPACING.lg }]}>SORT BY</Text>
             <View style={styles.sortRow}>
               {SORT_OPTIONS.map(opt => {
                 const isActive = filters.sortBy === opt.value;
@@ -267,9 +282,9 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
                     activeOpacity={0.8}
                     style={[
                       styles.sortChip,
-                      isActive && {
-                        backgroundColor: `${COLORS.primary}20`,
-                        borderColor:     COLORS.primary,
+                      {
+                        backgroundColor: isActive ? `${COLORS.primary}20` : COLORS.backgroundElevated,
+                        borderColor: isActive ? COLORS.primary : COLORS.border,
                       },
                     ]}
                   >
@@ -291,7 +306,7 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
             </View>
 
             {/* Date Range */}
-            <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>DATE RANGE</Text>
+            <Text style={[styles.sectionLabel, { color: COLORS.textMuted, marginTop: SPACING.lg }]}>DATE RANGE</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -306,9 +321,9 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
                     activeOpacity={0.8}
                     style={[
                       styles.sortChip,
-                      isActive && {
-                        backgroundColor: `${COLORS.info}20`,
-                        borderColor:     COLORS.info,
+                      {
+                        backgroundColor: isActive ? `${COLORS.info}20` : COLORS.backgroundElevated,
+                        borderColor: isActive ? COLORS.info : COLORS.border,
                       },
                     ]}
                   >
@@ -327,7 +342,7 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
             {/* Depth filter (reports only) */}
             {(filters.contentType === 'all' || filters.contentType === 'report') && (
               <>
-                <Text style={[styles.sectionLabel, { marginTop: SPACING.lg }]}>RESEARCH DEPTH</Text>
+                <Text style={[styles.sectionLabel, { color: COLORS.textMuted, marginTop: SPACING.lg }]}>RESEARCH DEPTH</Text>
                 <View style={styles.sortRow}>
                   {[
                     { value: undefined, label: 'All depths', color: COLORS.textMuted },
@@ -343,9 +358,9 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
                         activeOpacity={0.8}
                         style={[
                           styles.sortChip,
-                          isActive && {
-                            backgroundColor: `${opt.color}20`,
-                            borderColor:     opt.color,
+                          {
+                            backgroundColor: isActive ? `${opt.color}20` : COLORS.backgroundElevated,
+                            borderColor: isActive ? opt.color : COLORS.border,
                           },
                         ]}
                       >
@@ -380,14 +395,6 @@ export const SearchAdvancedFilters = memo(function SearchAdvancedFilters({
   );
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString();
-}
-
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
@@ -419,11 +426,9 @@ const styles = StyleSheet.create({
     width:           38,
     height:          38,
     borderRadius:    12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
-    borderColor:     COLORS.border,
     marginHorizontal: SPACING.sm,
     position:        'relative',
     flexShrink:      0,
@@ -435,7 +440,6 @@ const styles = StyleSheet.create({
     width:           16,
     height:          16,
     borderRadius:    8,
-    backgroundColor: COLORS.primary,
     alignItems:      'center',
     justifyContent:  'center',
   },
@@ -448,7 +452,6 @@ const styles = StyleSheet.create({
   // Sheet
   overlay: {
     flex:             1,
-    backgroundColor:  'rgba(10,10,26,0.70)',
     justifyContent:   'flex-end',
   },
   sheetOuter: {
@@ -460,13 +463,11 @@ const styles = StyleSheet.create({
     padding:              SPACING.xl,
     paddingBottom:        SPACING.xl + 20,
     borderTopWidth:       1,
-    borderTopColor:       `${COLORS.primary}30`,
   },
   handle: {
     width:           40,
     height:          4,
     borderRadius:    2,
-    backgroundColor: COLORS.border,
     alignSelf:       'center',
     marginBottom:    SPACING.lg,
   },
@@ -490,7 +491,6 @@ const styles = StyleSheet.create({
     ...SHADOWS.small,
   },
   sheetTitle: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.lg,
     fontWeight: '800',
   },
@@ -498,20 +498,16 @@ const styles = StyleSheet.create({
     flexDirection:     'row',
     alignItems:        'center',
     gap:               4,
-    backgroundColor:   `${COLORS.error}15`,
     borderRadius:      RADIUS.full,
     paddingHorizontal: 12,
     paddingVertical:    6,
     borderWidth:       1,
-    borderColor:       `${COLORS.error}30`,
   },
   resetText: {
-    color:      COLORS.error,
     fontSize:   FONTS.sizes.sm,
     fontWeight: '700',
   },
   sectionLabel: {
-    color:         COLORS.textMuted,
     fontSize:      FONTS.sizes.xs,
     fontWeight:    '700',
     letterSpacing: 1,
@@ -525,12 +521,10 @@ const styles = StyleSheet.create({
   },
   modeCard: {
     flex:            1,
-    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:    RADIUS.lg,
     padding:         SPACING.sm,
     alignItems:      'center',
     borderWidth:     1,
-    borderColor:     COLORS.border,
     gap:              4,
     position:        'relative',
   },
@@ -548,7 +542,6 @@ const styles = StyleSheet.create({
     textAlign:  'center',
   },
   modeDesc: {
-    color:     COLORS.textMuted,
     fontSize:  8,
     textAlign: 'center',
     lineHeight: 12,
@@ -578,8 +571,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical:    7,
     borderWidth:       1,
-    borderColor:       COLORS.border,
-    backgroundColor:   'rgba(255,255,255,0.04)',
   },
   sortChipText: {
     fontSize:   FONTS.sizes.xs,

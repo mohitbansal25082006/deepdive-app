@@ -1,14 +1,6 @@
 // src/components/workspace/ShareDebateToWorkspaceModal.tsx
-// Part 16 — FIXED v3
-//
-// Fixes applied:
-//   • S1 calls get_debate_sharing_workspaces(p_debate_id uuid) — dedicated,
-//     no overloading possible
-//   • S2 calls get_user_workspaces_for_debate_sharing(p_debate_id uuid) — alias
-//   • S3 direct table query — works with zero RPC dependency
-//
-// The generic get_user_workspaces_for_sharing is NOT called here at all
-// — it is now reserved for podcast and presentation sharing modals only.
+// Part 55.3 — FULL THEME-COMPATIBILITY PASS
+// All hardcoded hex colors replaced with COLORS tokens.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -24,9 +16,7 @@ import { supabase }               from '../../lib/supabase';
 import { shareDebateToWorkspace } from '../../services/debateSharingService';
 import { removeSharedDebate }     from '../../services/debateSharingService';
 import { WorkspaceRole }          from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
-
-const ACCENT = '#6C63FF';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../constants/theme';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -177,13 +167,13 @@ function WorkspaceRow({
         <LinearGradient
           colors={item.isShared
             ? [COLORS.success, COLORS.success + 'AA']
-            : [ACCENT, '#8B5CF6']}
+            : [COLORS.primary, COLORS.primaryLight]}
           style={{
             width: 44, height: 44, borderRadius: 12,
             alignItems: 'center', justifyContent: 'center', flexShrink: 0,
           }}
         >
-          <Ionicons name={item.isShared ? 'checkmark' : 'people'} size={20} color="#FFF" />
+          <Ionicons name={item.isShared ? 'checkmark' : 'people'} size={20} color={COLORS.textPrimary} />
         </LinearGradient>
       )}
 
@@ -199,11 +189,11 @@ function WorkspaceRow({
           gap: 5, marginTop: 3, flexWrap: 'wrap',
         }}>
           <View style={{
-            backgroundColor: `${ACCENT}18`, borderRadius: RADIUS.full,
+            backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
             paddingHorizontal: 7, paddingVertical: 1,
           }}>
             <Text style={{
-              color: ACCENT, fontSize: 10, fontWeight: '700', textTransform: 'capitalize',
+              color: COLORS.primary, fontSize: 10, fontWeight: '700', textTransform: 'capitalize',
             }}>
               {item.userRole}
             </Text>
@@ -231,19 +221,19 @@ function WorkspaceRow({
 
       {canShare && (
         isSharing ? (
-          <ActivityIndicator size="small" color={item.isShared ? COLORS.success : ACCENT} />
+          <ActivityIndicator size="small" color={item.isShared ? COLORS.success : COLORS.primary} />
         ) : (
           <View style={{
             width: 28, height: 28, borderRadius: 8,
-            backgroundColor: item.isShared ? `${COLORS.success}20` : `${ACCENT}15`,
+            backgroundColor: item.isShared ? `${COLORS.success}20` : `${COLORS.primary}15`,
             alignItems: 'center', justifyContent: 'center',
             borderWidth: 1,
-            borderColor: item.isShared ? `${COLORS.success}40` : `${ACCENT}30`,
+            borderColor: item.isShared ? `${COLORS.success}40` : `${COLORS.primary}30`,
           }}>
             <Ionicons
               name={item.isShared ? 'remove-outline' : 'add-outline'}
               size={16}
-              color={item.isShared ? COLORS.success : ACCENT}
+              color={item.isShared ? COLORS.success : COLORS.primary}
             />
           </View>
         )
@@ -317,7 +307,7 @@ export function ShareDebateToWorkspaceModal({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' }}
+        style={{ flex: 1, backgroundColor: getModalBackdrop(0.65) }}
         activeOpacity={1}
         onPress={onClose}
       />
@@ -349,14 +339,14 @@ export function ShareDebateToWorkspaceModal({
           borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.md,
         }}>
           <LinearGradient
-            colors={[ACCENT, '#8B5CF6']}
+            colors={[COLORS.primary, COLORS.primaryLight]}
             style={{
               width: 48, height: 48, borderRadius: 14,
               alignItems: 'center', justifyContent: 'center',
               flexShrink: 0, ...SHADOWS.medium,
             }}
           >
-            <Ionicons name="people" size={22} color="#FFF" />
+            <Ionicons name="people" size={22} color={COLORS.textPrimary} />
           </LinearGradient>
 
           <View style={{ flex: 1 }}>
@@ -382,12 +372,12 @@ export function ShareDebateToWorkspaceModal({
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
               <View style={{
                 flexDirection: 'row', alignItems: 'center', gap: 4,
-                backgroundColor: `${ACCENT}12`, borderRadius: RADIUS.full,
+                backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
                 paddingHorizontal: 8, paddingVertical: 3,
-                borderWidth: 1, borderColor: `${ACCENT}25`,
+                borderWidth: 1, borderColor: `${COLORS.primary}25`,
               }}>
-                <Ionicons name="people-outline" size={10} color={ACCENT} />
-                <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
+                <Ionicons name="people-outline" size={10} color={COLORS.primary} />
+                <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>
                   {perspectiveCount} agents
                 </Text>
               </View>
@@ -434,12 +424,12 @@ export function ShareDebateToWorkspaceModal({
         {/* Info banner */}
         <View style={{
           flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-          backgroundColor: `${ACCENT}08`, borderRadius: RADIUS.lg,
+          backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg,
           padding: SPACING.sm, marginHorizontal: SPACING.lg, marginTop: SPACING.md,
-          borderWidth: 1, borderColor: `${ACCENT}20`,
+          borderWidth: 1, borderColor: `${COLORS.primary}20`,
         }}>
-          <Ionicons name="information-circle-outline" size={15} color={ACCENT} style={{ marginTop: 1 }} />
-          <Text style={{ color: ACCENT, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 }}>
+          <Ionicons name="information-circle-outline" size={15} color={COLORS.primary} style={{ marginTop: 1 }} />
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 }}>
             Members can view and download this debate.
             Re-generation is not available for shared debates.
           </Text>
@@ -452,7 +442,7 @@ export function ShareDebateToWorkspaceModal({
           {/* Loading */}
           {isLoading && (
             <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
-              <ActivityIndicator color={ACCENT} size="large" />
+              <ActivityIndicator color={COLORS.primary} size="large" />
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 12 }}>
                 Loading workspaces…
               </Text>
@@ -484,13 +474,13 @@ export function ShareDebateToWorkspaceModal({
               <TouchableOpacity
                 onPress={loadWorkspaces}
                 style={{
-                  backgroundColor: ACCENT, borderRadius: RADIUS.lg,
+                  backgroundColor: COLORS.primary, borderRadius: RADIUS.lg,
                   paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
                   flexDirection: 'row', alignItems: 'center', gap: 6,
                 }}
               >
-                <Ionicons name="refresh-outline" size={14} color="#FFF" />
-                <Text style={{ color: '#FFF', fontWeight: '700' }}>Try Again</Text>
+                <Ionicons name="refresh-outline" size={14} color={COLORS.textPrimary} />
+                <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>Try Again</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -503,10 +493,10 @@ export function ShareDebateToWorkspaceModal({
             >
               <View style={{
                 width: 64, height: 64, borderRadius: 18,
-                backgroundColor: `${ACCENT}15`,
+                backgroundColor: `${COLORS.primary}15`,
                 alignItems: 'center', justifyContent: 'center',
               }}>
-                <Ionicons name="people-outline" size={32} color={ACCENT} />
+                <Ionicons name="people-outline" size={32} color={COLORS.primary} />
               </View>
               <Text style={{
                 color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700',

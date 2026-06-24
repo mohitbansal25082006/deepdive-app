@@ -1,9 +1,6 @@
 // src/components/podcast/VideoChapterOverlay.tsx
 // Part 40 — Video Podcast Mode
-//
-// Shows the current chapter name as an animated pill overlay
-// at the top of the video frame. Fades in when chapter changes,
-// auto-hides after 3 seconds.
+// UPDATED: Full theme integration — colors now read from COLORS singleton
 
 import React, { useEffect, useRef } from 'react';
 import { Text, View, StyleSheet }   from 'react-native';
@@ -16,6 +13,7 @@ import Animated, {
   withSequence,
   Easing,
 } from 'react-native-reanimated';
+import { COLORS } from '../../constants/theme';
 import type { ChapterMarker } from '../../types/podcast_v2';
 
 export interface VideoChapterOverlayProps {
@@ -29,7 +27,6 @@ function getCurrentChapter(
   turnIdx:  number,
 ): ChapterMarker | null {
   if (!chapters?.length) return null;
-  // Find the last chapter whose startTurnIdx <= currentTurnIndex
   let current: ChapterMarker | null = null;
   for (const ch of chapters) {
     if (ch.startTurnIdx <= turnIdx) {
@@ -55,8 +52,7 @@ export function VideoChapterOverlay({
     if (chapter.id === prevChapter.current) return;
     prevChapter.current = chapter.id;
 
-    // Animate in → hold → animate out
-    opacity.value    = 0;
+    opacity.value = 0;
     translateY.value = -8;
 
     opacity.value = withSequence(
@@ -80,13 +76,16 @@ export function VideoChapterOverlay({
 
   return (
     <Animated.View style={[styles.container, animStyle]}>
-      <View style={[styles.pill, { backgroundColor: `${accentColor}22`, borderColor: `${accentColor}55` }]}>
+      <View style={[styles.pill, { 
+        backgroundColor: `${accentColor}22`, 
+        borderColor: `${accentColor}55` 
+      }]}>
         <Ionicons name="bookmark" size={11} color={accentColor} />
         <Text style={[styles.chapterNum, { color: accentColor }]}>
           CH {chapterNum}
         </Text>
         <View style={[styles.dot, { backgroundColor: `${accentColor}80` }]} />
-        <Text style={styles.chapterTitle} numberOfLines={1}>
+        <Text style={[styles.chapterTitle, { color: COLORS.textPrimary }]} numberOfLines={1}>
           {chapter.title}
         </Text>
       </View>
@@ -120,7 +119,6 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   chapterTitle: {
-    color:      'rgba(255,255,255,0.88)',
     fontSize:   12,
     fontWeight: '600',
     flexShrink: 1,

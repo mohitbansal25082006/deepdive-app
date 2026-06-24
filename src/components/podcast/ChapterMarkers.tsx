@@ -1,8 +1,6 @@
 // src/components/podcast/ChapterMarkers.tsx
 // Part 39 — Chapter Markers for the podcast player progress bar.
-//
-// Renders small tick marks on the progress bar showing chapter start points.
-// Also renders a floating chapter label when the user is near a chapter boundary.
+// UPDATED: Full theme integration — dynamic colors
 
 import React, { useMemo } from 'react';
 import { View, Text }     from 'react-native';
@@ -26,10 +24,8 @@ export function ChapterMarkers({
 }: ChapterMarkersProps) {
   if (!chapters || chapters.length === 0 || totalDurationMs <= 0) return null;
 
-  // Find active chapter
   const activeChapter = useMemo(() => {
     if (!chapters.length) return null;
-    // Sort by timeMs descending and find the first one before currentPosition
     const sorted = [...chapters].sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0));
     let active: ChapterMarker | null = null;
     for (const ch of sorted) {
@@ -40,7 +36,6 @@ export function ChapterMarkers({
 
   return (
     <View>
-      {/* Active chapter label */}
       {activeChapter && (
         <Text
           style={{
@@ -55,7 +50,6 @@ export function ChapterMarkers({
         </Text>
       )}
 
-      {/* Tick marks on the progress bar */}
       <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: barHeight, pointerEvents: 'none' }}>
         {chapters.map(ch => {
           if (!ch.timeMs || totalDurationMs <= 0) return null;
@@ -75,7 +69,7 @@ export function ChapterMarkers({
                 width:           2,
                 height:          barHeight + 6,
                 borderRadius:    1,
-                backgroundColor: isActive ? COLORS.primary : 'rgba(255,255,255,0.5)',
+                backgroundColor: isActive ? COLORS.primary : COLORS.textMuted + '80',
               }}
             />
           );

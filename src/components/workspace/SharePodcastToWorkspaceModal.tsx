@@ -1,13 +1,6 @@
 // src/components/workspace/SharePodcastToWorkspaceModal.tsx
-// Part 15 UPDATED — Shows upload progress while audio segments are
-// being pushed to Supabase Storage before the podcast is shared.
-//
-// NEW BEHAVIOUR:
-//   1. When user taps "Share", shows an upload progress bar.
-//   2. Audio segments upload concurrently (3 at a time) to Supabase Storage.
-//   3. Cloud HTTPS URLs are stored in shared_podcasts so members on
-//      other devices can stream the audio directly.
-//   4. Success / error toast shown after share completes.
+// Part 15 UPDATED — Full theme integration
+// All colors now use the dynamic COLORS singleton
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -77,33 +70,35 @@ function UploadProgressBar({
     width: `${fillWidth.value * 100}%` as any,
   }));
 
+  const accentColor = COLORS.secondary;
+
   return (
     <View style={{
-      backgroundColor:   `${'#FF6584'}08`,
+      backgroundColor:   `${accentColor}08`,
       borderRadius:      RADIUS.lg,
       padding:           SPACING.md,
       borderWidth:       1,
-      borderColor:       `${'#FF6584'}20`,
+      borderColor:       `${accentColor}20`,
       gap:               8,
     }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <ActivityIndicator size="small" color="#FF6584" />
-        <Text style={{ color: '#FF6584', fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>
+        <ActivityIndicator size="small" color={accentColor} />
+        <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 }}>
           {message}
         </Text>
-        <Text style={{ color: '#FF6584', fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+        <Text style={{ color: accentColor, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
           {uploaded}/{total}
         </Text>
       </View>
       <View style={{
         height:          5,
-        backgroundColor: `${'#FF6584'}20`,
+        backgroundColor: `${accentColor}20`,
         borderRadius:    3,
         overflow:        'hidden',
       }}>
         <Animated.View style={[fillStyle, {
           height:          '100%',
-          backgroundColor: '#FF6584',
+          backgroundColor: accentColor,
           borderRadius:    3,
         }]} />
       </View>
@@ -126,7 +121,7 @@ function WorkspaceRow({
   onToggle:  () => void;
 }) {
   const canShare    = item.userRole === 'owner' || item.userRole === 'editor';
-  const accentColor = item.isShared ? COLORS.success : '#FF6584';
+  const accentColor = item.isShared ? COLORS.success : COLORS.secondary;
 
   return (
     <TouchableOpacity
@@ -147,7 +142,6 @@ function WorkspaceRow({
         opacity: canShare ? 1 : 0.45,
       }}
     >
-      {/* Logo or gradient */}
       {item.avatarUrl ? (
         <Image
           source={{ uri: item.avatarUrl }}
@@ -156,7 +150,7 @@ function WorkspaceRow({
         />
       ) : (
         <LinearGradient
-          colors={item.isShared ? [COLORS.success, COLORS.success + 'AA'] : ['#FF6584', '#FF8FA3']}
+          colors={item.isShared ? [COLORS.success, COLORS.success + 'AA'] : [COLORS.secondary, COLORS.secondary + 'AA']}
           style={{ width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
         >
           <Ionicons name={item.isShared ? 'checkmark' : 'people'} size={20} color="#FFF" />
@@ -187,12 +181,12 @@ function WorkspaceRow({
         ) : (
           <View style={{
             width: 28, height: 28, borderRadius: 8,
-            backgroundColor: item.isShared ? `${COLORS.success}20` : `${'#FF6584'}15`,
+            backgroundColor: item.isShared ? `${COLORS.success}20` : `${COLORS.secondary}15`,
             alignItems: 'center', justifyContent: 'center',
             borderWidth: 1,
-            borderColor: item.isShared ? `${COLORS.success}40` : `${'#FF6584'}30`,
+            borderColor: item.isShared ? `${COLORS.success}40` : `${COLORS.secondary}30`,
           }}>
-            <Ionicons name={item.isShared ? 'remove-outline' : 'add-outline'} size={16} color={item.isShared ? COLORS.success : '#FF6584'} />
+            <Ionicons name={item.isShared ? 'remove-outline' : 'add-outline'} size={16} color={item.isShared ? COLORS.success : COLORS.secondary} />
           </View>
         )
       )}
@@ -268,14 +262,12 @@ export function SharePodcastToWorkspaceModal({
 
     try {
       if (item.isShared) {
-        // Unshare — no audio upload needed
         const { error } = await removeSharedPodcast(item.workspaceId, podcastId);
         if (error) throw new Error(error);
         setWorkspaces(prev => prev.map(w => w.workspaceId === item.workspaceId ? { ...w, isShared: false } : w));
         setSharedCount(c => c - 1);
 
       } else {
-        // Share — uploads audio first, then shares
         const { error } = await sharePodcastToWorkspace(
           item.workspaceId,
           podcastId,
@@ -322,7 +314,7 @@ export function SharePodcastToWorkspaceModal({
 
         {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: SPACING.lg, paddingBottom: SPACING.md, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.md }}>
-          <LinearGradient colors={['#FF6584', '#FF8FA3']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
+          <LinearGradient colors={[COLORS.secondary, COLORS.secondary + 'CC']} style={{ width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
             <Ionicons name="mic" size={22} color="#FFF" />
           </LinearGradient>
 
@@ -350,9 +342,9 @@ export function SharePodcastToWorkspaceModal({
         <ScrollView contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.sm }} showsVerticalScrollIndicator={false}>
 
           {/* Info banner */}
-          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: `${'#FF6584'}08`, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: `${'#FF6584'}20`, marginBottom: SPACING.xs }}>
-            <Ionicons name="cloud-upload-outline" size={15} color="#FF6584" style={{ marginTop: 1 }} />
-            <Text style={{ color: '#FF6584', fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: `${COLORS.secondary}08`, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.secondary}20`, marginBottom: SPACING.xs }}>
+            <Ionicons name="cloud-upload-outline" size={15} color={COLORS.secondary} style={{ marginTop: 1 }} />
+            <Text style={{ color: COLORS.secondary, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 }}>
               Audio is uploaded to the cloud so workspace members on any device can listen and download.
             </Text>
           </View>
@@ -370,7 +362,7 @@ export function SharePodcastToWorkspaceModal({
 
           {isLoading ? (
             <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
-              <ActivityIndicator color="#FF6584" size="large" />
+              <ActivityIndicator color={COLORS.secondary} size="large" />
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 12 }}>Loading workspaces…</Text>
             </View>
 
@@ -378,15 +370,15 @@ export function SharePodcastToWorkspaceModal({
             <View style={{ alignItems: 'center', paddingVertical: SPACING.xl, gap: 12 }}>
               <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
               <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, textAlign: 'center' }}>{loadError}</Text>
-              <TouchableOpacity onPress={loadWorkspaces} style={{ backgroundColor: '#FF6584', borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm }}>
+              <TouchableOpacity onPress={loadWorkspaces} style={{ backgroundColor: COLORS.secondary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm }}>
                 <Text style={{ color: '#FFF', fontWeight: '700' }}>Retry</Text>
               </TouchableOpacity>
             </View>
 
           ) : workspaces.length === 0 ? (
             <Animated.View entering={FadeInDown.duration(400)} style={{ alignItems: 'center', paddingVertical: SPACING.xl, gap: 12 }}>
-              <View style={{ width: 64, height: 64, borderRadius: 18, backgroundColor: `${'#FF6584'}15`, alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="people-outline" size={32} color="#FF6584" />
+              <View style={{ width: 64, height: 64, borderRadius: 18, backgroundColor: `${COLORS.secondary}15`, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="people-outline" size={32} color={COLORS.secondary} />
               </View>
               <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>No Workspaces Found</Text>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 20 }}>

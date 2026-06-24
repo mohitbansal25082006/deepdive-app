@@ -1,15 +1,11 @@
 // src/components/search/SearchResultCard.tsx
 // Part 35 — FIXED
 // Part 50.8 — UI UPGRADE (visual only)
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
 //
-// IMPORTANT — navigation behaviour is UNCHANGED:
-//   • This component remains PURELY PRESENTATIONAL.
-//   • It does NOT call router.push() — navigation is delegated to the parent
-//     via the onPress callback. This preserves the modal-freeze fix from Part 35.
-//
-// Visual changes only: gradient glass card body, content-type accent rail,
-// gradient type icon, restyled depth/semantic badges. Query highlighting,
-// props, and CONTENT_TYPE_META usage are all preserved.
+// Part 55.2 changes: ALL hardcoded dark hex literals replaced with live
+// COLORS tokens. Every text color now uses theme-aware tokens.
+// Card gradient now uses COLORS.gradientCard which adapts to every theme.
 
 import React, { memo } from 'react';
 import {
@@ -63,7 +59,7 @@ interface SearchResultCardProps {
   result:  SearchResult;
   index:   number;
   query:   string;
-  onPress: (result: SearchResult) => void;  // ← navigation handled by parent
+  onPress: (result: SearchResult) => void;
 }
 
 function SearchResultCardComponent({ result, index, query, onPress }: SearchResultCardProps) {
@@ -73,11 +69,11 @@ function SearchResultCardComponent({ result, index, query, onPress }: SearchResu
     const lower      = result.title.toLowerCase();
     const queryLower = query.toLowerCase().trim();
     if (!queryLower || !lower.includes(queryLower)) {
-      return <Text style={styles.title} numberOfLines={2}>{result.title}</Text>;
+      return <Text style={[styles.title, { color: COLORS.textPrimary }]} numberOfLines={2}>{result.title}</Text>;
     }
     const idx = lower.indexOf(queryLower);
     return (
-      <Text style={styles.title} numberOfLines={2}>
+      <Text style={[styles.title, { color: COLORS.textPrimary }]} numberOfLines={2}>
         {result.title.slice(0, idx)}
         <Text style={[styles.title, { color: meta.color, fontWeight: '800' }]}>
           {result.title.slice(idx, idx + queryLower.length)}
@@ -100,7 +96,7 @@ function SearchResultCardComponent({ result, index, query, onPress }: SearchResu
         style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
       >
         <View style={[styles.card, { borderColor: `${meta.color}33` }]}>
-          <LinearGradient colors={['#16162F', '#101024']} style={styles.cardGradient}>
+          <LinearGradient colors={COLORS.gradientCard as [string, string]} style={styles.cardGradient}>
             <LinearGradient colors={[meta.color, `${meta.color}44`]} style={styles.accentBar} />
 
             <View style={styles.content}>
@@ -115,7 +111,7 @@ function SearchResultCardComponent({ result, index, query, onPress }: SearchResu
                 <View style={styles.titleWrap}>
                   {renderTitle()}
                   {result.subtitle ? (
-                    <Text style={styles.subtitle} numberOfLines={1}>{result.subtitle}</Text>
+                    <Text style={[styles.subtitle, { color: COLORS.textMuted }]} numberOfLines={1}>{result.subtitle}</Text>
                   ) : null}
                 </View>
 
@@ -123,7 +119,7 @@ function SearchResultCardComponent({ result, index, query, onPress }: SearchResu
               </View>
 
               {result.preview ? (
-                <Text style={styles.preview} numberOfLines={2}>{result.preview}</Text>
+                <Text style={[styles.preview, { color: COLORS.textSecondary }]} numberOfLines={2}>{result.preview}</Text>
               ) : null}
 
               <View style={styles.footerRow}>
@@ -134,7 +130,7 @@ function SearchResultCardComponent({ result, index, query, onPress }: SearchResu
                 {result.depth ? <DepthBadge depth={result.depth} /> : null}
                 {hasSemanticScore ? <SemanticBadge score={result.semanticScore!} /> : null}
                 <View style={styles.spacer} />
-                <Text style={styles.date}>{formattedDate}</Text>
+                <Text style={[styles.date, { color: COLORS.textMuted }]}>{formattedDate}</Text>
               </View>
             </View>
           </LinearGradient>
@@ -181,17 +177,17 @@ const styles = StyleSheet.create({
     flex: 1, minWidth: 0,
   },
   title: {
-    color: COLORS.textPrimary, fontSize: FONTS.sizes.base,
+    fontSize: FONTS.sizes.base,
     fontWeight: '800', lineHeight: 21, letterSpacing: -0.2,
   },
   subtitle: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2,
+    fontSize: FONTS.sizes.xs, marginTop: 2,
   },
   chevron: {
     marginTop: 2, flexShrink: 0,
   },
   preview: {
-    color: COLORS.textSecondary, fontSize: FONTS.sizes.xs,
+    fontSize: FONTS.sizes.xs,
     lineHeight: 18, marginBottom: SPACING.sm,
   },
   footerRow: {
@@ -213,6 +209,6 @@ const styles = StyleSheet.create({
   },
   spacer: { flex: 1 },
   date: {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
+    fontSize: FONTS.sizes.xs,
   },
 });

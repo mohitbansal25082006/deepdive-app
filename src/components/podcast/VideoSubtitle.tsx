@@ -1,13 +1,6 @@
 // src/components/podcast/VideoSubtitle.tsx
 // Part 40 — Video Podcast Mode (Paginated Fix)
-//
-// Shows subtitles as paginated 2-line chunks.
-// The visible "page" auto-advances as the karaoke cursor moves through words.
-// This ensures:
-//   • The subtitle area never overflows / overlaps other UI
-//   • ALL words of a turn are eventually shown (page 1 → page 2 → ...)
-//   • Karaoke highlight works correctly within the visible page
-//   • Smooth crossfade between pages
+// UPDATED: Full theme integration — dynamic text colors
 
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -15,12 +8,11 @@ import Animated, {
   FadeIn,
   FadeOut,
 } from 'react-native-reanimated';
+import { COLORS } from '../../constants/theme';
 
-// How many words fit on one line (approximate at ~16px font, ~320px wide)
 const WORDS_PER_LINE = 8;
-// How many lines are visible at once (2 = cinema standard, never overflows)
 const LINES_PER_PAGE = 2;
-const WORDS_PER_PAGE = WORDS_PER_LINE * LINES_PER_PAGE; // 16 words per page
+const WORDS_PER_PAGE = WORDS_PER_LINE * LINES_PER_PAGE;
 
 export interface VideoSubtitleProps {
   text:              string;
@@ -43,27 +35,22 @@ export function VideoSubtitle({
   visible,
   style,
 }: VideoSubtitleProps) {
-  // Split into words
   const words = useMemo(() => text.trim().split(/\s+/).filter(Boolean), [text]);
 
-  // Which word is being spoken right now
-  const wordProgress    = segmentDurationMs > 0
+  const wordProgress = segmentDurationMs > 0
     ? Math.min(1, positionMs / segmentDurationMs)
     : 0;
   const activeWordIndex = Math.floor(wordProgress * words.length);
 
-  // Which page should be visible (advance when active word reaches next page)
   const currentPage  = Math.floor(activeWordIndex / WORDS_PER_PAGE);
   const pageStartWord = currentPage * WORDS_PER_PAGE;
   const pageWords     = words.slice(pageStartWord, pageStartWord + WORDS_PER_PAGE);
 
-  // Split page words into lines
   const lines: string[][] = [];
   for (let i = 0; i < pageWords.length; i += WORDS_PER_LINE) {
     lines.push(pageWords.slice(i, i + WORDS_PER_LINE));
   }
 
-  // Page indicator dots
   const totalPages = Math.ceil(words.length / WORDS_PER_PAGE);
   const showDots   = totalPages > 1;
 
@@ -76,7 +63,6 @@ export function VideoSubtitle({
       exiting={FadeOut.duration(180)}
       style={[styles.container, style]}
     >
-      {/* Speaker label */}
       <View style={[
         styles.speakerTag,
         { backgroundColor: `${speakerColor}22`, borderColor: `${speakerColor}55` },
@@ -86,7 +72,6 @@ export function VideoSubtitle({
         </Text>
       </View>
 
-      {/* Fixed-height text box — exactly 2 lines, never overflows */}
       <View style={styles.textBox}>
         {lines.map((lineWords, lineIndex) => {
           const lineStartWordIndex = pageStartWord + lineIndex * WORDS_PER_LINE;
@@ -115,7 +100,6 @@ export function VideoSubtitle({
         })}
       </View>
 
-      {/* Page progress dots — shows there is more text coming */}
       {showDots && (
         <View style={styles.dotsRow}>
           {Array.from({ length: totalPages }).map((_, i) => (
@@ -159,7 +143,6 @@ const styles = StyleSheet.create({
   textBox: {
     alignItems:        'center',
     paddingHorizontal: 8,
-    // Fixed height for exactly 2 lines (lineHeight 24 × 2 + gap 3)
     minHeight:         52,
     justifyContent:    'center',
   },

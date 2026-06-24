@@ -1,30 +1,18 @@
 // app/(app)/voice-debate-player.tsx
-// Part 40 Fix — Complete redesign solving 3 issues:
+// Part 55.3 — FULL THEME-COMPATIBILITY PASS
+// All hardcoded hex colors replaced with COLORS tokens.
 //
-// FIX 1 — MiniPlayer continuity:
-//   When screen mounts, if VoiceDebateEngine.isActiveFor(id) is true,
-//   we call reattach() instead of startPlayback(0). This means tapping
-//   the MiniPlayer to return to the full player continues from where it was.
-//   The useVoiceDebatePlayer hook already handles this; the bug was that
-//   hasStarted guard was also preventing re-attach. Now we distinguish:
-//     • First open → start from turn 0
-//     • Re-open from MiniPlayer → reattach to running engine
-//
-// FIX 2 — Cancel button handled in VoiceDebateCard / debate-detail (separate file).
-//
-// FIX 3 — Layout redesign:
-//   Root cause: DebateConfidenceArc was inside the center flex section
-//   competing with controls for space. On small phones, controls were
-//   pushed below the visible area.
-//   Solution: Restructured into a proper fixed layout:
-//     • Header (fixed)
-//     • ScrollView for everything ABOVE controls (agent strip, waveform, turn info, arc)
-//     • Controls panel PINNED at the bottom (NOT in ScrollView)
-//   This guarantees play/pause is always visible regardless of screen size.
-//
-// FIX 4 — Full transcript display:
-//   Removed numberOfLines={4} limit from the current speaker card so the
-//   full transcript text is always visible (card is inside a ScrollView).
+// Part 55.4 — MODULE-STYLESHEET THEME FIX
+//   The bottom `StyleSheet.create({...})` block read COLORS.* at module-import
+//   time only, so it never picked up later theme switches (StyleSheet.create
+//   output is frozen, unlike inline style objects which re-read COLORS on
+//   every render). It's now a `createStyles()` factory rebuilt via useMemo
+//   whenever the ThemeContext `version` changes, matching the pattern theme.ts
+//   describes for the "small, enumerable set" of module-level style spots.
+//   Also pins icon/text colors that sit ON TOP of persona accent chips (the
+//   "NOW" badge, the play/pause glyph) to a fixed white instead of
+//   COLORS.textPrimary, since that token flips to near-black in light themes
+//   and would lose contrast against a colored chip rather than a theme surface.
 
 import React, {
   useEffect, useState, useCallback, useMemo, useRef,
@@ -46,7 +34,8 @@ import { useSafeAreaInsets }       from 'react-native-safe-area-context';
 import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { supabase }                from '../../src/lib/supabase';
 
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop, isLightTheme } from '../../src/constants/theme';
+import { useTheme }                from '../../src/context/ThemeContext';
 import {
   VOICE_PERSONAS,
   SEGMENT_LABELS,
@@ -72,6 +61,13 @@ import type { DebateAgentRole }           from '../../src/types';
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const RATE_OPTIONS = [0.75, 1.0, 1.25, 1.5, 2.0];
 
+// Fixed foreground used ONLY for glyphs/text drawn on top of a solid persona
+// accent chip (e.g. the play button disc, the "NOW" pill). Those backgrounds
+// are brand/persona colors, not theme surfaces, so they must NOT be paired
+// with COLORS.textPrimary — that token is white in dark themes but flips to
+// near-black in light themes, which would tank contrast against the chip.
+const ON_ACCENT_TEXT = '#FFFFFF';
+
 type SegmentKey = keyof typeof SEGMENT_COLORS;
 
 function asSegmentKey(value: unknown): SegmentKey {
@@ -93,7 +89,7 @@ function computeDisplayMinutes(vd: VoiceDebate): number {
 
 function getSpeakerColor(speaker: string): string {
   const persona = VOICE_PERSONAS[speaker as DebateAgentRole | 'moderator'];
-  return persona?.color ?? '#6C63FF';
+  return persona?.color ?? COLORS.primary;
 }
 
 function getSpeakerDisplayName(speaker: string): string {
@@ -131,7 +127,6 @@ function Orb({ x, y, size, color, duration }: {
 }
 
 // ─── Agent Avatar Strip ────────────────────────────────────────────────────────
-// Compact horizontal strip — each avatar is smaller to save vertical space
 
 function AgentAvatarStrip({
   voiceDebate, activeSpeaker,
@@ -187,7 +182,7 @@ function AgentAvatarStrip({
                 backgroundColor: persona.color,
                 borderRadius: RADIUS.full, paddingHorizontal: 4, paddingVertical: 1,
               }}>
-                <Text style={{ color: '#FFF', fontSize: 7, fontWeight: '800' }}>NOW</Text>
+                <Text style={{ color: ON_ACCENT_TEXT, fontSize: 7, fontWeight: '800' }}>NOW</Text>
               </View>
             )}
           </Animated.View>
@@ -234,13 +229,13 @@ function SegmentProgressBar({
     <View style={{ width: '100%' }}>
       {/* Time labels */}
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '600', fontVariant: ['tabular-nums'] }}>
+        <Text style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: '600', fontVariant: ['tabular-nums'] }}>
           {formatTime(currentPositionMs)}
         </Text>
         <Text style={{ color: segColor, fontSize: 10, fontWeight: '700' }}>
           {SEGMENT_LABELS[segKey] ?? ''}
         </Text>
-        <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, fontVariant: ['tabular-nums'] }}>
+        <Text style={{ color: COLORS.textMuted, fontSize: 11, fontVariant: ['tabular-nums'] }}>
           {formatTime(totalDur)}
         </Text>
       </View>
@@ -251,7 +246,7 @@ function SegmentProgressBar({
         onPress={e => { if (barWidth > 0) onSeek(e.nativeEvent.locationX / barWidth); }}
         activeOpacity={1}
         style={{
-          height: 7, backgroundColor: 'rgba(255,255,255,0.10)',
+          height: 7, backgroundColor: COLORS.backgroundElevated,
           borderRadius: 4, overflow: 'visible', marginBottom: 20,
         }}
       >
@@ -260,7 +255,7 @@ function SegmentProgressBar({
         }]} />
         <Animated.View style={[thumbStyle, {
           position: 'absolute', top: -4.5, width: 16, height: 16, borderRadius: 8,
-          backgroundColor: '#FFF',
+          backgroundColor: COLORS.backgroundCard,
           shadowColor: segColor, shadowOpacity: 0.9, shadowRadius: 6, elevation: 5,
         }]} />
 
@@ -299,10 +294,10 @@ function SegmentProgressBar({
               <Ionicons
                 name={SEGMENT_ICONS[sk] as any}
                 size={9}
-                color={isCurrentSeg ? sColor : 'rgba(255,255,255,0.18)'}
+                color={isCurrentSeg ? sColor : COLORS.textMuted}
               />
               <Text style={{
-                color:     isCurrentSeg ? sColor : 'rgba(255,255,255,0.18)',
+                color:     isCurrentSeg ? sColor : COLORS.textMuted,
                 fontSize:  6.5, fontWeight: isCurrentSeg ? '700' : '400',
               }}>
                 {SEGMENT_LABELS[sk]?.split(' ')[0] ?? ''}
@@ -326,12 +321,12 @@ function RateSelector({ current, onSelect, accentColor }: {
         const active = current === r;
         return (
           <TouchableOpacity key={r} onPress={() => onSelect(r)} style={{
-            backgroundColor: active ? `${accentColor}28` : 'rgba(255,255,255,0.07)',
+            backgroundColor: active ? `${accentColor}28` : COLORS.backgroundElevated,
             borderRadius: 16, paddingHorizontal: 10, paddingVertical: 4,
-            borderWidth: 1, borderColor: active ? accentColor : 'rgba(255,255,255,0.10)',
+            borderWidth: 1, borderColor: active ? accentColor : COLORS.border,
           }}>
             <Text style={{
-              color:      active ? accentColor : 'rgba(255,255,255,0.4)',
+              color:      active ? accentColor : COLORS.textMuted,
               fontSize:   11, fontWeight: active ? '800' : '400',
             }}>
               {r}×
@@ -364,7 +359,7 @@ function CollapsibleArc({ voiceDebate, accentColor }: {
           justifyContent:  'center',
           gap:             6,
           paddingVertical: 8,
-          backgroundColor: 'rgba(255,255,255,0.06)',
+          backgroundColor: COLORS.backgroundElevated,
           borderRadius:    12,
           borderWidth:     1,
           borderColor:     `${accentColor}20`,
@@ -399,6 +394,13 @@ export default function VoiceDebatePlayerScreen() {
   const topInset           = Math.max(insets.top, Platform.OS === 'android' ? 28 : 0);
   const bottomInset        = Math.max(insets.bottom, Platform.OS === 'android' ? 12 : 0);
 
+  // Theme subscription — `version` bumps on every theme/mode change. We use it
+  // to rebuild the module-level StyleSheet below, since StyleSheet.create
+  // output is frozen at creation time and would otherwise never pick up a
+  // later applyTheme() mutation of the live COLORS object.
+  const { version } = useTheme();
+  const styles = useMemo(() => createStyles(), [version]);
+
   const [voiceDebate,    setVoiceDebate]    = useState<VoiceDebate | null>(null);
   const [loadingDebate,  setLoadingDebate]  = useState(true);
   const [loadError,      setLoadError]      = useState<string | null>(null);
@@ -407,7 +409,6 @@ export default function VoiceDebatePlayerScreen() {
   const [shareBusy,      setShareBusy]      = useState<string | null>(null);
   const [shareCopied,    setShareCopied]    = useState(false);
 
-  // FIX 1: Track whether this is a fresh open or a return from MiniPlayer
   const hasInitialisedRef = useRef(false);
 
   // Load voice debate
@@ -439,11 +440,7 @@ export default function VoiceDebatePlayerScreen() {
     stopPlayback, formatTime,
   } = useVoiceDebatePlayer(voiceDebate);
 
-  // ── FIX 1: Smart initialisation — reattach vs fresh start ─────────────────
-  // If the engine is already playing this debate (user came back from MiniPlayer),
-  // we reattach (which is already handled in useVoiceDebatePlayer's useEffect).
-  // Only start from turn 0 if this is a genuinely fresh open.
-
+  // Smart initialisation — reattach vs fresh start
   useEffect(() => {
     if (!voiceDebate || loadingDebate || hasInitialisedRef.current) return;
     hasInitialisedRef.current = true;
@@ -451,24 +448,19 @@ export default function VoiceDebatePlayerScreen() {
     const isAlreadyPlaying = VoiceDebateEngine.isActiveFor(voiceDebate.id);
 
     if (!isAlreadyPlaying) {
-      // Fresh open — increment play count and start from beginning
       const incrementPlayCount = async () => {
         try {
           await supabase.rpc('increment_voice_debate_play_count', { p_voice_debate_id: voiceDebate.id });
         } catch (error) {
-          // Silently fail - this is non-critical
           console.warn('Failed to increment play count:', error);
         }
       };
       incrementPlayCount();
       startPlayback(0);
     }
-    // If already playing, useVoiceDebatePlayer.reattach() has already been called
-    // in its own useEffect, so we just let it continue.
   }, [voiceDebate, loadingDebate]);
 
-  // ── Detach on back navigation (keeps audio alive → MiniPlayer) ────────────
-
+  // Detach on back navigation
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (_e: any) => {
       detachScreen();
@@ -484,17 +476,19 @@ export default function VoiceDebatePlayerScreen() {
     skipToTurn(index);
   }, [skipToTurn]);
 
-  // ── Speaker-derived colors ────────────────────────────────────────────────
-
+  // Speaker-derived colors
   const activeSpeaker = currentTurn?.speaker ?? 'moderator';
   const accentColor   = getSpeakerColor(activeSpeaker);
-  const bgColors: [string, string, string] = ['#06060F', `${accentColor}14`, '#06060F'];
+  const bgColors: [string, string, string] = [
+    COLORS.background,
+    `${accentColor}14`,
+    COLORS.background,
+  ];
 
   const displayMinutes = voiceDebate ? computeDisplayMinutes(voiceDebate) : 0;
   const turns          = voiceDebate?.script?.turns ?? [];
 
-  // ── Share handlers ────────────────────────────────────────────────────────
-
+  // Share handlers
   const handleSharePDF = async () => {
     if (!voiceDebate || shareBusy) return;
     setShareBusy('pdf');
@@ -522,14 +516,13 @@ export default function VoiceDebatePlayerScreen() {
     finally { setShareBusy(null); }
   };
 
-  // ── Loading / Error ───────────────────────────────────────────────────────
-
+  // Loading / Error
   if (loadingDebate) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#06060F', alignItems: 'center', justifyContent: 'center' }}>
-        <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color="#6C63FF" />
-        <Text style={{ color: 'rgba(255,255,255,0.5)', marginTop: 16, fontSize: 14 }}>
+      <View style={{ flex: 1, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center' }}>
+        <StatusBar barStyle={isLightTheme() ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={{ color: COLORS.textMuted, marginTop: 16, fontSize: 14 }}>
           Loading voice debate...
         </Text>
       </View>
@@ -538,14 +531,14 @@ export default function VoiceDebatePlayerScreen() {
 
   if (loadError || !voiceDebate) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#06060F', alignItems: 'center', justifyContent: 'center', padding: 32, paddingTop: topInset + 32 }}>
-        <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
-        <Ionicons name="alert-circle-outline" size={48} color="#FF6584" />
-        <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '700', marginTop: 16, textAlign: 'center' }}>
+      <View style={{ flex: 1, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center', padding: 32, paddingTop: topInset + 32 }}>
+        <StatusBar barStyle={isLightTheme() ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
+        <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
+        <Text style={{ color: COLORS.textPrimary, fontSize: 18, fontWeight: '700', marginTop: 16, textAlign: 'center' }}>
           {loadError ?? 'Voice debate not found'}
         </Text>
         <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 24 }}>
-          <Text style={{ color: '#6C63FF', fontSize: 16, fontWeight: '600' }}>← Go Back</Text>
+          <Text style={{ color: COLORS.primary, fontSize: 16, fontWeight: '600' }}>← Go Back</Text>
         </TouchableOpacity>
       </View>
     );
@@ -553,12 +546,9 @@ export default function VoiceDebatePlayerScreen() {
 
   const headerSegKey = asSegmentKey(playerState.currentSegmentType);
 
-  // ── Main Render ───────────────────────────────────────────────────────────
-  // Layout: [Header] [ScrollView: topic + avatars + waveform + turn card + arc] [Controls panel pinned]
-
   return (
-    <View style={{ flex: 1, backgroundColor: '#06060F' }}>
-      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
+      <StatusBar barStyle={isLightTheme() ? 'dark-content' : 'light-content'} translucent backgroundColor="transparent" />
 
       {/* Gradient background */}
       <LinearGradient
@@ -567,24 +557,24 @@ export default function VoiceDebatePlayerScreen() {
         style={StyleSheet.absoluteFillObject}
       />
 
-      {/* Ambient orbs — positioned in top half only so they don't interfere with controls */}
+      {/* Ambient orbs */}
       <Orb x={SCREEN_W * 0.15} y={SCREEN_H * 0.20} size={160} color={accentColor} duration={3400} />
       <Orb x={SCREEN_W * 0.82} y={SCREEN_H * 0.35} size={130} color={accentColor} duration={4200} />
 
-      {/* ── HEADER ────────────────────────────────────────────────────────── */}
-      <View style={[s.header, { paddingTop: topInset }]}>
-        <TouchableOpacity onPress={() => router.back()} style={s.headerBtn}>
-          <Ionicons name="chevron-down" size={22} color="rgba(255,255,255,0.9)" />
+      {/* HEADER */}
+      <View style={[styles.header, { paddingTop: topInset }]}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
+          <Ionicons name="chevron-down" size={22} color={COLORS.textPrimary} />
         </TouchableOpacity>
 
         {/* Segment badge */}
-        <View style={s.segmentBadge}>
+        <View style={styles.segmentBadge}>
           <Ionicons
             name={(SEGMENT_ICONS[headerSegKey] ?? 'mic-outline') as any}
             size={10}
             color={SEGMENT_COLORS[headerSegKey] ?? COLORS.primary}
           />
-          <Text style={[s.segmentText, { color: SEGMENT_COLORS[headerSegKey] ?? COLORS.primary }]}>
+          <Text style={[styles.segmentText, { color: SEGMENT_COLORS[headerSegKey] ?? COLORS.primary }]}>
             {SEGMENT_LABELS[headerSegKey] ?? 'Debate'}
           </Text>
         </View>
@@ -592,20 +582,20 @@ export default function VoiceDebatePlayerScreen() {
         <View style={{ flexDirection: 'row', gap: 8 }}>
           <TouchableOpacity
             onPress={() => setShowTranscript(true)}
-            style={[s.headerBtn, showTranscript && { backgroundColor: `${accentColor}22`, borderColor: `${accentColor}45` }]}
+            style={[styles.headerBtn, showTranscript && { backgroundColor: `${accentColor}22`, borderColor: `${accentColor}45` }]}
           >
-            <Ionicons name="menu-outline" size={22} color="rgba(255,255,255,0.9)" />
+            <Ionicons name="menu-outline" size={22} color={COLORS.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setShowShare(true)}
-            style={s.headerBtn}
+            style={styles.headerBtn}
           >
-            <Ionicons name="share-outline" size={20} color="rgba(255,255,255,0.9)" />
+            <Ionicons name="share-outline" size={20} color={COLORS.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* ── SCROLLABLE CONTENT (everything above controls) ─────────────────── */}
+      {/* SCROLLABLE CONTENT */}
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}
@@ -614,7 +604,8 @@ export default function VoiceDebatePlayerScreen() {
       >
         {/* Topic */}
         <Text style={{
-          color: 'rgba(255,255,255,0.32)', fontSize: 11, textAlign: 'center',
+          color: COLORS.textMuted,
+          fontSize: 11, textAlign: 'center',
           marginBottom: 16, fontWeight: '500', paddingHorizontal: 16,
         }} numberOfLines={2}>
           {voiceDebate.topic}
@@ -635,18 +626,18 @@ export default function VoiceDebatePlayerScreen() {
         </View>
 
         {/* Turn indicator */}
-        <Text style={{ color: 'rgba(255,255,255,0.36)', fontSize: 11, fontWeight: '600', textAlign: 'center', marginBottom: 12 }}>
+        <Text style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: '600', textAlign: 'center', marginBottom: 12 }}>
           Turn {playerState.currentTurnIndex + 1} / {turns.length}
           {displayMinutes > 0 ? ` · ~${displayMinutes} min` : ''}
         </Text>
 
-        {/* Current speaker card — FIX 4: numberOfLines removed so full transcript is shown */}
+        {/* Current speaker card */}
         {currentTurn && (
           <Animated.View
             key={playerState.currentTurnIndex}
             entering={FadeIn.duration(280)}
             style={{
-              backgroundColor: 'rgba(0,0,0,0.30)',
+              backgroundColor: COLORS.backgroundElevated,
               borderRadius:    14,
               padding:         14,
               marginBottom:    14,
@@ -667,7 +658,7 @@ export default function VoiceDebatePlayerScreen() {
               {currentTurn.confidence ? ` · ${currentTurn.confidence}/10` : ''}
             </Text>
             <Text style={{
-              color:      'rgba(255,255,255,0.82)',
+              color:      COLORS.textPrimary,
               fontSize:   13,
               lineHeight: 19,
               fontWeight: '400',
@@ -677,16 +668,16 @@ export default function VoiceDebatePlayerScreen() {
           </Animated.View>
         )}
 
-        {/* Collapsible confidence arc — BELOW the turn card, not competing with controls */}
+        {/* Collapsible confidence arc */}
         {turns.length > 0 && (
           <CollapsibleArc voiceDebate={voiceDebate} accentColor={accentColor} />
         )}
       </ScrollView>
 
-      {/* ── CONTROLS PANEL — PINNED AT BOTTOM, ALWAYS VISIBLE ─────────────── */}
-      <View style={[s.controlsPanel, { paddingBottom: bottomInset + 12 }]}>
+      {/* CONTROLS PANEL — PINNED AT BOTTOM */}
+      <View style={[styles.controlsPanel, { paddingBottom: bottomInset + 12 }]}>
         {/* Thin separator */}
-        <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.07)', marginBottom: 14 }} />
+        <View style={{ height: 1, backgroundColor: COLORS.border, marginBottom: 14 }} />
 
         {/* Progress bar */}
         <View style={{ paddingHorizontal: 20, marginBottom: 4 }}>
@@ -710,16 +701,14 @@ export default function VoiceDebatePlayerScreen() {
           paddingHorizontal: 20,
           marginBottom:   12,
         }}>
-          {/* Previous turn */}
           <TouchableOpacity
             onPress={skipPrevious}
             style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Ionicons name="play-skip-back" size={26} color="rgba(255,255,255,0.85)" />
+            <Ionicons name="play-skip-back" size={26} color={COLORS.textPrimary} />
           </TouchableOpacity>
 
-          {/* Play / Pause — main CTA */}
           <TouchableOpacity
             onPress={togglePlayPause}
             disabled={playerState.isLoading}
@@ -738,24 +727,23 @@ export default function VoiceDebatePlayerScreen() {
             }}
           >
             {playerState.isLoading ? (
-              <ActivityIndicator color="#FFF" size="small" />
+              <ActivityIndicator color={ON_ACCENT_TEXT} size="small" />
             ) : (
               <Ionicons
                 name={playerState.isPlaying ? 'pause' : 'play'}
                 size={26}
-                color="#FFF"
+                color={ON_ACCENT_TEXT}
                 style={{ marginLeft: playerState.isPlaying ? 0 : 3 }}
               />
             )}
           </TouchableOpacity>
 
-          {/* Next turn */}
           <TouchableOpacity
             onPress={skipNext}
             style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
             hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
           >
-            <Ionicons name="play-skip-forward" size={26} color="rgba(255,255,255,0.85)" />
+            <Ionicons name="play-skip-forward" size={26} color={COLORS.textPrimary} />
           </TouchableOpacity>
         </View>
 
@@ -769,7 +757,7 @@ export default function VoiceDebatePlayerScreen() {
         </View>
       </View>
 
-      {/* ── Transcript Sheet ───────────────────────────────────────────────── */}
+      {/* Transcript Sheet */}
       {showTranscript && (
         <DebateTranscriptSheet
           voiceDebate={voiceDebate}
@@ -780,33 +768,35 @@ export default function VoiceDebatePlayerScreen() {
         />
       )}
 
-      {/* ── Share Sheet ────────────────────────────────────────────────────── */}
+      {/* Share Sheet */}
       {showShare && (
         <TouchableWithoutFeedback onPress={() => setShowShare(false)}>
           <View style={[StyleSheet.absoluteFillObject, {
-            backgroundColor:  'rgba(0,0,0,0.6)',
-            justifyContent:   'flex-end',
+            backgroundColor: getModalBackdrop(0.6),
+            justifyContent: 'flex-end',
           }]}>
             <TouchableWithoutFeedback>
               <Animated.View
                 entering={FadeInDown.duration(320).springify()}
                 style={{
-                  backgroundColor:     '#111128',
-                  borderTopLeftRadius: 26, borderTopRightRadius: 26,
-                  padding:             24,
-                  paddingBottom:       Math.max(bottomInset + 16, 40),
-                  borderTopWidth:      1, borderTopColor: 'rgba(255,255,255,0.09)',
+                  backgroundColor: COLORS.backgroundCard,
+                  borderTopLeftRadius: 26,
+                  borderTopRightRadius: 26,
+                  padding: 24,
+                  paddingBottom: Math.max(bottomInset + 16, 40),
+                  borderTopWidth: 1,
+                  borderTopColor: COLORS.border,
                 }}
               >
                 <View style={{
                   width: 38, height: 4, borderRadius: 2,
-                  backgroundColor: 'rgba(255,255,255,0.13)',
+                  backgroundColor: COLORS.border,
                   alignSelf: 'center', marginBottom: 18,
                 }} />
-                <Text style={{ color: '#FFF', fontSize: 17, fontWeight: '800', marginBottom: 4 }}>
+                <Text style={{ color: COLORS.textPrimary, fontSize: 17, fontWeight: '800', marginBottom: 4 }}>
                   Export Voice Debate
                 </Text>
-                <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginBottom: 18 }} numberOfLines={1}>
+                <Text style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 18 }} numberOfLines={1}>
                   {voiceDebate.topic}
                 </Text>
 
@@ -815,24 +805,24 @@ export default function VoiceDebatePlayerScreen() {
                     id: 'pdf',
                     icon: 'document-text-outline',
                     label: 'Export PDF Transcript',
-                    sub:   'Styled transcript with argument threading',
-                    color: '#6C63FF',
+                    sub: 'Styled transcript with argument threading',
+                    color: COLORS.primary,
                     onPress: handleSharePDF,
                   },
                   {
                     id: 'mp3',
                     icon: 'musical-notes-outline',
                     label: 'Export Audio (MP3)',
-                    sub:   'Full debate as single audio file',
-                    color: '#FF6584',
+                    sub: 'Full debate as single audio file',
+                    color: COLORS.secondary,
                     onPress: handleShareMP3,
                   },
                   {
                     id: 'copy',
                     icon: shareCopied ? 'checkmark-circle-outline' : 'copy-outline',
                     label: shareCopied ? 'Copied!' : 'Copy Transcript',
-                    sub:   'Plain text to clipboard',
-                    color: '#43E97B',
+                    sub: 'Plain text to clipboard',
+                    color: COLORS.success,
                     onPress: handleCopy,
                   },
                 ] as const).map(opt => (
@@ -842,9 +832,9 @@ export default function VoiceDebatePlayerScreen() {
                     activeOpacity={0.75}
                     style={{
                       flexDirection: 'row', alignItems: 'center', gap: 13,
-                      padding: 13, backgroundColor: 'rgba(255,255,255,0.05)',
+                      padding: 13, backgroundColor: COLORS.backgroundElevated,
                       borderRadius: 13, marginBottom: 9,
-                      borderWidth: 1, borderColor: 'rgba(255,255,255,0.09)',
+                      borderWidth: 1, borderColor: COLORS.border,
                     }}
                   >
                     <View style={{
@@ -858,11 +848,11 @@ export default function VoiceDebatePlayerScreen() {
                       }
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: '#FFF', fontSize: 14, fontWeight: '600' }}>{opt.label}</Text>
-                      <Text style={{ color: 'rgba(255,255,255,0.38)', fontSize: 11, marginTop: 2 }}>{opt.sub}</Text>
+                      <Text style={{ color: COLORS.textPrimary, fontSize: 14, fontWeight: '600' }}>{opt.label}</Text>
+                      <Text style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 2 }}>{opt.sub}</Text>
                     </View>
                     {!shareBusy && (
-                      <Ionicons name="chevron-forward" size={15} color="rgba(255,255,255,0.25)" />
+                      <Ionicons name="chevron-forward" size={15} color={COLORS.textMuted} />
                     )}
                   </TouchableOpacity>
                 ))}
@@ -871,7 +861,7 @@ export default function VoiceDebatePlayerScreen() {
                   onPress={() => setShowShare(false)}
                   style={{ alignItems: 'center', paddingVertical: 13, marginTop: 2 }}
                 >
-                  <Text style={{ color: 'rgba(255,255,255,0.42)', fontSize: 14, fontWeight: '600' }}>
+                  <Text style={{ color: COLORS.textMuted, fontSize: 14, fontWeight: '600' }}>
                     Cancel
                   </Text>
                 </TouchableOpacity>
@@ -885,53 +875,63 @@ export default function VoiceDebatePlayerScreen() {
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+// IMPORTANT: this used to be a single module-level `StyleSheet.create({...})`
+// constant. That captured COLORS.* by VALUE at import time and never updated
+// again, so these five styles silently froze on whichever theme was active
+// the first time the app loaded this screen. It's now a factory, rebuilt via
+// useMemo(() => createStyles(), [version]) inside the component so it always
+// reflects the live, currently-applied theme palette.
 
-const s = StyleSheet.create({
-  header: {
-    flexDirection:     'row',
-    alignItems:        'center',
-    paddingHorizontal: 16,
-    paddingVertical:   10,
-    zIndex:            20,
-  },
-  headerBtn: {
-    width:           42, height: 42, borderRadius:    13,
-    backgroundColor: 'rgba(0,0,0,0.38)',
-    alignItems:      'center', justifyContent: 'center',
-    borderWidth:     1, borderColor: 'rgba(255,255,255,0.10)',
-  },
-  segmentBadge: {
-    flex:              1,
-    flexDirection:     'row',
-    alignItems:        'center',
-    justifyContent:    'center',
-    gap:               5,
-    marginHorizontal:  8,
-    backgroundColor:   'rgba(0,0,0,0.32)',
-    borderRadius:      18,
-    paddingVertical:   6,
-    paddingHorizontal: 12,
-    borderWidth:       1,
-    borderColor:       'rgba(255,255,255,0.09)',
-  },
-  segmentText: {
-    fontSize:      11,
-    fontWeight:    '700',
-    letterSpacing: 0.5,
-  },
-  // FIX 3: Controls panel is now a separate View OUTSIDE the ScrollView,
-  // pinned to the bottom. It is NOT inside flex content, so it never
-  // gets pushed off-screen by the Confidence Arc above it.
-  controlsPanel: {
-    backgroundColor: 'rgba(6, 6, 15, 0.92)',
-    borderTopWidth:  1,
-    borderTopColor:  'rgba(255,255,255,0.06)',
-    paddingTop:      6,
-    // Subtle top blur effect via a thin gradient overlay
-    shadowColor:     '#000',
-    shadowOpacity:   0.5,
-    shadowRadius:    20,
-    shadowOffset:    { width: 0, height: -4 },
-    elevation:       20,
-  },
-});
+function createStyles() {
+  const lightMode = isLightTheme();
+
+  return StyleSheet.create({
+    header: {
+      flexDirection:     'row',
+      alignItems:        'center',
+      paddingHorizontal: 16,
+      paddingVertical:   10,
+      zIndex:            20,
+    },
+    headerBtn: {
+      width:           42, height: 42, borderRadius:    13,
+      backgroundColor: COLORS.backgroundElevated,
+      alignItems:      'center', justifyContent: 'center',
+      borderWidth:     1, borderColor: COLORS.border,
+    },
+    segmentBadge: {
+      flex:              1,
+      flexDirection:     'row',
+      alignItems:        'center',
+      justifyContent:    'center',
+      gap:               5,
+      marginHorizontal:  8,
+      backgroundColor:   COLORS.backgroundElevated,
+      borderRadius:      18,
+      paddingVertical:   6,
+      paddingHorizontal: 12,
+      borderWidth:       1,
+      borderColor:       COLORS.border,
+    },
+    segmentText: {
+      fontSize:      11,
+      fontWeight:    '700',
+      letterSpacing: 0.5,
+    },
+    controlsPanel: {
+      backgroundColor: COLORS.background,
+      borderTopWidth:  1,
+      borderTopColor:  COLORS.border,
+      paddingTop:      6,
+      shadowColor:     '#000',
+      // A 0.5-opacity black shadow reads as a soft glow on a near-black dark
+      // background, but turns into a heavy gray smudge on a white/light
+      // surface — back it off in light themes so the panel still feels lifted
+      // off the page instead of dirty.
+      shadowOpacity:   lightMode ? 0.16 : 0.5,
+      shadowRadius:    20,
+      shadowOffset:    { width: 0, height: -4 },
+      elevation:       20,
+    },
+  });
+}

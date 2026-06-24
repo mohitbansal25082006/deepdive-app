@@ -1,10 +1,6 @@
 // src/components/podcast/EpisodeThumbnail.tsx
 // Part 40 — Video Podcast Mode
-//
-// Generates a title-card style thumbnail for the video player.
-// Used as the initial "loading" frame before audio starts and
-// as the hero image when sharing the video.
-// Pure React Native — no images required.
+// UPDATED: Full theme integration — dynamic background and text colors
 
 import React from 'react';
 import {
@@ -13,6 +9,7 @@ import {
 import { LinearGradient }  from 'expo-linear-gradient';
 import { Ionicons }        from '@expo/vector-icons';
 import Animated, { FadeIn } from 'react-native-reanimated';
+import { COLORS } from '../../constants/theme';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
@@ -40,11 +37,10 @@ export function EpisodeThumbnail({
   const h1size = compact ? 15 : 22;
   const h2size = compact ? 11 : 13;
 
-  // Generate two complementary gradient stops from accentColor
   const stops: [string, string, string] = [
     `${accentColor}EE`,
     `${accentColor}88`,
-    '#0A0A1E',
+    COLORS.background,
   ];
 
   return (
@@ -55,11 +51,9 @@ export function EpisodeThumbnail({
         end={{ x: 1, y: 1 }}
         style={[styles.gradient, { padding: pad, borderRadius: compact ? 14 : 20 }]}
       >
-        {/* Decorative circles */}
         <View style={[styles.circle1, { borderColor: `${accentColor}40`, width: size * 3.5, height: size * 3.5, borderRadius: size * 1.75, top: -size * 1.2, right: -size * 1.1 }]} />
         <View style={[styles.circle2, { borderColor: `${accentColor}25`, width: size * 2.5, height: size * 2.5, borderRadius: size * 1.25, bottom: -size * 0.8, left: -size * 0.7 }]} />
 
-        {/* Mic icon + label */}
         <View style={[styles.iconRow, { marginBottom: compact ? 8 : 16 }]}>
           <View style={[styles.iconBubble, { width: size * 0.6, height: size * 0.6, borderRadius: size * 0.3, backgroundColor: `${accentColor}33`, borderColor: `${accentColor}66` }]}>
             <Ionicons name="mic" size={compact ? 14 : 22} color={accentColor} />
@@ -71,22 +65,19 @@ export function EpisodeThumbnail({
           </View>
         </View>
 
-        {/* Title */}
         <Text
-          style={[styles.title, { fontSize: h1size, marginBottom: compact ? 8 : 14 }]}
+          style={[styles.title, { fontSize: h1size, marginBottom: compact ? 8 : 14, color: COLORS.textPrimary }]}
           numberOfLines={compact ? 2 : 3}
         >
           {title}
         </Text>
 
-        {/* Host / Guest row */}
         <View style={styles.hostRow}>
           <SpeakerChip name={hostName}  label="HOST"  color={accentColor} compact={compact} />
           <View style={[styles.divider, { backgroundColor: `${accentColor}40` }]} />
           <SpeakerChip name={guestName} label="GUEST" color="#FF6584" compact={compact} />
         </View>
 
-        {/* Duration pill */}
         <View style={[styles.durationPill, { backgroundColor: 'rgba(0,0,0,0.35)', borderColor: 'rgba(255,255,255,0.12)', marginTop: compact ? 8 : 14 }]}>
           <Ionicons name="time-outline" size={compact ? 10 : 12} color="rgba(255,255,255,0.6)" />
           <Text style={[styles.durationText, { fontSize: compact ? 10 : 12 }]}>~{durationMin} min</Text>
@@ -147,7 +138,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   title: {
-    color:      '#FFFFFF',
     fontWeight: '800',
     lineHeight: 28,
   },

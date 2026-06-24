@@ -1,16 +1,6 @@
 // src/components/workspace/ShareVoiceDebateToWorkspaceModal.tsx
-// Part 44 — Modal for sharing a voice debate into workspaces.
-//
-// Mirrors ShareDebateToWorkspaceModal from Part 16, adapted for voice debates.
-//
-// KEY DIFFERENCES from ShareDebateToWorkspaceModal:
-//   • Validates audio_all_uploaded before allowing share (shows upload progress state)
-//   • Uses voiceDebateSharingService.loadWorkspacesForVoiceDebate for the list
-//   • Uses shareVoiceDebateToWorkspace / removeSharedVoiceDebate from Part 44
-//   • Shows cloud upload status indicator + "Upload in progress" disabled state
-//   • Audio upload progress banner when upload is running
-//
-// The modal is shown from VoiceDebateCard (Part 44B) in debate-detail.tsx.
+// Part 55.3 — FULL THEME-COMPATIBILITY PASS
+// All hardcoded hex colors replaced with COLORS tokens.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -33,9 +23,7 @@ import {
   shareVoiceDebateToWorkspace,
   removeSharedVoiceDebate,
 } from '../../services/voiceDebateSharingService';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
-
-const ACCENT = '#8B5CF6'; // purple for voice/audio
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../constants/theme';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +34,7 @@ interface Props {
   question:          string;
   totalTurns:        number;
   durationSeconds:   number;
-  audioAllUploaded:  boolean;   // false = still uploading, disable share
+  audioAllUploaded:  boolean;
   onClose:           () => void;
   onShared?:         (workspaceId: string, workspaceName: string) => void;
 }
@@ -108,13 +96,13 @@ function WorkspaceRow({
         <LinearGradient
           colors={item.isShared
             ? [COLORS.success, COLORS.success + 'AA']
-            : [ACCENT, '#A78BFA']}
+            : [COLORS.primary, COLORS.primaryLight]}
           style={{
             width: 44, height: 44, borderRadius: 12,
             alignItems: 'center', justifyContent: 'center', flexShrink: 0,
           }}
         >
-          <Ionicons name={item.isShared ? 'checkmark' : 'people'} size={20} color="#FFF" />
+          <Ionicons name={item.isShared ? 'checkmark' : 'people'} size={20} color={COLORS.textPrimary} />
         </LinearGradient>
       )}
 
@@ -130,11 +118,11 @@ function WorkspaceRow({
           gap: 5, marginTop: 3, flexWrap: 'wrap',
         }}>
           <View style={{
-            backgroundColor: `${ACCENT}18`, borderRadius: RADIUS.full,
+            backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
             paddingHorizontal: 7, paddingVertical: 1,
           }}>
             <Text style={{
-              color: ACCENT, fontSize: 10, fontWeight: '700', textTransform: 'capitalize',
+              color: COLORS.primary, fontSize: 10, fontWeight: '700', textTransform: 'capitalize',
             }}>
               {item.userRole}
             </Text>
@@ -167,19 +155,19 @@ function WorkspaceRow({
 
       {canShare && (
         isSharing ? (
-          <ActivityIndicator size="small" color={item.isShared ? COLORS.success : ACCENT} />
+          <ActivityIndicator size="small" color={item.isShared ? COLORS.success : COLORS.primary} />
         ) : (
           <View style={{
             width: 28, height: 28, borderRadius: 8,
-            backgroundColor: item.isShared ? `${COLORS.success}20` : `${ACCENT}15`,
+            backgroundColor: item.isShared ? `${COLORS.success}20` : `${COLORS.primary}15`,
             alignItems: 'center', justifyContent: 'center',
             borderWidth: 1,
-            borderColor: item.isShared ? `${COLORS.success}40` : `${ACCENT}30`,
+            borderColor: item.isShared ? `${COLORS.success}40` : `${COLORS.primary}30`,
           }}>
             <Ionicons
               name={item.isShared ? 'remove-outline' : 'add-outline'}
               size={16}
-              color={item.isShared ? COLORS.success : ACCENT}
+              color={item.isShared ? COLORS.success : COLORS.primary}
             />
           </View>
         )
@@ -261,7 +249,7 @@ export function ShareVoiceDebateToWorkspaceModal({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' }}
+        style={{ flex: 1, backgroundColor: getModalBackdrop(0.65) }}
         activeOpacity={1}
         onPress={onClose}
       />
@@ -293,14 +281,14 @@ export function ShareVoiceDebateToWorkspaceModal({
           borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.md,
         }}>
           <LinearGradient
-            colors={[ACCENT, '#A78BFA']}
+            colors={[COLORS.primary, COLORS.primaryLight]}
             style={{
               width: 48, height: 48, borderRadius: 14,
               alignItems: 'center', justifyContent: 'center',
               flexShrink: 0, ...SHADOWS.medium,
             }}
           >
-            <Ionicons name="mic-circle" size={24} color="#FFF" />
+            <Ionicons name="mic-circle" size={24} color={COLORS.textPrimary} />
           </LinearGradient>
 
           <View style={{ flex: 1 }}>
@@ -327,12 +315,12 @@ export function ShareVoiceDebateToWorkspaceModal({
               {totalTurns > 0 && (
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', gap: 4,
-                  backgroundColor: `${ACCENT}12`, borderRadius: RADIUS.full,
+                  backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
                   paddingHorizontal: 8, paddingVertical: 3,
-                  borderWidth: 1, borderColor: `${ACCENT}25`,
+                  borderWidth: 1, borderColor: `${COLORS.primary}25`,
                 }}>
-                  <Ionicons name="chatbubbles-outline" size={10} color={ACCENT} />
-                  <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
+                  <Ionicons name="chatbubbles-outline" size={10} color={COLORS.primary} />
+                  <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>
                     {totalTurns} turns
                   </Text>
                 </View>
@@ -403,12 +391,12 @@ export function ShareVoiceDebateToWorkspaceModal({
         {audioAllUploaded && (
           <View style={{
             flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-            backgroundColor: `${ACCENT}08`, borderRadius: RADIUS.lg,
+            backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg,
             padding: SPACING.sm, marginHorizontal: SPACING.lg, marginTop: SPACING.md,
-            borderWidth: 1, borderColor: `${ACCENT}20`,
+            borderWidth: 1, borderColor: `${COLORS.primary}20`,
           }}>
-            <Ionicons name="cloud-done-outline" size={15} color={ACCENT} style={{ marginTop: 1 }} />
-            <Text style={{ color: ACCENT, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 }}>
+            <Ionicons name="cloud-done-outline" size={15} color={COLORS.primary} style={{ marginTop: 1 }} />
+            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 }}>
               Audio is uploaded to cloud. Workspace members can stream it directly from any device.
             </Text>
           </View>
@@ -421,7 +409,7 @@ export function ShareVoiceDebateToWorkspaceModal({
           {/* Loading */}
           {isLoading && (
             <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
-              <ActivityIndicator color={ACCENT} size="large" />
+              <ActivityIndicator color={COLORS.primary} size="large" />
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 12 }}>
                 Loading workspaces…
               </Text>
@@ -453,13 +441,13 @@ export function ShareVoiceDebateToWorkspaceModal({
               <TouchableOpacity
                 onPress={loadWorkspaces}
                 style={{
-                  backgroundColor: ACCENT, borderRadius: RADIUS.lg,
+                  backgroundColor: COLORS.primary, borderRadius: RADIUS.lg,
                   paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
                   flexDirection: 'row', alignItems: 'center', gap: 6,
                 }}
               >
-                <Ionicons name="refresh-outline" size={14} color="#FFF" />
-                <Text style={{ color: '#FFF', fontWeight: '700' }}>Try Again</Text>
+                <Ionicons name="refresh-outline" size={14} color={COLORS.textPrimary} />
+                <Text style={{ color: COLORS.textPrimary, fontWeight: '700' }}>Try Again</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -472,10 +460,10 @@ export function ShareVoiceDebateToWorkspaceModal({
             >
               <View style={{
                 width: 64, height: 64, borderRadius: 18,
-                backgroundColor: `${ACCENT}15`,
+                backgroundColor: `${COLORS.primary}15`,
                 alignItems: 'center', justifyContent: 'center',
               }}>
-                <Ionicons name="people-outline" size={32} color={ACCENT} />
+                <Ionicons name="people-outline" size={32} color={COLORS.primary} />
               </View>
               <Text style={{
                 color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700',

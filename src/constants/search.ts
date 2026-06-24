@@ -102,8 +102,6 @@ export const COMMUNITY_SEARCH_PLACEHOLDER_EXAMPLES = [
   'mental health technology',
   'quantum computing startups',
   'EV battery technology',
-  'remote work productivity',
-  'biotech breakthroughs',
 ];
 
 // ─── Min chars to trigger search ─────────────────────────────────────────────

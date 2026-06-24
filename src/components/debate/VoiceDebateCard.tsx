@@ -1,14 +1,6 @@
 // src/components/debate/VoiceDebateCard.tsx
-// Part 44 UPDATE — Added Share to Workspace button + cloud upload status.
-// CREDIT GATE UPDATE — Cost display + confirmation modal before generation.
-//
-// FIX: COST is now derived from FEATURE_COSTS['voice_debate'] at the top of
-// this file (const COST = FEATURE_COSTS['voice_debate']). This resolves the
-// ts(2304) "Cannot find name 'COST'" errors that occurred when COST was used
-// in GeneratePrompt/ConfirmGenerateModal before being declared.
-//
-// FIX: InsufficientCreditsInfo imported from '../types/credits' (not from hook)
-// so the ts(2322) type mismatch on the onC... prop is resolved.
+// Part 40 + 44 + 55.2 — FULL THEME-COMPATIBILITY PASS
+// All colors now use COLORS tokens for theme compatibility.
 
 import React, { useState, useCallback } from 'react';
 import {
@@ -40,13 +32,10 @@ import type {
   VoiceDebateGenerationState,
   VoiceDebateGenerationPhase,
 }                               from '../../types/voiceDebate';
-// ── FIX: import the type directly from its source, not inferred from hook ──
 import type { InsufficientCreditsInfo } from '../../types/credits';
 
 const ACCENT = '#8B5CF6';
-
-// ── FIX: define COST at module scope so every function in this file can use it
-const COST = FEATURE_COSTS['voice_debate']; // 50
+const COST = FEATURE_COSTS['voice_debate'];
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -58,15 +47,10 @@ interface VoiceDebateCardProps {
   onCancel:             () => void;
   isGenerating:         boolean;
   isCancelling:         boolean;
-  // Passed directly from useVoiceDebate hook.
-  // true  = hook is fetching from DB (show subtle spinner, keep button disabled)
-  // false = fetch complete; if no existing debate, show enabled Generate button
   isLoadingExisting?:   boolean;
-  // Part 44 additions:
   onShareToWorkspace?:  () => void;
   sharedToCount?:       number;
   audioAllUploaded?:    boolean;
-  // Credit gate:
   insufficientCreditsInfo?:  InsufficientCreditsInfo | null;
   clearInsufficientCredits?: () => void;
   isConsumingCredits?:       boolean;
@@ -132,7 +116,7 @@ function CloudBadge({ audioAllUploaded }: { audioAllUploaded: boolean }) {
   );
 }
 
-// ─── Progress bar (during generation) ────────────────────────────────────────
+// ─── Progress bar ─────────────────────────────────────────────────────────────
 
 function ProgressBar({ percent }: { percent: number }) {
   const width = useSharedValue(0);
@@ -263,7 +247,7 @@ function CompletedDebateView({
           gap: 8, marginBottom: SPACING.sm, flexWrap: 'wrap',
         }}>
           {debate.durationSeconds > 0 && (
-            <View style={styles.metaChip}>
+            <View style={[styles.metaChip, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
               <Ionicons name="time-outline" size={10} color={ACCENT} />
               <Text style={[styles.metaChipText, { color: ACCENT }]}>
                 {formatDuration(debate.durationSeconds)}
@@ -271,7 +255,7 @@ function CompletedDebateView({
             </View>
           )}
           {debate.totalTurns > 0 && (
-            <View style={styles.metaChip}>
+            <View style={[styles.metaChip, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
               <Ionicons name="chatbubbles-outline" size={10} color={COLORS.primary} />
               <Text style={[styles.metaChipText, { color: COLORS.primary }]}>
                 {debate.totalTurns} turns
@@ -283,7 +267,6 @@ function CompletedDebateView({
 
         {/* Action buttons row */}
         <View style={{ flexDirection: 'row', gap: SPACING.sm, alignItems: 'center' }}>
-          {/* Play */}
           <TouchableOpacity
             onPress={handlePlay}
             style={{
@@ -304,7 +287,6 @@ function CompletedDebateView({
             </Text>
           </TouchableOpacity>
 
-          {/* Share to Workspace (Part 44) */}
           {onShareToWorkspace && (
             <TouchableOpacity
               onPress={onShareToWorkspace}
@@ -361,7 +343,7 @@ function CompletedDebateView({
           }}>
             <Ionicons name="information-circle-outline" size={13} color={COLORS.warning} />
             <Text style={{ color: COLORS.warning, fontSize: 10, lineHeight: 14, flex: 1 }}>
-              Audio is uploading to cloud for cross-device playback. Share to workspace will be available once complete.
+              Audio is uploading to cloud for cross-device playback.
             </Text>
           </View>
         )}
@@ -371,8 +353,6 @@ function CompletedDebateView({
 }
 
 // ─── Confirmation Modal ───────────────────────────────────────────────────────
-//
-// Uses module-level COST constant — no "Cannot find name 'COST'" error.
 
 interface ConfirmModalProps {
   visible:   boolean;
@@ -418,14 +398,12 @@ function ConfirmGenerateModal({
               ...SHADOWS.large,
             }}
           >
-            {/* Accent top bar */}
             <LinearGradient
               colors={[ACCENT, '#A78BFA']}
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
               style={{ height: 3 }}
             />
 
-            {/* Header */}
             <View style={{
               padding:           SPACING.lg,
               alignItems:        'center',
@@ -464,10 +442,7 @@ function ConfirmGenerateModal({
               </Text>
             </View>
 
-            {/* Cost breakdown */}
             <View style={{ padding: SPACING.lg, gap: SPACING.md }}>
-
-              {/* Credit cost card */}
               <View style={{
                 backgroundColor: COLORS.backgroundElevated,
                 borderRadius:    RADIUS.lg,
@@ -476,7 +451,6 @@ function ConfirmGenerateModal({
                 borderColor:     COLORS.border,
                 gap:             10,
               }}>
-                {/* Cost row */}
                 <View style={{
                   flexDirection:  'row',
                   alignItems:     'center',
@@ -509,7 +483,6 @@ function ConfirmGenerateModal({
                   </View>
                 </View>
 
-                {/* Balance row */}
                 <View style={{
                   flexDirection:  'row',
                   alignItems:     'center',
@@ -527,7 +500,6 @@ function ConfirmGenerateModal({
                   </Text>
                 </View>
 
-                {/* Balance after — only when affordable */}
                 {canAfford && (
                   <View style={{
                     flexDirection:  'row',
@@ -551,7 +523,6 @@ function ConfirmGenerateModal({
                 )}
               </View>
 
-              {/* What you get */}
               <View style={{
                 backgroundColor: `${ACCENT}08`,
                 borderRadius:    RADIUS.lg,
@@ -588,9 +559,7 @@ function ConfirmGenerateModal({
                 ))}
               </View>
 
-              {/* Action buttons */}
               <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-                {/* Cancel */}
                 <TouchableOpacity
                   onPress={onCancel}
                   disabled={isLoading}
@@ -614,7 +583,6 @@ function ConfirmGenerateModal({
                   </Text>
                 </TouchableOpacity>
 
-                {/* Confirm */}
                 <TouchableOpacity
                   onPress={onConfirm}
                   disabled={isLoading || !canAfford}
@@ -655,7 +623,6 @@ function ConfirmGenerateModal({
                 </TouchableOpacity>
               </View>
 
-              {/* Insufficient credits hint */}
               {!canAfford && (
                 <TouchableOpacity
                   onPress={() => {
@@ -692,10 +659,7 @@ function ConfirmGenerateModal({
   );
 }
 
-// ─── Generate prompt — shown when no voice debate exists yet ──────────────────
-//
-// Shows credit cost pill + opens confirmation modal on tap.
-// Uses module-level COST — no "Cannot find name 'COST'" errors.
+// ─── Generate prompt ──────────────────────────────────────────────────────────
 
 interface GeneratePromptProps {
   onGenerate:               () => Promise<void>;
@@ -743,7 +707,6 @@ function GeneratePrompt({
         borderWidth:     1,
         borderColor:     `${ACCENT}20`,
       }}>
-        {/* Top row: icon + text */}
         <View style={{
           flexDirection: 'row',
           alignItems:    'center',
@@ -777,9 +740,7 @@ function GeneratePrompt({
           </View>
         </View>
 
-        {/* Cost pill + Generate button row */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
-          {/* Credit cost pill */}
           <View style={{
             flexDirection:     'row',
             alignItems:        'center',
@@ -811,7 +772,6 @@ function GeneratePrompt({
             )}
           </View>
 
-          {/* Generate button */}
           <TouchableOpacity
             onPress={() => setShowConfirm(true)}
             disabled={buttonBusy}
@@ -837,7 +797,6 @@ function GeneratePrompt({
           </TouchableOpacity>
         </View>
 
-        {/* Low balance warning strip */}
         {!canAfford && (
           <TouchableOpacity
             onPress={() => router.push('/(app)/credits-store' as any)}
@@ -862,7 +821,6 @@ function GeneratePrompt({
         )}
       </View>
 
-      {/* Confirmation modal */}
       <ConfirmGenerateModal
         visible={showConfirm}
         balance={balance}
@@ -871,7 +829,6 @@ function GeneratePrompt({
         onCancel={() => setShowConfirm(false)}
       />
 
-      {/* Insufficient credits modal (triggered by hook after consume fails) */}
       <InsufficientCreditsModal
         visible={!!insufficientCreditsInfo}
         info={insufficientCreditsInfo}
@@ -939,11 +896,9 @@ export function VoiceDebateCard({
   isGenerating,
   isCancelling,
   isLoadingExisting        = false,
-  // Part 44:
   onShareToWorkspace,
   sharedToCount            = 0,
   audioAllUploaded         = false,
-  // Credit gate:
   insufficientCreditsInfo  = null,
   clearInsufficientCredits = () => {},
   isConsumingCredits       = false,
@@ -952,13 +907,10 @@ export function VoiceDebateCard({
 
   const hasCompleted = existingDebate?.status === 'completed';
   const isError      = genState.phase === 'error';
-
-  // Derive cloudReady from existingDebate if not passed explicitly
-  const cloudReady = audioAllUploaded || existingDebate?.audioAllUploaded === true;
+  const cloudReady   = audioAllUploaded || existingDebate?.audioAllUploaded === true;
 
   return (
     <Animated.View entering={FadeInDown.duration(400)}>
-      {/* Section header */}
       <View style={{
         flexDirection: 'row', alignItems: 'center',
         gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.lg,
@@ -990,7 +942,6 @@ export function VoiceDebateCard({
         )}
       </View>
 
-      {/* ── Generation in progress ── */}
       {isGenerating && (
         <GenerationProgress
           genState={genState}
@@ -999,7 +950,6 @@ export function VoiceDebateCard({
         />
       )}
 
-      {/* ── Completed — show player + share button ── */}
       {!isGenerating && hasCompleted && existingDebate && (
         <CompletedDebateView
           debate={existingDebate}
@@ -1009,11 +959,6 @@ export function VoiceDebateCard({
         />
       )}
 
-      {/* ── No voice debate yet — show Generate CTA with credit cost ──
-          KEY FIX (Part 44 patch): isLoadingExisting from hook prop.
-          When true (DB check in progress) → button disabled + spinner.
-          When false (check done, nothing found) → button fully enabled.
-          Cost pill always visible so user knows cost before tapping. */}
       {!isGenerating && !hasCompleted && !isError && (
         <GeneratePrompt
           onGenerate={onGenerate}
@@ -1026,7 +971,6 @@ export function VoiceDebateCard({
         />
       )}
 
-      {/* ── Error state ── */}
       {!isGenerating && isError && genState.error && (
         <ErrorView error={genState.error} onRetry={onGenerate} />
       )}
@@ -1041,12 +985,10 @@ const styles = StyleSheet.create({
     flexDirection:     'row',
     alignItems:        'center',
     gap:               4,
-    backgroundColor:   COLORS.backgroundCard,
     borderRadius:      RADIUS.full,
     paddingHorizontal: 8,
     paddingVertical:   3,
     borderWidth:       1,
-    borderColor:       COLORS.border,
   },
   metaChipText: {
     fontSize:   10,

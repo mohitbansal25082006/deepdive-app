@@ -1,9 +1,6 @@
 // src/components/podcast/VideoSpeakerAvatars.tsx
 // Part 40 — Video Podcast Mode
-//
-// Full-width speaker avatar row for the video player.
-// Active speaker gets a glowing border ring, scale-up animation,
-// and a pulsing outer glow effect. Works for 2 and 3 speakers.
+// UPDATED: Full theme integration — uses dynamic colors from theme
 
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -17,6 +14,7 @@ import Animated, {
   cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
+import { COLORS } from '../../constants/theme';
 
 export interface SpeakerInfo {
   name:     string;
@@ -40,7 +38,6 @@ function VideoAvatar({ speaker }: { speaker: SpeakerInfo }) {
     glow.value  = withTiming(speaker.isActive ? 1 : 0, { duration: 300 });
 
     if (speaker.isActive) {
-      // Subtle pulsing ring
       cancelAnimation(ringScale);
       ringScale.value = withRepeat(
         withSequence(
@@ -79,7 +76,6 @@ function VideoAvatar({ speaker }: { speaker: SpeakerInfo }) {
 
   return (
     <View style={styles.avatarWrapper}>
-      {/* Outer glow */}
       <Animated.View
         style={[
           styles.glowRing,
@@ -93,7 +89,6 @@ function VideoAvatar({ speaker }: { speaker: SpeakerInfo }) {
         ]}
       />
 
-      {/* Animated border ring */}
       <Animated.View
         style={[
           styles.borderRing,
@@ -106,7 +101,6 @@ function VideoAvatar({ speaker }: { speaker: SpeakerInfo }) {
           ringStyle,
         ]}
       >
-        {/* Avatar bubble */}
         <Animated.View
           style={[
             styles.bubble,
@@ -125,17 +119,18 @@ function VideoAvatar({ speaker }: { speaker: SpeakerInfo }) {
         </Animated.View>
       </Animated.View>
 
-      {/* Name + label */}
-      <Text style={[styles.name, { color: speaker.isActive ? '#FFFFFF' : 'rgba(255,255,255,0.45)' }]} numberOfLines={1}>
+      <Text style={[styles.name, { color: speaker.isActive ? COLORS.textPrimary : COLORS.textMuted }]} numberOfLines={1}>
         {speaker.name}
       </Text>
-      <View style={[styles.labelPill, { backgroundColor: speaker.isActive ? `${speaker.color}30` : 'transparent', borderColor: speaker.isActive ? `${speaker.color}60` : 'transparent' }]}>
-        <Text style={[styles.labelText, { color: speaker.isActive ? speaker.color : 'rgba(255,255,255,0.3)' }]}>
+      <View style={[styles.labelPill, { 
+        backgroundColor: speaker.isActive ? `${speaker.color}30` : 'transparent', 
+        borderColor: speaker.isActive ? `${speaker.color}60` : 'transparent' 
+      }]}>
+        <Text style={[styles.labelText, { color: speaker.isActive ? speaker.color : COLORS.textMuted }]}>
           {speaker.label}
         </Text>
       </View>
 
-      {/* "Speaking" indicator */}
       {speaker.isActive && (
         <View style={styles.speakingRow}>
           {[0, 1, 2].map(i => (
@@ -206,7 +201,6 @@ const styles = StyleSheet.create({
     position:   'absolute',
     alignSelf:  'center',
     top:        -4,
-    // Removed invalid filterShadowColor property
   },
   borderRing: {
     borderWidth:    2.5,

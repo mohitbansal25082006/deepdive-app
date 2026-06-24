@@ -1,8 +1,9 @@
 // src/components/debate/VoiceInputButton.tsx
 // Part 20 — Animated mic button for the Debate tab voice input feature.
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
 //
 // States:
-//   idle        — purple mic icon, tap to start
+//   idle        — theme-aware mic icon, tap to start
 //   recording   — pulsing red animation, tap to stop
 //   transcribing — spinner, not tappable
 
@@ -126,13 +127,13 @@ export function VoiceInputButton({
 
       {/* Duration label below button while recording */}
       {isRecording && (
-        <Text style={styles.duration}>
+        <Text style={[styles.duration, { color: COLORS.error }]}>
           {formatMs(durationMs)}
         </Text>
       )}
 
       {isTranscribing && (
-        <Text style={styles.transcribingLabel}>
+        <Text style={[styles.transcribingLabel, { color: COLORS.warning }]}>
           Transcribing…
         </Text>
       )}
@@ -174,14 +175,12 @@ const styles = StyleSheet.create({
   },
 
   duration: {
-    color:      COLORS.error,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '700',
     marginTop:  SPACING.xs,
   },
 
   transcribingLabel: {
-    color:      COLORS.warning,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '600',
     marginTop:  SPACING.xs,

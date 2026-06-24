@@ -1,9 +1,6 @@
 // src/components/podcast/PodcastGenerationProgress.tsx
-// Part 19 — Updated:
-//   • Added "Web Search" phase step shown when SerpAPI is active
-//   • Shows real estimated duration based on accurate 125 WPM TTS rate
-//   • Progress message includes web-grounded indicator
-//   • Cancel button is more prominent
+// Part 19 — Updated with full theme integration
+// All colors now use the dynamic COLORS singleton
 
 import React, { useEffect } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
@@ -81,7 +78,6 @@ function PhaseStep({
 
   return (
     <Animated.View style={[{ flexDirection: 'row', alignItems: 'center', gap: 10 }, animStyle]}>
-      {/* Step indicator */}
       <View style={{
         width:           28,
         height:          28,
@@ -153,12 +149,8 @@ export function PodcastGenerationProgress({
   onCancel,
 }: PodcastGenerationProgressProps) {
 
-  // Determine step states
-  // Step 1: Web Search (only shown when SerpAPI active)
-  // Step 2: Script Writing
-  // Step 3: Audio Generation
   const searchState: StepState =
-    !webSearchActive               ? 'done'    :   // not applicable → skip visual
+    !webSearchActive               ? 'done'    :
     scriptGenerated                ? 'done'    :
     isGeneratingScript             ? 'active'  :
     'pending';
@@ -178,7 +170,6 @@ export function PodcastGenerationProgress({
     ? audioProgress.completed / audioProgress.total
     : 0;
 
-  // Progress bar fill animation
   const barFill = useSharedValue(0);
   useEffect(() => {
     barFill.value = withTiming(audioPercent, { duration: 400 });
@@ -188,13 +179,11 @@ export function PodcastGenerationProgress({
     width: `${barFill.value * 100}%` as any,
   }));
 
-  // Overall progress calculation for the header bar
-  // Web search ~5%, script ~35%, audio ~60%
   const overallProgress =
     scriptGenerated
       ? 0.4 + (audioPercent * 0.6)
       : isGeneratingScript
-        ? 0.05 + 0.35 * 0.5   // midway through script
+        ? 0.05 + 0.35 * 0.5
         : 0.02;
 
   const overallBarFill = useSharedValue(0);
@@ -206,14 +195,13 @@ export function PodcastGenerationProgress({
     width: `${overallBarFill.value * 100}%` as any,
   }));
 
-  // Estimated time remaining
   const estimatedMinLabel = targetDurationMins
     ? `~${targetDurationMins} min episode`
     : undefined;
 
   return (
     <LinearGradient
-      colors={['#1A1A35', '#12122A']}
+      colors={[COLORS.backgroundElevated, COLORS.backgroundCard]}
       style={{
         borderRadius: RADIUS.xl,
         padding:      SPACING.lg,
@@ -380,7 +368,6 @@ export function PodcastGenerationProgress({
             ]} />
           </View>
 
-          {/* Duration estimate */}
           {targetDurationMins && audioState === 'active' && (
             <Text style={{
               color:     COLORS.textMuted,

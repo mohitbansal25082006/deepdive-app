@@ -1,12 +1,6 @@
 // app/(app)/podcast-player.tsx
 // Part 41 UPDATE — Register source screen with AudioEngine after playback starts.
-//
-// Change is minimal: after startPlayback() / resumeFrom() succeeds, call
-//   AudioEngine.setSourceScreen('/(app)/podcast-player', { podcastId })
-// so that if the user navigates away and the MiniPlayer appears, tapping it
-// brings them back to podcast-player (the correct screen for owned podcasts).
-//
-// This is the ONLY change from the Part 40 version. All other code is identical.
+// UPDATED: Full theme integration — all colors now use dynamic COLORS singleton
 
 import React, {
   useEffect, useState, useRef, useCallback, useMemo,
@@ -115,7 +109,7 @@ function ExportShareSheet({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.65)', justifyContent: 'flex-end' }}>
+      <BlurView intensity={20} style={{ flex: 1, backgroundColor: COLORS.background + 'A6', justifyContent: 'flex-end' }}>
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
         <View style={{
           backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28,
@@ -221,7 +215,7 @@ function ProgressBar({ progress, onSeek, totalDurationMs, currentPositionMs, for
           const pct = Math.min(1, ch.timeMs / totalDurationMs);
           const x   = pct * barWidth;
           if (x < 4 || x > barWidth - 4) return null;
-          return <View key={ch.id} style={{ position: 'absolute', left: x - 1, top: -2, width: 2, height: 9, borderRadius: 1, backgroundColor: 'rgba(255,255,255,0.6)' }} />;
+          return <View key={ch.id} style={{ position: 'absolute', left: x - 1, top: -2, width: 2, height: 9, borderRadius: 1, backgroundColor: COLORS.textMuted + '99' }} />;
         })}
       </TouchableOpacity>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -240,7 +234,7 @@ function TranscriptRow({ turn, isActive, speakers, onPress }: {
 }) {
   const isHost_   = speakerIsHost(turn.speaker);
   const isGuest2_ = speakerIsGuest2(turn.speaker);
-  const color     = isHost_ ? COLORS.primary : isGuest2_ ? '#43E97B' : COLORS.secondary;
+  const color     = isHost_ ? COLORS.primary : isGuest2_ ? COLORS.accent : COLORS.secondary;
   const name      = isHost_ ? speakers.host : isGuest2_ ? (speakers.guest2 ?? speakers.guest1) : speakers.guest1;
 
   return (
@@ -313,7 +307,7 @@ function AddToSeriesSheet({ visible, podcast, onClose }: {
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.7)', justifyContent: 'flex-end' }}>
+      <BlurView intensity={20} style={{ flex: 1, backgroundColor: COLORS.background + 'B3', justifyContent: 'flex-end' }}>
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
         <View style={{
           backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28, borderTopRightRadius: 28,
@@ -445,11 +439,9 @@ export default function PodcastPlayerScreen() {
     setHasStarted(true);
     (async () => {
       if (isGlobalAudioActiveForPodcast(podcast.id)) {
-        // Already playing (e.g. navigated back from video mode) — just re-register source
         AudioEngine.setSourceScreen('/(app)/podcast-player', { podcastId: podcast.id });
         return;
       }
-      // ── Part 41: register source screen so MiniPlayer navigates correctly ──
       AudioEngine.setSourceScreen('/(app)/podcast-player', { podcastId: podcast.id });
 
       if (user) {
@@ -499,7 +491,6 @@ export default function PodcastPlayerScreen() {
 
   const openVideoMode = useCallback(() => {
     if (!podcast) return;
-    // Video mode keeps source as podcast-player (it's owned)
     router.push({
       pathname: '/(app)/podcast-video-player' as any,
       params:   { podcastId: podcast.id },
@@ -527,7 +518,7 @@ export default function PodcastPlayerScreen() {
 
   const isHost_   = speakerIsHost(currentTurn?.speaker);
   const isGuest2_ = speakerIsGuest2(currentTurn?.speaker);
-  const activeColor = isHost_ ? COLORS.primary : isGuest2_ ? '#43E97B' : COLORS.secondary;
+  const activeColor = isHost_ ? COLORS.primary : isGuest2_ ? COLORS.accent : COLORS.secondary;
   const turns = podcast?.script?.turns ?? [];
 
   if (loadingPodcast) {
@@ -601,7 +592,9 @@ export default function PodcastPlayerScreen() {
 
         {/* Player Card */}
         <Animated.View entering={FadeInDown.duration(500).delay(50)} style={{ paddingHorizontal: SPACING.xl, marginBottom: SPACING.sm }}>
-          <LinearGradient colors={['#1A1A35', '#0F0F28']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${activeColor}25`, alignItems: 'center' }}>
+          <LinearGradient 
+            colors={[COLORS.backgroundElevated, COLORS.backgroundCard]} 
+            style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${activeColor}25`, alignItems: 'center' }}>
 
             {isPlayingFromCloud && (
               <Animated.View entering={FadeIn.duration(400)} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: `${COLORS.info}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 4, marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.info}25` }}>
@@ -619,7 +612,7 @@ export default function PodcastPlayerScreen() {
               {[
                 { name: speakers.host,   isActive: speakerIsHost(currentTurn?.speaker),   color: COLORS.primary,   label: 'HOST' },
                 { name: speakers.guest1, isActive: speakerIsGuest1(currentTurn?.speaker), color: COLORS.secondary, label: 'GUEST' },
-                ...(speakers.guest2 ? [{ name: speakers.guest2, isActive: speakerIsGuest2(currentTurn?.speaker), color: '#43E97B', label: 'GUEST 2' }] : []),
+                ...(speakers.guest2 ? [{ name: speakers.guest2, isActive: speakerIsGuest2(currentTurn?.speaker), color: COLORS.accent, label: 'GUEST 2' }] : []),
               ].map(sp => (
                 <View key={sp.label} style={{ alignItems: 'center', gap: 4 }}>
                   <SpeakerAvatar name={sp.name} isActive={sp.isActive} color={sp.color} />
