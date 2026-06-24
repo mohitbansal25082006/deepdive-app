@@ -1,35 +1,17 @@
 // src/components/research/RichText.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Editorial rich-text renderer for AI-generated report prose.
-//
-// Turns plain/markdown-ish strings into beautifully typeset content:
-//   • **bold**, *italic*, `inline code`
-//   • Accent-highlighted statistics ($1.2B, 45%, 3.5 million, 2x)
-//   • # / ## / ### headings with accent markers
-//   • -, *, • bullet lists  and  1. 2. numbered lists
-//   • > blockquotes with an accent bar
-//   • optional lead paragraph + drop cap (for executive summaries)
-//
-// No new dependencies — pure RN + expo-linear-gradient (already installed).
-//
-// Usage:
-//   <RichText content={section.content} highlightStats />
-//   <RichText content={report.executiveSummary} highlightStats lead dropCap />
-//   <RichText inline content={finding} highlightStats />        // single line
+// Editorial rich-text renderer — FULL THEME COMPATIBILITY
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useMemo } from 'react';
 import { View, Text, Platform, ViewStyle, TextStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
-// Inline markdown tokens (bold / italic / code), leftmost-longest first.
 const MD_RE = /(\*\*.+?\*\*|__.+?__|`[^`]+?`|\*[^*\n]+?\*|_[^_\n]+?_)/g;
-
-// Statistic-like tokens — deliberately requires a unit so plain years/ints
-// ("2024", "15") are NOT highlighted.
 const STAT_RE = /(\$\s?\d[\d,]*(?:\.\d+)?\s?(?:billion|million|trillion|bn|mn|k)?|\d[\d,]*(?:\.\d+)?\s?%|\d[\d,]*(?:\.\d+)?\s?(?:billion|million|trillion)\b|\d+(?:\.\d+)?x\b)/gi;
 
 interface Seg { text: string; bold?: boolean; italic?: boolean; code?: boolean; stat?: boolean; }
@@ -61,7 +43,7 @@ function parseInline(text: string, highlightStats: boolean): Seg[] {
   return out;
 }
 
-function spanStyle(seg: Seg, accent: string): TextStyle {
+function spanStyle(seg: Seg, accent: string, isLight: boolean): TextStyle {
   const s: TextStyle = {};
   if (seg.bold) { s.fontWeight = '800'; s.color = COLORS.textPrimary; }
   if (seg.italic) s.fontStyle = 'italic';
@@ -69,13 +51,14 @@ function spanStyle(seg: Seg, accent: string): TextStyle {
   if (seg.code) {
     s.fontFamily = MONO;
     s.color = accent;
-    s.backgroundColor = `${accent}1F`;
+    s.backgroundColor = isLight ? `${accent}15` : `${accent}1F`;
     s.fontSize = (FONTS.sizes.sm);
+    s.paddingHorizontal = 4;
+    s.paddingVertical = 1;
+    s.borderRadius = 4;
   }
   return s;
 }
-
-// ── Block model ───────────────────────────────────────────────────────────────
 
 type Block =
   | { kind: 'p'; text: string }
@@ -116,15 +99,11 @@ function parseBlocks(content: string): Block[] {
   return blocks;
 }
 
-// ── Inline span renderer ────────────────────────────────────────────────────
-
-function renderSpans(segs: Seg[], accent: string, keyBase: string) {
+function renderSpans(segs: Seg[], accent: string, keyBase: string, isLight: boolean) {
   return segs.map((seg, i) => (
-    <Text key={`${keyBase}-${i}`} style={spanStyle(seg, accent)}>{seg.text}</Text>
+    <Text key={`${keyBase}-${i}`} style={spanStyle(seg, accent, isLight)}>{seg.text}</Text>
   ));
 }
-
-// ── Props ─────────────────────────────────────────────────────────────────────
 
 interface RichTextProps {
   content: string;
@@ -135,10 +114,10 @@ interface RichTextProps {
   weight?: TextStyle['fontWeight'];
   accent?: string;
   highlightStats?: boolean;
-  lead?: boolean;       // emphasize first paragraph
-  dropCap?: boolean;    // drop cap on first paragraph
+  lead?: boolean;
+  dropCap?: boolean;
   paragraphSpacing?: number;
-  style?: ViewStyle;    // container (block mode) or text style (inline mode)
+  style?: ViewStyle;
 }
 
 export function RichText({
@@ -155,22 +134,24 @@ export function RichText({
   paragraphSpacing = SPACING.md,
   style,
 }: RichTextProps) {
+  const { isLight } = useTheme();
   const text = (content ?? '').trim();
 
-  // Compute both unconditionally (hook-safe); each is cheap.
   const inlineSegs = useMemo(() => parseInline(text, highlightStats), [text, highlightStats]);
   const blocks = useMemo(() => parseBlocks(text), [text]);
 
-  // ── Inline mode: single Text, rich spans only ──
+  // Theme-aware quote background
+  const quoteBg = isLight ? `${accent}08` : `${accent}0F`;
+  const listNumberBg = isLight ? `${accent}15` : `${accent}1F`;
+
   if (inline) {
     return (
       <Text style={[{ color, fontSize: size, lineHeight: lineHeight ?? size * 1.5, fontWeight: weight }, style as TextStyle]}>
-        {renderSpans(inlineSegs, accent, 'inl')}
+        {renderSpans(inlineSegs, accent, 'inl', isLight)}
       </Text>
     );
   }
 
-  // ── Block mode ──
   const lh = lineHeight ?? size * 1.62;
   let firstParaSeen = false;
 
@@ -194,9 +175,9 @@ export function RichText({
           return (
             <View key={bi} style={{ flexDirection: 'row', marginBottom: paragraphSpacing, borderRadius: RADIUS.md, overflow: 'hidden' }}>
               <LinearGradient colors={[accent, `${accent}55`]} style={{ width: 3 }} />
-              <View style={{ flex: 1, backgroundColor: `${accent}0F`, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md }}>
+              <View style={{ flex: 1, backgroundColor: quoteBg, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md }}>
                 <Text style={{ color: COLORS.textSecondary, fontSize: size, lineHeight: lh, fontStyle: 'italic' }}>
-                  {renderSpans(segs, accent, `q${bi}`)}
+                  {renderSpans(segs, accent, `q${bi}`, isLight)}
                 </Text>
               </View>
             </View>
@@ -211,14 +192,19 @@ export function RichText({
                 return (
                   <View key={ii} style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
                     {block.ordered ? (
-                      <View style={{ minWidth: 22, height: 22, borderRadius: 7, paddingHorizontal: 5, backgroundColor: `${accent}1F`, alignItems: 'center', justifyContent: 'center', marginRight: 10, marginTop: 1, flexShrink: 0 }}>
+                      <View style={{
+                        minWidth: 22, height: 22, borderRadius: 7, paddingHorizontal: 5,
+                        backgroundColor: listNumberBg,
+                        alignItems: 'center', justifyContent: 'center',
+                        marginRight: 10, marginTop: 1, flexShrink: 0,
+                      }}>
                         <Text style={{ color: accent, fontSize: 11, fontWeight: '900' }}>{ii + 1}</Text>
                       </View>
                     ) : (
                       <LinearGradient colors={[accent, `${accent}88`]} style={{ width: 7, height: 7, borderRadius: 4, marginTop: lh * 0.32, marginRight: 11, flexShrink: 0 }} />
                     )}
                     <Text style={{ color, fontSize: size, lineHeight: lh, flex: 1 }}>
-                      {renderSpans(segs, accent, `li${bi}-${ii}`)}
+                      {renderSpans(segs, accent, `li${bi}-${ii}`, isLight)}
                     </Text>
                   </View>
                 );
@@ -227,7 +213,6 @@ export function RichText({
           );
         }
 
-        // paragraph
         const isFirst = !firstParaSeen;
         firstParaSeen = true;
         const segs = parseInline(block.text, highlightStats);
@@ -245,9 +230,9 @@ export function RichText({
             children.push(
               <Text key={`dc-${si}`} style={{ color: accent, fontSize: pSize * 2.3, fontWeight: '900', lineHeight: pSize * 2.3 }}>{first}</Text>
             );
-            if (rest) children.push(<Text key={`dcr-${si}`} style={spanStyle(seg, accent)}>{rest}</Text>);
+            if (rest) children.push(<Text key={`dcr-${si}`} style={spanStyle(seg, accent, isLight)}>{rest}</Text>);
           } else {
-            children.push(<Text key={`s-${si}`} style={spanStyle(seg, accent)}>{seg.text}</Text>);
+            children.push(<Text key={`s-${si}`} style={spanStyle(seg, accent, isLight)}>{seg.text}</Text>);
           }
         });
 

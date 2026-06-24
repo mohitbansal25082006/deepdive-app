@@ -1,5 +1,6 @@
 // app/(app)/knowledge-graph.tsx
-// Advanced Knowledge Graph Screen — Part 4 (Upgraded)
+// ─────────────────────────────────────────────────────────────────────────────
+// Advanced Knowledge Graph Screen — FULL THEME COMPATIBILITY
 //
 // Features:
 //  • 4-stat header strip (nodes, edges, clusters, types)
@@ -9,28 +10,32 @@
 //  • Top-5 highest-weight nodes list
 //  • Regenerate with credit-aware messaging
 //  • Empty state and loading state
+//  • FULL THEME SUPPORT — all colors adapt to active theme
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
   ScrollView, Dimensions,
 } from 'react-native';
-import { LinearGradient }    from 'expo-linear-gradient';
-import { Ionicons }          from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase }                      from '../../src/lib/supabase';
-import { KnowledgeGraphView }            from '../../src/components/research/KnowledgeGraph';
-import { useKnowledgeGraph }             from '../../src/hooks/useKnowledgeGraph';
-import { LoadingOverlay }                from '../../src/components/common/LoadingOverlay';
+import { supabase } from '../../src/lib/supabase';
+import { KnowledgeGraphView } from '../../src/components/research/KnowledgeGraph';
+import { useKnowledgeGraph } from '../../src/hooks/useKnowledgeGraph';
+import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import { ResearchReport, KnowledgeGraphNode } from '../../src/types';
 import type { ExtendedKnowledgeGraph, KnowledgeGraphCluster } from '../../src/services/agents/knowledgeGraphAgent';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
 // ─── Node type display config ─────────────────────────────────────────────────
+// Colors are theme-agnostic base colors that will be used with opacity
 
 const NODE_TYPE_COLORS: Record<string, string> = {
   root:      '#6C63FF',
@@ -61,11 +66,12 @@ const EDGE_CATEGORY_COLORS: Record<string, string> = {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function KnowledgeGraphScreen() {
-  const { reportId }  = useLocalSearchParams<{ reportId: string }>();
-  const insets        = useSafeAreaInsets();
-  const [report,      setReport]      = useState<ResearchReport | null>(null);
+  const { reportId } = useLocalSearchParams<{ reportId: string }>();
+  const insets = useSafeAreaInsets();
+  const { isLight } = useTheme();
+  const [report, setReport] = useState<ResearchReport | null>(null);
   const [loadingReport, setLoadingReport] = useState(true);
-  const [selectedNode, setSelectedNode]   = useState<KnowledgeGraphNode | null>(null);
+  const [selectedNode, setSelectedNode] = useState<KnowledgeGraphNode | null>(null);
 
   // ── Load report ────────────────────────────────────────────────────────────
 
@@ -80,28 +86,28 @@ export default function KnowledgeGraphScreen() {
 
       if (data) {
         setReport({
-          id:                data.id,
-          userId:            data.user_id,
-          query:             data.query,
-          depth:             data.depth,
-          focusAreas:        data.focus_areas        ?? [],
-          title:             data.title              ?? data.query,
-          executiveSummary:  data.executive_summary  ?? '',
-          sections:          data.sections           ?? [],
-          keyFindings:       data.key_findings        ?? [],
-          futurePredictions: data.future_predictions  ?? [],
-          citations:         data.citations           ?? [],
-          statistics:        data.statistics          ?? [],
-          searchQueries:     data.search_queries      ?? [],
-          sourcesCount:      data.sources_count       ?? 0,
-          reliabilityScore:  data.reliability_score   ?? 0,
-          status:            data.status,
-          agentLogs:         data.agent_logs          ?? [],
-          knowledgeGraph:    data.knowledge_graph     ?? undefined,
-          infographicData:   data.infographic_data    ?? undefined,
-          sourceImages:      data.source_images       ?? [],
-          createdAt:         data.created_at,
-          completedAt:       data.completed_at,
+          id: data.id,
+          userId: data.user_id,
+          query: data.query,
+          depth: data.depth,
+          focusAreas: data.focus_areas ?? [],
+          title: data.title ?? data.query,
+          executiveSummary: data.executive_summary ?? '',
+          sections: data.sections ?? [],
+          keyFindings: data.key_findings ?? [],
+          futurePredictions: data.future_predictions ?? [],
+          citations: data.citations ?? [],
+          statistics: data.statistics ?? [],
+          searchQueries: data.search_queries ?? [],
+          sourcesCount: data.sources_count ?? 0,
+          reliabilityScore: data.reliability_score ?? 0,
+          status: data.status,
+          agentLogs: data.agent_logs ?? [],
+          knowledgeGraph: data.knowledge_graph ?? undefined,
+          infographicData: data.infographic_data ?? undefined,
+          sourceImages: data.source_images ?? [],
+          createdAt: data.created_at,
+          completedAt: data.completed_at,
         });
       }
       setLoadingReport(false);
@@ -143,13 +149,20 @@ export default function KnowledgeGraphScreen() {
 
   const clusterCount = extended?.clusters?.length ?? 0;
 
+  // ── Theme-aware styles ─────────────────────────────────────────────────────
+
+  const bgGradient: readonly [string, string] = isLight ? ['#F5F6FB', '#FFFFFF'] : [COLORS.background, COLORS.backgroundCard];
+  const cardBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
+  const emptyBg: readonly [string, string] = isLight ? ['#EEF0F8', '#FFFFFF'] : ['#1A1A35', '#10102A'];
+  const featureBg = isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated;
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   if (loadingReport) return <LoadingOverlay visible message="Loading report…" />;
 
   if (!report) {
     return (
-      <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+      <LinearGradient colors={[COLORS.background, COLORS.backgroundCard] as readonly [string, string]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: SPACING.xl }}>
           <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
           <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700', marginTop: SPACING.md }}>
@@ -164,7 +177,7 @@ export default function KnowledgeGraphScreen() {
   }
 
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={bgGradient} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
         {/* ── Header ── */}
@@ -176,13 +189,14 @@ export default function KnowledgeGraphScreen() {
             paddingTop: SPACING.sm,
             paddingBottom: SPACING.sm,
             borderBottomWidth: 1, borderBottomColor: COLORS.border,
+            backgroundColor: isLight ? 'rgba(255,255,255,0.8)' : 'transparent',
           }}
         >
           <TouchableOpacity
             onPress={() => router.back()}
             style={{
               width: 38, height: 38, borderRadius: 12,
-              backgroundColor: COLORS.backgroundElevated,
+              backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : COLORS.backgroundElevated,
               alignItems: 'center', justifyContent: 'center',
               marginRight: SPACING.sm, flexShrink: 0,
               borderWidth: 1, borderColor: COLORS.border,
@@ -203,13 +217,12 @@ export default function KnowledgeGraphScreen() {
             </Text>
           </View>
 
-          {/* Generate / regenerate button */}
           {!generating && (
             <TouchableOpacity
               onPress={generate}
               style={{
                 flexDirection: 'row', alignItems: 'center', gap: 6,
-                backgroundColor: graph ? COLORS.backgroundElevated : `${COLORS.primary}20`,
+                backgroundColor: graph ? (isLight ? 'rgba(0,0,0,0.05)' : COLORS.backgroundElevated) : `${COLORS.primary}20`,
                 borderRadius: RADIUS.full,
                 paddingHorizontal: 14, paddingVertical: 8,
                 borderWidth: 1,
@@ -251,7 +264,7 @@ export default function KnowledgeGraphScreen() {
           {!graph && !generating && (
             <View style={{ alignItems: 'center', paddingVertical: 80 }}>
               <LinearGradient
-                colors={['#1A1A35', '#10102A']}
+                colors={emptyBg}
                 style={{
                   width: 88, height: 88, borderRadius: 26,
                   alignItems: 'center', justifyContent: 'center',
@@ -277,17 +290,16 @@ export default function KnowledgeGraphScreen() {
                 and relationship extracted from this research report.
               </Text>
 
-              {/* Feature chips */}
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginBottom: SPACING.xl }}>
                 {[
-                  { icon: 'git-branch-outline',  label: 'Cluster detection'  },
-                  { icon: 'search-outline',       label: 'Node search'        },
-                  { icon: 'layers-outline',       label: 'Type filtering'     },
-                  { icon: 'information-circle',   label: 'Rich node details'  },
+                  { icon: 'git-branch-outline', label: 'Cluster detection' },
+                  { icon: 'search-outline', label: 'Node search' },
+                  { icon: 'layers-outline', label: 'Type filtering' },
+                  { icon: 'information-circle', label: 'Rich node details' },
                 ].map(f => (
                   <View key={f.label} style={{
                     flexDirection: 'row', alignItems: 'center', gap: 6,
-                    backgroundColor: COLORS.backgroundElevated,
+                    backgroundColor: featureBg,
                     borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 6,
                     borderWidth: 1, borderColor: COLORS.border,
                   }}>
@@ -336,7 +348,6 @@ export default function KnowledgeGraphScreen() {
                 relationships, and thematic communities.
               </Text>
 
-              {/* Animated step list */}
               <View style={{ marginTop: SPACING.lg, width: '100%', paddingHorizontal: SPACING.xl }}>
                 {[
                   'Extracting named entities…',
@@ -371,13 +382,13 @@ export default function KnowledgeGraphScreen() {
                 }}
               >
                 {[
-                  { label: 'Nodes',    value: graph.nodes.length,                                icon: 'ellipse-outline',    color: COLORS.primary   },
-                  { label: 'Edges',    value: graph.edges.length,                                icon: 'git-branch-outline', color: COLORS.info      },
-                  { label: 'Clusters', value: clusterCount,                                      icon: 'grid-outline',       color: COLORS.warning   },
-                  { label: 'Types',    value: new Set(graph.nodes.map(n => n.type)).size,        icon: 'layers-outline',     color: COLORS.success   },
+                  { label: 'Nodes', value: graph.nodes.length, icon: 'ellipse-outline', color: COLORS.primary },
+                  { label: 'Edges', value: graph.edges.length, icon: 'git-branch-outline', color: COLORS.info },
+                  { label: 'Clusters', value: clusterCount, icon: 'grid-outline', color: COLORS.warning },
+                  { label: 'Types', value: new Set(graph.nodes.map(n => n.type)).size, icon: 'layers-outline', color: COLORS.success },
                 ].map(s => (
                   <View key={s.label} style={{
-                    flex: 1, backgroundColor: COLORS.backgroundCard,
+                    flex: 1, backgroundColor: cardBg,
                     borderRadius: RADIUS.lg, padding: SPACING.sm,
                     alignItems: 'center',
                     borderWidth: 1, borderColor: COLORS.border,
@@ -407,7 +418,7 @@ export default function KnowledgeGraphScreen() {
                   entering={FadeInDown.duration(350).delay(100)}
                   style={{
                     marginTop: SPACING.lg,
-                    backgroundColor: COLORS.backgroundCard,
+                    backgroundColor: cardBg,
                     borderRadius: RADIUS.xl,
                     padding: SPACING.md,
                     borderWidth: 1, borderColor: COLORS.border,
@@ -422,7 +433,7 @@ export default function KnowledgeGraphScreen() {
                   {edgeCategoryBreakdown.map(([cat, count]) => {
                     const color = EDGE_CATEGORY_COLORS[cat] ?? COLORS.textMuted;
                     const total = graph.edges.length;
-                    const pct   = Math.round((count / total) * 100);
+                    const pct = Math.round((count / total) * 100);
                     return (
                       <View key={cat} style={{ marginBottom: 8 }}>
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3 }}>
@@ -440,7 +451,7 @@ export default function KnowledgeGraphScreen() {
                           </Text>
                         </View>
                         <View style={{
-                          height: 4, backgroundColor: COLORS.backgroundElevated,
+                          height: 4, backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : COLORS.backgroundElevated,
                           borderRadius: 2, overflow: 'hidden',
                         }}>
                           <View style={{
@@ -469,7 +480,7 @@ export default function KnowledgeGraphScreen() {
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm }}>
                   {nodeTypeBreakdown.map(([type, count]) => (
                     <View key={type} style={{
-                      backgroundColor: COLORS.backgroundCard,
+                      backgroundColor: cardBg,
                       borderRadius: RADIUS.lg,
                       paddingHorizontal: 12, paddingVertical: 9,
                       flexDirection: 'row', alignItems: 'center', gap: 8,
@@ -509,7 +520,7 @@ export default function KnowledgeGraphScreen() {
                   entering={FadeInDown.duration(350).delay(300)}
                   style={{
                     marginTop: SPACING.lg,
-                    backgroundColor: COLORS.backgroundCard,
+                    backgroundColor: cardBg,
                     borderRadius: RADIUS.xl,
                     padding: SPACING.md,
                     borderWidth: 1, borderColor: COLORS.border,
@@ -521,60 +532,71 @@ export default function KnowledgeGraphScreen() {
                   }}>
                     Most Important Nodes
                   </Text>
-                  {topNodes.map((n, i) => (
-                    <View key={n.id} style={{
-                      flexDirection: 'row', alignItems: 'center',
-                      paddingVertical: 8,
-                      borderBottomWidth: i < topNodes.length - 1 ? 1 : 0,
-                      borderBottomColor: COLORS.border,
-                    }}>
-                      <View style={{
-                        width: 22, height: 22, borderRadius: 7,
-                        backgroundColor: `${NODE_TYPE_COLORS[n.type] ?? COLORS.primary}20`,
-                        alignItems: 'center', justifyContent: 'center',
-                        marginRight: SPACING.sm,
+                  {topNodes.map((n, i) => {
+                    const nodeColor = NODE_TYPE_COLORS[n.type] ?? COLORS.primary;
+                    return (
+                      <View key={n.id} style={{
+                        flexDirection: 'row', alignItems: 'center',
+                        paddingVertical: 8,
+                        borderBottomWidth: i < topNodes.length - 1 ? 1 : 0,
+                        borderBottomColor: COLORS.border,
                       }}>
-                        <Text style={{
-                          color: NODE_TYPE_COLORS[n.type] ?? COLORS.primary,
-                          fontSize: 9, fontWeight: '800',
-                        }}>
-                          {i + 1}
-                        </Text>
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={{
-                          color: COLORS.textPrimary,
-                          fontSize: FONTS.sizes.sm, fontWeight: '600',
-                        }}>
-                          {n.label}
-                        </Text>
-                        {n.description ? (
-                          <Text
-                            style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}
-                            numberOfLines={1}
-                          >
-                            {n.description}
-                          </Text>
-                        ) : null}
-                      </View>
-                      {/* Weight bar */}
-                      <View style={{ alignItems: 'flex-end', minWidth: 48 }}>
-                        <View style={{
-                          height: 3, width: 40, backgroundColor: COLORS.backgroundElevated,
-                          borderRadius: 2, overflow: 'hidden',
-                        }}>
+                        <TouchableOpacity
+                          onPress={() => setSelectedNode(n)}
+                          style={{
+                            flexDirection: 'row', alignItems: 'center',
+                            flex: 1,
+                          }}
+                        >
                           <View style={{
-                            width: `${n.weight * 10}%`, height: '100%',
-                            backgroundColor: NODE_TYPE_COLORS[n.type] ?? COLORS.primary,
-                            borderRadius: 2,
-                          }} />
+                            width: 22, height: 22, borderRadius: 7,
+                            backgroundColor: `${nodeColor}20`,
+                            alignItems: 'center', justifyContent: 'center',
+                            marginRight: SPACING.sm,
+                          }}>
+                            <Text style={{
+                              color: nodeColor,
+                              fontSize: 9, fontWeight: '800',
+                            }}>
+                              {i + 1}
+                            </Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{
+                              color: COLORS.textPrimary,
+                              fontSize: FONTS.sizes.sm, fontWeight: '600',
+                            }}>
+                              {n.label}
+                            </Text>
+                            {n.description ? (
+                              <Text
+                                style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}
+                                numberOfLines={1}
+                              >
+                                {n.description}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </TouchableOpacity>
+                        {/* Weight bar */}
+                        <View style={{ alignItems: 'flex-end', minWidth: 48 }}>
+                          <View style={{
+                            height: 3, width: 40, backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : COLORS.backgroundElevated,
+                            borderRadius: 2, overflow: 'hidden',
+                          }}>
+                            <View style={{
+                              width: `${n.weight * 10}%`, height: '100%',
+                              backgroundColor: nodeColor,
+                              borderRadius: 2,
+                            }} />
+                          </View>
+                          <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 3 }}>
+                            {n.weight}/10
+                          </Text>
                         </View>
-                        <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 3 }}>
-                          {n.weight}/10
-                        </Text>
                       </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </Animated.View>
               )}
 
@@ -584,7 +606,7 @@ export default function KnowledgeGraphScreen() {
                   entering={FadeInDown.duration(350).delay(400)}
                   style={{
                     marginTop: SPACING.md,
-                    backgroundColor: COLORS.backgroundCard,
+                    backgroundColor: cardBg,
                     borderRadius: RADIUS.xl,
                     padding: SPACING.md,
                     borderWidth: 1, borderColor: COLORS.border,
@@ -633,7 +655,7 @@ export default function KnowledgeGraphScreen() {
                 style={{
                   marginTop: SPACING.lg,
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  backgroundColor: COLORS.backgroundElevated,
+                  backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated,
                   borderRadius: RADIUS.lg, paddingVertical: 12,
                   borderWidth: 1, borderColor: COLORS.border,
                 }}

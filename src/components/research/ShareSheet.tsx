@@ -1,8 +1,6 @@
 // src/components/research/ShareSheet.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Share-summary sheet  (REDESIGN)
-// 5 rich text formats with live preview · copy · native share.
-// Drop-in compatible: export `ShareSheet`, props { visible, report, onClose }.
+// Share Sheet — FULL THEME COMPATIBILITY
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState } from 'react';
@@ -16,15 +14,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { ResearchReport } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 interface Props {
   visible: boolean;
   report: ResearchReport;
   onClose: () => void;
 }
-
-// ─── Text format builders (unchanged) ─────────────────────────────────────────
 
 function buildQuickSummary(r: ResearchReport): string {
   const date = new Date(r.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -105,17 +102,16 @@ interface Fmt {
 }
 
 const FORMATS: Fmt[] = [
-  { id: 'quick',    label: 'Quick Summary',       desc: 'Title, summary & reliability score',  icon: 'flash-outline',         color: '#6C63FF', gradient: ['#6C63FF', '#8B5CF6'], build: buildQuickSummary },
-  { id: 'full',     label: 'Full Research Brief',  desc: 'Summary, sections & key findings',     icon: 'document-text-outline', color: '#4FACFE', gradient: ['#4FACFE', '#00F2FE'], build: buildFullBrief },
-  { id: 'findings', label: 'Key Findings',         desc: 'Numbered findings + future outlook',   icon: 'bulb-outline',          color: '#43E97B', gradient: ['#43E97B', '#38F9D7'], build: buildKeyFindings },
-  { id: 'stats',    label: 'Statistics Snapshot',  desc: 'Data points & figures only',           icon: 'stats-chart-outline',   color: '#FA709A', gradient: ['#FA709A', '#FEE140'], build: buildStatsSnapshot },
-  { id: 'social',   label: 'Social Digest',        desc: 'Short-form, hashtag-ready (~280 chars)', icon: 'megaphone-outline',   color: '#F093FB', gradient: ['#F093FB', '#F5576C'], build: buildSocialDigest },
+  { id: 'quick', label: 'Quick Summary', desc: 'Title, summary & reliability score', icon: 'flash-outline', color: '#6C63FF', gradient: ['#6C63FF', '#8B5CF6'] as const, build: buildQuickSummary },
+  { id: 'full', label: 'Full Research Brief', desc: 'Summary, sections & key findings', icon: 'document-text-outline', color: '#4FACFE', gradient: ['#4FACFE', '#00F2FE'] as const, build: buildFullBrief },
+  { id: 'findings', label: 'Key Findings', desc: 'Numbered findings + future outlook', icon: 'bulb-outline', color: '#43E97B', gradient: ['#43E97B', '#38F9D7'] as const, build: buildKeyFindings },
+  { id: 'stats', label: 'Statistics Snapshot', desc: 'Data points & figures only', icon: 'stats-chart-outline', color: '#FA709A', gradient: ['#FA709A', '#FEE140'] as const, build: buildStatsSnapshot },
+  { id: 'social', label: 'Social Digest', desc: 'Short-form, hashtag-ready (~280 chars)', icon: 'megaphone-outline', color: '#F093FB', gradient: ['#F093FB', '#F5576C'] as const, build: buildSocialDigest },
 ];
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 export function ShareSheet({ visible, report, onClose }: Props) {
   const insets = useSafeAreaInsets();
+  const { isLight } = useTheme();
   const [selectedId, setSelected] = useState('quick');
   const [sharing, setSharing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -137,9 +133,12 @@ export function ShareSheet({ visible, report, onClose }: Props) {
     setTimeout(() => setCopied(false), 2200);
   };
 
+  const bgGradient: readonly [string, string] = isLight ? ['#F5F6FB', '#FFFFFF'] : ['#181834', '#0C0C1C'];
+  const previewBg = isLight ? '#FFFFFF' : '#0A0A1C';
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' }} onPress={onClose} />
+      <Pressable style={{ flex: 1, backgroundColor: getModalBackdrop(0.6) }} onPress={onClose} />
 
       <View style={{
         position: 'absolute', bottom: 0, left: 0, right: 0,
@@ -147,7 +146,7 @@ export function ShareSheet({ visible, report, onClose }: Props) {
         overflow: 'hidden', maxHeight: '90%',
         borderTopWidth: 1, borderColor: `${COLORS.primary}30`,
       }}>
-        <LinearGradient colors={['#181834', '#0C0C1C']} style={{ paddingBottom: insets.bottom + SPACING.md }}>
+        <LinearGradient colors={bgGradient} style={{ paddingBottom: insets.bottom + SPACING.md }}>
           <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
 
           <ScrollView
@@ -155,7 +154,6 @@ export function ShareSheet({ visible, report, onClose }: Props) {
             contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.md }}
             keyboardShouldPersistTaps="handled"
           >
-            {/* Header */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: SPACING.lg }}>
               <LinearGradient colors={fmt.gradient} style={{ width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' }}>
                 <Ionicons name="share-social" size={20} color="#FFF" />
@@ -166,25 +164,26 @@ export function ShareSheet({ visible, report, onClose }: Props) {
               </View>
             </View>
 
-            <Text style={labelStyle}>Choose Format</Text>
+            <Text style={labelStyle()}>Choose Format</Text>
 
             <View style={{ gap: SPACING.sm, marginBottom: SPACING.lg }}>
               {FORMATS.map((f, i) => {
                 const active = f.id === selectedId;
                 const chars = f.build(report).length;
+                const bgColor = active ? `${f.color}14` : (isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.03)');
                 return (
                   <Animated.View key={f.id} entering={FadeInDown.duration(300).delay(i * 45)}>
                     <Pressable
                       onPress={() => { setSelected(f.id); setShowPrev(false); }}
                       style={{
                         flexDirection: 'row', alignItems: 'center',
-                        backgroundColor: active ? `${f.color}14` : 'rgba(255,255,255,0.03)',
+                        backgroundColor: bgColor,
                         borderRadius: RADIUS.lg, padding: SPACING.md,
                         borderWidth: 1.5, borderColor: active ? f.color : COLORS.border,
                       }}
                     >
                       <LinearGradient
-                        colors={active ? f.gradient : ['#2A2A4A', '#1A1A35']}
+                        colors={active ? f.gradient : [COLORS.backgroundElevated, COLORS.backgroundCard] as readonly [string, string]}
                         style={{ width: 46, height: 46, borderRadius: 13, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.md, flexShrink: 0 }}
                       >
                         <Ionicons name={f.icon as any} size={21} color={active ? '#FFF' : COLORS.textMuted} />
@@ -209,13 +208,12 @@ export function ShareSheet({ visible, report, onClose }: Props) {
               })}
             </View>
 
-            {/* Preview toggle */}
             <Pressable
               onPress={() => setShowPrev(p => !p)}
               style={{
                 flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10,
-                backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: RADIUS.md,
-                borderWidth: 1, borderColor: COLORS.border, marginBottom: showPrev ? SPACING.sm : SPACING.lg,
+                backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.03)',
+                borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, marginBottom: showPrev ? SPACING.sm : SPACING.lg,
               }}
             >
               <Ionicons name={showPrev ? 'eye-off-outline' : 'eye-outline'} size={15} color={COLORS.textSecondary} />
@@ -227,7 +225,7 @@ export function ShareSheet({ visible, report, onClose }: Props) {
             {showPrev && (
               <Animated.View
                 entering={FadeInDown.duration(280)}
-                style={{ backgroundColor: '#0A0A1C', borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${fmt.color}3A`, maxHeight: 210 }}
+                style={{ backgroundColor: previewBg, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${fmt.color}3A`, maxHeight: 210 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -244,13 +242,12 @@ export function ShareSheet({ visible, report, onClose }: Props) {
               </Animated.View>
             )}
 
-            {/* Action row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
               <Pressable
                 onPress={handleCopy}
                 style={{
                   flex: 1, paddingVertical: 15, borderRadius: RADIUS.lg,
-                  backgroundColor: copied ? `${COLORS.success}18` : 'rgba(255,255,255,0.04)',
+                  backgroundColor: copied ? `${COLORS.success}18` : (isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)'),
                   alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7,
                   borderWidth: 1, borderColor: copied ? `${COLORS.success}44` : COLORS.border,
                 }}
@@ -273,7 +270,7 @@ export function ShareSheet({ visible, report, onClose }: Props) {
 
             <Pressable
               onPress={onClose}
-              style={{ marginTop: SPACING.sm, paddingVertical: 13, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: RADIUS.lg, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}
+              style={{ marginTop: SPACING.sm, paddingVertical: 13, backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.03)', borderRadius: RADIUS.lg, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}
             >
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Close</Text>
             </Pressable>
@@ -284,11 +281,13 @@ export function ShareSheet({ visible, report, onClose }: Props) {
   );
 }
 
-const labelStyle = {
-  color: COLORS.textMuted,
-  fontSize: FONTS.sizes.xs,
-  fontWeight: '700' as const,
-  letterSpacing: 1,
-  textTransform: 'uppercase' as const,
-  marginBottom: SPACING.sm,
-};
+function labelStyle() {
+  return {
+    color: COLORS.textMuted,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '700' as const,
+    letterSpacing: 1,
+    textTransform: 'uppercase' as const,
+    marginBottom: SPACING.sm,
+  };
+}

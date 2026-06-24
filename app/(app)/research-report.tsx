@@ -1,27 +1,11 @@
 // app/(app)/research-report.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Research Report — Detail Screen
+// Research Report — Detail Screen (FULL THEME COMPATIBILITY)
 //
-// Part 54A — NAVIGATION FIX (Feature 3)
-//   The Row-1 back button now navigates to the HISTORY tab
-//   (/(app)/(tabs)/history) instead of the Home tab. A report is opened from
-//   History (and from notifications), so returning to History — where the
-//   report list lives — is the expected behaviour. We use router.replace so the
-//   back stack doesn't accumulate report→home→report chains.
-//
-// Part 50.8 — BOOKMARK SUPPORT ADDED
-//   • Loads `is_pinned` into the mapped report.
-//   • Bookmark action button writes `is_pinned` to Supabase (optimistic).
-//
-// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
-//   (Issue 4) The embedded AI Research Assistant chat input could sit under the
-//     Android nav bar. We pass `bottomInset={insets.bottom}` to
-//     <ResearchAssistantChat> so its input row clears the nav/gesture bar, and
-//     drag-to-dismiss keyboard is handled inside that component.
-//   (Issue 5) The top "Report Details" bottom-sheet modal now pads its scroll
-//     content by `insets.bottom` so the last detail card isn't hidden behind the
-//     Android nav bar (SDK 54 edge-to-edge draws behind it). The chat overlay's
-//     bottom spacer also uses insets.bottom.
+// Part 54A — NAVIGATION FIX + Part 55 — FULL THEME SYSTEM
+//   All colors now derive from the active theme via COLORS object.
+//   Gradients, accents, and UI elements adapt to any theme.
+//   Uses useTheme() for light/dark mode awareness.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -41,45 +25,42 @@ import {
   Animated as RNAnimated,
   LayoutChangeEvent,
 } from 'react-native';
-import { LinearGradient }    from 'expo-linear-gradient';
-import { Ionicons }          from '@expo/vector-icons';
-import * as Haptics          from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams }    from 'expo-router';
-import { supabase }                        from '../../src/lib/supabase';
-import { ReportSectionCard }               from '../../src/components/research/ReportSection';
-import { RichText }                         from '../../src/components/research/RichText';
-import { CitationModal }                   from '../../src/components/research/CitationModal';
-import { InfographicsPanel }               from '../../src/components/research/InfographicCard';
-import { SourceImageGallery }              from '../../src/components/research/SourceImageGallery';
-import { ShareSheet }                      from '../../src/components/research/ShareSheet';
-import { LoadingOverlay }                  from '../../src/components/common/LoadingOverlay';
-import { ResearchAssistantChat }           from '../../src/components/research/ResearchAssistantChat';
-import { useResearchAssistant }            from '../../src/hooks/useResearchAssistant';
+import { router, useLocalSearchParams } from 'expo-router';
+import { supabase } from '../../src/lib/supabase';
+import { ReportSectionCard } from '../../src/components/research/ReportSection';
+import { RichText } from '../../src/components/research/RichText';
+import { CitationModal } from '../../src/components/research/CitationModal';
+import { InfographicsPanel } from '../../src/components/research/InfographicCard';
+import { SourceImageGallery } from '../../src/components/research/SourceImageGallery';
+import { ShareSheet } from '../../src/components/research/ShareSheet';
+import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
+import { ResearchAssistantChat } from '../../src/components/research/ResearchAssistantChat';
+import { useResearchAssistant } from '../../src/hooks/useResearchAssistant';
 import {
   SourceTrustBadge,
   SourceTrustSummaryBanner,
   TrustDistributionBar,
-}                                          from '../../src/components/research/SourceTrustBadge';
-import { getScoreColor, scoreSource }      from '../../src/services/sourceTrustScorer';
-import { usePublicShare }                  from '../../src/hooks/usePublicShare';
+} from '../../src/components/research/SourceTrustBadge';
+import { getScoreColor, scoreSource } from '../../src/services/sourceTrustScorer';
+import { usePublicShare } from '../../src/hooks/usePublicShare';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import { ResearchReport }                  from '../../src/types';
-import { exportReportAsPDF }               from '../../src/services/pdfExport';
-import { cacheReport, getCachedReport }    from '../../src/lib/cacheStorage';
+import { useTheme } from '../../src/context/ThemeContext';
+import { ResearchReport } from '../../src/types';
+import { exportReportAsPDF } from '../../src/services/pdfExport';
+import { cacheReport, getCachedReport } from '../../src/lib/cacheStorage';
 
-const SCREEN_W  = Dimensions.get('window').width;
-const SCREEN_H  = Dimensions.get('window').height;
-const PANEL_W   = SCREEN_W - SPACING.lg * 2;
-// FIX (issue 2): the Report Details sheet opens to a taller, fixed height so all
-// detail cards are reachable. 0.72 left it feeling cut off on taller content;
-// 0.85 gives the sheet room while still showing the dimmed backdrop above it.
-const SHEET_MAX_H  = SCREEN_H * 0.85;
+const SCREEN_W = Dimensions.get('window').width;
+const SCREEN_H = Dimensions.get('window').height;
+const PANEL_W = SCREEN_W - SPACING.lg * 2;
+const SHEET_MAX_H = SCREEN_H * 0.85;
 const SCROLL_MAX_H = SHEET_MAX_H - 90;
 
 const DEPTH_LABELS: Record<string, string> = { quick: 'Quick', deep: 'Deep Dive', expert: 'Expert' };
-const DEPTH_COLORS: Record<string, string> = { quick: COLORS.success, deep: COLORS.primary, expert: COLORS.warning };
 
 const haptic = (style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Light) => {
   try { Haptics.impactAsync(style); } catch {}
@@ -94,6 +75,8 @@ interface ActionBtnProps {
 
 function ActionBtn({ icon, onPress, active, activeColor, loading, badge, disabled }: ActionBtnProps) {
   const color = activeColor ?? COLORS.primary;
+  const { isLight } = useTheme();
+  
   return (
     <Pressable
       onPress={onPress}
@@ -101,7 +84,7 @@ function ActionBtn({ icon, onPress, active, activeColor, loading, badge, disable
       hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
       style={({ pressed }) => [{
         width: 38, height: 38, borderRadius: 12,
-        backgroundColor: active ? `${color}22` : 'rgba(255,255,255,0.05)',
+        backgroundColor: active ? `${color}22` : (isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)'),
         alignItems: 'center', justifyContent: 'center',
         borderWidth: 1, borderColor: active ? `${color}55` : COLORS.border,
         opacity: disabled ? 0.5 : pressed ? 0.7 : 1,
@@ -139,11 +122,14 @@ interface PromoCardProps {
 }
 
 function PromoCard({ icon, iconGradient, title, subtitle, badge, accentBorder, chevronColor, onPress, delay = 0 }: PromoCardProps) {
+  const { isLight } = useTheme();
+  const cardBg: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1A1A38', '#11112A'];
+  
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(delay)} style={{ marginBottom: SPACING.md }}>
       <Pressable onPress={onPress} style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }] }]}>
         <View style={{ borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: accentBorder }}>
-          <LinearGradient colors={['#1A1A38', '#11112A']} style={{ padding: SPACING.lg }}>
+          <LinearGradient colors={cardBg} style={{ padding: SPACING.lg }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
               <LinearGradient colors={iconGradient} style={{ width: 50, height: 50, borderRadius: 15, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
                 <Ionicons name={icon as any} size={23} color="#FFF" />
@@ -195,11 +181,13 @@ function SegmentedTabs({
 
   const onLayout = (e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width);
 
+  const gradientColors = COLORS.gradientPrimary;
+
   return (
     <View
       onLayout={onLayout}
       style={{
-        flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.04)',
+        flexDirection: 'row', backgroundColor: `${COLORS.textMuted}0A`,
         borderRadius: RADIUS.full, padding: pad, borderWidth: 1, borderColor: COLORS.border,
         position: 'relative', overflow: 'hidden',
       }}
@@ -209,7 +197,7 @@ function SegmentedTabs({
           position: 'absolute', top: pad, bottom: pad, left: 0, width: tabW,
           transform: [{ translateX: indicatorX }],
         }}>
-          <LinearGradient colors={COLORS.gradientPrimary} style={{ flex: 1, borderRadius: RADIUS.full, ...SHADOWS.small }} />
+          <LinearGradient colors={gradientColors} style={{ flex: 1, borderRadius: RADIUS.full, ...SHADOWS.small }} />
         </RNAnimated.View>
       )}
       {tabs.map(tab => {
@@ -226,7 +214,7 @@ function SegmentedTabs({
   );
 }
 
-// ── Public Share Modal (redesigned · same props/logic) ──────────────────────────
+// ── Public Share Modal ─────────────────────────────────────────────────────────
 
 interface PublicShareModalProps {
   visible: boolean;
@@ -248,6 +236,9 @@ function PublicShareModal({
   onClose, onCopy, onOpen, onShare, onPublish, onUnpublish,
 }: PublicShareModalProps) {
   const insets = useSafeAreaInsets();
+  const { isLight } = useTheme();
+  
+  const bgGradient: readonly [string, string] = isLight ? ['#F5F6FB', '#FFFFFF'] : ['#1A1A38', '#0A0A1A'];
 
   const handleToggle = async (newValue: boolean) => {
     if (newValue) {
@@ -266,17 +257,31 @@ function PublicShareModal({
 
   const hasLink = !!shareId;
 
+  const closeBtnStyle = {
+    width: 32, height: 32, borderRadius: 10,
+    backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)',
+    alignItems: 'center' as const, justifyContent: 'center' as const,
+    borderWidth: 1, borderColor: COLORS.border,
+  };
+
+  const secondaryBtnStyle = {
+    flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
+    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
+    backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.05)',
+    borderWidth: 1, borderColor: COLORS.border,
+  };
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={onClose}>
+      <Pressable style={{ flex: 1, backgroundColor: getModalBackdrop(0.6), justifyContent: 'flex-end' }} onPress={onClose}>
         <Pressable onPress={e => e.stopPropagation()}>
           <View style={{ borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden', borderTopWidth: 1, borderColor: `${isActive ? COLORS.success : COLORS.primary}40` }}>
-            <LinearGradient colors={['#1A1A38', '#0A0A1A']} style={{ paddingBottom: insets.bottom + SPACING.lg }}>
+            <LinearGradient colors={bgGradient} style={{ paddingBottom: insets.bottom + SPACING.lg }}>
               <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
 
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-                  <LinearGradient colors={isActive ? [COLORS.success, `${COLORS.success}CC`] : ['#6C63FF', '#8B5CF6']} style={{ width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
+                  <LinearGradient colors={isActive ? [COLORS.success, `${COLORS.success}CC` as const] : COLORS.gradientPrimary} style={{ width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
                     <Ionicons name={isActive ? 'globe' : 'globe-outline'} size={19} color="#FFF" />
                   </LinearGradient>
                   <View>
@@ -286,7 +291,7 @@ function PublicShareModal({
                     </Text>
                   </View>
                 </View>
-                <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={closeBtn}>
+                <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={closeBtnStyle}>
                   <Ionicons name="close" size={16} color={COLORS.textMuted} />
                 </Pressable>
               </View>
@@ -294,7 +299,7 @@ function PublicShareModal({
               <View style={{ paddingHorizontal: SPACING.lg }}>
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                  backgroundColor: isActive ? `${COLORS.success}12` : 'rgba(255,255,255,0.04)',
+                  backgroundColor: isActive ? `${COLORS.success}12` : (isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)'),
                   borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
                   borderWidth: 1, borderColor: isActive ? `${COLORS.success}33` : COLORS.border,
                 }}>
@@ -319,8 +324,10 @@ function PublicShareModal({
                 </View>
 
                 <View style={{
-                  backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
-                  borderWidth: 1, borderColor: shareUrl && isActive ? `${COLORS.primary}33` : COLORS.border, minHeight: 56, justifyContent: 'center',
+                  backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)',
+                  borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
+                  borderWidth: 1, borderColor: shareUrl && isActive ? `${COLORS.primary}33` : COLORS.border,
+                  minHeight: 56, justifyContent: 'center',
                 }}>
                   {isLoading ? (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -346,22 +353,24 @@ function PublicShareModal({
                 }}>
                   <Ionicons name="information-circle-outline" size={16} color={COLORS.info} style={{ marginTop: 1 }} />
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 18 }}>
-                    Visitors get{' '}<Text style={{ color: COLORS.textPrimary, fontWeight: '800' }}>3 free AI questions</Text>{' '}about this report, then they&apos;re prompted to download DeepDive AI.
+                    Visitors get <Text style={{ color: COLORS.textPrimary, fontWeight: '800' }}>3 free AI questions</Text> about this report, then they're prompted to download DeepDive AI.
                   </Text>
                 </View>
 
                 {isActive && (
                   <View style={{ gap: SPACING.sm }}>
-                    <Pressable onPress={onCopy} style={({ pressed }) => [primaryBtn(shareUrl ? COLORS.primary : COLORS.backgroundElevated), { opacity: pressed ? 0.85 : 1, borderWidth: shareUrl ? 0 : 1, borderColor: COLORS.border }]}>
+                    <Pressable onPress={onCopy} style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: RADIUS.full, backgroundColor: shareUrl ? COLORS.primary : COLORS.backgroundElevated, opacity: pressed ? 0.85 : 1, borderWidth: shareUrl ? 0 : 1, borderColor: COLORS.border }
+                    ]}>
                       <Ionicons name="copy-outline" size={18} color={shareUrl ? '#FFF' : COLORS.textMuted} />
                       <Text style={{ color: shareUrl ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Copy Link</Text>
                     </Pressable>
-                    <Pressable onPress={onShare} style={({ pressed }) => [secondaryBtn, { opacity: pressed ? 0.85 : 1 }]}>
+                    <Pressable onPress={onShare} style={({ pressed }) => [secondaryBtnStyle, { opacity: pressed ? 0.85 : 1 }]}>
                       <Ionicons name="share-social-outline" size={18} color={COLORS.textSecondary} />
                       <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Share via…</Text>
                     </Pressable>
                     {shareUrl && (
-                      <Pressable onPress={onOpen} style={({ pressed }) => [secondaryBtn, { opacity: pressed ? 0.85 : 1 }]}>
+                      <Pressable onPress={onOpen} style={({ pressed }) => [secondaryBtnStyle, { opacity: pressed ? 0.85 : 1 }]}>
                         <Ionicons name="open-outline" size={18} color={COLORS.textSecondary} />
                         <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>Preview in Browser</Text>
                       </Pressable>
@@ -370,16 +379,20 @@ function PublicShareModal({
                 )}
 
                 {!isActive && hasLink && (
-                  <Pressable onPress={() => handleToggle(true)} disabled={isToggling} style={({ pressed }) => [primaryBtn(COLORS.primary), { opacity: pressed || isToggling ? 0.7 : 1 }]}>
+                  <Pressable onPress={() => handleToggle(true)} disabled={isToggling} style={({ pressed }) => [
+                    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: RADIUS.full, backgroundColor: COLORS.primary, opacity: pressed || isToggling ? 0.7 : 1 }
+                  ]}>
                     {isToggling ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="globe-outline" size={18} color="#FFF" />}
                     <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Re-publish Report</Text>
                   </Pressable>
                 )}
 
                 {!hasLink && !isLoading && (
-                  <Pressable onPress={() => handleToggle(true)} style={({ pressed }) => [primaryBtn(COLORS.primary), { opacity: pressed ? 0.85 : 1 }]}>
+                  <Pressable onPress={() => handleToggle(true)} style={({ pressed }) => [
+                    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: RADIUS.full, backgroundColor: COLORS.primary, opacity: pressed ? 0.85 : 1 }
+                  ]}>
                     <Ionicons name="globe-outline" size={18} color="#FFF" />
-                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Generate &amp; Publish Link</Text>
+                    <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Generate & Publish Link</Text>
                   </Pressable>
                 )}
               </View>
@@ -391,65 +404,39 @@ function PublicShareModal({
   );
 }
 
-// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
-const closeBtn = {
-  width: 32, height: 32, borderRadius: 10,
-  backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center' as const, justifyContent: 'center' as const,
-  borderWidth: 1,
-  get borderColor() { return COLORS.border; },
-};
-
-// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
-const secondaryBtn = {
-  flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
-  gap: 8, paddingVertical: 14, borderRadius: RADIUS.full,
-  backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1,
-  get borderColor() { return COLORS.border; },
-};
-
-// primaryBtn is already a function — it re-reads COLORS every time, so leave it.
-function primaryBtn(bg: string) {
-  return {
-    flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const,
-    gap: 8, paddingVertical: 14, borderRadius: RADIUS.full, backgroundColor: bg,
-  };
-}
+// Helper for modal backdrop - imported from theme
+import { getModalBackdrop } from '../../src/constants/theme';
 
 // ── Main Screen ────────────────────────────────────────────────────────────────
 
 export default function ResearchReportScreen() {
   const { reportId } = useLocalSearchParams<{ reportId: string }>();
-  const insets       = useSafeAreaInsets();
+  const insets = useSafeAreaInsets();
+  const { isLight } = useTheme();
 
-  const [report,            setReport]            = useState<ResearchReport | null>(null);
-  const [loading,           setLoading]           = useState(true);
-  const [activeTab,         setActiveTab]         = useState<'report' | 'findings' | 'sources'>('report');
-  const [showChat,          setShowChat]          = useState(false);
-  const [showCitations,     setShowCitations]     = useState(false);
-  const [showShareSheet,    setShowShareSheet]    = useState(false);
-  const [exporting,         setExporting]         = useState(false);
-  const [isFromCache,       setIsFromCache]       = useState(false);
-  const [visualMode,        setVisualMode]        = useState(true);
+  const [report, setReport] = useState<ResearchReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'report' | 'findings' | 'sources'>('report');
+  const [showChat, setShowChat] = useState(false);
+  const [showCitations, setShowCitations] = useState(false);
+  const [showShareSheet, setShowShareSheet] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [isFromCache, setIsFromCache] = useState(false);
+  const [visualMode, setVisualMode] = useState(true);
   const [showReportDetails, setShowReportDetails] = useState(false);
-  const [showPublicShare,   setShowPublicShare]   = useState(false);
+  const [showPublicShare, setShowPublicShare] = useState(false);
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [bookmarking, setBookmarking] = useState(false);
 
-  // Part 50.8: bookmark state for this report
-  const [isBookmarked,      setIsBookmarked]      = useState(false);
-  const [bookmarking,       setBookmarking]       = useState(false);
-
-  const scrollY   = useRef(new RNAnimated.Value(0)).current;
-  const [contentH,  setContentH]  = useState(0);
+  const scrollY = useRef(new RNAnimated.Value(0)).current;
+  const [contentH, setContentH] = useState(0);
   const [scrollerH, setScrollerH] = useState(0);
 
-  const assistant   = useResearchAssistant(report);
+  const assistant = useResearchAssistant(report);
   const publicShare = usePublicShare(report?.id ?? null);
 
   useEffect(() => { if (reportId) loadReport(); }, [reportId]);
 
-  // ── Part 54A (Feature 3): back button → History tab ──────────────────────
-  // A report is reached from History (or a notification), so "back" returns to
-  // the History tab where the report list lives — not Home. router.replace keeps
-  // the back stack from accumulating report→home→report chains.
   const handleBackToHistory = () => {
     router.replace('/(app)/(tabs)/history' as any);
   };
@@ -479,39 +466,39 @@ export default function ResearchReportScreen() {
       }
 
       const mapped: ResearchReport = {
-        id:                data.id,
-        userId:            data.user_id,
-        query:             data.query,
-        depth:             data.depth,
-        focusAreas:        data.focus_areas        ?? [],
-        title:             data.title              ?? data.query,
-        executiveSummary:  data.executive_summary  ?? '',
-        sections:          data.sections           ?? [],
-        keyFindings:       data.key_findings        ?? [],
-        futurePredictions: data.future_predictions  ?? [],
+        id: data.id,
+        userId: data.user_id,
+        query: data.query,
+        depth: data.depth,
+        focusAreas: data.focus_areas ?? [],
+        title: data.title ?? data.query,
+        executiveSummary: data.executive_summary ?? '',
+        sections: data.sections ?? [],
+        keyFindings: data.key_findings ?? [],
+        futurePredictions: data.future_predictions ?? [],
         citations: (data.citations ?? []).map((c: any) => ({
           ...c,
           trustScore: c.trustScore ?? scoreSource(c.url ?? '', c.source),
         })),
-        statistics:        data.statistics          ?? [],
-        searchQueries:     data.search_queries      ?? [],
-        sourcesCount:      data.sources_count       ?? 0,
-        reliabilityScore:  data.reliability_score   ?? 0,
-        status:            data.status,
-        errorMessage:      data.error_message,
-        agentLogs:         data.agent_logs          ?? [],
-        isPinned:          data.is_pinned           ?? false,
-        exportCount:       data.export_count        ?? 0,
-        viewCount:         data.view_count          ?? 0,
-        knowledgeGraph:    data.knowledge_graph     ?? undefined,
-        infographicData:   data.infographic_data    ?? undefined,
-        sourceImages:      data.source_images       ?? [],
-        presentationId:    data.presentation_id     ?? undefined,
-        slideCount:        data.slide_count         ?? 0,
-        academicPaperId:   data.academic_paper_id   ?? undefined,
-        researchMode:      data.research_mode       ?? 'standard',
-        createdAt:         data.created_at,
-        completedAt:       data.completed_at,
+        statistics: data.statistics ?? [],
+        searchQueries: data.search_queries ?? [],
+        sourcesCount: data.sources_count ?? 0,
+        reliabilityScore: data.reliability_score ?? 0,
+        status: data.status,
+        errorMessage: data.error_message,
+        agentLogs: data.agent_logs ?? [],
+        isPinned: data.is_pinned ?? false,
+        exportCount: data.export_count ?? 0,
+        viewCount: data.view_count ?? 0,
+        knowledgeGraph: data.knowledge_graph ?? undefined,
+        infographicData: data.infographic_data ?? undefined,
+        sourceImages: data.source_images ?? [],
+        presentationId: data.presentation_id ?? undefined,
+        slideCount: data.slide_count ?? 0,
+        academicPaperId: data.academic_paper_id ?? undefined,
+        researchMode: data.research_mode ?? 'standard',
+        createdAt: data.created_at,
+        completedAt: data.completed_at,
       };
 
       setReport(mapped);
@@ -526,7 +513,6 @@ export default function ResearchReportScreen() {
     }
   };
 
-  // Part 50.8: bookmark toggle — writes the same is_pinned field as History
   const handleToggleBookmark = async () => {
     if (!report || bookmarking) return;
     const next = !isBookmarked;
@@ -575,8 +561,8 @@ export default function ResearchReportScreen() {
     });
   };
 
-  const handlePublicShareCopy   = async () => { await publicShare.copyUrl(); setShowPublicShare(false); };
-  const handlePublicShareOpen   = async () => { const url = publicShare.shareUrl; if (url && await Linking.canOpenURL(url)) await Linking.openURL(url); };
+  const handlePublicShareCopy = async () => { await publicShare.copyUrl(); setShowPublicShare(false); };
+  const handlePublicShareOpen = async () => { const url = publicShare.shareUrl; if (url && await Linking.canOpenURL(url)) await Linking.openURL(url); };
   const handlePublicShareNative = async () => { await publicShare.shareReport(); setShowPublicShare(false); };
 
   const openURL = async (url: string) => {
@@ -591,10 +577,10 @@ export default function ResearchReportScreen() {
     : (report?.reliabilityScore ?? 0) >= 6 ? COLORS.warning
     : COLORS.error;
 
-  const hasVisuals       = (report?.infographicData?.charts.length ?? 0) > 0 || (report?.infographicData?.stats.length ?? 0) > 0 || (report?.sourceImages?.length ?? 0) > 0 || !!report?.knowledgeGraph;
-  const hasPresentation  = !!report?.presentationId;
+  const hasVisuals = (report?.infographicData?.charts.length ?? 0) > 0 || (report?.infographicData?.stats.length ?? 0) > 0 || (report?.sourceImages?.length ?? 0) > 0 || !!report?.knowledgeGraph;
+  const hasPresentation = !!report?.presentationId;
   const hasAcademicPaper = !!report?.academicPaperId;
-  const isAcademicMode   = report?.researchMode === 'academic';
+  const isAcademicMode = report?.researchMode === 'academic';
 
   const sortedCitations = report?.citations
     ? [...report.citations].sort((a, b) => {
@@ -611,28 +597,35 @@ export default function ResearchReportScreen() {
   if (loading && !report) return <LoadingOverlay visible message="Loading report…" />;
   if (!report) return null;
 
-  const depthColor = DEPTH_COLORS[report.depth] ?? COLORS.primary;
+  const depthColor = (() => {
+    const colors = { quick: COLORS.success, deep: COLORS.primary, expert: COLORS.warning };
+    return colors[report.depth as keyof typeof colors] ?? COLORS.primary;
+  })();
 
   const statTiles = [
-    { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline',            color: COLORS.info },
-    { label: 'Citations',   value: String(report.citations.length), icon: 'link-outline',             color: COLORS.primary },
+    { label: 'Sources', value: String(report.sourcesCount), icon: 'globe-outline', color: COLORS.info },
+    { label: 'Citations', value: String(report.citations.length), icon: 'link-outline', color: COLORS.primary },
     { label: 'Reliability', value: `${report.reliabilityScore}/10`, icon: 'shield-checkmark-outline', color: reliabilityColor },
     ...(avgSourceQuality !== null ? [{ label: 'Src Quality', value: `${avgSourceQuality}/10`, icon: 'star-outline', color: getScoreColor(avgSourceQuality) }] : []),
   ];
 
+  const bgGradient: readonly [string, string, string] = isLight ? ['#F5F6FB', '#FFFFFF', '#EEF0F8'] : [COLORS.background, '#0B0B1E', COLORS.backgroundCard];
+  const headerGradient: readonly [string, string] = isLight ? ['#EEF0F8', '#FFFFFF'] : ['#16162F', '#0E0E22'];
+
   return (
-    <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={bgGradient} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {/* ══ FIXED HERO HEADER ══ */}
         <View style={{ zIndex: 10 }}>
-          <LinearGradient colors={['#16162F', '#0E0E22']} style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+          <LinearGradient colors={headerGradient} style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
             {/* Row 1 */}
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: 6, gap: SPACING.sm }}>
               <Pressable
                 onPress={handleBackToHistory}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={({ pressed }) => [{
-                  width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
+                  width: 38, height: 38, borderRadius: 12,
+                  backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
                   alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border,
                   flexShrink: 0, opacity: pressed ? 0.7 : 1,
                 }]}
@@ -654,19 +647,18 @@ export default function ResearchReportScreen() {
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', flex: 1, letterSpacing: -0.2 }} numberOfLines={1} ellipsizeMode="tail">
                   {report.title}
                 </Text>
-                <View style={{ width: 22, height: 22, borderRadius: 7, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <View style={{ width: 22, height: 22, borderRadius: 7, backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                   <Ionicons name="chevron-down" size={13} color={COLORS.textMuted} />
                 </View>
               </Pressable>
 
-              {/* Part 50.8: quick bookmark toggle in the top row */}
               <Pressable
                 onPress={handleToggleBookmark}
                 disabled={bookmarking}
                 hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
                 style={({ pressed }) => [{
                   width: 38, height: 38, borderRadius: 12,
-                  backgroundColor: isBookmarked ? `${COLORS.primary}22` : 'rgba(255,255,255,0.05)',
+                  backgroundColor: isBookmarked ? `${COLORS.primary}22` : (isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)'),
                   alignItems: 'center', justifyContent: 'center',
                   borderWidth: 1, borderColor: isBookmarked ? `${COLORS.primary}55` : COLORS.border,
                   flexShrink: 0, opacity: pressed ? 0.7 : 1,
@@ -708,12 +700,6 @@ export default function ResearchReportScreen() {
           </LinearGradient>
         </View>
 
-        {/* FIX (issue 3 — chat broken on Android): behavior="height" on Android
-            shrank the whole container (header, tabs, chat) and double-compensated
-            against SDK 54 'pan', breaking the embedded AI chat layout and leaving
-            a gap. Android now uses behavior={undefined} so the OS 'pan' handles
-            the keyboard; iOS keeps 'padding'. The chat is a flex column
-            (message list + input row) that lays out correctly under 'pan'. */}
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
           {hasVisuals && (
             <View style={{
@@ -723,7 +709,7 @@ export default function ResearchReportScreen() {
               borderBottomWidth: 1, borderBottomColor: visualMode ? `${COLORS.primary}18` : COLORS.border,
             }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
-                <LinearGradient colors={visualMode ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
+                <LinearGradient colors={visualMode ? COLORS.gradientPrimary : [COLORS.backgroundElevated, COLORS.backgroundCard] as readonly [string, string]} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
                   <Ionicons name="bar-chart" size={15} color="#FFF" />
                 </LinearGradient>
                 <View>
@@ -733,7 +719,12 @@ export default function ResearchReportScreen() {
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {report.knowledgeGraph && (
-                  <Pressable onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 6, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Pressable onPress={() => router.push({ pathname: '/(app)/knowledge-graph' as any, params: { reportId: report.id } })} style={{
+                    flexDirection: 'row', alignItems: 'center', gap: 4,
+                    backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
+                    borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 6,
+                    borderWidth: 1, borderColor: COLORS.border
+                  }}>
                     <Ionicons name="git-network-outline" size={12} color={COLORS.primaryLight} />
                     <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Graph</Text>
                   </Pressable>
@@ -768,8 +759,8 @@ export default function ResearchReportScreen() {
               <Animated.View entering={FadeInDown.duration(400)} style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
                 {statTiles.map(stat => (
                   <View key={stat.label} style={{ flex: 1, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${stat.color}33` }}>
-                    <LinearGradient colors={['#1A1A38', '#12122A']} style={{ padding: SPACING.sm, alignItems: 'center' }}>
-                      <LinearGradient colors={[stat.color, `${stat.color}99`]} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 6 }}>
+                    <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1A1A38', '#12122A']} style={{ padding: SPACING.sm, alignItems: 'center' }}>
+                      <LinearGradient colors={[stat.color, `${stat.color}99`] as readonly [string, string]} style={{ width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 6 }}>
                         <Ionicons name={stat.icon as any} size={15} color="#FFF" />
                       </LinearGradient>
                       <Text style={{ color: stat.color, fontSize: FONTS.sizes.md, fontWeight: '900' }}>{stat.value}</Text>
@@ -789,7 +780,7 @@ export default function ResearchReportScreen() {
 
                   <Animated.View entering={FadeInDown.duration(400).delay(100)}>
                     <View style={{ borderRadius: RADIUS.xl, marginBottom: SPACING.lg, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}2A` }}>
-                      <LinearGradient colors={['#1B1B3C', '#121228']} style={{ padding: SPACING.lg }}>
+                      <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1B1B3C', '#121228']} style={{ padding: SPACING.lg }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md }}>
                           <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
                             <Ionicons name="newspaper" size={16} color="#FFF" />
@@ -814,7 +805,7 @@ export default function ResearchReportScreen() {
 
                   <PromoCard
                     icon={publicShare.isActive ? 'globe' : 'globe-outline'}
-                    iconGradient={publicShare.isActive ? [COLORS.success, `${COLORS.success}BB`] : ['#6C63FF', '#4A42CC']}
+                    iconGradient={publicShare.isActive ? [COLORS.success, `${COLORS.success}BB` as const] : COLORS.gradientPrimary}
                     title={publicShare.isActive ? 'Public Link Active' : (publicShare.shareId ? 'Unpublished' : 'Share as Public Page')}
                     subtitle={publicShare.isActive ? 'Anyone with the link can read this · 3 free AI questions for visitors' : (publicShare.shareId ? 'Link is hidden · Tap to re-publish' : 'Generate a public URL · Visitors get 3 free AI questions · Great for sharing')}
                     badge={publicShare.isActive ? { text: 'LIVE', color: COLORS.success } : (publicShare.shareId ? { text: 'UNPUBLISHED', color: COLORS.warning } : undefined)}
@@ -825,7 +816,7 @@ export default function ResearchReportScreen() {
 
                   <PromoCard
                     icon="school"
-                    iconGradient={['#6C63FF', '#4A42CC']}
+                    iconGradient={COLORS.gradientPrimary}
                     title={hasAcademicPaper ? 'View Academic Paper' : 'Generate Academic Paper'}
                     subtitle={hasAcademicPaper ? 'Abstract · Introduction · Literature Review · Methodology · Findings · Conclusion' : 'Convert this report into a full peer-review–quality academic paper'}
                     badge={hasAcademicPaper ? { text: 'READY', color: COLORS.primary } : undefined}
@@ -836,7 +827,7 @@ export default function ResearchReportScreen() {
 
                   <PromoCard
                     icon="easel"
-                    iconGradient={['#6C63FF', '#8B5CF6']}
+                    iconGradient={COLORS.gradientPrimary}
                     title={hasPresentation ? 'View Presentation' : 'Generate Slides'}
                     subtitle={hasPresentation ? 'Your AI presentation is ready · Export as PPTX, PDF or HTML' : 'Convert this report into a beautiful slide deck with AI'}
                     badge={hasPresentation ? { text: `${report.slideCount} SLIDES`, color: COLORS.accent } : undefined}
@@ -847,7 +838,7 @@ export default function ResearchReportScreen() {
 
                   <PromoCard
                     icon="chatbubble-ellipses"
-                    iconGradient={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'AA'] : COLORS.gradientPrimary}
+                    iconGradient={assistant.isEmbedded ? [COLORS.success, `${COLORS.success}AA` as const] : COLORS.gradientPrimary}
                     title="AI Research Assistant"
                     subtitle="7 modes · RAG search · Follow-up questions"
                     badge={assistant.isEmbedded ? { text: 'RAG READY', color: COLORS.success, icon: 'sparkles' } : undefined}
@@ -860,10 +851,10 @@ export default function ResearchReportScreen() {
 
               {activeTab === 'findings' && (
                 <>
-                  <Text style={sectionLabel}>Key Findings</Text>
+                  <Text style={[sectionLabelStyle(), { marginBottom: SPACING.md }]}>Key Findings</Text>
                   {report.keyFindings.map((finding, i) => (
                     <Animated.View key={i} entering={FadeInDown.duration(350).delay(i * 50)} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}>
-                      <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start', borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
+                      <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#16162F', '#101024']} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start', borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
                         <LinearGradient colors={COLORS.gradientPrimary} style={{ width: 26, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
                           <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '900' }}>{i + 1}</Text>
                         </LinearGradient>
@@ -874,10 +865,10 @@ export default function ResearchReportScreen() {
 
                   {report.futurePredictions.length > 0 && (
                     <>
-                      <Text style={[sectionLabel, { marginTop: SPACING.lg }]}>Future Predictions</Text>
+                      <Text style={[sectionLabelStyle(), { marginTop: SPACING.lg, marginBottom: SPACING.md }]}>Future Predictions</Text>
                       {report.futurePredictions.map((pred, i) => (
                         <View key={i} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.warning}2A` }}>
-                          <LinearGradient colors={[`${COLORS.warning}14`, `${COLORS.warning}06`]} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start' }}>
+                          <LinearGradient colors={[`${COLORS.warning}14`, `${COLORS.warning}06`] as readonly [string, string]} style={{ padding: SPACING.md, flexDirection: 'row', alignItems: 'flex-start' }}>
                             <Ionicons name="telescope" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
                             <RichText inline content={pred} highlightStats accent={COLORS.warning} size={FONTS.sizes.sm} color={COLORS.textSecondary} lineHeight={21} style={{ flex: 1 }} />
                           </LinearGradient>
@@ -888,10 +879,10 @@ export default function ResearchReportScreen() {
 
                   {report.statistics.length > 0 && (
                     <>
-                      <Text style={[sectionLabel, { marginTop: SPACING.lg }]}>Key Statistics</Text>
+                      <Text style={[sectionLabelStyle(), { marginTop: SPACING.lg, marginBottom: SPACING.md }]}>Key Statistics</Text>
                       {report.statistics.slice(0, 10).map((stat, i) => (
                         <View key={i} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}22` }}>
-                          <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md }}>
+                          <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#16162F', '#101024']} style={{ padding: SPACING.md }}>
                             <Text style={{ color: COLORS.primaryLight, fontSize: FONTS.sizes.lg, fontWeight: '900' }}>{stat.value}</Text>
                             <RichText inline content={stat.context} highlightStats accent={COLORS.primaryLight} size={FONTS.sizes.sm} color={COLORS.textPrimary} lineHeight={19} style={{ marginTop: 4 }} />
                             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 4 }}>Source: {stat.source}</Text>
@@ -917,7 +908,7 @@ export default function ResearchReportScreen() {
                     </Animated.View>
                   )}
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
-                    <Text style={sectionLabel}>{sortedCitations.length} Sources · Sorted by Trust</Text>
+                    <Text style={sectionLabelStyle()}>{sortedCitations.length} Sources · Sorted by Trust</Text>
                     <Pressable onPress={() => setShowCitations(true)} style={{ backgroundColor: `${COLORS.primary}1A`, borderRadius: RADIUS.full, paddingHorizontal: 13, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: `${COLORS.primary}40` }}>
                       <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
                       <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Cite</Text>
@@ -926,7 +917,7 @@ export default function ResearchReportScreen() {
 
                   {sortedCitations.map((c, i) => (
                     <Pressable key={c.id ?? i} onPress={() => openURL(c.url)} style={{ borderRadius: RADIUS.lg, marginBottom: SPACING.sm, overflow: 'hidden', borderWidth: 1, borderColor: c.trustScore?.tier === 1 ? `${COLORS.success}33` : c.trustScore?.tier === 2 ? `${COLORS.primary}2A` : COLORS.border }}>
-                      <LinearGradient colors={['#16162F', '#101024']} style={{ padding: SPACING.md }}>
+                      <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#16162F', '#101024']} style={{ padding: SPACING.md }}>
                         <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
                           <View style={{ width: 24, height: 24, borderRadius: 7, backgroundColor: c.trustScore?.tier === 1 ? `${COLORS.success}22` : `${COLORS.primary}22`, alignItems: 'center', justifyContent: 'center', marginRight: 9, flexShrink: 0 }}>
                             <Text style={{ color: c.trustScore?.tier === 1 ? COLORS.success : COLORS.primary, fontSize: 10, fontWeight: '900' }}>{i + 1}</Text>
@@ -944,13 +935,13 @@ export default function ResearchReportScreen() {
                   {report.searchQueries.length > 0 && (
                     <View style={{ marginTop: SPACING.lg }}>
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
-                        <Text style={sectionLabel}>{report.searchQueries.length} Search Queries</Text>
+                        <Text style={sectionLabelStyle()}>{report.searchQueries.length} Search Queries</Text>
                         <View style={{ backgroundColor: `${COLORS.info}1A`, borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 4, borderWidth: 1, borderColor: `${COLORS.info}2A` }}>
                           <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '800' }}>{report.sourcesCount} UNIQUE SOURCES</Text>
                         </View>
                       </View>
                       {report.searchQueries.map((q, i) => (
-                        <View key={i} style={{ backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 9, marginBottom: 6, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
+                        <View key={i} style={{ backgroundColor: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: 9, marginBottom: 6, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border }}>
                           <Ionicons name="search-outline" size={14} color={COLORS.textMuted} style={{ marginRight: 9 }} />
                           <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, flex: 1 }}>{q}</Text>
                         </View>
@@ -963,10 +954,10 @@ export default function ResearchReportScreen() {
           )}
 
           {!showChat && (
-            <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: 'rgba(8,8,22,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
+            <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.sm, backgroundColor: isLight ? 'rgba(245,246,251,0.97)' : 'rgba(8,8,22,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Pressable onPress={() => setShowChat(true)}>
                 <LinearGradient
-                  colors={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'CC'] : COLORS.gradientPrimary}
+                  colors={assistant.isEmbedded ? [COLORS.success, `${COLORS.success}CC` as const] : COLORS.gradientPrimary}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                   style={{ borderRadius: RADIUS.full, paddingVertical: 15, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, ...SHADOWS.medium }}
                 >
@@ -983,7 +974,7 @@ export default function ResearchReportScreen() {
             <Animated.View entering={FadeIn.duration(200)} style={{ flex: 1, backgroundColor: COLORS.backgroundCard, borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Pressable onPress={() => setShowChat(false)} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
-                  <LinearGradient colors={assistant.isEmbedded ? [COLORS.success, COLORS.success + 'AA'] : COLORS.gradientPrimary} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
+                  <LinearGradient colors={assistant.isEmbedded ? [COLORS.success, `${COLORS.success}AA` as const] : COLORS.gradientPrimary} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
                     <Ionicons name="chatbubble-ellipses" size={15} color="#FFF" />
                   </LinearGradient>
                   <View>
@@ -993,10 +984,6 @@ export default function ResearchReportScreen() {
                 </View>
                 <Ionicons name="chevron-down" size={20} color={COLORS.textMuted} />
               </Pressable>
-              {/* FIX (issue 4): pass bottomInset so the chat input clears the
-                  Android nav/gesture bar. The chat handles drag-to-dismiss keyboard
-                  internally. The previous height:insets.bottom spacer is removed
-                  because the inset now lives inside the chat's input row. */}
               <ResearchAssistantChat assistant={assistant} reportTitle={report.title} bottomInset={insets.bottom} />
             </Animated.View>
           )}
@@ -1022,10 +1009,10 @@ export default function ResearchReportScreen() {
       />
 
       <Modal visible={showReportDetails} transparent animationType="slide" onRequestClose={() => setShowReportDetails(false)}>
-        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={() => setShowReportDetails(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: getModalBackdrop(0.6), justifyContent: 'flex-end' }} onPress={() => setShowReportDetails(false)}>
           <Pressable onPress={e => e.stopPropagation()} style={{ height: SHEET_MAX_H }}>
             <View style={{ borderTopLeftRadius: 30, borderTopRightRadius: 30, overflow: 'hidden', borderTopWidth: 1, borderColor: COLORS.border }}>
-              <LinearGradient colors={['#1A1A38', '#0A0A1A']} style={{ paddingTop: SPACING.sm }}>
+              <LinearGradient colors={isLight ? ['#F5F6FB', '#FFFFFF'] : ['#1A1A38', '#0A0A1A']} style={{ paddingTop: SPACING.sm }}>
                 <View style={{ width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, marginBottom: SPACING.sm }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, flex: 1 }}>
@@ -1037,24 +1024,22 @@ export default function ResearchReportScreen() {
                       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }} numberOfLines={1}>{report.title}</Text>
                     </View>
                   </View>
-                  <Pressable onPress={() => setShowReportDetails(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={closeBtn}>
+                  <Pressable onPress={() => setShowReportDetails(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={{
+                    width: 32, height: 32, borderRadius: 10,
+                    backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)',
+                    alignItems: 'center', justifyContent: 'center',
+                    borderWidth: 1, borderColor: COLORS.border,
+                  }}>
                     <Ionicons name="close" size={16} color={COLORS.textMuted} />
                   </Pressable>
                 </View>
 
-                {/* FIX (issue 2): use a fixed height (not maxHeight) so the sheet
-                    always opens to its full size and every detail card is
-                    scrollable into view, instead of collapsing to content height
-                    and appearing "not fully open". */}
                 <View style={{ height: SCROLL_MAX_H }}>
                   <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}
                     contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xs, paddingBottom: SPACING.lg + insets.bottom, gap: SPACING.sm }}
                     scrollEventThrottle={16}
                     nestedScrollEnabled
                     keyboardShouldPersistTaps="handled"
-                    // FIX: lock to vertical so diagonal/imprecise drags that begin
-                    // on a card still scroll, and make sure the ScrollView always
-                    // owns the vertical gesture from any child component.
                     directionalLockEnabled
                     alwaysBounceVertical
                     canCancelContentTouches
@@ -1062,15 +1047,15 @@ export default function ResearchReportScreen() {
                     onContentSizeChange={(_, h) => setContentH(h)}
                     onLayout={e => setScrollerH(e.nativeEvent.layout.height)}>
 
-                    <View style={detailCard(`${COLORS.primary}30`)}>
-                      <Text style={detailLabel}>Full Title</Text>
+                    <View style={detailCardStyle(`${COLORS.primary}30`, isLight)}>
+                      <Text style={detailLabelStyle()}>Full Title</Text>
                       <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', lineHeight: 24 }}>{report.title}</Text>
                     </View>
 
-                    <View style={detailCard(COLORS.border)}>
+                    <View style={detailCardStyle(COLORS.border, isLight)}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                         <Ionicons name="search-outline" size={13} color={COLORS.primary} />
-                        <Text style={detailLabel}>Original Query</Text>
+                        <Text style={detailLabelStyle()}>Original Query</Text>
                       </View>
                       <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, fontStyle: 'italic' }}>&quot;{report.query}&quot;</Text>
                     </View>
@@ -1078,10 +1063,10 @@ export default function ResearchReportScreen() {
                     <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
                       {[
                         { icon: 'layers-outline', colors: COLORS.gradientPrimary, label: 'Depth', value: DEPTH_LABELS[report.depth], color: COLORS.textPrimary },
-                        { icon: 'shield-checkmark-outline', colors: [reliabilityColor, reliabilityColor + 'AA'] as [string, string], label: 'Reliability', value: `${report.reliabilityScore}/10`, color: reliabilityColor },
-                        { icon: 'globe-outline', colors: [COLORS.info, COLORS.info + 'AA'] as [string, string], label: 'Sources', value: String(report.sourcesCount), color: COLORS.info },
+                        { icon: 'shield-checkmark-outline', colors: [reliabilityColor, `${reliabilityColor}AA`] as readonly [string, string], label: 'Reliability', value: `${report.reliabilityScore}/10`, color: reliabilityColor },
+                        { icon: 'globe-outline', colors: [COLORS.info, `${COLORS.info}AA`] as readonly [string, string], label: 'Sources', value: String(report.sourcesCount), color: COLORS.info },
                       ].map(item => (
-                        <View key={item.label} style={[detailCard(COLORS.border), { flex: 1, alignItems: 'center', gap: 4 }]}>
+                        <View key={item.label} style={[detailCardStyle(COLORS.border, isLight), { flex: 1, alignItems: 'center', gap: 4 }]}>
                           <LinearGradient colors={item.colors} style={{ width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }}>
                             <Ionicons name={item.icon as any} size={13} color="#FFF" />
                           </LinearGradient>
@@ -1091,19 +1076,12 @@ export default function ResearchReportScreen() {
                       ))}
                     </View>
 
-                    {/* FIX: unstable_pressDelay lets a vertical drag that starts ON
-                        this card become a scroll instead of being captured
-                        immediately by the Pressable. Without it, starting a swipe
-                        on this card (or the tiles) felt "dead" — the press handler
-                        grabbed the touch before the ScrollView could claim it.
-                        (Pressable uses unstable_pressDelay; delayPressIn is a
-                        TouchableOpacity-only prop and not valid here.) */}
                     <Pressable onPress={() => { setShowReportDetails(false); setTimeout(() => setShowPublicShare(true), 300); }}
                       unstable_pressDelay={120}
-                      style={[detailCard(publicShare.isActive ? `${COLORS.success}33` : COLORS.border), { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                      style={[detailCardStyle(publicShare.isActive ? `${COLORS.success}33` : COLORS.border, isLight), { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
                       <Ionicons name={publicShare.isActive ? 'globe' : 'globe-outline'} size={16} color={publicShare.isActive ? COLORS.success : COLORS.textMuted} />
                       <View style={{ flex: 1 }}>
-                        <Text style={detailLabel}>Public Link</Text>
+                        <Text style={detailLabelStyle()}>Public Link</Text>
                         <Text style={{ color: publicShare.isActive ? COLORS.success : COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
                           {publicShare.isActive ? `Active · /r/${publicShare.shareId}` : (publicShare.shareId ? 'Unpublished · Tap to manage' : 'Not generated · Tap to create')}
                         </Text>
@@ -1112,17 +1090,17 @@ export default function ResearchReportScreen() {
                     </Pressable>
 
                     {avgSourceQuality !== null && (
-                      <View style={detailCard(`${getScoreColor(avgSourceQuality)}2A`)}>
+                      <View style={detailCardStyle(`${getScoreColor(avgSourceQuality)}2A`, isLight)}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                           <Ionicons name="star-outline" size={14} color={getScoreColor(avgSourceQuality)} />
-                          <Text style={detailLabel}>Source Quality</Text>
+                          <Text style={detailLabelStyle()}>Source Quality</Text>
                         </View>
                         <SourceTrustSummaryBanner results={sortedCitations} />
                         <View style={{ marginTop: 8 }}><TrustDistributionBar results={sortedCitations} /></View>
                       </View>
                     )}
 
-                    <View style={[detailCard(COLORS.border), { gap: 8 }]}>
+                    <View style={[detailCardStyle(COLORS.border, isLight), { gap: 8 }]}>
                       {[
                         { icon: 'time-outline', iconColor: COLORS.textMuted, label: 'Created', value: formatDate(report.createdAt) },
                         ...(report.completedAt ? [{ icon: 'checkmark-circle-outline', iconColor: COLORS.success, label: 'Completed', value: formatDate(report.completedAt) }] : []),
@@ -1145,7 +1123,7 @@ export default function ResearchReportScreen() {
                         { icon: assistant.isEmbedded ? 'sparkles' : assistant.isEmbedding ? 'sync-outline' : 'cloud-outline', color: assistant.isEmbedded ? COLORS.success : assistant.isEmbedding ? COLORS.primary : COLORS.textMuted, border: assistant.isEmbedded ? `${COLORS.success}33` : COLORS.border, label: 'RAG', value: assistant.isEmbedded ? 'Ready' : assistant.isEmbedding ? 'Indexing' : 'Pending' },
                         { icon: 'chatbubbles-outline', color: COLORS.primary, border: COLORS.border, label: 'Chats', value: String(assistant.messages.length) },
                       ].map(item => (
-                        <View key={item.label} style={[detailCard(item.border), { flex: 1, alignItems: 'center', gap: 3 }]}>
+                        <View key={item.label} style={[detailCardStyle(item.border, isLight), { flex: 1, alignItems: 'center', gap: 3 }]}>
                           <Ionicons name={item.icon as any} size={16} color={item.color} />
                           <Text style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 }}>{item.label}</Text>
                           <Text style={{ color: item.color, fontSize: FONTS.sizes.xs, fontWeight: '800', textTransform: 'capitalize' }}>{item.value}</Text>
@@ -1154,8 +1132,6 @@ export default function ResearchReportScreen() {
                     </View>
                   </ScrollView>
 
-                  {/* Custom progress scrollbar — overlaid absolutely on the right
-                      so it no longer narrows the ScrollView's draggable area. */}
                   {contentH > scrollerH && (
                     <View pointerEvents="none" style={{ position: 'absolute', top: SPACING.sm, bottom: SPACING.sm, right: 4, width: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' }}>
                       <RNAnimated.View style={{ width: 4, borderRadius: 2, backgroundColor: COLORS.primary, height: scrollerH > 0 ? Math.max(32, (scrollerH / contentH) * scrollerH) : 32, transform: [{ translateY: scrollerH > 0 && contentH > scrollerH ? scrollY.interpolate({ inputRange: [0, contentH - scrollerH], outputRange: [0, scrollerH - Math.max(32, (scrollerH / contentH) * scrollerH)], extrapolate: 'clamp' }) : 0 }] }} />
@@ -1171,29 +1147,30 @@ export default function ResearchReportScreen() {
   );
 }
 
-// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
-const sectionLabel = {
-  get color() { return COLORS.textMuted; },
-  fontSize: FONTS.sizes.xs,
-  fontWeight: '700' as const,
-  letterSpacing: 1,
-  textTransform: 'uppercase' as const,
-  marginBottom: SPACING.md,
-};
-
-// Part 55: getter-based so RN reads the live COLORS each render (theme-aware).
-const detailLabel = {
-  get color() { return COLORS.textMuted; },
-  fontSize: FONTS.sizes.xs,
-  fontWeight: '700' as const,
-  letterSpacing: 0.8,
-  textTransform: 'uppercase' as const,
-};
-
-// detailCard is already a function — it re-reads COLORS every time, so leave it.
-function detailCard(border: string) {
+// Theme-aware style functions
+function sectionLabelStyle() {
   return {
-    backgroundColor: COLORS.backgroundCard,
+    color: COLORS.textMuted,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '700' as const,
+    letterSpacing: 1,
+    textTransform: 'uppercase' as const,
+  };
+}
+
+function detailLabelStyle() {
+  return {
+    color: COLORS.textMuted,
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '700' as const,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase' as const,
+  };
+}
+
+function detailCardStyle(border: string, isLight: boolean) {
+  return {
+    backgroundColor: isLight ? '#FFFFFF' : COLORS.backgroundCard,
     borderRadius: RADIUS.lg,
     padding: SPACING.md,
     borderWidth: 1,

@@ -3,9 +3,14 @@
 // Part 41.8 — Dynamic section navigator: nav pills now generated from the actual
 //              sections array (not a fixed AcademicSectionType map), so custom
 //              sections added in the editor appear in the filter strip automatically.
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.3 — Theme compatibility: Replaced all hardcoded gradients and colors
+//             with theme-aware values from COLORS. All surfaces, text, and
+//             interactive elements now follow the active theme palette.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useRef, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Dimensions } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons }       from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -43,7 +48,7 @@ function getNavIcon(section: AcademicSection): string {
 }
 
 function getNavAccent(section: AcademicSection): string {
-  return SECTION_TYPE_COLORS[section.type] ?? '#6C63FF';
+  return SECTION_TYPE_COLORS[section.type] ?? COLORS.primary;
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -84,95 +89,88 @@ export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExpo
       {/* ── Title page header ── */}
       <Animated.View entering={FadeInDown.duration(400)}>
         <LinearGradient
-          colors={['#12122A', '#1A1A35']}
-          style={{
-            paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg,
-            paddingBottom: SPACING.md, borderBottomWidth: 1,
-            borderBottomColor: `${COLORS.primary}25`,
-          }}
+          colors={[COLORS.backgroundCard, COLORS.backgroundElevated]}
+          style={styles.headerContainer}
         >
           {/* Running head */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
-            <Text style={{
-              color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-              letterSpacing: 0.8, textTransform: 'uppercase', flex: 1,
-            }} numberOfLines={1}>
+          <View style={styles.runningHeadContainer}>
+            <Text style={[styles.runningHeadText, { color: COLORS.textMuted }]} numberOfLines={1}>
               {paper.runningHead}
             </Text>
-            <View style={{
-              backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
-              paddingHorizontal: 10, paddingVertical: 3,
-              borderWidth: 1, borderColor: `${COLORS.primary}35`,
-              flexDirection: 'row', alignItems: 'center', gap: 4,
-              flexShrink: 0, marginLeft: SPACING.sm,
-            }}>
+            <View style={[
+              styles.citationBadge,
+              {
+                backgroundColor: `${COLORS.primary}18`,
+                borderColor: `${COLORS.primary}35`,
+              }
+            ]}>
               <Ionicons name="school-outline" size={11} color={COLORS.primary} />
-              <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '700' }}>
+              <Text style={[styles.citationBadgeText, { color: COLORS.primary }]}>
                 {paper.citationStyle.toUpperCase()}
               </Text>
             </View>
           </View>
 
           {/* Paper title */}
-          <Text style={{
-            color: COLORS.textPrimary, fontSize: FONTS.sizes.lg,
-            fontWeight: '800', lineHeight: 28, marginBottom: SPACING.sm,
-          }}>
+          <Text style={[styles.paperTitle, { color: COLORS.textPrimary }]}>
             {paper.title}
           </Text>
 
           {/* Keywords */}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: SPACING.md }}>
+          <View style={styles.keywordsContainer}>
             {paper.keywords.map((kw, i) => (
-              <View key={i} style={{
-                backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
-                paddingHorizontal: 10, paddingVertical: 3,
-                borderWidth: 1, borderColor: `${COLORS.primary}25`,
-              }}>
-                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{kw}</Text>
+              <View key={i} style={[
+                styles.keywordBadge,
+                {
+                  backgroundColor: `${COLORS.primary}12`,
+                  borderColor: `${COLORS.primary}25`,
+                }
+              ]}>
+                <Text style={[styles.keywordText, { color: COLORS.primary }]}>{kw}</Text>
               </View>
             ))}
           </View>
 
           {/* Stats */}
-          <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.md }}>
+          <View style={styles.statsContainer}>
             {[
               { label: 'Words',     value: `~${paper.wordCount.toLocaleString()}`, icon: 'text-outline',     color: COLORS.info },
               { label: 'Pages',     value: `~${paper.pageEstimate}`,               icon: 'document-outline', color: COLORS.primary },
               { label: 'Sections',  value: String(paper.sections.length),          icon: 'list-outline',     color: COLORS.success },
               { label: 'Citations', value: String(paper.citations.length),         icon: 'link-outline',     color: COLORS.warning },
             ].map(stat => (
-              <View key={stat.label} style={{
-                flex: 1, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
-                padding: SPACING.sm, alignItems: 'center',
-                borderWidth: 1, borderColor: COLORS.border,
-              }}>
+              <View key={stat.label} style={[
+                styles.statCard,
+                {
+                  backgroundColor: COLORS.backgroundElevated,
+                  borderColor: COLORS.border,
+                }
+              ]}>
                 <Ionicons name={stat.icon as any} size={14} color={stat.color} />
-                <Text style={{ color: stat.color, fontSize: FONTS.sizes.sm, fontWeight: '800', marginTop: 4 }}>
+                <Text style={[styles.statValue, { color: stat.color }]}>
                   {stat.value}
                 </Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 }}>{stat.label}</Text>
+                <Text style={[styles.statLabel, { color: COLORS.textMuted }]}>{stat.label}</Text>
               </View>
             ))}
           </View>
 
           {/* Export actions */}
-          <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-            <TouchableOpacity onPress={onExportPDF} disabled={isExporting} activeOpacity={0.8} style={{ flex: 1 }}>
+          <View style={styles.exportActionsContainer}>
+            <TouchableOpacity onPress={onExportPDF} disabled={isExporting} activeOpacity={0.8} style={styles.exportButton}>
               <LinearGradient
                 colors={COLORS.gradientPrimary}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={{
-                  borderRadius: RADIUS.lg, paddingVertical: 11,
-                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                  gap: 6, opacity: isExporting ? 0.7 : 1,
-                }}
+                style={[
+                  styles.exportGradient,
+                  { opacity: isExporting ? 0.7 : 1 }
+                ]}
               >
                 {isExporting
                   ? <ActivityIndicator size="small" color="#FFF" />
                   : <Ionicons name="download-outline" size={16} color="#FFF" />
                 }
-                <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+                <Text style={styles.exportButtonText}>
                   {isExporting ? 'Exporting…' : 'Export'}
                 </Text>
               </LinearGradient>
@@ -181,19 +179,20 @@ export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExpo
             <TouchableOpacity
               onPress={onExportMarkdown}
               activeOpacity={0.8}
-              style={{
-                flex: 1, backgroundColor: COLORS.backgroundElevated,
-                borderRadius: RADIUS.lg, paddingVertical: 11,
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-                gap: 6, borderWidth: 1, borderColor: COLORS.border,
-              }}
+              style={[
+                styles.shareButton,
+                {
+                  backgroundColor: COLORS.backgroundElevated,
+                  borderColor: COLORS.border,
+                }
+              ]}
             >
               <Ionicons name="share-outline" size={16} color={COLORS.textSecondary} />
-              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>Share</Text>
+              <Text style={[styles.shareButtonText, { color: COLORS.textSecondary }]}>Share</Text>
             </TouchableOpacity>
           </View>
 
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: SPACING.sm, textAlign: 'center' }}>
+          <Text style={[styles.generatedAtText, { color: COLORS.textMuted }]}>
             Generated {formatDate(paper.generatedAt)}
           </Text>
         </LinearGradient>
@@ -202,11 +201,11 @@ export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExpo
       {/* ── Part 41.8: Dynamic section navigator ──
           Generates nav pills directly from paper.sections so that any custom
           sections added in the editor appear here automatically.           */}
-      <View style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.background }}>
+      <View style={[styles.navContainer, { borderBottomColor: COLORS.border, backgroundColor: COLORS.background }]}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, gap: 8 }}
+          contentContainerStyle={styles.navScrollContent}
         >
           {paper.sections.map((section) => {
             const isActive    = section.id === activeId;
@@ -219,19 +218,22 @@ export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExpo
                 key={section.id}
                 onPress={() => scrollToSection(section.id)}
                 activeOpacity={0.75}
-                style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 5,
-                  backgroundColor: isActive ? `${accentColor}20` : COLORS.backgroundElevated,
-                  borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7,
-                  borderWidth: 1, borderColor: isActive ? accentColor : COLORS.border,
-                }}
+                style={[
+                  styles.navPill,
+                  {
+                    backgroundColor: isActive ? `${accentColor}20` : COLORS.backgroundElevated,
+                    borderColor: isActive ? accentColor : COLORS.border,
+                  }
+                ]}
               >
                 <Ionicons name={icon as any} size={12} color={isActive ? accentColor : COLORS.textMuted} />
-                <Text style={{
-                  color: isActive ? accentColor : COLORS.textMuted,
-                  fontSize: FONTS.sizes.xs,
-                  fontWeight: isActive ? '700' : '400',
-                }}>
+                <Text style={[
+                  styles.navPillText,
+                  {
+                    color: isActive ? accentColor : COLORS.textMuted,
+                    fontWeight: isActive ? '700' : '400',
+                  }
+                ]}>
                   {label}
                 </Text>
               </TouchableOpacity>
@@ -243,7 +245,7 @@ export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExpo
       {/* ── Section cards ── */}
       <View
         onLayout={(e) => { sectionsContainerY.current = e.nativeEvent.layout.y; }}
-        style={{ padding: SPACING.lg }}
+        style={styles.sectionsContainer}
       >
         {paper.sections.map((section, i) => (
           <View
@@ -263,3 +265,153 @@ export function AcademicPaperView({ paper, onExportPDF, onExportMarkdown, isExpo
     </ScrollView>
   );
 }
+
+// ─── Styles ────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  // Header
+  headerContainer: {
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.lg,
+    paddingBottom: SPACING.md,
+    borderBottomWidth: 1,
+    borderBottomColor: `${COLORS.primary}25`,
+  },
+  runningHeadContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: SPACING.sm,
+  },
+  runningHeadText: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '600',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    flex: 1,
+  },
+  citationBadge: {
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+    marginLeft: SPACING.sm,
+  },
+  citationBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  paperTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: '800',
+    lineHeight: 28,
+    marginBottom: SPACING.sm,
+  },
+  keywordsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: SPACING.md,
+  },
+  keywordBadge: {
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderWidth: 1,
+  },
+  keywordText: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '600',
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginBottom: SPACING.md,
+  },
+  statCard: {
+    flex: 1,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  statValue: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  statLabel: {
+    fontSize: FONTS.sizes.xs,
+    marginTop: 1,
+  },
+  exportActionsContainer: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  exportButton: {
+    flex: 1,
+  },
+  exportGradient: {
+    borderRadius: RADIUS.lg,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  exportButtonText: {
+    color: '#FFF',
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '700',
+  },
+  shareButton: {
+    flex: 1,
+    borderRadius: RADIUS.lg,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+  },
+  shareButtonText: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '700',
+  },
+  generatedAtText: {
+    fontSize: FONTS.sizes.xs,
+    marginTop: SPACING.sm,
+    textAlign: 'center',
+  },
+
+  // Navigation
+  navContainer: {
+    borderBottomWidth: 1,
+  },
+  navScrollContent: {
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    gap: 8,
+  },
+  navPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderWidth: 1,
+  },
+  navPillText: {
+    fontSize: FONTS.sizes.xs,
+  },
+
+  // Sections
+  sectionsContainer: {
+    padding: SPACING.lg,
+  },
+});

@@ -1,10 +1,7 @@
 // src/components/research/KnowledgeGraph.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Interactive Knowledge Graph  (REDESIGN — v6)
-// Visual upgrade only: glowing gradient nodes, gradient highlighted edges,
-// glassy detail/legend panels, polished search + chips + zoom bar.
-// Force-simulation, gestures, fullscreen logic, props all unchanged.
-// Export `KnowledgeGraphView`, props { graph, height?, onNodePress? }.
+// Interactive Knowledge Graph — FULL THEME COMPATIBILITY
+// Visual upgrade with theme-aware colors and text visibility
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -28,14 +25,13 @@ import {
   KnowledgeGraphEdge,
 } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 import type {
   KnowledgeGraphCluster,
   ExtendedKnowledgeGraph,
 } from '../../services/agents/knowledgeGraphAgent';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-
-// ─── Constants ────────────────────────────────────────────────────────────────
 
 const CLUSTER_FALLBACK = [
   '#6C63FF', '#00D4AA', '#FF6584', '#F9CB42',
@@ -63,8 +59,6 @@ const MIN_SCALE = 0.25;
 const MAX_SCALE = 5.0;
 const ZOOM_STEP = 0.35;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function resolveId(ep: string | KnowledgeGraphNode): string {
   return typeof ep === 'string' ? ep : ep.id;
 }
@@ -73,7 +67,7 @@ function ptDist(ax: number, ay: number, bx: number, by: number) {
   return Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2);
 }
 
-// ─── Force simulation (unchanged) ──────────────────────────────────────────────
+// ─── Force simulation ──────────────────────────────────────────────────────────
 
 function runForceLayout(
   rawNodes: KnowledgeGraphNode[],
@@ -153,7 +147,7 @@ function runForceLayout(
   return nodes;
 }
 
-// ─── SVG Canvas (visual upgrade) ───────────────────────────────────────────────
+// ─── SVG Canvas ──────────────────────────────────────────────────────────────
 
 interface CanvasProps {
   graph: KnowledgeGraphType | ExtendedKnowledgeGraph;
@@ -172,12 +166,17 @@ function GraphCanvas({
   graph, layoutNodes, W, H, scale, ox, oy,
   selectedNode, visibleIds, matches, connectedIds, colorMap, onNodePress,
 }: CanvasProps) {
+  const { isLight } = useTheme();
   const nodeMap = useMemo(() => new Map(layoutNodes.map(n => [n.id, n])), [layoutNodes]);
   const getColor = (n: KnowledgeGraphNode) => colorMap.get(n.id) ?? NODE_TYPE_COLORS[n.type] ?? '#6C63FF';
 
   const vbX = -ox / scale, vbY = -oy / scale, vbW = W / scale, vbH = H / scale;
 
   const gradientDefs: React.ReactElement[] = [];
+
+  // Theme-aware text colors for labels
+  const labelColor = isLight ? 'rgba(20,20,40,0.95)' : 'rgba(225,225,245,0.95)';
+  const dimLabelColor = isLight ? 'rgba(100,100,120,0.3)' : 'rgba(160,160,180,0.2)';
 
   const edgeEls = graph.edges.map((edge, i) => {
     const srcId = resolveId(edge.source), tgtId = resolveId(edge.target);
@@ -192,7 +191,7 @@ function GraphCanvas({
     const op = isDim ? 0.04 : isHL ? 0.95 : 0.16 + edge.strength * 0.3;
     const sw = Math.max(0.4, (cat === 'causal' || cat === 'hierarchical' ? 0.6 + edge.strength * 2.2 : 0.5 + edge.strength * 1.3) / scale);
 
-    let stroke = `rgba(150,150,200,${op})`;
+    let stroke = isLight ? `rgba(60,60,100,${op})` : `rgba(150,150,200,${op})`;
     if (isHL) {
       const gid = `edge-grad-${i}`;
       gradientDefs.push(
@@ -229,7 +228,6 @@ function GraphCanvas({
 
     return (
       <G key={node.id} onPress={() => onNodePress(node)} opacity={isDim ? 0.12 : 1}>
-        {/* outer glow */}
         {emphasize && (
           <Circle cx={cx} cy={cy} r={r + 12 / scale} fill={color} opacity={0.16} />
         )}
@@ -240,16 +238,15 @@ function GraphCanvas({
           <Circle cx={cx} cy={cy} r={r + 6 / scale} fill="none" stroke={color}
             strokeWidth={0.8 / scale} strokeDasharray={`${3 / scale},${2 / scale}`} opacity={0.5} />
         )}
-        {/* body */}
         <Circle cx={cx} cy={cy} r={r} fill={color} opacity={isSel ? 1 : 0.92} />
-        {/* gloss highlight */}
         <Circle cx={cx - r * 0.28} cy={cy - r * 0.28} r={r * 0.34} fill="rgba(255,255,255,0.22)" />
-        {/* label */}
         <SvgText
           x={cx} y={cy + r + 13 / scale}
           textAnchor="middle" fontSize={fs}
           fontWeight={node.type === 'root' || node.type === 'primary' ? 'bold' : 'normal'}
-          fill={isDim ? 'rgba(160,160,180,0.2)' : 'rgba(225,225,245,0.95)'}
+          fill={isDim ? dimLabelColor : labelColor}
+          stroke={isLight ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)'}
+          strokeWidth={isLight ? 2 / scale : 1.5 / scale}
         >
           {node.label.length > 20 ? node.label.slice(0, 19) + '…' : node.label}
         </SvgText>
@@ -257,21 +254,26 @@ function GraphCanvas({
     );
   });
 
+  const bgGradient: readonly [string, string] = isLight 
+    ? ['#F5F6FB', '#FFFFFF']
+    : ['#13132F', '#08081C'];
+
+  const gridColor = isLight ? 'rgba(0,0,0,0.04)' : 'rgba(108,99,255,0.035)';
+
   return (
     <Svg width={W} height={H} viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}>
       <Defs>
         <RadialGradient id="kg-bg" cx="50%" cy="40%" r="75%">
-          <Stop offset="0" stopColor="#13132F" stopOpacity={1} />
-          <Stop offset="1" stopColor="#08081C" stopOpacity={1} />
+          <Stop offset="0" stopColor={bgGradient[0]} stopOpacity={1} />
+          <Stop offset="1" stopColor={bgGradient[1]} stopOpacity={1} />
         </RadialGradient>
         {gradientDefs}
       </Defs>
-      {/* subtle grid */}
       {Array.from({ length: 10 }).map((_, i) => (
-        <Line key={`hg${i}`} x1={0} y1={i * (H / 9)} x2={W} y2={i * (H / 9)} stroke="rgba(108,99,255,0.035)" strokeWidth={1} />
+        <Line key={`hg${i}`} x1={0} y1={i * (H / 9)} x2={W} y2={i * (H / 9)} stroke={gridColor} strokeWidth={1} />
       ))}
       {Array.from({ length: 10 }).map((_, i) => (
-        <Line key={`vg${i}`} x1={i * (W / 9)} y1={0} x2={i * (W / 9)} y2={H} stroke="rgba(108,99,255,0.035)" strokeWidth={1} />
+        <Line key={`vg${i}`} x1={i * (W / 9)} y1={0} x2={i * (W / 9)} y2={H} stroke={gridColor} strokeWidth={1} />
       ))}
       <G>{edgeEls}</G>
       <G>{nodeEls}</G>
@@ -288,36 +290,38 @@ interface ZoomBarProps {
 }
 
 function ZoomBar({ scale, isFS, onZoomIn, onZoomOut, onReset, onExpand, bottom = 12 }: ZoomBarProps) {
+  const { isLight } = useTheme();
+  const ctrlBtnStyle = {
+    width: 34, height: 34, borderRadius: 11,
+    backgroundColor: isLight ? 'rgba(255,255,255,0.92)' : 'rgba(10,10,28,0.92)',
+    alignItems: 'center' as const, justifyContent: 'center' as const,
+    borderWidth: 1, borderColor: isLight ? 'rgba(0,0,0,0.12)' : 'rgba(108,99,255,0.35)',
+    ...SHADOWS.small,
+  };
+
   return (
     <View style={{ position: 'absolute', bottom, right: 10, gap: 7, alignItems: 'center' }}>
-      <TouchableOpacity onPress={onExpand} style={ctrlBtn}>
+      <TouchableOpacity onPress={onExpand} style={ctrlBtnStyle}>
         <Ionicons name={isFS ? 'contract-outline' : 'expand-outline'} size={15} color={COLORS.textSecondary} />
       </TouchableOpacity>
       <View style={{ width: 34, height: 1, backgroundColor: 'rgba(108,99,255,0.25)', marginVertical: 1 }} />
-      <TouchableOpacity onPress={onZoomIn} style={[ctrlBtn, scale >= MAX_SCALE && { opacity: 0.35 }]} disabled={scale >= MAX_SCALE}>
+      <TouchableOpacity onPress={onZoomIn} style={[ctrlBtnStyle, scale >= MAX_SCALE && { opacity: 0.35 }]} disabled={scale >= MAX_SCALE}>
         <Ionicons name="add" size={19} color={COLORS.textSecondary} />
       </TouchableOpacity>
-      <View style={[ctrlBtn, { backgroundColor: 'rgba(108,99,255,0.18)' }]}>
+      <View style={[ctrlBtnStyle, { backgroundColor: 'rgba(108,99,255,0.18)' }]}>
         <Text style={{ color: COLORS.primaryLight, fontSize: 9, fontWeight: '900' }}>{Math.round(scale * 100)}%</Text>
       </View>
-      <TouchableOpacity onPress={onZoomOut} style={[ctrlBtn, scale <= MIN_SCALE && { opacity: 0.35 }]} disabled={scale <= MIN_SCALE}>
+      <TouchableOpacity onPress={onZoomOut} style={[ctrlBtnStyle, scale <= MIN_SCALE && { opacity: 0.35 }]} disabled={scale <= MIN_SCALE}>
         <Ionicons name="remove" size={19} color={COLORS.textSecondary} />
       </TouchableOpacity>
-      <TouchableOpacity onPress={onReset} style={ctrlBtn}>
+      <TouchableOpacity onPress={onReset} style={ctrlBtnStyle}>
         <Ionicons name="locate-outline" size={14} color={COLORS.textMuted} />
       </TouchableOpacity>
     </View>
   );
 }
 
-const ctrlBtn: object = {
-  width: 34, height: 34, borderRadius: 11,
-  backgroundColor: 'rgba(10,10,28,0.92)',
-  alignItems: 'center', justifyContent: 'center',
-  borderWidth: 1, borderColor: 'rgba(108,99,255,0.35)',
-};
-
-// ─── Gestures (unchanged) ──────────────────────────────────────────────────────
+// ─── Gestures ─────────────────────────────────────────────────────────────────
 
 function useGestures(
   scaleRef: React.MutableRefObject<number>,
@@ -399,16 +403,26 @@ function FullscreenModal({
   colorMap, insets, ready, searchQuery, fsPanHandlers, getColor,
   onClose, onNodePress, onZoomIn, onZoomOut, onReset, onExpand, onSearchChange, onDeselectNode,
 }: FullscreenContentProps) {
+  const { isLight } = useTheme();
+  const bgColor = isLight ? '#F5F6FB' : '#08081C';
+  const headerBg: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#15152E', '#0A0A1C'];
+  const ctrlBtnStyle = {
+    width: 34, height: 34, borderRadius: 11,
+    backgroundColor: isLight ? 'rgba(255,255,255,0.92)' : 'rgba(10,10,28,0.92)',
+    alignItems: 'center' as const, justifyContent: 'center' as const,
+    borderWidth: 1, borderColor: isLight ? 'rgba(0,0,0,0.12)' : COLORS.border,
+    ...SHADOWS.small,
+  };
+
   return (
     <Modal visible={visible} animationType="fade" statusBarTranslucent onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: '#08081C' }}>
-        {/* Header */}
-        <LinearGradient colors={['#15152E', '#0A0A1C']} style={{
+      <View style={{ flex: 1, backgroundColor: bgColor }}>
+        <LinearGradient colors={headerBg} style={{
           paddingTop: insets.top + 6, paddingBottom: SPACING.sm, paddingHorizontal: SPACING.md,
           flexDirection: 'row', alignItems: 'center', gap: 10,
           borderBottomWidth: 1, borderBottomColor: COLORS.border,
         }}>
-          <TouchableOpacity onPress={onClose} style={ctrlBtn}>
+          <TouchableOpacity onPress={onClose} style={ctrlBtnStyle}>
             <Ionicons name="close" size={18} color={COLORS.textSecondary} />
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
@@ -420,7 +434,7 @@ function FullscreenModal({
             </Text>
           </View>
           <View style={{
-            flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.backgroundElevated,
+            flexDirection: 'row', alignItems: 'center', backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated,
             borderRadius: RADIUS.full, paddingHorizontal: 10, height: 34,
             borderWidth: 1, borderColor: COLORS.border, flex: 1, maxWidth: 180,
           }}>
@@ -456,7 +470,7 @@ function FullscreenModal({
             borderRadius: RADIUS.xl, overflow: 'hidden',
             borderWidth: 1, borderColor: `${getColor(selectedNode)}44`, ...SHADOWS.large,
           }}>
-            <LinearGradient colors={['#1A1838', '#100E26']} style={{ padding: SPACING.md, borderLeftWidth: 3, borderLeftColor: getColor(selectedNode) }}>
+            <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1A1838', '#100E26']} style={{ padding: SPACING.md, borderLeftWidth: 3, borderLeftColor: getColor(selectedNode) }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: getColor(selectedNode) }} />
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', flex: 1 }}>{selectedNode.label}</Text>
@@ -472,8 +486,8 @@ function FullscreenModal({
               )}
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Importance</Text>
-                <View style={{ flex: 1, height: 4, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
-                  <LinearGradient colors={[getColor(selectedNode), `${getColor(selectedNode)}99`]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ width: `${selectedNode.weight * 10}%`, height: '100%' }} />
+                <View style={{ flex: 1, height: 4, backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+                  <LinearGradient colors={[getColor(selectedNode), `${getColor(selectedNode)}99` as const]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ width: `${selectedNode.weight * 10}%`, height: '100%' }} />
                 </View>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{selectedNode.weight}/10</Text>
               </View>
@@ -483,7 +497,9 @@ function FullscreenModal({
 
         {!selectedNode && (
           <View style={{ position: 'absolute', bottom: insets.bottom + 14, left: 14 }}>
-            <Text style={{ color: 'rgba(160,160,200,0.3)', fontSize: 11 }}>Pinch · drag · double-tap to zoom</Text>
+            <Text style={{ color: isLight ? 'rgba(100,100,120,0.3)' : 'rgba(160,160,200,0.3)', fontSize: 11 }}>
+              Pinch · drag · double-tap to zoom
+            </Text>
           </View>
         )}
       </View>
@@ -503,6 +519,7 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
   const extended = graph as ExtendedKnowledgeGraph;
   const clusters = extended.clusters ?? [];
   const insets = useSafeAreaInsets();
+  const { isLight } = useTheme();
 
   const canvasW = SCREEN_W - SPACING.lg * 2;
   const canvasH = height;
@@ -527,12 +544,10 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
 
   const layoutNodes = useMemo(
     () => runForceLayout(graph.nodes, graph.edges, clusters, canvasW, canvasH),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [graph.nodes.length, graph.edges.length, canvasW, canvasH]
   );
   const fsLayoutNodes = useMemo(
     () => runForceLayout(graph.nodes, graph.edges, clusters, fsW, fsH),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [graph.nodes.length, graph.edges.length, fsW, fsH]
   );
 
@@ -598,11 +613,13 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
     color: SENTIMENT_COLORS[(selectedNode as any).sentiment ?? 'neutral'] ?? SENTIMENT_COLORS.neutral,
   } : null;
 
+  const bgColor = isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated;
+  const canvasBg = isLight ? '#F5F6FB' : '#08081C';
+
   return (
     <View>
-      {/* Search */}
       <View style={{
-        flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.backgroundElevated,
+        flexDirection: 'row', alignItems: 'center', backgroundColor: bgColor,
         borderRadius: RADIUS.lg, paddingHorizontal: SPACING.sm, marginBottom: SPACING.sm,
         borderWidth: 1, borderColor: COLORS.border, height: 42,
       }}>
@@ -624,7 +641,6 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         )}
       </View>
 
-      {/* Type chips */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingBottom: SPACING.sm }}>
         {(['root', 'primary', 'secondary', 'concept', 'company', 'trend'] as const).map(type => {
           const active = filterType === type;
@@ -634,7 +650,7 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
               style={{
                 flexDirection: 'row', alignItems: 'center', gap: 5,
                 paddingHorizontal: 11, paddingVertical: 6, borderRadius: RADIUS.full,
-                backgroundColor: active ? `${NODE_TYPE_COLORS[type]}26` : COLORS.backgroundElevated,
+                backgroundColor: active ? `${NODE_TYPE_COLORS[type]}26` : bgColor,
                 borderWidth: 1, borderColor: active ? NODE_TYPE_COLORS[type] : COLORS.border,
               }}
             >
@@ -645,11 +661,11 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         })}
       </ScrollView>
 
-      {/* Canvas */}
       <View
         style={{
-          width: canvasW, height: canvasH, backgroundColor: '#08081C',
+          width: canvasW, height: canvasH, backgroundColor: canvasBg,
           borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: `${COLORS.primary}26`,
+          ...SHADOWS.medium,
         }}
         {...inlinePan.panHandlers}
       >
@@ -668,15 +684,14 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         Pinch to zoom · drag to pan · double-tap to zoom · ⤢ full-screen
       </Text>
 
-      {/* Selected detail */}
       {selectedNode && (
         <Animated.View entering={FadeInDown.duration(260).springify()} style={{
           borderRadius: RADIUS.xl, marginTop: SPACING.sm, overflow: 'hidden',
           borderWidth: 1, borderColor: `${getColor(selectedNode)}44`,
         }}>
-          <LinearGradient colors={['#1A1838', '#121028']} style={{ padding: SPACING.md, borderLeftWidth: 3, borderLeftColor: getColor(selectedNode) }}>
+          <LinearGradient colors={isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1A1838', '#121028']} style={{ padding: SPACING.md, borderLeftWidth: 3, borderLeftColor: getColor(selectedNode) }}>
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
-              <LinearGradient colors={[getColor(selectedNode), `${getColor(selectedNode)}88`]} style={{ width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
+              <LinearGradient colors={[getColor(selectedNode), `${getColor(selectedNode)}88` as const]} style={{ width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
                 <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.85)' }} />
               </LinearGradient>
               <View style={{ flex: 1 }}>
@@ -702,8 +717,8 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
 
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Importance</Text>
-              <View style={{ flex: 1, height: 5, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
-                <LinearGradient colors={[getColor(selectedNode), `${getColor(selectedNode)}99`]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ width: `${selectedNode.weight * 10}%`, height: '100%' }} />
+              <View style={{ flex: 1, height: 5, backgroundColor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+                <LinearGradient colors={[getColor(selectedNode), `${getColor(selectedNode)}99` as const]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ width: `${selectedNode.weight * 10}%`, height: '100%' }} />
               </View>
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{selectedNode.weight}/10</Text>
             </View>
@@ -714,7 +729,7 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                   {selectedConns.slice(0, 8).map(cn => (
                     <TouchableOpacity key={cn.id} onPress={() => handleNodePress(cn)} style={{
-                      flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.05)',
+                      flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
                       borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 6, borderWidth: 1, borderColor: `${getColor(cn)}33`,
                     }}>
                       <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: getColor(cn) }} />
@@ -728,10 +743,9 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         </Animated.View>
       )}
 
-      {/* Cluster legend */}
       {clusters.length > 0 && (
         <View style={{ marginTop: SPACING.sm }}>
-          <Text style={legendLabel}>Clusters</Text>
+          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Clusters</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
             {clusters.map(c => {
               const hidden = hiddenClusters.has(c.id);
@@ -740,7 +754,7 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
                   onPress={() => setHiddenClusters(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })}
                   style={{
                     flexDirection: 'row', alignItems: 'center', gap: 6,
-                    backgroundColor: hidden ? COLORS.backgroundElevated : `${c.color}18`,
+                    backgroundColor: hidden ? bgColor : `${c.color}18`,
                     borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 7,
                     borderWidth: 1, borderColor: hidden ? COLORS.border : `${c.color}44`, opacity: hidden ? 0.5 : 1,
                   }}>
@@ -754,9 +768,8 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         </View>
       )}
 
-      {/* Edge legend */}
       <View style={{ marginTop: SPACING.sm }}>
-        <Text style={legendLabel}>Edge Types</Text>
+        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Edge Types</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           {[
             { label: 'Causal', dash: '─────', color: COLORS.primary },
@@ -787,12 +800,3 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
     </View>
   );
 }
-
-const legendLabel = {
-  color: COLORS.textMuted,
-  fontSize: FONTS.sizes.xs,
-  fontWeight: '700' as const,
-  textTransform: 'uppercase' as const,
-  letterSpacing: 0.8,
-  marginBottom: 6,
-};

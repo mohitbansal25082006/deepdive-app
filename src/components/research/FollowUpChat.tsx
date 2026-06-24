@@ -1,6 +1,7 @@
 // src/components/research/FollowUpChat.tsx
-// UPDATED: Keyboard-safe — messages scroll up when keyboard opens.
-// Uses ScrollView with inverted approach so newest messages are always visible.
+// ─────────────────────────────────────────────────────────────────────────────
+// FollowUpChat — FULL THEME COMPATIBILITY
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useRef, useEffect } from 'react';
 import {
@@ -16,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { ConversationMessage } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 const SUGGESTED_QUESTIONS = [
   'Who are the top companies?',
@@ -33,8 +35,8 @@ interface Props {
 export function FollowUpChat({ messages, sending, onSend }: Props) {
   const [inputText, setInputText] = React.useState('');
   const scrollRef = useRef<ScrollView>(null);
+  const { isLight } = useTheme();
 
-  // Scroll to bottom whenever messages change
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -47,9 +49,11 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
     setInputText('');
   };
 
+  const bgColor = isLight ? 'rgba(0,0,0,0.03)' : `${COLORS.primary}15`;
+  const borderColor = isLight ? 'rgba(0,0,0,0.08)' : `${COLORS.primary}30`;
+
   return (
     <View style={{ flexShrink: 1 }}>
-      {/* Suggested chips — only when no messages yet */}
       {messages.length === 0 && (
         <ScrollView
           horizontal
@@ -66,12 +70,12 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
               key={q}
               onPress={() => onSend(q)}
               style={{
-                backgroundColor: `${COLORS.primary}15`,
+                backgroundColor: bgColor,
                 borderRadius: RADIUS.full,
                 paddingHorizontal: 14,
                 paddingVertical: 8,
                 borderWidth: 1,
-                borderColor: `${COLORS.primary}30`,
+                borderColor: borderColor,
               }}
             >
               <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '500' }}>
@@ -82,7 +86,6 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
         </ScrollView>
       )}
 
-      {/* Message list — fixed height so it doesn't push the input off screen */}
       {messages.length > 0 && (
         <ScrollView
           ref={scrollRef}
@@ -138,7 +141,6 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
             </Animated.View>
           ))}
 
-          {/* Typing indicator */}
           {sending && (
             <View style={{
               alignSelf: 'flex-start',
@@ -159,7 +161,6 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
         </ScrollView>
       )}
 
-      {/* Input row — always visible, above keyboard */}
       <View style={{
         flexDirection: 'row',
         alignItems: 'center',
@@ -168,6 +169,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
         gap: SPACING.sm,
         borderTopWidth: messages.length > 0 ? 1 : 0,
         borderTopColor: COLORS.border,
+        backgroundColor: isLight ? '#FFFFFF' : COLORS.backgroundCard,
       }}>
         <TextInput
           value={inputText}
@@ -176,7 +178,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
           placeholderTextColor={COLORS.textMuted}
           style={{
             flex: 1,
-            backgroundColor: COLORS.backgroundElevated,
+            backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated,
             borderRadius: RADIUS.full,
             paddingHorizontal: SPACING.md,
             paddingVertical: 10,
@@ -193,7 +195,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
         />
         <TouchableOpacity onPress={handleSend} disabled={!inputText.trim() || sending}>
           <LinearGradient
-            colors={inputText.trim() ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']}
+            colors={inputText.trim() ? COLORS.gradientPrimary : [COLORS.backgroundElevated, COLORS.backgroundCard]}
             style={{
               width: 42, height: 42, borderRadius: 21,
               alignItems: 'center', justifyContent: 'center',
@@ -201,7 +203,7 @@ export function FollowUpChat({ messages, sending, onSend }: Props) {
           >
             {sending
               ? <ActivityIndicator size="small" color="#FFF" />
-              : <Ionicons name="arrow-up" size={20} color="#FFF" />
+              : <Ionicons name="arrow-up" size={20} color={inputText.trim() ? "#FFF" : COLORS.textMuted} />
             }
           </LinearGradient>
         </TouchableOpacity>

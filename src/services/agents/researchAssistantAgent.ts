@@ -1,6 +1,7 @@
 // src/services/agents/researchAssistantAgent.ts
-// Part 6 — AI Research Assistant Agent
-//
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Research Assistant Agent — FULL THEME COMPATIBILITY
+// 
 // Upgrades the plain follow-up chat into a true research assistant with 7 modes:
 //
 //   general        → Expert RAG-powered Q&A using semantic search context
@@ -19,10 +20,12 @@
 //   • A dedicated system prompt with specific output instructions
 //   • Tuned temperature and token limits
 //   • Suggested follow-up prompts tailored to the topic
+//   • Theme-aware colors for UI integration
+// ─────────────────────────────────────────────────────────────────────────────
 
-import { chatCompletion, ChatMessage }                    from '../openaiClient';
+import { chatCompletion, ChatMessage } from '../openaiClient';
 import { ResearchReport, AssistantMode, AssistantMessage } from '../../types';
-import { RAGContext }                                      from '../ragService';
+import { RAGContext } from '../ragService';
 
 // ─── Re-export convenience ───────────────────────────────────────────────────
 
@@ -31,21 +34,21 @@ export type { AssistantMode };
 // ─── Mode Config (used by UI: ModeSelector, chips, etc.) ─────────────────────
 
 export interface ModeConfig {
-  mode:            AssistantMode;
-  label:           string;
-  description:     string;
-  icon:            string;   // Ionicons name
-  color:           string;   // hex colour
-  examplePrompts:  string[];
+  mode: AssistantMode;
+  label: string;
+  description: string;
+  icon: string;   // Ionicons name
+  color: string;   // hex colour — theme-agnostic base color
+  examplePrompts: string[];
 }
 
 export const MODE_CONFIGS: ModeConfig[] = [
   {
-    mode:        'general',
-    label:       'Ask Anything',
+    mode: 'general',
+    label: 'Ask Anything',
     description: 'RAG-powered Q&A using your report',
-    icon:        'chatbubble-ellipses-outline',
-    color:       '#6C63FF',
+    icon: 'chatbubble-ellipses-outline',
+    color: '#6C63FF',
     examplePrompts: [
       'What are the main takeaways?',
       'Who are the key companies involved?',
@@ -53,11 +56,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     ],
   },
   {
-    mode:        'beginner',
-    label:       'Explain Simply',
+    mode: 'beginner',
+    label: 'Explain Simply',
     description: 'Break this down for a complete beginner',
-    icon:        'school-outline',
-    color:       '#43E97B',
+    icon: 'school-outline',
+    color: '#43E97B',
     examplePrompts: [
       'Explain this like I\'m a beginner',
       'What does this mean in simple terms?',
@@ -65,11 +68,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     ],
   },
   {
-    mode:        'compare',
-    label:       'Compare Topics',
+    mode: 'compare',
+    label: 'Compare Topics',
     description: 'Side-by-side comparison with another topic',
-    icon:        'git-compare-outline',
-    color:       '#29B6F6',
+    icon: 'git-compare-outline',
+    color: '#29B6F6',
     examplePrompts: [
       'Compare this with traditional approaches',
       'How does this compare to 5 years ago?',
@@ -77,11 +80,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     ],
   },
   {
-    mode:        'contradictions',
-    label:       'Find Flaws',
+    mode: 'contradictions',
+    label: 'Find Flaws',
     description: 'Identify gaps, contradictions & weak claims',
-    icon:        'alert-circle-outline',
-    color:       '#FF6584',
+    icon: 'alert-circle-outline',
+    color: '#FF6584',
     examplePrompts: [
       'Find contradictions in this research',
       'What are the weakest claims here?',
@@ -89,11 +92,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     ],
   },
   {
-    mode:        'questions',
-    label:       'Go Deeper',
+    mode: 'questions',
+    label: 'Go Deeper',
     description: 'Generate follow-up research questions',
-    icon:        'telescope-outline',
-    color:       '#FFA726',
+    icon: 'telescope-outline',
+    color: '#FFA726',
     examplePrompts: [
       'What should I research next?',
       'Generate 10 deeper questions',
@@ -101,11 +104,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     ],
   },
   {
-    mode:        'summarize',
-    label:       'Summarize',
+    mode: 'summarize',
+    label: 'Summarize',
     description: 'Get a concise structured overview',
-    icon:        'document-text-outline',
-    color:       '#8B5CF6',
+    icon: 'document-text-outline',
+    color: '#8B5CF6',
     examplePrompts: [
       'Give me a quick TL;DR',
       'What are the 5 most important points?',
@@ -113,11 +116,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     ],
   },
   {
-    mode:        'factcheck',
-    label:       'Fact Check',
+    mode: 'factcheck',
+    label: 'Fact Check',
     description: 'Verify claims with confidence ratings',
-    icon:        'shield-checkmark-outline',
-    color:       '#FF8C00',
+    icon: 'shield-checkmark-outline',
+    color: '#FF8C00',
     examplePrompts: [
       'How reliable is this data?',
       'Verify the statistics in this report',
@@ -170,8 +173,8 @@ export function detectAssistantMode(query: string): AssistantMode {
 // ─── System Prompt Builder ────────────────────────────────────────────────────
 
 function buildSystemPrompt(
-  mode:       AssistantMode,
-  report:     ResearchReport,
+  mode: AssistantMode,
+  report: ResearchReport,
   ragContext: RAGContext,
 ): string {
 
@@ -214,7 +217,10 @@ RULES:
 - Cite specific statistics and data points when available: "According to the research, [fact]"
 - Be concise and direct — no filler phrases
 - Structure longer answers with clear headings or numbered points
-- Suggest a follow-up angle at the end if relevant`;
+- Suggest a follow-up angle at the end if relevant
+- Use markdown formatting: **bold** for emphasis, *italic* for terms, \`code\` for data points
+- Format lists with - or 1. 2. 3.
+- Separate sections with --- for visual clarity`;
 
     // ── Beginner ─────────────────────────────────────────────────────────────
     case 'beginner':
@@ -230,7 +236,9 @@ RULES:
 - If you catch yourself using a technical term, immediately explain it in plain English
 - Use short sentences (max 20 words each where possible)
 - Aim for "could a curious 14-year-old understand this?" as your bar
-- Use bullet points freely for readability`;
+- Use bullet points freely for readability
+- Format with **bold** for key concepts and \`code\` for data points
+- Use emojis sparingly to add warmth (🎯, 💡, ✅)`;
 
     // ── Compare ───────────────────────────────────────────────────────────────
     case 'compare':
@@ -240,25 +248,27 @@ ROLE: Comparative Analyst
 TASK: Compare the topic of this research with whatever subject the user mentions.
 
 OUTPUT FORMAT:
-## Overview
+## 📊 Overview
 One paragraph framing the comparison.
 
-## Similarities
+## ✅ Similarities
 Bullet list — what both share.
 
-## Key Differences
+## 🔄 Key Differences
 Bullet list — what sets them apart (be specific with data from the report).
 
-## Advantages & Disadvantages
+## ⚖️ Advantages & Disadvantages
 Two columns: pros/cons for each side.
 
-## Bottom Line
+## 🎯 Bottom Line
 1–2 sentences: which is better in what context?
 
 RULES:
 - Use specific numbers and data from the report where available
 - Be balanced — do not favour one side without evidence
-- If you lack info on the comparison topic, say so explicitly`;
+- If you lack info on the comparison topic, say so explicitly
+- Use **bold** for key comparison points
+- Use \`code\` for statistical differences`;
 
     // ── Contradictions ────────────────────────────────────────────────────────
     case 'contradictions':
@@ -277,12 +287,13 @@ LOOK FOR:
 7. Methodological gaps — what research approach might have found different results
 
 FORMAT for each issue:
-**Issue**: [brief title]
+## 🔍 Issue: [brief title]
 **Evidence**: [what the report says vs. what's problematic]
-**Severity**: High / Medium / Low
+**Severity**: 🔴 High / 🟡 Medium / 🟢 Low
 **Suggested Fix**: [how this could be addressed]
 
-Be constructive — the goal is stronger research, not tearing it down.`;
+Be constructive — the goal is stronger research, not tearing it down.
+Use **bold** for key terms and \`code\` for data points.`;
 
     // ── Questions ─────────────────────────────────────────────────────────────
     case 'questions':
@@ -311,7 +322,9 @@ Require domain expertise or primary research:
 RULES:
 - Each question must lead to genuinely NEW insights not already in the report
 - Cover different angles: technical, business, societal, regulatory, historical
-- Avoid vague questions — be specific and researchable`;
+- Avoid vague questions — be specific and researchable
+- Use **bold** for key terms in each question
+- Number questions clearly`;
 
     // ── Summarize ─────────────────────────────────────────────────────────────
     case 'summarize':
@@ -321,26 +334,28 @@ ROLE: Editorial Summarizer
 TASK: Produce a concise, structured summary of the requested aspect of the report.
 
 FORMAT:
-## TL;DR
+## 📌 TL;DR
 One sentence capturing the single most important insight.
 
-## What's happening
+## 📋 What's happening
 2–3 bullet points on the current state.
 
-## Why it matters
+## 💡 Why it matters
 2–3 bullet points on implications.
 
-## Key Numbers
+## 📊 Key Numbers
 3–5 statistics from the report (bold the values).
 
-## What's next
+## 🔮 What's next
 2–3 bullet points on future outlook.
 
 RULES:
 - Total response under 350 words (unless user asks for more)
-- Bold every statistic and key data point
+- Bold every statistic and key data point using **value**
+- Use \`code\` for precise figures
 - Avoid adjective-heavy sentences — let the data speak
-- If the user asks to summarize a specific section, focus only on that`;
+- If the user asks to summarize a specific section, focus only on that
+- Use emojis sparingly for visual structure (📌, 📋, 💡, 📊, 🔮)`;
 
     // ── Fact Check ────────────────────────────────────────────────────────────
     case 'factcheck':
@@ -350,37 +365,39 @@ ROLE: Research Fact Checker
 TASK: Evaluate the accuracy and reliability of claims in or about this research.
 
 FOR EACH CLAIM, output:
-**Claim**: [exact claim being evaluated]
+## 📋 Claim: [exact claim being evaluated]
 **Status**: ✅ Well-supported / ⚠️ Partially supported / ❌ Unsupported / ❓ Needs verification
 **Evidence**: [what the report does/doesn't say to support this]
-**Confidence**: High / Medium / Low
+**Confidence**: 🔵 High / 🟡 Medium / 🔴 Low
 **Note**: [any caveats, regional limitations, date sensitivity]
 
-OVERALL ASSESSMENT at the end:
-- Overall reliability: X/10
-- Strongest evidence: ...
-- Most important caveat: ...
+## 📊 OVERALL ASSESSMENT
+- **Overall reliability**: X/10
+- **Strongest evidence**: ...
+- **Most important caveat**: ...
 
 RULES:
 - Only evaluate claims that are verifiable against the research context
 - Be precise — distinguish "not in the report" from "contradicted by the report"
-- Note when claims are time-sensitive (data may have changed since research)`;
+- Note when claims are time-sensitive (data may have changed since research)
+- Use **bold** for key findings and \`code\` for data points
+- Use emojis for visual status indicators`;
 
     default:
-      return `${coreInstruction}\n\nAnswer questions clearly and accurately using the research context above.`;
+      return `${coreInstruction}\n\nAnswer questions clearly and accurately using the research context above. Use **bold** for emphasis and \`code\` for data points.`;
   }
 }
 
 // ─── Temperature & Token Config per Mode ─────────────────────────────────────
 
 const MODE_PARAMS: Record<AssistantMode, { temperature: number; maxTokens: number }> = {
-  general:        { temperature: 0.40, maxTokens: 1000 },
-  beginner:       { temperature: 0.70, maxTokens: 900  },
-  compare:        { temperature: 0.40, maxTokens: 1200 },
+  general: { temperature: 0.40, maxTokens: 1000 },
+  beginner: { temperature: 0.70, maxTokens: 900 },
+  compare: { temperature: 0.40, maxTokens: 1200 },
   contradictions: { temperature: 0.45, maxTokens: 1400 },
-  questions:      { temperature: 0.75, maxTokens: 1500 },
-  summarize:      { temperature: 0.30, maxTokens: 800  },
-  factcheck:      { temperature: 0.25, maxTokens: 1200 },
+  questions: { temperature: 0.75, maxTokens: 1500 },
+  summarize: { temperature: 0.30, maxTokens: 800 },
+  factcheck: { temperature: 0.25, maxTokens: 1200 },
 };
 
 // ─── Follow-up Suggestions ────────────────────────────────────────────────────
@@ -432,14 +449,14 @@ function getFollowUpSuggestions(mode: AssistantMode, topic: string): string[] {
 // ─── Response Type ────────────────────────────────────────────────────────────
 
 export interface AssistantResponse {
-  content:             string;
-  mode:                AssistantMode;
-  detectedMode:        AssistantMode;   // mode auto-detected from query
-  appliedMode:         AssistantMode;   // mode actually used (may differ if forced)
-  suggestedFollowUps:  string[];
-  usedRAG:             boolean;
+  content: string;
+  mode: AssistantMode;
+  detectedMode: AssistantMode;   // mode auto-detected from query
+  appliedMode: AssistantMode;   // mode actually used (may differ if forced)
+  suggestedFollowUps: string[];
+  usedRAG: boolean;
   retrievedChunkCount: number;
-  confidence:          'high' | 'medium' | 'low';
+  confidence: 'high' | 'medium' | 'low';
 }
 
 // ─── Main Agent Function ──────────────────────────────────────────────────────
@@ -454,16 +471,16 @@ export interface AssistantResponse {
  * @param forcedMode         If provided, override auto-detection
  */
 export async function runResearchAssistantAgent(
-  userQuery:           string,
-  report:              ResearchReport,
+  userQuery: string,
+  report: ResearchReport,
   conversationHistory: AssistantMessage[],
-  ragContext:          RAGContext,
-  forcedMode?:         AssistantMode,
+  ragContext: RAGContext,
+  forcedMode?: AssistantMode,
 ): Promise<AssistantResponse> {
 
   // ── Determine mode ────────────────────────────────────────────────────────
   const detectedMode = detectAssistantMode(userQuery);
-  const appliedMode  = forcedMode ?? detectedMode;
+  const appliedMode = forcedMode ?? detectedMode;
 
   // ── Build system prompt ───────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(appliedMode, report, ragContext);
@@ -490,7 +507,7 @@ export async function runResearchAssistantAgent(
     ],
     {
       temperature: params.temperature,
-      maxTokens:   params.maxTokens,
+      maxTokens: params.maxTokens,
     }
   );
 
@@ -504,16 +521,16 @@ export async function runResearchAssistantAgent(
 
   const confidence: 'high' | 'medium' | 'low' =
     ragContext.chunks.length >= 3 && avgSimilarity >= 0.5 ? 'high'
-    : ragContext.chunks.length >= 1 || ragContext.isEmbedded           ? 'medium'
-    : 'low';
+      : ragContext.chunks.length >= 1 || ragContext.isEmbedded ? 'medium'
+        : 'low';
 
   return {
     content,
-    mode:                appliedMode,
+    mode: appliedMode,
     detectedMode,
     appliedMode,
-    suggestedFollowUps:  getFollowUpSuggestions(appliedMode, report.query),
-    usedRAG:             ragContext.usedVectorSearch && ragContext.chunks.length > 0,
+    suggestedFollowUps: getFollowUpSuggestions(appliedMode, report.query),
+    usedRAG: ragContext.usedVectorSearch && ragContext.chunks.length > 0,
     retrievedChunkCount: ragContext.chunks.length,
     confidence,
   };
@@ -526,47 +543,219 @@ export async function runResearchAssistantAgent(
  * Each maps a user-facing label to a specific (query, mode) combination.
  */
 export interface QuickAction {
-  label:   string;
-  query:   string;
-  mode:    AssistantMode;
-  icon:    string;
-  color:   string;
+  label: string;
+  query: string;
+  mode: AssistantMode;
+  icon: string;
+  color: string;
 }
 
 export const QUICK_ACTIONS: QuickAction[] = [
   {
     label: 'Explain Simply',
-    query: 'Explain this research like I am a complete beginner with no background knowledge',
-    mode:  'beginner',
-    icon:  'school-outline',
+    query: 'Explain this research like I am a complete beginner with no background knowledge. Use analogies and simple language.',
+    mode: 'beginner',
+    icon: 'school-outline',
     color: '#43E97B',
   },
   {
     label: 'Find Contradictions',
-    query: 'Find all contradictions, weak claims, and important gaps in this research',
-    mode:  'contradictions',
-    icon:  'alert-circle-outline',
+    query: 'Find all contradictions, weak claims, and important gaps in this research. Be thorough and constructive.',
+    mode: 'contradictions',
+    icon: 'alert-circle-outline',
     color: '#FF6584',
   },
   {
     label: 'Deeper Questions',
-    query: 'Generate a comprehensive list of follow-up research questions at surface, intermediate, and expert levels',
-    mode:  'questions',
-    icon:  'telescope-outline',
+    query: 'Generate a comprehensive list of follow-up research questions at surface, intermediate, and expert levels. Cover technical, business, and societal angles.',
+    mode: 'questions',
+    icon: 'telescope-outline',
     color: '#FFA726',
   },
   {
     label: 'Quick Summary',
-    query: 'Give me a concise TL;DR summary of the most important findings and what they mean',
-    mode:  'summarize',
-    icon:  'document-text-outline',
+    query: 'Give me a concise TL;DR summary of the most important findings and what they mean. Include key statistics.',
+    mode: 'summarize',
+    icon: 'document-text-outline',
     color: '#8B5CF6',
   },
   {
     label: 'Fact Check',
-    query: 'Evaluate the reliability of the key claims and statistics in this report',
-    mode:  'factcheck',
-    icon:  'shield-checkmark-outline',
+    query: 'Evaluate the reliability of the key claims and statistics in this report. Rate each claim and provide an overall assessment.',
+    mode: 'factcheck',
+    icon: 'shield-checkmark-outline',
     color: '#FF8C00',
   },
 ];
+
+// ─── Helper: Get Mode Color for Theme Integration ────────────────────────────
+
+/**
+ * Returns a mode's color with optional opacity for theme-aware styling.
+ * This helps UI components apply consistent colors across all themes.
+ */
+export function getModeColor(mode: AssistantMode, opacity: number = 1): string {
+  const config = MODE_CONFIG_MAP[mode];
+  if (!config) return `rgba(108,99,255,${opacity})`;
+  const hex = config.color;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+/**
+ * Returns a mode's icon name for Ionicons.
+ */
+export function getModeIcon(mode: AssistantMode): string {
+  return MODE_CONFIG_MAP[mode]?.icon ?? 'chatbubble-ellipses-outline';
+}
+
+/**
+ * Returns a mode's label for display.
+ */
+export function getModeLabel(mode: AssistantMode): string {
+  return MODE_CONFIG_MAP[mode]?.label ?? 'Ask Anything';
+}
+
+/**
+ * Returns a mode's description for tooltips or empty states.
+ */
+export function getModeDescription(mode: AssistantMode): string {
+  return MODE_CONFIG_MAP[mode]?.description ?? 'RAG-powered Q&A using your report';
+}
+
+/**
+ * Returns example prompts for a mode.
+ */
+export function getModeExamples(mode: AssistantMode): string[] {
+  return MODE_CONFIG_MAP[mode]?.examplePrompts ?? MODE_CONFIGS[0].examplePrompts;
+}
+
+// ─── Export all mode configs for easy iteration ──────────────────────────────
+
+export const ALL_MODES = MODE_CONFIGS.map(c => c.mode);
+export const MODE_LABELS = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.label]));
+export const MODE_ICONS = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.icon]));
+export const MODE_COLORS = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.color]));
+
+// ─── Error Handling Helpers ──────────────────────────────────────────────────
+
+export interface AssistantError {
+  code: 'RAG_UNAVAILABLE' | 'CONTEXT_TOO_LONG' | 'API_ERROR' | 'RATE_LIMIT' | 'UNKNOWN';
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * Format an error for display in the chat UI.
+ */
+export function formatAssistantError(error: unknown): AssistantError {
+  const err = error as any;
+  const message = err?.message ?? 'An unexpected error occurred.';
+
+  if (message.includes('rate limit') || message.includes('429')) {
+    return {
+      code: 'RATE_LIMIT',
+      message: 'Too many requests. Please wait a moment before trying again.',
+      retryable: true,
+    };
+  }
+
+  if (message.includes('context') || message.includes('token')) {
+    return {
+      code: 'CONTEXT_TOO_LONG',
+      message: 'The conversation is getting long. Please start a new chat or simplify your question.',
+      retryable: false,
+    };
+  }
+
+  if (message.includes('RAG') || message.includes('embedding') || message.includes('vector')) {
+    return {
+      code: 'RAG_UNAVAILABLE',
+      message: 'Semantic search is unavailable. Using keyword fallback mode. Please try again.',
+      retryable: true,
+    };
+  }
+
+  return {
+    code: 'API_ERROR',
+    message: 'Something went wrong. Please try again in a moment.',
+    retryable: true,
+  };
+}
+
+/**
+ * Check if an error is retryable.
+ */
+export function isRetryableError(error: AssistantError): boolean {
+  return error.retryable;
+}
+
+// ─── Streaming Support (for future implementation) ──────────────────────────
+
+export interface StreamChunk {
+  type: 'start' | 'content' | 'end' | 'error';
+  content?: string;
+  metadata?: {
+    mode?: AssistantMode;
+    confidence?: 'high' | 'medium' | 'low';
+    retrievedChunkCount?: number;
+  };
+  error?: AssistantError;
+}
+
+/**
+ * Placeholder for streaming implementation.
+ * Currently uses the non-streaming API, but this interface is ready for future upgrade.
+ */
+export async function* streamResearchAssistantAgent(
+  userQuery: string,
+  report: ResearchReport,
+  conversationHistory: AssistantMessage[],
+  ragContext: RAGContext,
+  forcedMode?: AssistantMode,
+): AsyncGenerator<StreamChunk, void, unknown> {
+  try {
+    const response = await runResearchAssistantAgent(
+      userQuery,
+      report,
+      conversationHistory,
+      ragContext,
+      forcedMode
+    );
+
+    yield {
+      type: 'start',
+      metadata: {
+        mode: response.mode,
+        confidence: response.confidence,
+        retrievedChunkCount: response.retrievedChunkCount,
+      },
+    };
+
+    // Simulate streaming by sending the content in chunks
+    const words = response.content.split(' ');
+    let buffer = '';
+    for (let i = 0; i < words.length; i++) {
+      buffer += words[i] + ' ';
+      if (buffer.length > 20 || i % 3 === 0) {
+        yield { type: 'content', content: buffer };
+        buffer = '';
+        // Yield control to the event loop for smooth UI updates
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+    if (buffer) {
+      yield { type: 'content', content: buffer };
+    }
+
+    yield { type: 'end' };
+
+  } catch (error) {
+    yield {
+      type: 'error',
+      error: formatAssistantError(error),
+    };
+  }
+}

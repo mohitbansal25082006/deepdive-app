@@ -1,17 +1,6 @@
 // src/components/research/InfographicCard.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Visual Mode — Infographics Panel  (REDESIGN)
-//
-// Swapped react-native-chart-kit → react-native-gifted-charts for crisp,
-// animated, gradient charts that never clip their Y-axis labels.
-//
-// Drop-in compatible: same export `InfographicsPanel`, same props
-//   { data: InfographicData, availableWidth?: number }
-//
-// Install once:
-//   npm install react-native-gifted-charts --legacy-peer-deps
-//   npx expo install --fix -- --legacy-peer-deps
-// (peer deps react-native-svg + expo-linear-gradient are already in the project)
+// Infographics Panel — FULL THEME COMPATIBILITY
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useMemo } from 'react';
@@ -22,16 +11,14 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { BarChart, LineChart, PieChart } from 'react-native-gifted-charts';
 import { InfographicChart, InfographicData, InfographicStat } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 const SCREEN_W = Dimensions.get('window').width;
 
-// Cohesive vibrant palette used across every chart type
 const PALETTE = [
   '#6C63FF', '#4FACFE', '#43E97B', '#FA709A',
   '#F9CB42', '#F093FB', '#38F9D7', '#FF8E53',
 ];
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -57,8 +44,6 @@ function niceCeil(v: number): number {
 const Y_AXIS_TEXT = { color: 'rgba(160,160,200,0.85)', fontSize: 9.5 };
 const X_AXIS_TEXT = { color: 'rgba(160,160,200,0.85)', fontSize: 9.5 };
 
-// ── Section label ───────────────────────────────────────────────────────────
-
 function SectionLabel({ icon, text }: { icon: string; text: string }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: SPACING.sm }}>
@@ -79,14 +64,16 @@ function SectionLabel({ icon, text }: { icon: string; text: string }) {
   );
 }
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
-
 function StatCard({ stat }: { stat: InfographicStat }) {
+  const { isLight } = useTheme();
   const accent = stat.color ?? COLORS.primary;
   const changeColor =
     stat.changeType === 'positive' ? COLORS.success
     : stat.changeType === 'negative' ? COLORS.error
     : COLORS.textMuted;
+
+  const bgGradient: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1C1C3A', '#13132B'];
+  const gradientColors: readonly [string, string] = [accent, `${accent}99`] as const;
 
   return (
     <View style={{
@@ -97,10 +84,9 @@ function StatCard({ stat }: { stat: InfographicStat }) {
       minHeight: 116,
     }}>
       <LinearGradient
-        colors={['#1C1C3A', '#13132B']}
+        colors={bgGradient}
         style={{ flex: 1, padding: SPACING.md }}
       >
-        {/* soft corner glow */}
         <View style={{
           position: 'absolute', top: -28, right: -28,
           width: 80, height: 80, borderRadius: 40,
@@ -109,7 +95,7 @@ function StatCard({ stat }: { stat: InfographicStat }) {
 
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
           <LinearGradient
-            colors={[accent, `${accent}99`]}
+            colors={gradientColors}
             style={{
               width: 34, height: 34, borderRadius: 11,
               alignItems: 'center', justifyContent: 'center',
@@ -151,11 +137,12 @@ function StatCard({ stat }: { stat: InfographicStat }) {
   );
 }
 
-// ── Chart card wrapper ──────────────────────────────────────────────────────
-
 function ChartShell({
   chart, index, children,
 }: { chart: InfographicChart; index: number; children: React.ReactNode }) {
+  const { isLight } = useTheme();
+  const bgGradient: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#181833', '#101026'];
+
   return (
     <Animated.View
       entering={FadeInDown.duration(500).delay(index * 110)}
@@ -167,8 +154,7 @@ function ChartShell({
         overflow: 'hidden',
       }}
     >
-      <LinearGradient colors={['#181833', '#101026']} style={{ padding: SPACING.md, paddingBottom: SPACING.sm }}>
-        {/* header */}
+      <LinearGradient colors={bgGradient} style={{ padding: SPACING.md, paddingBottom: SPACING.sm }}>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm }}>
           <View style={{
             width: 30, height: 30, borderRadius: 9,
@@ -210,8 +196,6 @@ function ChartShell({
   );
 }
 
-// ── Chart renderer ──────────────────────────────────────────────────────────
-
 interface ChartCardProps {
   chart: InfographicChart;
   index: number;
@@ -219,6 +203,7 @@ interface ChartCardProps {
 }
 
 function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
+  const { isLight } = useTheme();
   const dataset = chart.datasets?.[0];
   const rawData = dataset?.data ?? [];
   const rawLabels = chart.labels ?? rawData.map((_, i) => String(i + 1));
@@ -239,7 +224,6 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
   const yAxisLabelWidth = 42;
   const plotW = Math.max(40, chartWidth - yAxisLabelWidth - 8);
 
-  // ── BAR ──────────────────────────────────────────────────────────────────
   if (chart.type === 'bar') {
     const n = values.length;
     const slot = plotW / n;
@@ -297,7 +281,6 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
     );
   }
 
-  // ── LINE / AREA ────────────────────────────────────────────────────────────
   if (chart.type === 'line') {
     const n = values.length;
     const spacing = clamp(plotW / Math.max(1, n - 1), 26, 90);
@@ -350,7 +333,7 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
               pointerLabelWidth: 90,
               pointerLabelComponent: (items: any[]) => (
                 <View style={{
-                  backgroundColor: '#0E0E22',
+                  backgroundColor: COLORS.backgroundCard,
                   borderRadius: RADIUS.md, paddingHorizontal: 10, paddingVertical: 6,
                   borderWidth: 1, borderColor: `${accent}55`,
                 }}>
@@ -366,7 +349,6 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
     );
   }
 
-  // ── PIE / DONUT ──────────────────────────────────────────────────────────
   if (chart.type === 'pie') {
     const total = values.reduce((s, v) => s + (v > 0 ? v : 0), 0);
     const pieData = values
@@ -381,6 +363,7 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
     if (pieData.length < 1) return null;
 
     const radius = clamp(plotW * 0.32, 70, 110);
+    const innerColor = isLight ? '#FFFFFF' : '#101026';
 
     return (
       <ChartShell chart={chart} index={index}>
@@ -391,10 +374,10 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
             showGradient
             radius={radius}
             innerRadius={radius * 0.58}
-            innerCircleColor="#101026"
+            innerCircleColor={innerColor}
             sectionAutoFocus
             focusOnPress
-            strokeColor="#101026"
+            strokeColor={innerColor}
             strokeWidth={2}
             centerLabelComponent={() => (
               <View style={{ alignItems: 'center' }}>
@@ -409,7 +392,6 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
           />
         </View>
 
-        {/* legend */}
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 10 }}>
           {pieData.map((d, i) => {
             const pct = total > 0 ? Math.round((d.value / total) * 100) : 0;
@@ -435,8 +417,6 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
 
   return null;
 }
-
-// ── Public panel ──────────────────────────────────────────────────────────
 
 interface Props {
   data: InfographicData;

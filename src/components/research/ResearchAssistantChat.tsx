@@ -1,29 +1,7 @@
 // src/components/research/ResearchAssistantChat.tsx
-// Part 6 — AI Research Assistant: Full Chat Component
-//
-// This replaces the old FollowUpChat.tsx for the upgraded assistant.
-//
-// Features:
-//   • Embedding status banner (progress bar while indexing, "RAG Ready" badge)
-//   • Mode selector strip (7 modes, each with icon + color)
-//   • Quick action chips (pre-built prompts for each mode)
-//   • Message list with RAG metadata (confidence badge, # chunks retrieved)
-//   • Suggested follow-up prompts after each assistant response
-//   • Typing indicator with animated dots
-//   • Smooth keyboard avoidance (messages scroll up, input stays visible)
-//   • Error state with retry option
-//
-// Props:
-//   assistant    — return value of useResearchAssistant()
-//   reportTitle  — used in empty state
-//   bottomInset  — Android nav-bar safe-area inset (added to input row padding)
-//
-// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
-//   1. The chat input row had no bottom safe-area padding; under SDK 54 edge-to-
-//      edge it could sit under the Android nav bar. We now accept `bottomInset`
-//      and pad the input row's bottom with it.
-//   2. Scrolling the message list now dismisses the keyboard (keyboardDismissMode)
-//      and taps on bubbles still work (keyboardShouldPersistTaps="handled").
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Research Assistant Chat — FULL THEME COMPATIBILITY
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useRef, useEffect, useState } from 'react';
 import {
@@ -31,21 +9,19 @@ import {
   ActivityIndicator, StyleSheet, Animated as RNAnimated,
   Platform,
 } from 'react-native';
-import { LinearGradient }   from 'expo-linear-gradient';
-import { Ionicons }          from '@expo/vector-icons';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { AssistantMessage, AssistantMode } from '../../types';
-import { AssistantModeSelector }           from './AssistantModeSelector';
-import { QUICK_ACTIONS, MODE_CONFIG_MAP }  from '../../services/agents/researchAssistantAgent';
-import { COLORS, FONTS, SPACING, RADIUS }  from '../../constants/theme';
+import { AssistantModeSelector } from './AssistantModeSelector';
+import { QUICK_ACTIONS, MODE_CONFIG_MAP } from '../../services/agents/researchAssistantAgent';
+import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 import type { UseResearchAssistantReturn } from '../../hooks/useResearchAssistant';
 
-// ─── Props ────────────────────────────────────────────────────────────────────
-
 interface Props {
-  assistant:   UseResearchAssistantReturn;
+  assistant: UseResearchAssistantReturn;
   reportTitle: string;
-  /** Android nav-bar safe-area inset, added to the input row's bottom padding. */
   bottomInset?: number;
 }
 
@@ -53,12 +29,12 @@ interface Props {
 
 function ConfidenceBadge({ level }: { level: 'high' | 'medium' | 'low' }) {
   const colors = {
-    high:   COLORS.success,
+    high: COLORS.success,
     medium: COLORS.warning,
-    low:    COLORS.error,
+    low: COLORS.error,
   };
   const labels = { high: 'High', medium: 'Medium', low: 'Low' };
-  const icons  = { high: 'shield-checkmark', medium: 'shield-half', low: 'shield-outline' };
+  const icons = { high: 'shield-checkmark', medium: 'shield-half', low: 'shield-outline' };
 
   return (
     <View style={[styles.confidenceBadge, { borderColor: colors[level] + '40', backgroundColor: colors[level] + '12' }]}>
@@ -107,9 +83,7 @@ function TypingDots() {
 
   return (
     <View style={styles.typingWrap}>
-      <LinearGradient colors={COLORS.gradientPrimary}
-        style={styles.typingAvatar}
-      >
+      <LinearGradient colors={COLORS.gradientPrimary} style={styles.typingAvatar}>
         <Ionicons name="sparkles" size={10} color="#FFF" />
       </LinearGradient>
       <View style={styles.typingBubble}>
@@ -136,9 +110,9 @@ function EmbedBanner({
   onRetry,
 }: {
   isEmbedding: boolean;
-  isEmbedded:  boolean;
-  progress:    { done: number; total: number } | null;
-  onRetry:     () => void;
+  isEmbedded: boolean;
+  progress: { done: number; total: number } | null;
+  onRetry: () => void;
 }) {
   if (isEmbedded) {
     return (
@@ -190,12 +164,15 @@ function MessageBubble({
   isLastAssistant,
   onFollowUp,
 }: {
-  msg:              AssistantMessage;
+  msg: AssistantMessage;
   isLastAssistant?: boolean;
-  onFollowUp:       (text: string) => void;
+  onFollowUp: (text: string) => void;
 }) {
+  const { isLight } = useTheme();
   const isUser = msg.role === 'user';
   const modeCfg = msg.mode ? MODE_CONFIG_MAP[msg.mode] : null;
+
+  const assistantBubbleBg = isLight ? '#EEF0F8' : COLORS.backgroundElevated;
 
   return (
     <Animated.View
@@ -205,22 +182,16 @@ function MessageBubble({
         isUser ? styles.bubbleRowUser : styles.bubbleRowAssistant,
       ]}
     >
-      {/* Assistant avatar */}
       {!isUser && (
         <LinearGradient
           colors={modeCfg ? [modeCfg.color, modeCfg.color + 'AA'] : COLORS.gradientPrimary}
           style={styles.assistantAvatar}
         >
-          <Ionicons
-            name={(modeCfg?.icon ?? 'sparkles') as any}
-            size={12}
-            color="#FFF"
-          />
+          <Ionicons name={(modeCfg?.icon ?? 'sparkles') as any} size={12} color="#FFF" />
         </LinearGradient>
       )}
 
       <View style={{ maxWidth: '86%', gap: 6 }}>
-        {/* Assistant label row */}
         {!isUser && (
           <View style={styles.assistantLabel}>
             <Text style={styles.assistantLabelText}>DeepDive AI</Text>
@@ -234,10 +205,9 @@ function MessageBubble({
           </View>
         )}
 
-        {/* Bubble */}
         <View style={[
           styles.bubble,
-          isUser ? styles.bubbleUser : styles.bubbleAssistant,
+          isUser ? styles.bubbleUser : [styles.bubbleAssistant, { backgroundColor: assistantBubbleBg }],
         ]}>
           <Text style={[
             styles.bubbleText,
@@ -247,7 +217,6 @@ function MessageBubble({
           </Text>
         </View>
 
-        {/* Metadata row (assistant only) */}
         {!isUser && (msg.confidence || (msg.retrievedChunks?.length ?? 0) > 0) && (
           <View style={styles.metaRow}>
             {msg.confidence && <ConfidenceBadge level={msg.confidence} />}
@@ -261,7 +230,6 @@ function MessageBubble({
           </View>
         )}
 
-        {/* Suggested follow-ups (last assistant message only) */}
         {!isUser && isLastAssistant && Array.isArray(msg.suggestedFollowUps) && msg.suggestedFollowUps.length > 0 && (
           <View style={styles.followUpRow}>
             {msg.suggestedFollowUps.slice(0, 3).map((q, i) => (
@@ -288,14 +256,15 @@ function EmptyState({
   onSend,
 }: {
   reportTitle: string;
-  activeMode:  AssistantMode;
-  onSend:      (q: string, mode?: AssistantMode) => void;
+  activeMode: AssistantMode;
+  onSend: (q: string, mode?: AssistantMode) => void;
 }) {
+  const { isLight } = useTheme();
   const modeCfg = MODE_CONFIG_MAP[activeMode];
+  const chipBg = isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated;
 
   return (
     <Animated.View entering={FadeInDown.duration(400)} style={styles.emptyWrap}>
-      {/* Hero icon */}
       <LinearGradient
         colors={[modeCfg.color, modeCfg.color + 'AA']}
         style={styles.emptyIcon}
@@ -312,13 +281,12 @@ function EmptyState({
           : modeCfg.description}
       </Text>
 
-      {/* Quick action chips for the active mode */}
       <View style={styles.exampleWrap}>
         {(modeCfg.examplePrompts ?? []).slice(0, 3).map((q, i) => (
           <Pressable
             key={i}
             onPress={() => onSend(q, activeMode)}
-            style={styles.exampleChip}
+            style={[styles.exampleChip, { backgroundColor: chipBg }]}
           >
             <Ionicons name="arrow-forward-circle-outline" size={14} color={modeCfg.color} />
             <Text style={[styles.exampleChipText, { color: modeCfg.color + 'DD' }]}>{q}</Text>
@@ -332,6 +300,9 @@ function EmptyState({
 // ─── Quick Actions Row ────────────────────────────────────────────────────────
 
 function QuickActionsRow({ onSend }: { onSend: (q: string, mode: AssistantMode) => void }) {
+  const { isLight } = useTheme();
+  const chipBg = isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated;
+
   return (
     <ScrollView
       horizontal
@@ -343,7 +314,7 @@ function QuickActionsRow({ onSend }: { onSend: (q: string, mode: AssistantMode) 
         <Pressable
           key={action.mode}
           onPress={() => onSend(action.query, action.mode)}
-          style={[styles.quickChip, { borderColor: action.color + '40' }]}
+          style={[styles.quickChip, { borderColor: action.color + '40', backgroundColor: chipBg }]}
         >
           <Ionicons name={action.icon as any} size={13} color={action.color} />
           <Text style={[styles.quickChipText, { color: action.color }]}>{action.label}</Text>
@@ -356,6 +327,7 @@ function QuickActionsRow({ onSend }: { onSend: (q: string, mode: AssistantMode) 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 }: Props) {
+  const { isLight } = useTheme();
   const {
     messages,
     isEmbedding,
@@ -372,7 +344,6 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
   const [inputText, setInputText] = useState('');
   const scrollRef = useRef<ScrollView>(null);
 
-  // Auto-scroll to bottom when messages update
   useEffect(() => {
     if (messages.length > 0 || isSending) {
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
@@ -386,19 +357,20 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
     sendMessage(t, mode);
   };
 
-  // Find the last assistant message index for showing follow-ups
   const lastAssistantIdx = [...messages].reverse().findIndex(m => m.role === 'assistant');
-  const lastAssistantId  = lastAssistantIdx >= 0
+  const lastAssistantId = lastAssistantIdx >= 0
     ? messages[messages.length - 1 - lastAssistantIdx]?.id
     : null;
 
   const modeCfg = MODE_CONFIG_MAP[activeMode];
   const hasMessages = messages.length > 0;
 
-  return (
-    <View style={styles.container}>
+  const inputBg = isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated;
+  const containerBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
 
-      {/* ── Embed status banner ─────────────────────────────────────────── */}
+  return (
+    <View style={[styles.container, { backgroundColor: containerBg }]}>
+
       <EmbedBanner
         isEmbedding={isEmbedding}
         isEmbedded={isEmbedded}
@@ -406,19 +378,16 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
         onRetry={retryEmbed}
       />
 
-      {/* ── Mode selector ───────────────────────────────────────────────── */}
       <AssistantModeSelector
         activeMode={activeMode}
         onSelect={setMode}
         disabled={isSending}
       />
 
-      {/* ── Quick actions (only when no messages) ───────────────────────── */}
       {!hasMessages && (
         <QuickActionsRow onSend={handleSend} />
       )}
 
-      {/* ── Message list ────────────────────────────────────────────────── */}
       <ScrollView
         ref={scrollRef}
         style={styles.messageList}
@@ -428,11 +397,9 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        // FIX: dragging the message list dismisses the keyboard on Android too.
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
       >
-        {/* Empty state */}
         {!hasMessages && (
           <EmptyState
             reportTitle={reportTitle}
@@ -441,7 +408,6 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
           />
         )}
 
-        {/* Messages */}
         {messages.map(msg => (
           <MessageBubble
             key={msg.id}
@@ -451,10 +417,8 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
           />
         ))}
 
-        {/* Typing indicator */}
         {isSending && <TypingDots />}
 
-        {/* Error banner */}
         {error && !isSending && (
           <Animated.View entering={FadeInDown.duration(300)} style={styles.errorBanner}>
             <Ionicons name="warning-outline" size={14} color={COLORS.error} />
@@ -463,11 +427,11 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
         )}
       </ScrollView>
 
-      {/* ── Input row ───────────────────────────────────────────────────── */}
-      {/* FIX: bottomInset added to the input row's bottom padding so it clears
-          the Android nav/gesture bar in edge-to-edge mode. */}
-      <View style={[styles.inputRow, { paddingBottom: SPACING.sm + bottomInset }]}>
-        {/* Active mode indicator pill */}
+      <View style={[styles.inputRow, { 
+        paddingBottom: SPACING.sm + bottomInset,
+        backgroundColor: containerBg,
+        borderTopColor: COLORS.border,
+      }]}>
         <View style={[styles.inputModePill, { backgroundColor: modeCfg.color + '18', borderColor: modeCfg.color + '40' }]}>
           <Ionicons name={modeCfg.icon as any} size={11} color={modeCfg.color} />
         </View>
@@ -477,7 +441,11 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
           onChangeText={setInputText}
           placeholder={modeCfg.examplePrompts?.[0] ?? 'Ask anything about this research…'}
           placeholderTextColor={COLORS.textMuted}
-          style={styles.input}
+          style={[styles.input, { 
+            backgroundColor: inputBg,
+            color: COLORS.textPrimary,
+            borderColor: COLORS.border,
+          }]}
           onSubmitEditing={() => handleSend()}
           returnKeyType="send"
           blurOnSubmit={false}
@@ -491,12 +459,12 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
           style={{ opacity: !inputText.trim() || isSending ? 0.4 : 1 }}
         >
           <LinearGradient
-            colors={inputText.trim() ? [modeCfg.color, modeCfg.color + 'BB'] : ['#2A2A4A', '#1A1A35']}
+            colors={inputText.trim() ? [modeCfg.color, modeCfg.color + 'BB'] : [COLORS.backgroundElevated, COLORS.backgroundCard]}
             style={styles.sendBtn}
           >
             {isSending
               ? <ActivityIndicator size="small" color="#FFF" />
-              : <Ionicons name="arrow-up" size={18} color="#FFF" />
+              : <Ionicons name="arrow-up" size={18} color={inputText.trim() ? "#FFF" : COLORS.textMuted} />
             }
           </LinearGradient>
         </Pressable>
@@ -510,10 +478,8 @@ export function ResearchAssistantChat({ assistant, reportTitle, bottomInset = 0 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.backgroundCard,
   },
 
-  // ── Embed banner ────────────────────────────────────────────────────────────
   embedBannerReady: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -570,7 +536,6 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.xs,
   },
 
-  // ── Quick actions ────────────────────────────────────────────────────────────
   quickActionsStrip: {
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.xs,
@@ -586,14 +551,12 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: RADIUS.full,
     borderWidth: 1,
-    backgroundColor: COLORS.backgroundElevated,
   },
   quickChipText: {
     fontSize: FONTS.sizes.xs,
     fontWeight: '600',
   },
 
-  // ── Message list ─────────────────────────────────────────────────────────────
   messageList: {
     flex: 1,
   },
@@ -607,7 +570,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  // ── Empty state ──────────────────────────────────────────────────────────────
   emptyWrap: {
     alignItems: 'center',
     paddingVertical: SPACING.xl,
@@ -645,7 +607,6 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: SPACING.sm,
     borderRadius: RADIUS.md,
-    backgroundColor: COLORS.backgroundElevated,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -655,7 +616,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
-  // ── Message bubbles ───────────────────────────────────────────────────────────
   bubbleRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -708,7 +668,6 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 4,
   },
   bubbleAssistant: {
-    backgroundColor: COLORS.backgroundElevated,
     borderBottomLeftRadius: 4,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -724,7 +683,6 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
   },
 
-  // ── Metadata row ──────────────────────────────────────────────────────────────
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -777,7 +735,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  // ── Suggested follow-ups ──────────────────────────────────────────────────────
   followUpRow: {
     gap: 6,
     marginTop: 4,
@@ -796,7 +753,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
-  // ── Typing indicator ──────────────────────────────────────────────────────────
   typingWrap: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -829,7 +785,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
 
-  // ── Error banner ──────────────────────────────────────────────────────────────
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -848,7 +803,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
-  // ── Input row ─────────────────────────────────────────────────────────────────
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -856,8 +810,6 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.sm,
     gap: SPACING.sm,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    backgroundColor: COLORS.backgroundCard,
   },
   inputModePill: {
     width: 32,
@@ -870,14 +822,11 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    backgroundColor: COLORS.backgroundElevated,
     borderRadius: RADIUS.full,
     paddingHorizontal: SPACING.md,
     paddingVertical: 10,
-    color: COLORS.textPrimary,
     fontSize: FONTS.sizes.sm,
     borderWidth: 1,
-    borderColor: COLORS.border,
     maxHeight: 80,
   },
   sendBtn: {

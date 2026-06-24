@@ -8,11 +8,17 @@
 //   Activity logging for share/unshare is handled SERVER-SIDE by DB triggers on
 //   shared_workspace_content (schema_part52_2.sql §9), so this modal no longer
 //   logs activity itself — one correct entry per action regardless of path.
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.3 — Theme compatibility: Replaced all hardcoded colors and gradients
+//             with theme-aware values from COLORS. All surfaces, badges, and
+//             status indicators now follow the active theme palette.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, Modal, TouchableOpacity,
   ScrollView, ActivityIndicator, Alert, Image,
+  StyleSheet,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -70,38 +76,32 @@ function WorkspaceRow({
       onPress={onToggle}
       disabled={!canShare || isSharing}
       activeOpacity={0.78}
-      style={{
-        flexDirection:   'row',
-        alignItems:      'center',
-        gap:             SPACING.md,
-        backgroundColor: item.isShared
-          ? `${COLORS.success}10`
-          : COLORS.backgroundElevated,
-        borderRadius: RADIUS.lg,
-        padding:      SPACING.md,
-        borderWidth:  1.5,
-        borderColor:  item.isShared
-          ? `${COLORS.success}40`
-          : canShare ? COLORS.border : `${COLORS.border}60`,
-        opacity: canShare ? 1 : 0.45,
-      }}
+      style={[
+        styles.workspaceRow,
+        {
+          backgroundColor: item.isShared
+            ? `${COLORS.success}10`
+            : COLORS.backgroundElevated,
+          borderColor: item.isShared
+            ? `${COLORS.success}40`
+            : canShare ? COLORS.border : `${COLORS.border}60`,
+          opacity: canShare ? 1 : 0.45,
+        }
+      ]}
     >
       {/* Workspace logo / fallback gradient */}
       {item.avatarUrl ? (
         <Image
           source={{ uri: item.avatarUrl }}
-          style={{ width: 44, height: 44, borderRadius: 12, flexShrink: 0 }}
+          style={styles.workspaceAvatar}
           resizeMode="cover"
         />
       ) : (
         <LinearGradient
           colors={item.isShared
             ? [COLORS.success, COLORS.success + 'AA']
-            : [COLORS.primary, '#8B5CF6']}
-          style={{
-            width: 44, height: 44, borderRadius: 12,
-            alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          }}
+            : COLORS.gradientPrimary}
+          style={styles.workspaceAvatarGradient}
         >
           <Ionicons
             name={item.isShared ? 'checkmark' : 'people'}
@@ -112,43 +112,31 @@ function WorkspaceRow({
       )}
 
       {/* Name & role chips */}
-      <View style={{ flex: 1 }}>
+      <View style={styles.workspaceInfo}>
         <Text
-          style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' }}
+          style={[styles.workspaceName, { color: COLORS.textPrimary }]}
           numberOfLines={1}
         >
           {item.workspaceName}
         </Text>
-        <View style={{
-          flexDirection: 'row', alignItems: 'center',
-          gap: 5, marginTop: 3, flexWrap: 'wrap',
-        }}>
-          <View style={{
-            backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
-            paddingHorizontal: 7, paddingVertical: 1,
-          }}>
-            <Text style={{
-              color: COLORS.primary, fontSize: 10, fontWeight: '700', textTransform: 'capitalize',
-            }}>
+        <View style={styles.workspaceChips}>
+          <View style={[styles.roleChip, { backgroundColor: `${COLORS.primary}18` }]}>
+            <Text style={[styles.roleChipText, { color: COLORS.primary }]}>
               {item.userRole}
             </Text>
           </View>
 
           {item.isShared && (
-            <View style={{
-              backgroundColor: `${COLORS.success}18`, borderRadius: RADIUS.full,
-              paddingHorizontal: 7, paddingVertical: 1,
-              flexDirection: 'row', alignItems: 'center', gap: 3,
-            }}>
+            <View style={[styles.sharedChip, { backgroundColor: `${COLORS.success}18` }]}>
               <Ionicons name="checkmark-circle" size={9} color={COLORS.success} />
-              <Text style={{ color: COLORS.success, fontSize: 10, fontWeight: '700' }}>
+              <Text style={[styles.sharedChipText, { color: COLORS.success }]}>
                 Shared
               </Text>
             </View>
           )}
 
           {!canShare && (
-            <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
+            <Text style={[styles.viewerText, { color: COLORS.textMuted }]}>
               Viewer — can't share
             </Text>
           )}
@@ -160,13 +148,13 @@ function WorkspaceRow({
         isSharing
           ? <ActivityIndicator size="small" color={accentColor} />
           : (
-            <View style={{
-              width: 28, height: 28, borderRadius: 8,
-              backgroundColor: item.isShared ? `${COLORS.success}20` : `${COLORS.primary}15`,
-              alignItems: 'center', justifyContent: 'center',
-              borderWidth: 1,
-              borderColor: item.isShared ? `${COLORS.success}40` : `${COLORS.primary}30`,
-            }}>
+            <View style={[
+              styles.toggleButton,
+              {
+                backgroundColor: item.isShared ? `${COLORS.success}20` : `${COLORS.primary}15`,
+                borderColor: item.isShared ? `${COLORS.success}40` : `${COLORS.primary}30`,
+              }
+            ]}>
               <Ionicons
                 name={item.isShared ? 'remove-outline' : 'add-outline'}
                 size={16}
@@ -201,8 +189,6 @@ export function ShareToWorkspaceModal({
   const [loadError,   setLoadError]   = useState<string | null>(null);
 
   // ── Load workspaces via SECURITY DEFINER RPC ──────────────────────────────
-  // Uses get_user_workspaces_for_sharing() which returns out_-prefixed columns
-  // to avoid Postgres 42702 ambiguous column reference error.
   const loadWorkspaces = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
@@ -220,7 +206,6 @@ export function ShareToWorkspaceModal({
       const rows = (data as Record<string, unknown>[]) ?? [];
 
       const items: WorkspaceItem[] = rows.map(row => ({
-        // Map out_-prefixed columns; fall back to un-prefixed for safety
         workspaceId:   (row.out_workspace_id   ?? row.workspace_id)   as string,
         workspaceName: (row.out_workspace_name  ?? row.workspace_name) as string,
         avatarUrl:     ((row.out_avatar_url     ?? row.avatar_url)     as string) ?? null,
@@ -299,7 +284,7 @@ export function ShareToWorkspaceModal({
     >
       {/* Backdrop */}
       <TouchableOpacity
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' }}
+        style={[styles.backdrop, { backgroundColor: 'rgba(0,0,0,0.65)' }]}
         activeOpacity={1}
         onPress={onClose}
       />
@@ -307,61 +292,47 @@ export function ShareToWorkspaceModal({
       {/* Sheet */}
       <Animated.View
         entering={SlideInDown.duration(340).springify()}
-        style={{
-          position: 'absolute', bottom: 0, left: 0, right: 0,
-          backgroundColor:      COLORS.backgroundCard,
-          borderTopLeftRadius:  26,
-          borderTopRightRadius: 26,
-          borderTopWidth:       1,
-          borderTopColor:       COLORS.border,
-          paddingBottom:        insets.bottom + SPACING.md,
-          maxHeight:            '88%',
-        }}
+        style={[
+          styles.sheet,
+          {
+            backgroundColor: COLORS.backgroundCard,
+            borderTopColor: COLORS.border,
+            paddingBottom: insets.bottom + SPACING.md,
+          }
+        ]}
       >
         {/* Handle */}
-        <View style={{
-          width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border,
-          alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md,
-        }} />
+        <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
 
         {/* Header */}
-        <View style={{
-          flexDirection: 'row', alignItems: 'flex-start',
-          paddingHorizontal: SPACING.lg, paddingBottom: SPACING.md,
-          borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.md,
-        }}>
+        <View style={[styles.header, { borderBottomColor: COLORS.border }]}>
           <LinearGradient
-            colors={['#6C63FF', '#8B5CF6']}
-            style={{
-              width: 48, height: 48, borderRadius: 14,
-              alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium,
-            }}
+            colors={COLORS.gradientPrimary}
+            style={[styles.headerIcon, SHADOWS.medium]}
           >
             <Ionicons name={iconName as any} size={22} color="#FFF" />
           </LinearGradient>
 
-          <View style={{ flex: 1 }}>
-            <Text style={{
-              color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800',
-            }}>
+          <View style={styles.headerText}>
+            <Text style={[styles.headerTitle, { color: COLORS.textPrimary }]}>
               Share {typeLabel}
             </Text>
             <Text
-              style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 }}
+              style={[styles.headerSubtitle, { color: COLORS.textMuted }]}
               numberOfLines={2}
             >
               {title}
             </Text>
             {sharedCount > 0 && (
-              <View style={{
-                flexDirection: 'row', alignItems: 'center', gap: 4,
-                backgroundColor: `${COLORS.success}15`,
-                borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3,
-                alignSelf: 'flex-start', marginTop: 6,
-                borderWidth: 1, borderColor: `${COLORS.success}30`,
-              }}>
+              <View style={[
+                styles.sharedBadge,
+                {
+                  backgroundColor: `${COLORS.success}15`,
+                  borderColor: `${COLORS.success}30`,
+                }
+              ]}>
                 <Ionicons name="checkmark-circle" size={11} color={COLORS.success} />
-                <Text style={{ color: COLORS.success, fontSize: 11, fontWeight: '700' }}>
+                <Text style={[styles.sharedBadgeText, { color: COLORS.success }]}>
                   Shared to {sharedCount} workspace{sharedCount !== 1 ? 's' : ''}
                 </Text>
               </View>
@@ -370,12 +341,13 @@ export function ShareToWorkspaceModal({
 
           <TouchableOpacity
             onPress={onClose}
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              backgroundColor: COLORS.backgroundElevated,
-              alignItems: 'center', justifyContent: 'center',
-              borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
-            }}
+            style={[
+              styles.closeButton,
+              {
+                backgroundColor: COLORS.backgroundElevated,
+                borderColor: COLORS.border,
+              }
+            ]}
           >
             <Ionicons name="close" size={16} color={COLORS.textMuted} />
           </TouchableOpacity>
@@ -383,67 +355,50 @@ export function ShareToWorkspaceModal({
 
         {/* Content */}
         <ScrollView
-          contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.sm }}
+          contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {isLoading ? (
-            <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
+            <View style={styles.centerState}>
               <ActivityIndicator color={COLORS.primary} size="large" />
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 12 }}>
+              <Text style={[styles.centerStateText, { color: COLORS.textMuted }]}>
                 Loading workspaces…
               </Text>
             </View>
 
           ) : loadError ? (
-            <View style={{ alignItems: 'center', paddingVertical: SPACING.xl, gap: 12 }}>
+            <View style={styles.errorState}>
               <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
-              <Text style={{
-                color: COLORS.error, fontSize: FONTS.sizes.sm, textAlign: 'center',
-              }}>
+              <Text style={[styles.errorText, { color: COLORS.error }]}>
                 {loadError}
               </Text>
               <TouchableOpacity
                 onPress={loadWorkspaces}
-                style={{
-                  backgroundColor: COLORS.primary, borderRadius: RADIUS.lg,
-                  paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
-                }}
+                style={[styles.retryButton, { backgroundColor: COLORS.primary }]}
               >
-                <Text style={{ color: '#FFF', fontWeight: '700' }}>Retry</Text>
+                <Text style={styles.retryButtonText}>Retry</Text>
               </TouchableOpacity>
             </View>
 
           ) : workspaces.length === 0 ? (
             <Animated.View
               entering={FadeInDown.duration(400)}
-              style={{ alignItems: 'center', paddingVertical: SPACING.xl, gap: 12 }}
+              style={styles.emptyState}
             >
-              <View style={{
-                width: 64, height: 64, borderRadius: 18,
-                backgroundColor: `${COLORS.primary}15`,
-                alignItems: 'center', justifyContent: 'center',
-              }}>
+              <View style={[styles.emptyIcon, { backgroundColor: `${COLORS.primary}15` }]}>
                 <Ionicons name="people-outline" size={32} color={COLORS.primary} />
               </View>
-              <Text style={{
-                color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700',
-              }}>
+              <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>
                 No Workspaces Found
               </Text>
-              <Text style={{
-                color: COLORS.textMuted, fontSize: FONTS.sizes.sm,
-                textAlign: 'center', lineHeight: 20,
-              }}>
+              <Text style={[styles.emptySubtitle, { color: COLORS.textMuted }]}>
                 Create or join a workspace to share your {typeLabel.toLowerCase()}.
               </Text>
             </Animated.View>
 
           ) : (
             <>
-              <Text style={{
-                color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600',
-                letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.xs,
-              }}>
+              <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>
                 Your Workspaces
               </Text>
 
@@ -460,10 +415,7 @@ export function ShareToWorkspaceModal({
                 </Animated.View>
               ))}
 
-              <Text style={{
-                color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
-                textAlign: 'center', marginTop: SPACING.sm, lineHeight: 16,
-              }}>
+              <Text style={[styles.footerNote, { color: COLORS.textMuted }]}>
                 Tap to share or unshare.{'\n'}
                 Only owners and editors can share content.
               </Text>
@@ -474,3 +426,226 @@ export function ShareToWorkspaceModal({
     </Modal>
   );
 }
+
+// ─── Styles ────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  // Backdrop
+  backdrop: {
+    flex: 1,
+  },
+
+  // Sheet
+  sheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderTopWidth: 1,
+    maxHeight: '88%',
+  },
+  handle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.md,
+  },
+
+  // Header
+  header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: SPACING.lg,
+    paddingBottom: SPACING.md,
+    borderBottomWidth: 1,
+    gap: SPACING.md,
+  },
+  headerIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  headerText: {
+    flex: 1,
+  },
+  headerTitle: {
+    fontSize: FONTS.sizes.lg,
+    fontWeight: '800',
+  },
+  headerSubtitle: {
+    fontSize: FONTS.sizes.xs,
+    marginTop: 3,
+  },
+  sharedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    borderWidth: 1,
+  },
+  sharedBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    flexShrink: 0,
+  },
+
+  // Scroll content
+  scrollContent: {
+    padding: SPACING.lg,
+    gap: SPACING.sm,
+  },
+
+  // Workspace row
+  workspaceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    borderWidth: 1.5,
+  },
+  workspaceAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    flexShrink: 0,
+  },
+  workspaceAvatarGradient: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  workspaceInfo: {
+    flex: 1,
+  },
+  workspaceName: {
+    fontSize: FONTS.sizes.base,
+    fontWeight: '700',
+  },
+  workspaceChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 3,
+    flexWrap: 'wrap',
+  },
+  roleChip: {
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+  },
+  roleChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'capitalize',
+  },
+  sharedChip: {
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  sharedChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  viewerText: {
+    fontSize: 10,
+  },
+  toggleButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+
+  // States
+  centerState: {
+    alignItems: 'center',
+    paddingVertical: SPACING.xl,
+  },
+  centerStateText: {
+    fontSize: FONTS.sizes.sm,
+    marginTop: 12,
+  },
+  errorState: {
+    alignItems: 'center',
+    paddingVertical: SPACING.xl,
+    gap: 12,
+  },
+  errorText: {
+    fontSize: FONTS.sizes.sm,
+    textAlign: 'center',
+  },
+  retryButton: {
+    borderRadius: RADIUS.lg,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+  },
+  retryButtonText: {
+    color: '#FFF',
+    fontWeight: '700',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: SPACING.xl,
+    gap: 12,
+  },
+  emptyIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyTitle: {
+    fontSize: FONTS.sizes.base,
+    fontWeight: '700',
+  },
+  emptySubtitle: {
+    fontSize: FONTS.sizes.sm,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+
+  // Section
+  sectionLabel: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '600',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: SPACING.xs,
+  },
+  footerNote: {
+    fontSize: FONTS.sizes.xs,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    lineHeight: 16,
+  },
+});

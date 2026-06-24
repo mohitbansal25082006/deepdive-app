@@ -1,15 +1,7 @@
 // src/components/research/ReportSection.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Research report section card  (REDESIGN)
+// Research report section card — FULL THEME COMPATIBILITY
 // Glassy expandable card · gradient index marker · refined stat & bullet styling.
-// Drop-in compatible: export `ReportSectionCard`, props { section, citations, index }.
-//
-// Part 55 UPDATE — THEME SYSTEM:
-//   The module-level `const labelStyle = {...COLORS...}` captured COLORS at import
-//   time and would not recolor on a runtime theme switch. It is now produced by
-//   `labelStyle()` (a function that reads the live COLORS) and called inside the
-//   render. The component also subscribes to useTheme()'s `version` so it
-//   re-renders on theme change. Everything else is unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState } from 'react';
@@ -32,9 +24,7 @@ interface Props {
 }
 
 export function ReportSectionCard({ section, citations, index }: Props) {
-  // Part 55: subscribe to theme version so this card re-renders on theme change.
-  useTheme();
-
+  const { isLight } = useTheme();
   const [expanded, setExpanded] = useState(index === 0);
   const [showCitations, setShowCitations] = useState(false);
 
@@ -51,6 +41,13 @@ export function ReportSectionCard({ section, citations, index }: Props) {
     chevron.value = withTiming(next ? 1 : 0, { duration: 220 });
   };
 
+  // Theme-aware gradients
+  const expandedBg: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1A1A38', '#121228'];
+  const collapsedBg: readonly [string, string] = isLight ? ['#F5F6FB', '#FFFFFF'] : ['#15152E', '#101024'];
+  const statBg: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : [`${COLORS.primary}14`, `${COLORS.primary}06`];
+  const citationBg = isLight ? '#F5F6FB' : COLORS.backgroundElevated;
+  const chipBg = isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated;
+
   return (
     <Animated.View
       entering={FadeInDown.duration(480).delay(index * 90)}
@@ -62,7 +59,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
         overflow: 'hidden',
       }}
     >
-      <LinearGradient colors={expanded ? ['#1A1A38', '#121228'] : ['#15152E', '#101024']} style={{ flex: 1 }}>
+      <LinearGradient colors={expanded ? expandedBg : collapsedBg} style={{ flex: 1 }}>
         {/* Header */}
         <Pressable
           onPress={toggleExpand}
@@ -81,7 +78,8 @@ export function ReportSectionCard({ section, citations, index }: Props) {
             <View style={{
               position: 'absolute', bottom: -4, right: -4,
               minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4,
-              backgroundColor: COLORS.background, borderWidth: 1.5, borderColor: `${COLORS.primary}55`,
+              backgroundColor: isLight ? '#FFFFFF' : COLORS.background,
+              borderWidth: 1.5, borderColor: `${COLORS.primary}55`,
               alignItems: 'center', justifyContent: 'center',
             }}>
               <Text style={{ color: COLORS.primaryLight, fontSize: 9, fontWeight: '800' }}>{index + 1}</Text>
@@ -97,7 +95,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
 
           <Animated.View style={[{
             width: 28, height: 28, borderRadius: 9,
-            backgroundColor: COLORS.backgroundElevated,
+            backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated,
             alignItems: 'center', justifyContent: 'center',
             borderWidth: 1, borderColor: COLORS.border,
           }, chevronStyle]}>
@@ -109,7 +107,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
         {expanded && (
           <Animated.View entering={FadeIn.duration(220)} style={{ paddingHorizontal: SPACING.md, paddingBottom: SPACING.md }}>
             <LinearGradient
-              colors={[`${COLORS.primary}30`, 'transparent']}
+              colors={[`${COLORS.primary}30`, 'transparent'] as readonly [string, string]}
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
               style={{ height: 1, marginBottom: SPACING.md }}
             />
@@ -133,7 +131,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
                     borderRadius: RADIUS.md, marginBottom: 8, overflow: 'hidden',
                     borderWidth: 1, borderColor: `${COLORS.primary}22`,
                   }}>
-                    <LinearGradient colors={[`${COLORS.primary}14`, `${COLORS.primary}06`]} style={{ padding: SPACING.sm, paddingLeft: SPACING.md }}>
+                    <LinearGradient colors={statBg} style={{ padding: SPACING.sm, paddingLeft: SPACING.md }}>
                       <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, backgroundColor: COLORS.primary }} />
                       <Text style={{ color: COLORS.primaryLight, fontSize: FONTS.sizes.md, fontWeight: '900' }}>{stat.value}</Text>
                       <RichText inline content={stat.context} highlightStats accent={COLORS.primary} size={FONTS.sizes.sm} color={COLORS.textSecondary} lineHeight={19} style={{ marginTop: 3 }} />
@@ -166,7 +164,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
                   onPress={() => setShowCitations(v => !v)}
                   style={{
                     flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6,
-                    backgroundColor: COLORS.backgroundElevated,
+                    backgroundColor: chipBg,
                     borderRadius: RADIUS.full, paddingHorizontal: 11, paddingVertical: 6,
                     borderWidth: 1, borderColor: COLORS.border,
                   }}
@@ -182,7 +180,7 @@ export function ReportSectionCard({ section, citations, index }: Props) {
                   <Animated.View entering={FadeIn.duration(200)} style={{ marginTop: 8, gap: 6 }}>
                     {sectionCitations.map(c => (
                       <View key={c.id} style={{
-                        backgroundColor: COLORS.backgroundElevated,
+                        backgroundColor: citationBg,
                         borderRadius: RADIUS.md, padding: SPACING.sm,
                         borderWidth: 1, borderColor: COLORS.border,
                       }}>
@@ -204,7 +202,6 @@ export function ReportSectionCard({ section, citations, index }: Props) {
   );
 }
 
-// Part 55: labelStyle is now a function so it reads the live COLORS each render.
 function labelStyle() {
   return {
     color: COLORS.textMuted,
