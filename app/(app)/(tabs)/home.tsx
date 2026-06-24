@@ -15,25 +15,21 @@
 //
 // All existing functionality (voice, personalization, depth routing, KB nav) preserved exactly.
 //
-// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
-//   Symptom: the search input area blinked/flashed for a moment when the keyboard
-//   was dismissed.
+// ── Part 55.1A — THEME SYSTEM ─────────────────────────────────────────────────
+//   Every hardcoded hex (#1E1B45, #6C63FF, #8B5CF6, #2A2A4A, rgba(108,99,255,…) …)
+//   is replaced with a live COLORS read so the whole screen recolors on a theme
+//   switch. Helpers `hexWithAlpha()` and `mix()` give us theme-derived tints for
+//   the deep-space gradients that were previously hardcoded.
 //
-//   ROOT CAUSE:
-//     The animated placeholder <Animated.Text> overlay was conditionally MOUNTED
-//     with `{query.length === 0 && !isRecording && (...)}`. On blur (keyboard
-//     dismiss) Android re-runs layout; the conditional remount of that overlay —
-//     combined with the `inputFocused` state flip re-rendering the whole search
-//     card — produced a one-frame flash on the elevated input background.
+//   WORKLETS-SAFE: the search-glow animated style read a hardcoded primary before;
+//   it now snapshots the COLORS.primary primitive into rgba components OUTSIDE the
+//   worklet (parsePrimaryRGB) and the worklet references only those numbers, so
+//   the mutable COLORS singleton is never captured by the UI runtime.
 //
-//   THE FIX:
-//     • The placeholder overlay is now ALWAYS mounted. Its visibility is driven
-//       purely by an animated opacity (0 when typing / recording, animated cycle
-//       otherwise). No mount/unmount on focus or blur → no relayout flash.
-//     • `onFocus`/`onBlur` now only drive a Reanimated shared value (UI-thread),
-//       not React state, so dismissing the keyboard no longer re-renders the card.
-//     • The orbs' entrance opacity animation runs once on mount only (guarded),
-//       so it never re-plays on a parent re-render.
+//   The orbs use theme-tinted colors derived from COLORS via hexWithAlpha(); these
+//   are plain strings recomputed each render → recolor on theme change, and they
+//   are passed as backgroundColor (not via a COLORS-object reference), so no
+//   worklet captures the singleton.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -53,6 +49,7 @@ import Animated, {
 import { SafeAreaView }   from 'react-native-safe-area-context';
 import { router }         from 'expo-router';
 import { useAuth }        from '../../../src/context/AuthContext';
+import { useTheme }       from '../../../src/context/ThemeContext';
 import { Avatar }         from '../../../src/components/common/Avatar';
 import { PersonalizedSuggestionCard } from '../../../src/components/home/PersonalizedSuggestionCard';
 import { usePersonalization }         from '../../../src/hooks/usePersonalization';
@@ -66,6 +63,33 @@ import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
+// ─── Theme color helpers ──────────────────────────────────────────────────────
+// hexWithAlpha('#6C63FF', 0.13) → 'rgba(108,99,255,0.13)'. Works with 3/6-digit
+// hex. Falls back gracefully if a non-hex value is passed (returns it unchanged).
+function hexWithAlpha(hex: string, alpha: number): string {
+  if (typeof hex !== 'string' || hex[0] !== '#') return hex;
+  let h = hex.slice(1);
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Parse a hex color into [r,g,b] numbers (for worklet-safe animated rgba).
+function parsePrimaryRGB(hex: string): { r: number; g: number; b: number } {
+  if (typeof hex !== 'string' || hex[0] !== '#') return { r: 108, g: 99, b: 255 };
+  let h = hex.slice(1);
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6) return { r: 108, g: 99, b: 255 };
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
 // ─── Cycling placeholder queries ──────────────────────────────────────────────
 const PLACEHOLDERS = [
   'Future of quantum computing startups…',
@@ -76,26 +100,25 @@ const PLACEHOLDERS = [
   'Decentralized AI models & privacy…',
 ];
 
-// ─── Depth feature data ───────────────────────────────────────────────────────
-const DEPTH_PILLS = [
-  { key: 'quick',  label: 'Quick',  desc: '2–3 min',  icon: 'flash',            color: '#6C63FF', bg: '#6C63FF20' },
-  { key: 'deep',   label: 'Deep',   desc: '5–7 min',  icon: 'analytics',        color: '#FF6584', bg: '#FF658420' },
-  { key: 'expert', label: 'Expert', desc: '10–12 min', icon: 'trophy',          color: '#43E97B', bg: '#43E97B20' },
-];
+// ─── Depth feature data (colors resolved at render via getDepthPills) ─────────
+function getDepthPills() {
+  return [
+    { key: 'quick',  label: 'Quick',  desc: '2–3 min',   icon: 'flash',     color: COLORS.primary,   bg: hexWithAlpha(COLORS.primary, 0.13) },
+    { key: 'deep',   label: 'Deep',   desc: '5–7 min',   icon: 'analytics', color: COLORS.secondary, bg: hexWithAlpha(COLORS.secondary, 0.13) },
+    { key: 'expert', label: 'Expert', desc: '10–12 min', icon: 'trophy',    color: COLORS.accent,    bg: hexWithAlpha(COLORS.accent, 0.13) },
+  ];
+}
 
-const FEATURE_PILLS: {
-  icon:  string;
-  label: string;
-  color: string;
-  route: string;
-}[] = [
-  { icon: 'radio-outline',   label: 'Podcast',      color: '#A78BFA', route: '/(app)/(tabs)/podcast'  },
-  { icon: 'people-outline',  label: 'Debate',       color: '#FB7185', route: '/(app)/(tabs)/debate'   },
-  { icon: 'school-outline',  label: 'Paper',        color: '#34D399', route: '/(app)/research-input'  },
-  { icon: 'easel-outline',   label: 'Slides',       color: '#FBBF24', route: '/(app)/(tabs)/history'  },
-  { icon: 'mic-outline',     label: 'Voice Debate', color: '#60A5FA', route: '/(app)/(tabs)/debate'   },
-  { icon: 'library-outline', label: 'KB',           color: '#C084FC', route: '/(app)/knowledge-base'  },
-];
+function getFeaturePills(): { icon: string; label: string; color: string; route: string }[] {
+  return [
+    { icon: 'radio-outline',   label: 'Podcast',      color: COLORS.primaryLight, route: '/(app)/(tabs)/podcast'  },
+    { icon: 'people-outline',  label: 'Debate',       color: COLORS.secondary,    route: '/(app)/(tabs)/debate'   },
+    { icon: 'school-outline',  label: 'Paper',        color: COLORS.accent,       route: '/(app)/research-input'  },
+    { icon: 'easel-outline',   label: 'Slides',       color: COLORS.warning,      route: '/(app)/(tabs)/history'  },
+    { icon: 'mic-outline',     label: 'Voice Debate', color: COLORS.info,         route: '/(app)/(tabs)/debate'   },
+    { icon: 'library-outline', label: 'KB',           color: COLORS.primaryLight, route: '/(app)/knowledge-base'  },
+  ];
+}
 
 const SOURCE_HEADER: Record<string, string> = {
   affinity: '⭐  Your Interests',
@@ -105,27 +128,14 @@ const SOURCE_HEADER: Record<string, string> = {
 };
 
 // ─── Floating Orb Component ───────────────────────────────────────────────────
-// Pure Reanimated, no BlurView, no new libraries. Each orb drifts on a unique
-// path using a combination of translateX/Y looping animations.
+// Pure Reanimated, no BlurView. Each orb drifts on a unique path. `color` is a
+// plain rgba string (theme-derived) — no COLORS object reference is captured.
 
 function FloatingOrb({
-  size,
-  color,
-  x,
-  y,
-  driftX,
-  driftY,
-  duration,
-  delay,
+  size, color, x, y, driftX, driftY, duration, delay,
 }: {
-  size:     number;
-  color:    string;
-  x:        number;
-  y:        number;
-  driftX:   number;
-  driftY:   number;
-  duration: number;
-  delay:    number;
+  size: number; color: string; x: number; y: number;
+  driftX: number; driftY: number; duration: number; delay: number;
 }) {
   const translateX = useSharedValue(0);
   const translateY = useSharedValue(0);
@@ -188,7 +198,8 @@ function FloatingOrb({
 }
 
 // ─── Breathing dot ────────────────────────────────────────────────────────────
-function BreathingDot({ color = COLORS.accent }: { color?: string }) {
+function BreathingDot({ color }: { color?: string }) {
+  const dotColor = color ?? COLORS.accent;
   const scale   = useSharedValue(1);
   const opacity = useSharedValue(0.6);
 
@@ -221,7 +232,7 @@ function BreathingDot({ color = COLORS.accent }: { color?: string }) {
   return (
     <Animated.View
       style={[
-        { width: 6, height: 6, borderRadius: 3, backgroundColor: color },
+        { width: 6, height: 6, borderRadius: 3, backgroundColor: dotColor },
         style,
       ]}
     />
@@ -332,12 +343,12 @@ function StatChip({
     <Animated.View
       entering={FadeInDown.springify().delay(delay).damping(14).stiffness(100)}
       style={{
-        backgroundColor:   `${color}12`,
+        backgroundColor:   hexWithAlpha(color, 0.07),
         borderRadius:      RADIUS.lg,
         paddingHorizontal: 12,
         paddingVertical:   8,
         borderWidth:       1,
-        borderColor:       `${color}25`,
+        borderColor:       hexWithAlpha(color, 0.15),
         flexDirection:     'row',
         alignItems:        'center',
         gap:               6,
@@ -356,6 +367,9 @@ function StatChip({
 export default function HomeScreen() {
   const { profile } = useAuth();
   const { stats }   = useStats();
+  // Part 55.1A: subscribe to theme version so this screen + its memoized helpers
+  // recolor immediately on a theme change.
+  useTheme();
 
   const [query,            setQuery]            = useState('');
   const [isRecording,      setIsRecording]      = useState(false);
@@ -373,13 +387,19 @@ export default function HomeScreen() {
     refresh:       refreshSuggestions,
   } = usePersonalization();
 
+  // Resolve theme-driven data each render.
+  const DEPTH_PILLS   = getDepthPills();
+  const FEATURE_PILLS = getFeaturePills();
+
+  // Worklet-safe primary rgb snapshot (for the focus glow border).
+  const primaryRGB = parsePrimaryRGB(COLORS.primary);
+  const pr = primaryRGB.r, pg = primaryRGB.g, pb = primaryRGB.b;
+  const primaryHex = COLORS.primary;
+
   // ── Shared values ──────────────────────────────────────────────────────────
-  // FIX: inputFocused is now a SHARED VALUE only (UI thread). Focus/blur no longer
-  // triggers a React re-render of the search card, eliminating the dismiss blink.
   const inputBorderGlow    = useSharedValue(0);
   const micPulse           = useSharedValue(1);
   const placeholderOpacity = useSharedValue(1);
-  // Drives the placeholder visibility (typing/recording hides it) without remount.
   const placeholderVisible = useSharedValue(1);
 
   // ── Cached count ───────────────────────────────────────────────────────────
@@ -400,9 +420,6 @@ export default function HomeScreen() {
     return () => clearInterval(cycle);
   }, []);
 
-  // FIX: placeholder is hidden whenever the user has typed text or is recording.
-  // This replaces the old conditional MOUNT with an animated opacity, so there is
-  // no remount-driven relayout flash on keyboard dismiss.
   useEffect(() => {
     const shouldShow = query.length === 0 && !isRecording;
     placeholderVisible.value = withTiming(shouldShow ? 1 : 0, { duration: 120 });
@@ -425,33 +442,21 @@ export default function HomeScreen() {
     }
   }, [isRecording]);
 
+  // Part 55.1A WORKLETS-SAFE: the glow border references only the primitive rgb
+  // numbers (pr/pg/pb) and the primary hex string snapshot — never the COLORS
+  // object — so applyTheme()'s mutation can't trip the worklet warning.
   const inputWrapStyle = useAnimatedStyle(() => ({
-    borderColor:   `rgba(108, 99, 255, ${interpolate(inputBorderGlow.value, [0, 1], [0.18, 0.85])})`,
-    shadowColor:   '#6C63FF',
+    borderColor:   `rgba(${pr}, ${pg}, ${pb}, ${interpolate(inputBorderGlow.value, [0, 1], [0.18, 0.85])})`,
+    shadowColor:   primaryHex,
     shadowOpacity: interpolate(inputBorderGlow.value, [0, 1], [0, 0.5]),
     shadowRadius:  interpolate(inputBorderGlow.value, [0, 1], [0, 20]),
     shadowOffset:  { width: 0, height: 0 },
-    // FIX (issue 1): do NOT animate `elevation`. On Android, changing elevation
-    // every frame forces the view's hardware layer to be re-composited, which
-    // flickers the input's border AND the text inside it. The iOS shadow above
-    // gives the glow; Android keeps a static elevation set in the base style.
   }));
 
   const micStyle = useAnimatedStyle(() => ({
     transform: [{ scale: micPulse.value }],
   }));
 
-  // Search-icon color must react to focus without React state. Track focus in a
-  // tiny piece of state ONLY for the icon tint; this does not affect the
-  // placeholder overlay (which is always mounted) so there is no blink.
-  //
-  // FIX (issue 1 follow-up): the search ICON tint was previously an `iconFocused`
-  // React state that flipped on BOTH focus AND blur — and the blur flip caused a
-  // full re-render of the search card at the exact frame the keyboard closed,
-  // which still produced a one-frame blink. The icon tint is now driven entirely
-  // by the `inputBorderGlow` shared value (UI thread): two pre-coloured icons are
-  // cross-faded via animated opacity. NO React state changes on focus/blur, so
-  // there is no re-render and no blink at all.
   const searchIconActiveStyle = useAnimatedStyle(() => ({
     opacity: inputBorderGlow.value,
   }));
@@ -460,10 +465,6 @@ export default function HomeScreen() {
   }));
 
   const handleInputFocus = useCallback(() => {
-    // FIX (issue 1): use withTiming, NOT withSpring. A spring OVERSHOOTS and
-    // oscillates as it settles, so the glow + cross-faded icon visibly bounced
-    // 3-4 times when the keyboard closed. withTiming is monotonic — the glow
-    // fades in/out smoothly once, with no flicker.
     inputBorderGlow.value = withTiming(1, { duration: 200 });
   }, []);
   const handleInputBlur = useCallback(() => {
@@ -543,23 +544,20 @@ export default function HomeScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
 
-      {/* ── Animated orb background ─────────────────────────────────────── */}
+      {/* ── Animated orb background (theme-tinted) ──────────────────────── */}
       <View style={{ ...StyleSheet.absoluteFillObject, overflow: 'hidden', pointerEvents: 'none' }}>
-        {/* Purple orb — top left */}
         <FloatingOrb
-          size={260} color="rgba(108,99,255,0.13)"
+          size={260} color={hexWithAlpha(COLORS.primary, 0.13)}
           x={-40} y={60} driftX={30} driftY={20}
           duration={7000} delay={0}
         />
-        {/* Pink orb — top right */}
         <FloatingOrb
-          size={200} color="rgba(255,101,132,0.10)"
+          size={200} color={hexWithAlpha(COLORS.secondary, 0.10)}
           x={SCREEN_W + 20} y={180} driftX={-25} driftY={35}
           duration={9000} delay={800}
         />
-        {/* Teal orb — lower mid */}
         <FloatingOrb
-          size={180} color="rgba(67,233,123,0.08)"
+          size={180} color={hexWithAlpha(COLORS.accent, 0.08)}
           x={SCREEN_W * 0.55} y={500} driftX={20} driftY={-30}
           duration={11000} delay={400}
         />
@@ -586,7 +584,6 @@ export default function HomeScreen() {
             entering={FadeInDown.springify().delay(0).damping(16).stiffness(90)}
             style={{ paddingTop: SPACING.md, marginBottom: SPACING.lg }}
           >
-            {/* Top row: greeting + avatar */}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: SPACING.md }}>
               <View style={{ flex: 1 }}>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '500', letterSpacing: 0.3 }}>
@@ -601,10 +598,10 @@ export default function HomeScreen() {
                   <Animated.View
                     entering={FadeIn.duration(600).delay(300)}
                     style={{
-                      backgroundColor:   `${COLORS.primary}15`,
+                      backgroundColor:   hexWithAlpha(COLORS.primary, 0.08),
                       borderRadius:      RADIUS.full,
                       paddingHorizontal: 10, paddingVertical: 5,
-                      borderWidth:       1, borderColor: `${COLORS.primary}30`,
+                      borderWidth:       1, borderColor: hexWithAlpha(COLORS.primary, 0.19),
                       flexDirection:     'row', alignItems: 'center', gap: 4,
                     }}
                   >
@@ -628,10 +625,10 @@ export default function HomeScreen() {
                   <StatChip value={Math.round(stats.hoursResearched ?? 0)} label="hrs saved" icon="time-outline" color={COLORS.accent}    delay={250} />
                 )}
                 {(stats.totalPodcasts ?? 0) > 0 && (
-                  <StatChip value={stats.totalPodcasts ?? 0} label="podcasts" icon="radio-outline" color="#A78BFA" delay={350} />
+                  <StatChip value={stats.totalPodcasts ?? 0} label="podcasts" icon="radio-outline" color={COLORS.primaryLight} delay={350} />
                 )}
                 {(stats.totalDebates ?? 0) > 0 && (
-                  <StatChip value={stats.totalDebates ?? 0} label="debates" icon="people-outline" color="#FB7185"  delay={450} />
+                  <StatChip value={stats.totalDebates ?? 0} label="debates" icon="people-outline" color={COLORS.secondary}  delay={450} />
                 )}
                 {cachedCount > 0 && (
                   <StatChip value={cachedCount} label="offline" icon="cloud-offline-outline" color={COLORS.info}  delay={550} />
@@ -646,18 +643,18 @@ export default function HomeScreen() {
             style={{ marginBottom: SPACING.lg }}
           >
             <LinearGradient
-              colors={['#1E1B45', '#12122A']}
+              colors={COLORS.gradientCard as [string, string]}
               style={{
                 borderRadius: RADIUS.xl,
                 padding:      SPACING.lg,
                 borderWidth:  1,
-                borderColor:  `${COLORS.primary}28`,
+                borderColor:  hexWithAlpha(COLORS.primary, 0.16),
                 overflow:     'hidden',
               }}
             >
               {/* Subtle top glow strip */}
               <LinearGradient
-                colors={[`${COLORS.primary}50`, 'transparent']}
+                colors={[hexWithAlpha(COLORS.primary, 0.31), 'transparent']}
                 style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 1.5 }}
               />
 
@@ -665,7 +662,7 @@ export default function HomeScreen() {
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
                   <LinearGradient
-                    colors={['#6C63FF', '#8B5CF6']}
+                    colors={COLORS.gradientPrimary as [string, string]}
                     style={{
                       width: 32, height: 32, borderRadius: 10,
                       alignItems: 'center', justifyContent: 'center',
@@ -696,11 +693,11 @@ export default function HomeScreen() {
                 <Animated.View
                   entering={FadeIn.duration(200)}
                   style={{
-                    backgroundColor: `${COLORS.error}15`,
+                    backgroundColor: hexWithAlpha(COLORS.error, 0.08),
                     borderRadius:    RADIUS.md, padding: SPACING.sm,
                     marginBottom:    SPACING.sm,
                     flexDirection:   'row', alignItems: 'center', justifyContent: 'space-between',
-                    borderWidth:     1, borderColor: `${COLORS.error}30`,
+                    borderWidth:     1, borderColor: hexWithAlpha(COLORS.error, 0.19),
                   }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -719,7 +716,7 @@ export default function HomeScreen() {
                 <Animated.View
                   entering={FadeIn.duration(200)}
                   style={{
-                    backgroundColor: `${COLORS.primary}12`,
+                    backgroundColor: hexWithAlpha(COLORS.primary, 0.07),
                     borderRadius:    RADIUS.md, padding: SPACING.sm, marginBottom: SPACING.sm,
                     flexDirection:   'row', alignItems: 'center', gap: 8,
                   }}
@@ -744,8 +741,6 @@ export default function HomeScreen() {
                 ]}
               >
                 <View style={{ width: 19, height: 19, justifyContent: 'center', alignItems: 'center' }}>
-                  {/* Two pre-coloured icons cross-faded by inputBorderGlow (UI thread).
-                      No React state → no re-render → no blink on keyboard close. */}
                   <Animated.View style={[{ position: 'absolute' }, searchIconIdleStyle]}>
                     <Ionicons name="search-outline" size={19} color={COLORS.textMuted} />
                   </Animated.View>
@@ -772,11 +767,6 @@ export default function HomeScreen() {
                     }}
                     editable={!isRecording && !transcribing}
                   />
-                  {/* FIX: Animated placeholder is now ALWAYS mounted. Its visibility
-                      is driven purely by animated opacity (placeholderStyle), which
-                      multiplies the cycle opacity by placeholderVisible. No conditional
-                      mount/unmount on focus/blur → no relayout blink when the keyboard
-                      is dismissed. */}
                   <Animated.Text
                     style={[
                       {
@@ -801,10 +791,10 @@ export default function HomeScreen() {
                     onPress={handleVoicePress}
                     style={{
                       width:           36, height: 36, borderRadius: 18,
-                      backgroundColor: isRecording ? COLORS.error : `${COLORS.primary}22`,
+                      backgroundColor: isRecording ? COLORS.error : hexWithAlpha(COLORS.primary, 0.13),
                       alignItems:      'center', justifyContent: 'center', marginLeft: 6,
                       borderWidth:     1,
-                      borderColor:     isRecording ? `${COLORS.error}60` : `${COLORS.primary}40`,
+                      borderColor:     isRecording ? hexWithAlpha(COLORS.error, 0.38) : hexWithAlpha(COLORS.primary, 0.25),
                     }}
                   >
                     <Ionicons
@@ -840,7 +830,7 @@ export default function HomeScreen() {
               >
                 <LinearGradient
                   colors={query.trim() && !isRecording
-                    ? ['#6C63FF', '#8B5CF6']
+                    ? (COLORS.gradientPrimary as [string, string])
                     : ['#2A2A4A', '#1A1A35']
                   }
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
@@ -878,21 +868,21 @@ export default function HomeScreen() {
               activeOpacity={0.88}
             >
               <LinearGradient
-                colors={['#1A1235', '#130D2E']}
+                colors={COLORS.gradientCard as [string, string]}
                 style={{
                   borderRadius: RADIUS.xl, overflow: 'hidden',
-                  borderWidth: 1, borderColor: `${COLORS.primary}40`,
+                  borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.25),
                 }}
               >
                 {/* Diagonal shimmer overlay */}
                 <LinearGradient
-                  colors={['transparent', `${COLORS.primary}08`, 'transparent']}
+                  colors={['transparent', hexWithAlpha(COLORS.primary, 0.03), 'transparent']}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
                 />
                 {/* Top edge glow */}
                 <LinearGradient
-                  colors={[`${COLORS.primary}60`, 'transparent']}
+                  colors={[hexWithAlpha(COLORS.primary, 0.38), 'transparent']}
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 1.5 }}
                 />
 
@@ -902,11 +892,11 @@ export default function HomeScreen() {
                 }}>
                   {/* Icon orb */}
                   <LinearGradient
-                    colors={['#7C3AED', '#6C63FF']}
+                    colors={COLORS.gradientPrimary as [string, string]}
                     style={{
                       width: 50, height: 50, borderRadius: 15,
                       alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                      borderWidth: 1, borderColor: `${COLORS.primary}50`,
+                      borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.31),
                     }}
                   >
                     <Ionicons name="library" size={24} color="#FFF" />
@@ -918,10 +908,10 @@ export default function HomeScreen() {
                         Knowledge Base
                       </Text>
                       <View style={{
-                        backgroundColor: `${COLORS.primary}25`,
+                        backgroundColor: hexWithAlpha(COLORS.primary, 0.15),
                         borderRadius:    RADIUS.full,
                         paddingHorizontal: 6, paddingVertical: 1,
-                        borderWidth: 1, borderColor: `${COLORS.primary}40`,
+                        borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.25),
                       }}>
                         <Text style={{ color: COLORS.primary, fontSize: 8, fontWeight: '800', letterSpacing: 0.5 }}>NEW</Text>
                       </View>
@@ -932,9 +922,9 @@ export default function HomeScreen() {
                     <View style={{ flexDirection: 'row', gap: 5, marginTop: 6 }}>
                       {['Semantic search', 'Source citation', 'Multi-report'].map(t => (
                         <View key={t} style={{
-                          backgroundColor: `${COLORS.primary}10`,
+                          backgroundColor: hexWithAlpha(COLORS.primary, 0.06),
                           borderRadius: RADIUS.full, paddingHorizontal: 6, paddingVertical: 2,
-                          borderWidth: 1, borderColor: `${COLORS.primary}20`,
+                          borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.13),
                         }}>
                           <Text style={{ color: COLORS.primary, fontSize: 8, fontWeight: '600' }}>{t}</Text>
                         </View>
@@ -944,9 +934,9 @@ export default function HomeScreen() {
 
                   <View style={{
                     width: 32, height: 32, borderRadius: 16,
-                    backgroundColor: `${COLORS.primary}18`,
+                    backgroundColor: hexWithAlpha(COLORS.primary, 0.09),
                     alignItems: 'center', justifyContent: 'center',
-                    borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                    borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.19),
                     flexShrink: 0,
                   }}>
                     <Ionicons name="arrow-forward" size={14} color={COLORS.primary} />
@@ -979,19 +969,19 @@ export default function HomeScreen() {
                     activeOpacity={0.8}
                   >
                     <LinearGradient
-                      colors={[d.bg, `${d.color}08`]}
+                      colors={[d.bg, hexWithAlpha(d.color, 0.03)]}
                       style={{
                         borderRadius:  RADIUS.lg, padding: SPACING.sm,
                         alignItems:    'center',
-                        borderWidth:   1, borderColor: `${d.color}30`,
+                        borderWidth:   1, borderColor: hexWithAlpha(d.color, 0.19),
                         minHeight:     80, justifyContent: 'center',
                       }}
                     >
                       <View style={{
                         width: 34, height: 34, borderRadius: 10,
-                        backgroundColor: `${d.color}20`,
+                        backgroundColor: hexWithAlpha(d.color, 0.13),
                         alignItems: 'center', justifyContent: 'center',
-                        borderWidth: 1, borderColor: `${d.color}35`,
+                        borderWidth: 1, borderColor: hexWithAlpha(d.color, 0.21),
                         marginBottom: 6,
                       }}>
                         <Ionicons name={d.icon as any} size={17} color={d.color} />
@@ -1021,7 +1011,7 @@ export default function HomeScreen() {
                     activeOpacity={0.78}
                   >
                     <View style={{
-                      backgroundColor:   `${f.color}12`,
+                      backgroundColor:   hexWithAlpha(f.color, 0.07),
                       borderRadius:      RADIUS.lg,
                       paddingHorizontal: 14,
                       paddingVertical:   10,
@@ -1030,11 +1020,11 @@ export default function HomeScreen() {
                       alignItems:        'center',
                       gap:               7,
                       borderWidth:       1,
-                      borderColor:       `${f.color}28`,
+                      borderColor:       hexWithAlpha(f.color, 0.16),
                     }}>
                       <View style={{
                         width: 26, height: 26, borderRadius: 8,
-                        backgroundColor: `${f.color}20`,
+                        backgroundColor: hexWithAlpha(f.color, 0.13),
                         alignItems: 'center', justifyContent: 'center',
                       }}>
                         <Ionicons name={f.icon as any} size={14} color={f.color} />
@@ -1042,7 +1032,7 @@ export default function HomeScreen() {
                       <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>
                         {f.label}
                       </Text>
-                      <Ionicons name="chevron-forward" size={12} color={`${f.color}80`} />
+                      <Ionicons name="chevron-forward" size={12} color={hexWithAlpha(f.color, 0.5)} />
                     </View>
                   </TouchableOpacity>
                 </Animated.View>
@@ -1063,10 +1053,10 @@ export default function HomeScreen() {
                 onPress={refreshSuggestions}
                 style={{
                   flexDirection:     'row', alignItems: 'center', gap: 4,
-                  backgroundColor:   `${COLORS.primary}12`,
+                  backgroundColor:   hexWithAlpha(COLORS.primary, 0.07),
                   borderRadius:      RADIUS.full,
                   paddingHorizontal: 10, paddingVertical: 4,
-                  borderWidth:       1, borderColor: `${COLORS.primary}22`,
+                  borderWidth:       1, borderColor: hexWithAlpha(COLORS.primary, 0.13),
                   marginBottom:      SPACING.md,
                 }}
               >
@@ -1080,7 +1070,7 @@ export default function HomeScreen() {
               <Animated.View
                 entering={FadeIn.duration(400).delay(340)}
                 style={{
-                  backgroundColor: `${COLORS.primary}08`,
+                  backgroundColor: hexWithAlpha(COLORS.primary, 0.03),
                   borderRadius:    RADIUS.lg,
                   padding:         SPACING.sm,
                   marginBottom:    SPACING.md,
@@ -1088,7 +1078,7 @@ export default function HomeScreen() {
                   alignItems:      'center',
                   gap:             8,
                   borderWidth:     1,
-                  borderColor:     `${COLORS.primary}15`,
+                  borderColor:     hexWithAlpha(COLORS.primary, 0.08),
                 }}
               >
                 <Ionicons name="sparkles" size={13} color={COLORS.primary} />

@@ -9,8 +9,19 @@
 // The streaming panel renders StreamingSectionCard for each of the 6 sections,
 // showing tokens arriving in real-time with a blinking cursor on the active one.
 // A sticky "Now writing:" header shows which section is currently being generated.
+//
+// ── Part 55.1A — THEME SYSTEM ─────────────────────────────────────────────────
+//   • Subscribes to useTheme() so the whole screen recolors on a theme switch.
+//   • All hardcoded brand hexes (#6C63FF/#8B5CF6 academic gradient) now route
+//     through COLORS.gradientPrimary / COLORS.gradientDark.
+//   • WORKLETS-SAFE: the header pulse orb previously spread ...SHADOWS.medium
+//     (mutable singleton) into a LinearGradient that lives right next to an
+//     Animated.View. We now build a fresh shadow literal from SHADOWS' live
+//     PRIMITIVES so the mutable object is never captured by the worklet runtime.
+//   • The pulseStyle animated style only touches shared values (scale/opacity),
+//     so it is already worklet-safe.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -19,7 +30,6 @@ import {
   Alert,
   Dimensions,
   ActivityIndicator,
-  Animated as RNAnimated,
 } from 'react-native';
 import { LinearGradient }       from 'expo-linear-gradient';
 import { Ionicons }              from '@expo/vector-icons';
@@ -32,25 +42,36 @@ import { SafeAreaView }          from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
-import { useResearch, StreamingPhase }             from '../../src/hooks/useResearch';
+import { useTheme }                                from '../../src/context/ThemeContext';
+import { useResearch }                             from '../../src/hooks/useResearch';
 import { AgentStep, AgentStatus }                  from '../../src/types';
 import { ResearchMode }                            from '../../src/types';
 import { StreamingSectionCard }                    from '../../src/components/research/StreamingSectionCard';
 
 const SCREEN_W = Dimensions.get('window').width;
 
-// ─── Status config ────────────────────────────────────────────────────────────
+// Part 55.1A: fresh shadow literal from live SHADOWS.medium primitives (theme-aware
+// + worklet-safe — never references the mutable SHADOWS singleton object).
+function freshMediumShadow() {
+  return {
+    shadowColor:   SHADOWS.medium.shadowColor,
+    shadowOffset:  { width: SHADOWS.medium.shadowOffset.width, height: SHADOWS.medium.shadowOffset.height },
+    shadowOpacity: SHADOWS.medium.shadowOpacity,
+    shadowRadius:  SHADOWS.medium.shadowRadius,
+    elevation:     SHADOWS.medium.elevation,
+  };
+}
 
-const STATUS_CONFIG: Record<AgentStatus, {
-  icon:    string;
-  color:   string;
-  bgColor: string;
-}> = {
-  pending:   { icon: 'ellipse-outline',   color: COLORS.textMuted, bgColor: COLORS.backgroundElevated },
-  running:   { icon: 'sync-outline',      color: COLORS.primary,   bgColor: `${COLORS.primary}18`    },
-  completed: { icon: 'checkmark-circle',  color: COLORS.success,   bgColor: `${COLORS.success}18`    },
-  failed:    { icon: 'close-circle',      color: COLORS.error,     bgColor: `${COLORS.error}18`      },
-};
+// ─── Status config (Part 55.1A: function over live COLORS) ────────────────────
+
+function getStatusConfig(): Record<AgentStatus, { icon: string; color: string; bgColor: string }> {
+  return {
+    pending:   { icon: 'ellipse-outline',  color: COLORS.textMuted, bgColor: COLORS.backgroundElevated },
+    running:   { icon: 'sync-outline',     color: COLORS.primary,   bgColor: `${COLORS.primary}18` },
+    completed: { icon: 'checkmark-circle', color: COLORS.success,   bgColor: `${COLORS.success}18` },
+    failed:    { icon: 'close-circle',     color: COLORS.error,     bgColor: `${COLORS.error}18` },
+  };
+}
 
 const AGENT_ICONS: Record<string, string> = {
   planner:     'map-outline',
@@ -72,6 +93,7 @@ interface StepRowProps {
 }
 
 function StepRow({ step, detail, index, compact = false }: StepRowProps) {
+  const STATUS_CONFIG = getStatusConfig();
   const cfg       = STATUS_CONFIG[step.status];
   const isRunning = step.status === 'running';
 
@@ -93,7 +115,6 @@ function StepRow({ step, detail, index, compact = false }: StepRowProps) {
     : null;
 
   if (compact) {
-    // Compact row for the top summary when streaming is active
     return (
       <View style={{
         flexDirection:   'row',
@@ -278,6 +299,9 @@ export default function ResearchProgressScreen() {
     citationStyle?: string;
   }>();
 
+  // Part 55.1A: recolor on theme change.
+  useTheme();
+
   const {
     phase, steps, stepDetails, report, error,
     startResearch, reset,
@@ -353,10 +377,8 @@ export default function ResearchProgressScreen() {
   const totalSteps   = isAcademic ? 7 : 6;
   const completedCnt = steps.filter(s => s.status === 'completed').length;
 
-  // Overall progress: agents phase + streaming phase weighted
-  const agentWeight     = 0.5;  // first 4 steps = 50%
-  const streamingWeight = 0.4;  // streaming 6 sections = 40%
-  const visualWeight    = 0.1;  // visualizer = 10%
+  const agentWeight     = 0.5;
+  const streamingWeight = 0.4;
 
   let overallProgress = 0;
   if (streamingPhase === 'agents') {
@@ -398,7 +420,7 @@ export default function ResearchProgressScreen() {
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={COLORS.gradientDark as [string, string]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
 
         {/* ── Header ───────────────────────────────────────────────────── */}
@@ -419,18 +441,16 @@ export default function ResearchProgressScreen() {
               ]} />
               <LinearGradient
                 colors={isStreaming
-                  ? [COLORS.success, COLORS.success + 'CC']
-                  : isAcademic
-                  ? ['#6C63FF', '#8B5CF6']
-                  : COLORS.gradientPrimary}
+                  ? [COLORS.success, `${COLORS.success}CC`]
+                  : (COLORS.gradientPrimary as [string, string])}
                 style={{
                   width: 44, height: 44, borderRadius: 22,
-                  alignItems: 'center', justifyContent: 'center', ...SHADOWS.medium,
+                  alignItems: 'center', justifyContent: 'center', ...freshMediumShadow(),
                 }}
               >
                 <Ionicons
                   name={
-                    isStreaming    ? 'pencil'
+                    isStreaming   ? 'pencil'
                     : isAcademic  ? 'school'
                     : 'sparkles'
                   }
@@ -513,13 +533,13 @@ export default function ResearchProgressScreen() {
           }}>
             {/* Background segments */}
             <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, flexDirection: 'row' }}>
-              <View style={{ flex: 50, borderRightWidth: 1, borderRightColor: COLORS.border + '40' }} />
-              <View style={{ flex: 40, borderRightWidth: 1, borderRightColor: COLORS.border + '40' }} />
+              <View style={{ flex: 50, borderRightWidth: 1, borderRightColor: `${COLORS.border}40` }} />
+              <View style={{ flex: 40, borderRightWidth: 1, borderRightColor: `${COLORS.border}40` }} />
               <View style={{ flex: 10 }} />
             </View>
             {/* Fill */}
             <LinearGradient
-              colors={isStreaming ? [COLORS.success, COLORS.primary] : COLORS.gradientPrimary}
+              colors={isStreaming ? [COLORS.success, COLORS.primary] : (COLORS.gradientPrimary as [string, string])}
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
               style={{ height: 8, width: `${overallProgress}%`, borderRadius: RADIUS.full }}
             />

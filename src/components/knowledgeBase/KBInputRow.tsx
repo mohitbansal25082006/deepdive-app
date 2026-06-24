@@ -9,6 +9,17 @@
 //   resting input always clears the system nav bar. When the keyboard opens the
 //   parent KeyboardAvoidingView lifts the whole bar above the keyboard, and the
 //   extra inset is harmless (it just becomes a small gap, consistent with the OS).
+//
+// ── Part 55.1 — THEME SYSTEM ──────────────────────────────────────────────────
+//   • typingStyles + styles were module-level StyleSheet.create (frozen palette).
+//     Both are now makeTypingStyles() / makeStyles() factories read at render.
+//   • The hardcoded avatar gradient ['#7C3AED','#6C63FF'] → kbBrandGradient().
+//   • The send-button gradients ['#6C63FF','#8B5CF6'] (active) and
+//     ['#2A2A4A','#1A1A35'] (disabled) → COLORS.gradientPrimary / a theme-derived
+//     muted tuple (kbMutedGradient) so the disabled state is correct on light
+//     themes too.
+//   • Both exported components (KBTypingIndicator, KBInputRow) subscribe to
+//     useTheme().
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
@@ -21,7 +32,9 @@ import {
   startRecording, stopRecording, cancelRecording,
   transcribeAudio, formatDuration,
 } from '../../services/voiceResearch';
+import { useTheme }       from '../../context/ThemeContext';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { kbBrandGradient } from './kbTheme';
 
 const PLACEHOLDERS = [
   'What have I researched about AI?',
@@ -32,8 +45,19 @@ const PLACEHOLDERS = [
   'Find contradictions across my research…',
 ];
 
+// Part 55.1: a theme-derived "muted" gradient for disabled send buttons. Uses the
+// theme's dark/surface gradient so it reads correctly on both dark and light.
+function kbMutedGradient(): readonly [string, string] {
+  return COLORS.gradientDark;
+}
+
 // ─── Typing Indicator ─────────────────────────────────────────────────────────
 export function KBTypingIndicator() {
+  // Part 55.1: subscribe so the indicator recolours on a theme switch.
+  useTheme();
+  const typingStyles = makeTypingStyles();
+  const brand        = kbBrandGradient();
+
   const dots = [
     useRef(new RNAnimated.Value(0)).current,
     useRef(new RNAnimated.Value(0)).current,
@@ -53,7 +77,7 @@ export function KBTypingIndicator() {
 
   return (
     <View style={typingStyles.wrap}>
-      <LinearGradient colors={['#7C3AED', '#6C63FF']} style={typingStyles.avatar}>
+      <LinearGradient colors={brand as [string, string]} style={typingStyles.avatar}>
         <Ionicons name="library-outline" size={11} color="#FFF" />
       </LinearGradient>
       <View style={typingStyles.content}>
@@ -75,21 +99,23 @@ export function KBTypingIndicator() {
   );
 }
 
-const typingStyles = StyleSheet.create({
-  wrap:    { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: SPACING.sm },
-  avatar:  { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  content: { gap: 4 },
-  label:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  bubble:  {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.lg, borderBottomLeftRadius: 4,
-    paddingHorizontal: SPACING.sm, paddingVertical: 10,
-    borderWidth: 1, borderColor: `${COLORS.primary}18`,
-  },
-  searchingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic' },
-  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.primary },
-});
+function makeTypingStyles() {
+  return StyleSheet.create({
+    wrap:    { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: SPACING.sm },
+    avatar:  { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+    content: { gap: 4 },
+    label:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+    bubble:  {
+      flexDirection: 'row', alignItems: 'center', gap: 6,
+      backgroundColor: COLORS.backgroundCard,
+      borderRadius: RADIUS.lg, borderBottomLeftRadius: 4,
+      paddingHorizontal: SPACING.sm, paddingVertical: 10,
+      borderWidth: 1, borderColor: `${COLORS.primary}18`,
+    },
+    searchingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontStyle: 'italic' },
+    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.primary },
+  });
+}
 
 // ─── Input Row ─────────────────────────────────────────────────────────────────
 interface InputRowProps {
@@ -105,6 +131,12 @@ export function KBInputRow({
   isSending, disabled, indexedCount, inputRef,
   bottomInset = 0,
 }: InputRowProps) {
+  // Part 55.1: subscribe so the input bar recolours on a theme switch.
+  useTheme();
+  const styles = makeStyles();
+  const brand  = kbBrandGradient();
+  const muted  = kbMutedGradient();
+
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
   const placeholderAnim = useRef(new RNAnimated.Value(1)).current;
 
@@ -229,7 +261,7 @@ export function KBInputRow({
         {/* Send */}
         <Pressable onPress={onSend} disabled={!canSend} style={{ opacity: canSend ? 1 : 0.38 }}>
           <LinearGradient
-            colors={canSend ? ['#6C63FF', '#8B5CF6'] : ['#2A2A4A', '#1A1A35']}
+            colors={(canSend ? brand : muted) as [string, string]}
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
             style={styles.sendBtn}
           >
@@ -251,27 +283,30 @@ export function KBInputRow({
   );
 }
 
-const styles = StyleSheet.create({
-  container: { paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: SPACING.sm, borderTopWidth: 1, borderTopColor: `${COLORS.primary}15`, backgroundColor: COLORS.backgroundCard, gap: 6 },
-  recordingBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.sm, paddingVertical: 7, backgroundColor: `${COLORS.error}08`, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.error}22` },
-  recordingLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.error },
-  recordingText: { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-  cancelBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.error}12` },
-  cancelText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  transcribingBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.sm, paddingVertical: 7, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.primary}18` },
-  transcribingText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontStyle: 'italic' },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingHorizontal: 9, paddingVertical: 3, borderRadius: RADIUS.full, backgroundColor: `${COLORS.accent}08`, borderWidth: 1, borderColor: `${COLORS.accent}18` },
-  statusDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.accent },
-  statusText: { color: COLORS.accent, fontSize: 9, fontWeight: '700' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  libIconOrb: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}10`, borderWidth: 1, borderColor: `${COLORS.primary}22`, flexShrink: 0 },
-  input: { flex: 1, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: 10, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, borderWidth: 1, borderColor: `${COLORS.primary}15` },
-  inputRecording: { borderColor: `${COLORS.error}45`, backgroundColor: `${COLORS.error}06` },
-  inputTranscribing: { borderColor: `${COLORS.primary}45`, backgroundColor: `${COLORS.primary}06` },
-  micBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}10`, borderWidth: 1, borderColor: `${COLORS.primary}22`, flexShrink: 0 },
-  micBtnRecording: { backgroundColor: COLORS.error, borderColor: COLORS.error },
-  micBtnTranscribing: { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}35` },
-  sendBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  hint: { color: COLORS.textMuted, fontSize: 9, textAlign: 'center', lineHeight: 13 },
-});
+// Part 55.1: factory reads the LIVE COLORS each render → theme-aware.
+function makeStyles() {
+  return StyleSheet.create({
+    container: { paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, paddingBottom: SPACING.sm, borderTopWidth: 1, borderTopColor: `${COLORS.primary}15`, backgroundColor: COLORS.backgroundCard, gap: 6 },
+    recordingBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.sm, paddingVertical: 7, backgroundColor: `${COLORS.error}08`, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.error}22` },
+    recordingLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.error },
+    recordingText: { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+    cancelBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.error}12` },
+    cancelText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+    transcribingBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.sm, paddingVertical: 7, backgroundColor: `${COLORS.primary}08`, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: `${COLORS.primary}18` },
+    transcribingText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontStyle: 'italic' },
+    statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingHorizontal: 9, paddingVertical: 3, borderRadius: RADIUS.full, backgroundColor: `${COLORS.accent}08`, borderWidth: 1, borderColor: `${COLORS.accent}18` },
+    statusDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.accent },
+    statusText: { color: COLORS.accent, fontSize: 9, fontWeight: '700' },
+    row: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+    libIconOrb: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}10`, borderWidth: 1, borderColor: `${COLORS.primary}22`, flexShrink: 0 },
+    input: { flex: 1, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: 10, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, borderWidth: 1, borderColor: `${COLORS.primary}15` },
+    inputRecording: { borderColor: `${COLORS.error}45`, backgroundColor: `${COLORS.error}06` },
+    inputTranscribing: { borderColor: `${COLORS.primary}45`, backgroundColor: `${COLORS.primary}06` },
+    micBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}10`, borderWidth: 1, borderColor: `${COLORS.primary}22`, flexShrink: 0 },
+    micBtnRecording: { backgroundColor: COLORS.error, borderColor: COLORS.error },
+    micBtnTranscribing: { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}35` },
+    sendBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+    hint: { color: COLORS.textMuted, fontSize: 9, textAlign: 'center', lineHeight: 13 },
+  });
+}

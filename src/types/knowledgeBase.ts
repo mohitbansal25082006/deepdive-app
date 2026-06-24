@@ -1,6 +1,16 @@
 // src/types/knowledgeBase.ts
 // Part 26 — Personal AI Knowledge Base (Second Brain)
 //
+// ── Part 55.1 — THEME SYSTEM ──────────────────────────────────────────────────
+//   KB_SUGGESTED_QUERIES previously carried a HARDCODED `gradient` tuple per item
+//   (e.g. ['#6C63FF','#8B5CF6']). Those froze the suggestion cards to the default
+//   palette and looked wrong on the light themes. The data still ships a sensible
+//   static gradient (kept so the type stays valid and any other consumer keeps
+//   working), but the KBEmptyState component now IGNORES this field and resolves
+//   the colour at render via kbSuggestedGradient(index) from kbTheme.ts, so the
+//   cards recolour with the active theme. Treat the `gradient` below as a
+//   fallback only.
+//
 // All types used by the KB feature.
 // These are imported by the hook, agent, and UI components.
 
@@ -135,6 +145,11 @@ export interface KBSuggestedQuery {
   label:    string;
   query:    string;
   icon:     string;
+  /**
+   * Part 55.1: fallback gradient only. KBEmptyState resolves the real, theme-aware
+   * gradient at render via kbSuggestedGradient(index). Kept here so the type
+   * remains valid and any other consumer still has a usable value.
+   */
   gradient: readonly [string, string];
 }
 

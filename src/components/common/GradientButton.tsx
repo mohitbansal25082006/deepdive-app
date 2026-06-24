@@ -1,6 +1,29 @@
 // src/components/common/GradientButton.tsx
 // A beautiful gradient button with press animation and loading state.
 // Used throughout the app for primary actions.
+//
+// ── Part 55.1A — THEME SYSTEM + WORKLETS-SAFE ─────────────────────────────────
+//   This button reads COLORS.gradient* and spreads ...SHADOWS.medium into the
+//   inner LinearGradient style. Both COLORS and SHADOWS are MUTABLE singletons
+//   that applyTheme() rewrites in place on a theme switch.
+//
+//   THE WORKLETS WARNING ("Tried to modify key `primary` of an object which has
+//   been already passed to a worklet") happens when one of those mutable objects
+//   gets captured by Reanimated's UI runtime (because the button is wrapped in an
+//   Animated component) and is then mutated by applyTheme(). Reanimated copies the
+//   object to the UI thread once and freezes the JS copy; mutating it afterwards
+//   triggers the warning.
+//
+//   FIX (per Reanimated/Worklets docs): never hand the mutable singleton object to
+//   the animated subtree. Instead, read the PRIMITIVE values fresh on each render
+//   and build a brand-new plain style literal. Because the button re-renders when
+//   the ThemeContext version bumps, these reads pick up the new palette, and the
+//   animated wrapper only ever sees freshly-created literals — so there is nothing
+//   stale for a worklet to "modify".
+//
+//   The animatedStyle here only animates `transform.scale` (a shared value) and
+//   never references COLORS/SHADOWS, so it is already safe; the shadow/gradient
+//   live on the non-animated inner LinearGradient.
 
 import React from 'react';
 import {
@@ -32,6 +55,20 @@ interface GradientButtonProps {
   size?: 'sm' | 'md' | 'lg';
 }
 
+// Part 55.1A: build a fresh, plain shadow literal from the live SHADOWS.medium
+// PRIMITIVES. We copy numbers/strings out by value so the returned object never
+// references the mutable SHADOWS singleton — this is what keeps Reanimated from
+// capturing (and later warning about) the singleton when this button is animated.
+function freshMediumShadow() {
+  return {
+    shadowColor:   SHADOWS.medium.shadowColor,
+    shadowOffset:  { width: SHADOWS.medium.shadowOffset.width, height: SHADOWS.medium.shadowOffset.height },
+    shadowOpacity: SHADOWS.medium.shadowOpacity,
+    shadowRadius:  SHADOWS.medium.shadowRadius,
+    elevation:     SHADOWS.medium.elevation,
+  };
+}
+
 export function GradientButton({
   onPress,
   title,
@@ -45,7 +82,9 @@ export function GradientButton({
   // Shared value for the press animation (scale)
   const scale = useSharedValue(1);
 
-  // Animated style that changes scale based on the shared value
+  // Animated style that changes scale based on the shared value.
+  // NOTE: this only touches the shared value `scale` — it never reads COLORS or
+  // SHADOWS, so the mutable singletons are never copied into the worklet.
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
   }));
@@ -59,12 +98,17 @@ export function GradientButton({
     scale.value = withSpring(1, { damping: 15, stiffness: 300 });
   };
 
-  // Choose gradient colors based on variant
-  const gradientColors = {
-    primary: COLORS.gradientPrimary,
+  // Choose gradient colors based on variant. Read fresh each render → recolors on
+  // theme change. We copy the tuple into a new array so the LinearGradient never
+  // holds the mutable COLORS gradient tuple by reference.
+  const gradientTuple = {
+    primary:   COLORS.gradientPrimary,
     secondary: COLORS.gradientSecondary,
-    success: COLORS.gradientSuccess,
+    success:   COLORS.gradientSuccess,
   }[variant];
+  const gradientColors = disabled
+    ? (['#2A2A4A', '#1A1A35'] as [string, string])
+    : ([gradientTuple[0], gradientTuple[1]] as [string, string]);
 
   // Choose height based on size
   const heights = { sm: 44, md: 52, lg: 58 };
@@ -80,7 +124,7 @@ export function GradientButton({
       style={[animatedStyle, style]}
     >
       <LinearGradient
-        colors={disabled ? ['#2A2A4A', '#1A1A35'] : gradientColors}
+        colors={gradientColors}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 0 }}
         style={{
@@ -90,7 +134,8 @@ export function GradientButton({
           justifyContent: 'center',
           paddingHorizontal: 24,
           opacity: disabled ? 0.6 : 1,
-          ...SHADOWS.medium,
+          // Fresh literal built from live primitives — theme-aware + worklet-safe.
+          ...freshMediumShadow(),
         }}
       >
         {loading ? (

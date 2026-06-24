@@ -7,21 +7,20 @@
 //   • Initial state for `depth` initialised from the param (defaults to 'deep' if absent)
 //   • All previous features (voice, credit gate, focus areas) preserved exactly
 //
-// UI changes:
-//   • Dark gradient background matching home screen (#0A0A1A → #12122A)
-//   • Header with subtle glow strip + breadcrumb
-//   • Selected depth card uses full-width colored gradient highlight
-//   • Focus area chips redesigned with per-chip animated press
-//   • Academic hint card redesigned with icon orb
-//   • Launch button with dynamic gradient matching selected depth color
-//   • Animated entrance for every section using spring physics
+// ── Part 55.1A — THEME SYSTEM ─────────────────────────────────────────────────
+//   • The depth options' colors are now resolved from the live palette via
+//     getDepthOptions() (called each render), so Quick/Deep/Expert recolor with
+//     the theme while keeping their distinct identities.
+//   • All hardcoded chrome hexes (#12122A/#0F0F22 depth-card gradients,
+//     rgba(10,10,26,0.97) launch bar, #1A1235/#0F0F22 hint card, #2A2A4A/#1A1A35
+//     disabled gradient) now derive from COLORS via gradientCard / gradientDark /
+//     hexWithAlpha().
+//   • WORKLETS-SAFE: the focus-glow animated style read a hardcoded primary
+//     before; it now snapshots COLORS.primary into rgb primitives OUTSIDE the
+//     worklet and the worklet references only those numbers.
 //
-// ── ANDROID UI FIX (production) ───────────────────────────────────────────────
-//   The sticky bottom launch bar slipped BEHIND the Android navigation / gesture
-//   bar because its bottom padding was hardcoded (`ios ? 28 : SPACING.md`) instead
-//   of using the real safe-area inset. Under SDK 54 edge-to-edge, content draws
-//   behind the system nav bar, so we now pad with `insets.bottom`. The scroll
-//   content's bottom padding also accounts for the inset so nothing is hidden.
+// ── ANDROID UI FIX (production) — unchanged from Part 43 ──────────────────────
+//   The sticky bottom launch bar uses insets.bottom under SDK 54 edge-to-edge.
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -38,6 +37,7 @@ import Animated, {
 }                            from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useTheme }          from '../../src/context/ThemeContext';
 import { GradientButton }    from '../../src/components/common/GradientButton';
 import { CreditBalance }     from '../../src/components/credits/CreditBalance';
 import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
@@ -54,9 +54,32 @@ import {
   transcribeAudio, formatDuration,
 }                            from '../../src/services/voiceResearch';
 
-// ─── Depth options ─────────────────────────────────────────────────────────────
+// ─── Theme color helpers ──────────────────────────────────────────────────────
+function hexWithAlpha(hex: string, alpha: number): string {
+  if (typeof hex !== 'string' || hex[0] !== '#') return hex;
+  let h = hex.slice(1);
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+function parseRGB(hex: string): { r: number; g: number; b: number } {
+  if (typeof hex !== 'string' || hex[0] !== '#') return { r: 108, g: 99, b: 255 };
+  let h = hex.slice(1);
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6) return { r: 108, g: 99, b: 255 };
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
 
-const DEPTH_OPTIONS: {
+// ─── Depth options (Part 55.1A: colors resolved from the palette each render) ──
+
+function getDepthOptions(): {
   key:        ResearchDepth;
   label:      string;
   desc:       string;
@@ -66,41 +89,43 @@ const DEPTH_OPTIONS: {
   color:      string;
   gradColors: [string, string];
   creditCost: number;
-}[] = [
-  {
-    key:        'quick',
-    label:      'Quick Scan',
-    desc:       'Surface-level overview with key facts',
-    icon:       'flash-outline',
-    time:       '2–3 min',
-    searches:   '4 searches',
-    color:      '#29B6F6',
-    gradColors: ['#29B6F620', '#29B6F608'],
-    creditCost: FEATURE_COSTS.research_quick,
-  },
-  {
-    key:        'deep',
-    label:      'Deep Dive',
-    desc:       'Comprehensive analysis with statistics',
-    icon:       'analytics-outline',
-    time:       '5–7 min',
-    searches:   '8 searches',
-    color:      '#6C63FF',
-    gradColors: ['#6C63FF20', '#6C63FF08'],
-    creditCost: FEATURE_COSTS.research_deep,
-  },
-  {
-    key:        'expert',
-    label:      'Expert Mode',
-    desc:       'Exhaustive research with full citations',
-    icon:       'trophy-outline',
-    time:       '10–12 min',
-    searches:   '12 searches',
-    color:      '#FFA726',
-    gradColors: ['#FFA72620', '#FFA72608'],
-    creditCost: FEATURE_COSTS.research_expert,
-  },
-];
+}[] {
+  return [
+    {
+      key:        'quick',
+      label:      'Quick Scan',
+      desc:       'Surface-level overview with key facts',
+      icon:       'flash-outline',
+      time:       '2–3 min',
+      searches:   '4 searches',
+      color:      COLORS.info,
+      gradColors: [hexWithAlpha(COLORS.info, 0.13), hexWithAlpha(COLORS.info, 0.03)],
+      creditCost: FEATURE_COSTS.research_quick,
+    },
+    {
+      key:        'deep',
+      label:      'Deep Dive',
+      desc:       'Comprehensive analysis with statistics',
+      icon:       'analytics-outline',
+      time:       '5–7 min',
+      searches:   '8 searches',
+      color:      COLORS.primary,
+      gradColors: [hexWithAlpha(COLORS.primary, 0.13), hexWithAlpha(COLORS.primary, 0.03)],
+      creditCost: FEATURE_COSTS.research_deep,
+    },
+    {
+      key:        'expert',
+      label:      'Expert Mode',
+      desc:       'Exhaustive research with full citations',
+      icon:       'trophy-outline',
+      time:       '10–12 min',
+      searches:   '12 searches',
+      color:      COLORS.warning,
+      gradColors: [hexWithAlpha(COLORS.warning, 0.13), hexWithAlpha(COLORS.warning, 0.03)],
+      creditCost: FEATURE_COSTS.research_expert,
+    },
+  ];
+}
 
 const FOCUS_OPTIONS = [
   'Market Size & Revenue', 'Key Companies', 'Technology Details',
@@ -132,8 +157,8 @@ function FocusChip({
       >
         <LinearGradient
           colors={selected
-            ? ['#6C63FF30', '#6C63FF18']
-            : ['#1A1A3500', '#1A1A3500']
+            ? [hexWithAlpha(COLORS.primary, 0.19), hexWithAlpha(COLORS.primary, 0.09)]
+            : ['transparent', 'transparent']
           }
           style={{
             borderRadius:      RADIUS.full,
@@ -194,6 +219,8 @@ export default function ResearchInputScreen() {
   // ── Part 43 FIX: read BOTH query AND depth from route params ──────────────
   const params = useLocalSearchParams<{ query?: string; depth?: string }>();
   const insets = useSafeAreaInsets();
+  // Part 55.1A: re-render on theme change.
+  useTheme();
 
   // Validate the depth param — must be one of the three valid values
   const initialDepth: ResearchDepth =
@@ -214,6 +241,14 @@ export default function ResearchInputScreen() {
   const { balance } = useCredits();
   const { guardedConsume, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
+  // Resolve theme-driven depth data each render.
+  const DEPTH_OPTIONS = getDepthOptions();
+
+  // Worklet-safe primary rgb snapshot.
+  const prgb = parseRGB(COLORS.primary);
+  const pr = prgb.r, pg = prgb.g, pb = prgb.b;
+  const primaryHex = COLORS.primary;
+
   // ── Shared values ──────────────────────────────────────────────────────────
   const micScale      = useSharedValue(1);
   const inputFocused  = useSharedValue(0);
@@ -231,9 +266,11 @@ export default function ResearchInputScreen() {
 
   const micAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: micScale.value }] }));
 
+  // Part 55.1A WORKLETS-SAFE: only primitive numbers / the primary hex snapshot
+  // are referenced inside the worklet — never the COLORS object.
   const inputWrapStyle = useAnimatedStyle(() => ({
-    borderColor:   `rgba(108,99,255,${interpolate(inputFocused.value, [0, 1], [0.25, 0.85])})`,
-    shadowColor:   '#6C63FF',
+    borderColor:   `rgba(${pr},${pg},${pb},${interpolate(inputFocused.value, [0, 1], [0.25, 0.85])})`,
+    shadowColor:   primaryHex,
     shadowOpacity: interpolate(inputFocused.value, [0, 1], [0, 0.35]),
     shadowRadius:  interpolate(inputFocused.value, [0, 1], [0, 16]),
     elevation:     interpolate(inputFocused.value, [0, 1], [0, 8]),
@@ -299,9 +336,6 @@ export default function ResearchInputScreen() {
     });
   };
 
-  // FIX: bottom safe-area inset for the sticky launch bar + scroll padding.
-  // The launch bar is ~140px tall; pad the scroll content so the last card and
-  // the academic hint are never hidden behind it.
   const LAUNCH_BAR_H = 140;
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -318,7 +352,7 @@ export default function ResearchInputScreen() {
             paddingHorizontal: SPACING.xl,
             paddingVertical:   SPACING.md,
             borderBottomWidth: 1,
-            borderBottomColor: `${COLORS.primary}18`,
+            borderBottomColor: hexWithAlpha(COLORS.primary, 0.09),
           }}
         >
           {/* Back */}
@@ -358,7 +392,6 @@ export default function ResearchInputScreen() {
           contentContainerStyle={{
             paddingHorizontal: SPACING.xl,
             paddingTop:        SPACING.lg,
-            // FIX: pad for the sticky bar height + the bottom safe-area inset.
             paddingBottom:     LAUNCH_BAR_H + insets.bottom + SPACING.md,
           }}
           showsVerticalScrollIndicator={false}
@@ -384,9 +417,9 @@ export default function ResearchInputScreen() {
               </View>
               <View style={{
                 flexDirection: 'row', alignItems: 'center', gap: 4,
-                backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full,
+                backgroundColor: hexWithAlpha(COLORS.primary, 0.07), borderRadius: RADIUS.full,
                 paddingHorizontal: 8, paddingVertical: 3,
-                borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.15),
               }}>
                 <Ionicons name="mic-outline" size={11} color={COLORS.primary} />
                 <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '600' }}>Voice Input</Text>
@@ -398,10 +431,10 @@ export default function ResearchInputScreen() {
               <Animated.View
                 entering={FadeIn.duration(200)}
                 style={{
-                  backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg,
+                  backgroundColor: hexWithAlpha(COLORS.error, 0.07), borderRadius: RADIUS.lg,
                   padding: SPACING.md, marginBottom: SPACING.sm,
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                  borderWidth: 1, borderColor: `${COLORS.error}35`,
+                  borderWidth: 1, borderColor: hexWithAlpha(COLORS.error, 0.21),
                 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -413,7 +446,7 @@ export default function ResearchInputScreen() {
                 <TouchableOpacity
                   onPress={handleVoiceCancel}
                   style={{
-                    backgroundColor: `${COLORS.error}20`, borderRadius: RADIUS.sm,
+                    backgroundColor: hexWithAlpha(COLORS.error, 0.13), borderRadius: RADIUS.sm,
                     paddingHorizontal: 10, paddingVertical: 5,
                   }}
                 >
@@ -427,10 +460,10 @@ export default function ResearchInputScreen() {
               <Animated.View
                 entering={FadeIn.duration(200)}
                 style={{
-                  backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg,
+                  backgroundColor: hexWithAlpha(COLORS.primary, 0.07), borderRadius: RADIUS.lg,
                   padding: SPACING.md, marginBottom: SPACING.sm,
                   flexDirection: 'row', alignItems: 'center', gap: 10,
-                  borderWidth: 1, borderColor: `${COLORS.primary}25`,
+                  borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.15),
                 }}
               >
                 <Ionicons name="mic" size={16} color={COLORS.primary} />
@@ -445,10 +478,10 @@ export default function ResearchInputScreen() {
               <Animated.View
                 entering={FadeIn.duration(300)}
                 style={{
-                  backgroundColor: `${COLORS.success}08`, borderRadius: RADIUS.lg,
+                  backgroundColor: hexWithAlpha(COLORS.success, 0.03), borderRadius: RADIUS.lg,
                   padding: SPACING.sm, marginBottom: SPACING.sm,
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                  borderWidth: 1, borderColor: `${COLORS.success}22`,
+                  borderWidth: 1, borderColor: hexWithAlpha(COLORS.success, 0.13),
                 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -493,8 +526,8 @@ export default function ResearchInputScreen() {
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   paddingHorizontal: SPACING.md, paddingVertical: 8,
                   borderTopWidth: 1,
-                  borderTopColor: isRecording ? `${COLORS.error}25` : `${COLORS.primary}15`,
-                  backgroundColor: `${COLORS.backgroundCard}CC`,
+                  borderTopColor: isRecording ? hexWithAlpha(COLORS.error, 0.15) : hexWithAlpha(COLORS.primary, 0.09),
+                  backgroundColor: hexWithAlpha(COLORS.backgroundCard, 0.8),
                 }}>
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
                     {isRecording  ? 'Tap ⏹ to finish speaking'  :
@@ -505,9 +538,9 @@ export default function ResearchInputScreen() {
                     <TouchableOpacity onPress={handleVoicePress} disabled={transcribing} activeOpacity={0.82}>
                       <LinearGradient
                         colors={
-                          isRecording  ? [COLORS.error, '#CC0000']        :
-                          transcribing ? ['#555', '#444']                  :
-                          ['#6C63FF', '#8B5CF6']
+                          isRecording  ? [COLORS.error, hexWithAlpha(COLORS.error, 0.8)]    :
+                          transcribing ? ['#555', '#444']                                    :
+                          (COLORS.gradientPrimary as [string, string])
                         }
                         style={{
                           width: 38, height: 38, borderRadius: 19,
@@ -555,7 +588,7 @@ export default function ResearchInputScreen() {
                     style={{ marginBottom: SPACING.sm }}
                   >
                     <LinearGradient
-                      colors={isSelected ? opt.gradColors : ['#12122A', '#0F0F22']}
+                      colors={isSelected ? opt.gradColors : (COLORS.gradientCard as [string, string])}
                       style={{
                         borderRadius:  RADIUS.lg,
                         padding:       SPACING.md,
@@ -569,14 +602,14 @@ export default function ResearchInputScreen() {
                       {/* Icon orb */}
                       <LinearGradient
                         colors={isSelected
-                          ? [opt.color + '40', opt.color + '20']
+                          ? [hexWithAlpha(opt.color, 0.25), hexWithAlpha(opt.color, 0.13)]
                           : [COLORS.backgroundElevated, COLORS.backgroundElevated]
                         }
                         style={{
                           width: 48, height: 48, borderRadius: 14,
                           alignItems: 'center', justifyContent: 'center',
                           borderWidth: 1,
-                          borderColor: isSelected ? opt.color + '60' : COLORS.border,
+                          borderColor: isSelected ? hexWithAlpha(opt.color, 0.38) : COLORS.border,
                           flexShrink: 0,
                         }}
                       >
@@ -617,11 +650,11 @@ export default function ResearchInputScreen() {
                         </Text>
                         <View style={{
                           flexDirection: 'row', alignItems: 'center', gap: 3,
-                          backgroundColor: isSelected ? `${opt.color}22` : `${COLORS.primary}10`,
+                          backgroundColor: isSelected ? hexWithAlpha(opt.color, 0.13) : hexWithAlpha(COLORS.primary, 0.06),
                           borderRadius:    RADIUS.full,
                           paddingHorizontal: 8, paddingVertical: 3,
                           borderWidth: 1,
-                          borderColor: isSelected ? `${opt.color}40` : `${COLORS.primary}20`,
+                          borderColor: isSelected ? hexWithAlpha(opt.color, 0.25) : hexWithAlpha(COLORS.primary, 0.13),
                         }}>
                           <Ionicons name="flash" size={9} color={isSelected ? opt.color : COLORS.primary} />
                           <Text style={{
@@ -667,9 +700,9 @@ export default function ResearchInputScreen() {
               </Text>
               {focusAreas.length > 0 && (
                 <View style={{
-                  backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full,
+                  backgroundColor: hexWithAlpha(COLORS.primary, 0.13), borderRadius: RADIUS.full,
                   paddingHorizontal: 7, paddingVertical: 1,
-                  borderWidth: 1, borderColor: `${COLORS.primary}35`,
+                  borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.21),
                 }}>
                   <Text style={{ color: COLORS.primary, fontSize: 9, fontWeight: '800' }}>
                     {focusAreas.length} selected
@@ -698,26 +731,26 @@ export default function ResearchInputScreen() {
             entering={FadeInDown.springify().delay(260).damping(15).stiffness(100)}
           >
             <LinearGradient
-              colors={['#1A1235', '#0F0F22']}
+              colors={COLORS.gradientCard as [string, string]}
               style={{
                 borderRadius: RADIUS.lg, padding: SPACING.md,
-                borderWidth: 1, borderColor: `${COLORS.primary}20`,
+                borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.13),
                 flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md,
                 overflow: 'hidden',
               }}
             >
               {/* Top glow */}
               <LinearGradient
-                colors={[`${COLORS.primary}30`, 'transparent']}
+                colors={[hexWithAlpha(COLORS.primary, 0.19), 'transparent']}
                 style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 1 }}
               />
 
               {/* Icon orb */}
               <View style={{
                 width: 38, height: 38, borderRadius: 11,
-                backgroundColor: `${COLORS.primary}18`,
+                backgroundColor: hexWithAlpha(COLORS.primary, 0.09),
                 alignItems: 'center', justifyContent: 'center',
-                borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                borderWidth: 1, borderColor: hexWithAlpha(COLORS.primary, 0.19),
                 flexShrink: 0, marginTop: 1,
               }}>
                 <Ionicons name="school-outline" size={18} color={COLORS.primary} />
@@ -734,18 +767,15 @@ export default function ResearchInputScreen() {
         </ScrollView>
 
         {/* ── Launch Button ───────────────────────────────────────────────── */}
-        {/* FIX: use insets.bottom for the sticky bar's bottom padding so it clears
-            the Android nav/gesture bar under SDK 54 edge-to-edge. A small minimum
-            keeps spacing on devices that report a 0 inset. */}
         <View style={{
           position:        'absolute',
           bottom:          0, left: 0, right: 0,
           paddingHorizontal: SPACING.xl,
           paddingTop:      SPACING.md,
           paddingBottom:   Math.max(insets.bottom, SPACING.md),
-          backgroundColor: 'rgba(10,10,26,0.97)',
+          backgroundColor: hexWithAlpha(COLORS.background, 0.97),
           borderTopWidth:  1,
-          borderTopColor:  `${selectedDepthOpt.color}20`,
+          borderTopColor:  hexWithAlpha(selectedDepthOpt.color, 0.13),
         }}>
           {/* Credit summary row */}
           <View style={{
@@ -755,9 +785,9 @@ export default function ResearchInputScreen() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <View style={{
                 width: 22, height: 22, borderRadius: 6,
-                backgroundColor: `${selectedDepthOpt.color}20`,
+                backgroundColor: hexWithAlpha(selectedDepthOpt.color, 0.13),
                 alignItems: 'center', justifyContent: 'center',
-                borderWidth: 1, borderColor: `${selectedDepthOpt.color}35`,
+                borderWidth: 1, borderColor: hexWithAlpha(selectedDepthOpt.color, 0.21),
               }}>
                 <Ionicons name="flash" size={11} color={selectedDepthOpt.color} />
               </View>
@@ -785,7 +815,7 @@ export default function ResearchInputScreen() {
               colors={
                 (!query.trim() && !isRecording) || transcribing
                   ? ['#2A2A4A', '#1A1A35']
-                  : [selectedDepthOpt.color, selectedDepthOpt.color + 'CC']
+                  : [selectedDepthOpt.color, hexWithAlpha(selectedDepthOpt.color, 0.8)]
               }
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
               style={{

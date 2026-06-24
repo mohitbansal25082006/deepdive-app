@@ -1,6 +1,18 @@
 // src/components/research/AgentStep.tsx
 // Animated card for a single agent step in the progress screen.
 // Shows status icon, label, timing, and live detail text.
+//
+// ── Part 55.1A — THEME SYSTEM ─────────────────────────────────────────────────
+//   AGENT_GRADIENTS was a MODULE-LEVEL map of hardcoded hex tuples, so the agent
+//   accents were frozen to the default palette and never recolored on a theme
+//   switch. It is now produced by getAgentGradients(), a render-time function that
+//   maps each agent to a hue drawn from the LIVE palette (primary / info /
+//   secondary / success / accent …). Each agent keeps a distinct identity while
+//   following the active theme. The hardcoded done-state ['#43E97B','#38F9D7'] and
+//   pending ['#2A2A4A','#1A1A35'] gradients are likewise theme-derived now.
+//
+//   WORKLETS-SAFE: pulseStyle only animates `opacity` from a shared value — it
+//   never reads COLORS — so it was already safe and is unchanged.
 
 import React, { useEffect } from 'react';
 import { View, Text } from 'react-native';
@@ -25,13 +37,18 @@ const AGENT_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   reporter: 'document-text-outline',
 };
 
-const AGENT_GRADIENTS: Record<string, readonly [string, string]> = {
-  planner: ['#6C63FF', '#8B5CF6'],
-  searcher: ['#3B82F6', '#06B6D4'],
-  analyst: ['#F59E0B', '#EF4444'],
-  factchecker: ['#10B981', '#059669'],
-  reporter: ['#F97316', '#EF4444'],
-};
+// Part 55.1A: per-agent accent gradients derived from the LIVE palette (was a
+// module-level hardcoded map). Each agent maps to a palette role so identities
+// stay distinct AND themed.
+function getAgentGradients(): Record<string, readonly [string, string]> {
+  return {
+    planner:     [COLORS.primary,   COLORS.secondary],
+    searcher:    [COLORS.info,       COLORS.primary],
+    analyst:     [COLORS.warning,    COLORS.error],
+    factchecker: [COLORS.success,    `${COLORS.success}CC`],
+    reporter:    [COLORS.accent,     COLORS.error],
+  };
+}
 
 interface Props {
   step: AgentStepType;
@@ -69,10 +86,13 @@ export function AgentStepCard({ step, detail, index }: Props) {
     }
   }, [step.status]);
 
+  // Worklet-safe: only reads the shared value, never COLORS.
   const pulseStyle = useAnimatedStyle(() => ({
     opacity: step.status === 'running' ? pulseAnim.value : 1,
   }));
 
+  // Part 55.1A: resolve gradients at render from the live palette.
+  const AGENT_GRADIENTS = getAgentGradients();
   const iconBg = AGENT_GRADIENTS[step.agent] ?? COLORS.gradientPrimary;
   const isRunning = step.status === 'running';
   const isDone = step.status === 'completed';
@@ -109,7 +129,7 @@ export function AgentStepCard({ step, detail, index }: Props) {
       <Animated.View style={[{ marginRight: SPACING.md }, isRunning ? pulseStyle : {}]}>
         {isDone ? (
           <LinearGradient
-            colors={['#43E97B', '#38F9D7']}
+            colors={[COLORS.success, `${COLORS.success}AA`]}
             style={{
               width: 44,
               height: 44,
@@ -130,7 +150,7 @@ export function AgentStepCard({ step, detail, index }: Props) {
           </View>
         ) : (
           <LinearGradient
-            colors={isPending ? ['#2A2A4A', '#1A1A35'] : iconBg}
+            colors={isPending ? [COLORS.backgroundElevated, COLORS.backgroundCard] : (iconBg as [string, string])}
             style={{
               width: 44, height: 44, borderRadius: 12,
               alignItems: 'center', justifyContent: 'center',

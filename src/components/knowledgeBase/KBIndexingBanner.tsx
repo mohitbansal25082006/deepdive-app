@@ -1,6 +1,14 @@
 // src/components/knowledgeBase/KBIndexingBanner.tsx
 // Part 43 — REDESIGNED: matches research-input.tsx aesthetic.
 // No floating animations. Clean status strips. All logic unchanged.
+//
+// ── Part 55.1 — THEME SYSTEM ──────────────────────────────────────────────────
+//   The styles were a MODULE-LEVEL StyleSheet.create evaluated once at import, so
+//   every `${COLORS.x}` template literal baked in the DEFAULT palette and never
+//   recoloured. Converted to a makeStyles() factory called inside the component
+//   each render (reads the LIVE COLORS), and the component subscribes to
+//   useTheme() so it re-renders on a theme switch. The hardcoded progress-fill
+//   gradient ['#6C63FF','#8B5CF6'] now uses COLORS.gradientPrimary.
 
 import React, { useEffect, useRef } from 'react';
 import {
@@ -9,8 +17,9 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons }       from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { KBIndexState, KBStats }  from '../../types/knowledgeBase';
+import { useTheme }       from '../../context/ThemeContext';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
 interface Props {
@@ -20,6 +29,10 @@ interface Props {
 }
 
 export function KBIndexingBanner({ stats, indexState, onRetry }: Props) {
+  // Part 55.1: subscribe so the banner recolours on a theme switch.
+  useTheme();
+  const styles = makeStyles();
+
   const progressAnim = useRef(new RNAnimated.Value(0)).current;
 
   useEffect(() => {
@@ -102,7 +115,7 @@ export function KBIndexingBanner({ stats, indexState, onRetry }: Props) {
         {/* Progress bar */}
         <View style={styles.progressTrack}>
           <RNAnimated.View style={[styles.progressFillWrap, { width: progressWidth as any }]}>
-            <LinearGradient colors={['#6C63FF', '#8B5CF6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+            <LinearGradient colors={COLORS.gradientPrimary as [string, string]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
           </RNAnimated.View>
         </View>
         <StatsStrip />
@@ -147,38 +160,41 @@ export function KBIndexingBanner({ stats, indexState, onRetry }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  checkingBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingVertical: 8, backgroundColor: `${COLORS.primary}08`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}15` },
-  checkingText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontStyle: 'italic' },
+// Part 55.1: factory reads the LIVE COLORS each render → theme-aware.
+function makeStyles() {
+  return StyleSheet.create({
+    checkingBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingVertical: 8, backgroundColor: `${COLORS.primary}08`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}15` },
+    checkingText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontStyle: 'italic' },
 
-  indexingBanner: { paddingHorizontal: SPACING.md, paddingVertical: 10, backgroundColor: `${COLORS.primary}08`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}18`, gap: 8 },
-  indexingTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  indexingTitle: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', marginBottom: 2 },
-  indexingSubtitle: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-  countPill: { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}28`, flexShrink: 0 },
-  countPillText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
-  progressTrack: { height: 4, borderRadius: 2, overflow: 'hidden', backgroundColor: COLORS.border },
-  progressFillWrap: { height: 4, borderRadius: 2, overflow: 'hidden' },
+    indexingBanner: { paddingHorizontal: SPACING.md, paddingVertical: 10, backgroundColor: `${COLORS.primary}08`, borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}18`, gap: 8 },
+    indexingTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    indexingTitle: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', marginBottom: 2 },
+    indexingSubtitle: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+    countPill: { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.primary}28`, flexShrink: 0 },
+    countPillText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+    progressTrack: { height: 4, borderRadius: 2, overflow: 'hidden', backgroundColor: COLORS.border },
+    progressFillWrap: { height: 4, borderRadius: 2, overflow: 'hidden' },
 
-  readyBanner: { paddingHorizontal: SPACING.md, paddingVertical: 8, backgroundColor: COLORS.backgroundCard, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 6 },
-  readyPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.accent}10`, borderWidth: 1, borderColor: `${COLORS.accent}22` },
-  readyDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.accent },
-  readyText: { color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  partialPill: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.primary}10`, borderWidth: 1, borderColor: `${COLORS.primary}22` },
-  partialText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  indexNowText: { color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '700' },
-  emptyPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border },
-  emptyPillText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+    readyBanner: { paddingHorizontal: SPACING.md, paddingVertical: 8, backgroundColor: COLORS.backgroundCard, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: 6 },
+    readyPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.accent}10`, borderWidth: 1, borderColor: `${COLORS.accent}22` },
+    readyDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: COLORS.accent },
+    readyText: { color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+    partialPill: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.primary}10`, borderWidth: 1, borderColor: `${COLORS.primary}22` },
+    partialText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+    indexNowText: { color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+    emptyPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border },
+    emptyPillText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
 
-  errorBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingVertical: 8, backgroundColor: `${COLORS.warning}08`, borderBottomWidth: 1, borderBottomColor: `${COLORS.warning}18` },
-  errorIconWrap: { width: 26, height: 26, borderRadius: 7, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.warning}12`, borderWidth: 1, borderColor: `${COLORS.warning}25`, flexShrink: 0 },
-  errorText: { flex: 1, color: COLORS.warning, fontSize: FONTS.sizes.xs, lineHeight: 16 },
-  retryBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.warning}18`, borderWidth: 1, borderColor: `${COLORS.warning}35`, flexShrink: 0 },
-  retryText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+    errorBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingVertical: 8, backgroundColor: `${COLORS.warning}08`, borderBottomWidth: 1, borderBottomColor: `${COLORS.warning}18` },
+    errorIconWrap: { width: 26, height: 26, borderRadius: 7, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.warning}12`, borderWidth: 1, borderColor: `${COLORS.warning}25`, flexShrink: 0 },
+    errorText: { flex: 1, color: COLORS.warning, fontSize: FONTS.sizes.xs, lineHeight: 16 },
+    retryBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.warning}18`, borderWidth: 1, borderColor: `${COLORS.warning}35`, flexShrink: 0 },
+    retryText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
-  statsStrip: { flexDirection: 'row', alignItems: 'center' },
-  statItem: { flex: 1, alignItems: 'center', gap: 2 },
-  statsDivider: { width: 1, height: 24, backgroundColor: `${COLORS.border}80` },
-  statValue: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', marginTop: 1 },
-  statLabel: { color: COLORS.textMuted, fontSize: 9, fontWeight: '500', textTransform: 'uppercase', letterSpacing: 0.4 },
-});
+    statsStrip: { flexDirection: 'row', alignItems: 'center' },
+    statItem: { flex: 1, alignItems: 'center', gap: 2 },
+    statsDivider: { width: 1, height: 24, backgroundColor: `${COLORS.border}80` },
+    statValue: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700', marginTop: 1 },
+    statLabel: { color: COLORS.textMuted, fontSize: 9, fontWeight: '500', textTransform: 'uppercase', letterSpacing: 0.4 },
+  });
+}

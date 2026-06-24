@@ -4,6 +4,22 @@
 // Glassy card · animated progress stripe · blinking cursor · shimmer skeleton.
 // Drop-in compatible: export `StreamingSectionCard`, props { section, isActive }.
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// ── Part 55.1A — THEME SYSTEM ─────────────────────────────────────────────────
+//   The three hardcoded card gradients —
+//       active:    ['#1A1A3A', '#121228']
+//       idle:      ['#15152E', '#101024']
+//       header-idle ['#2A2A4A', '#1A1A35']
+//   were frozen to the default dark palette and never recolored on a theme
+//   switch. They now derive from the live palette:
+//       • card body  → COLORS.gradientCard (active gets a faint primary overlay)
+//       • header-idle orb → gradientCardSoft() (elevated → card tint)
+//   Everything else (RichText, bullets, skeletons) already reads COLORS inline.
+//
+//   WORKLETS-SAFE: this card uses React Native's own `Animated` (NOT Reanimated
+//   worklets) for the cursor/stripe/shimmer. There is no worklet to capture the
+//   mutable COLORS singleton, so reading COLORS.primary / COLORS.primaryLight
+//   inline is safe; they refresh each render and recolor with the theme.
 
 import React, { useEffect, useRef } from 'react';
 import { View, Text, Animated, Easing } from 'react-native';
@@ -27,6 +43,12 @@ const SECTION_ICON_MAP: Record<number, string> = {
   4: 'warning-outline',
   5: 'telescope-outline',
 };
+
+// Part 55.1A: theme-derived stand-in for the old hardcoded ['#2A2A4A','#1A1A35']
+// "idle header orb" gradient — uses elevated → card surface tints.
+function idleOrbGradient(): [string, string] {
+  return [COLORS.backgroundElevated, COLORS.backgroundCard];
+}
 
 export function StreamingSectionCard({ section, isActive }: Props) {
   const cursorOpacity = useRef(new Animated.Value(1)).current;
@@ -70,7 +92,16 @@ export function StreamingSectionCard({ section, isActive }: Props) {
       entering={FadeInDown.duration(300)}
       style={{ borderRadius: RADIUS.xl, marginBottom: SPACING.md, borderWidth: 1, borderColor, overflow: 'hidden' }}
     >
-      <LinearGradient colors={isActive ? ['#1A1A3A', '#121228'] : ['#15152E', '#101024']} style={{ flex: 1 }}>
+      {/* Part 55.1A: card body uses the live gradientCard (was hardcoded hexes). */}
+      <LinearGradient colors={COLORS.gradientCard as [string, string]} style={{ flex: 1 }}>
+        {/* Active-state faint primary overlay so the running card reads warmer */}
+        {isActive && (
+          <LinearGradient
+            colors={[`${COLORS.primary}14`, 'transparent']}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+        )}
+
         {/* Active progress stripe */}
         {isActive && (
           <View style={{ height: 3, backgroundColor: `${COLORS.primary}30`, overflow: 'hidden' }}>
@@ -81,7 +112,7 @@ export function StreamingSectionCard({ section, isActive }: Props) {
         {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'center', padding: SPACING.md, paddingBottom: SPACING.sm, gap: SPACING.sm }}>
           <LinearGradient
-            colors={section.isComplete ? [COLORS.success, COLORS.success + 'AA'] : isActive ? COLORS.gradientPrimary : ['#2A2A4A', '#1A1A35']}
+            colors={section.isComplete ? [COLORS.success, COLORS.success + 'AA'] : isActive ? (COLORS.gradientPrimary as [string, string]) : idleOrbGradient()}
             style={{ width: 38, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
           >
             {section.isComplete

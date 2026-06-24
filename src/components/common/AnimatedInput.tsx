@@ -1,6 +1,22 @@
 // src/components/common/AnimatedInput.tsx
 // An input field with animated floating label and focus effects.
 // The label slides up when you tap the input.
+//
+// ── Part 55.1A — THEME SYSTEM + WORKLETS-SAFE ─────────────────────────────────
+//   The animated label/border styles previously read COLORS.primary /
+//   COLORS.borderFocus / COLORS.border / COLORS.error / COLORS.textMuted DIRECTLY
+//   inside useAnimatedStyle worklets. Those worklets run on the UI runtime and
+//   captured the mutable COLORS singleton; when applyTheme() later rewrote COLORS
+//   on a theme switch, Reanimated emitted "Tried to modify key `primary` of an
+//   object which has been already passed to a worklet".
+//
+//   FIX (per Reanimated docs — "access properties more granularly"): read the
+//   needed COLOR values into PRIMITIVE local consts on the JS thread FIRST, then
+//   reference only those primitives inside the worklets. Primitives are copied by
+//   value into the worklet, so the mutable singleton is never handed to the UI
+//   runtime and nothing stale can be mutated. Because the component re-renders on
+//   the ThemeContext version bump, these primitives refresh and the input
+//   recolors correctly on a theme change.
 
 import React, { useState } from 'react';
 import {
@@ -47,7 +63,18 @@ export function AnimatedInput({
   const labelAnim = useSharedValue(value ? 1 : 0);
   const borderAnim = useSharedValue(0);
 
-  // Animated label style — moves up and shrinks when focused
+  // Part 55.1A — WORKLETS-SAFE: snapshot the COLOR primitives we need OUTSIDE the
+  // worklets. These are plain strings, copied by value into the UI runtime, so
+  // the mutable COLORS singleton is never captured. They refresh every render, so
+  // the field recolors on a theme change.
+  const cPrimary    = COLORS.primary;
+  const cBorderFocus = COLORS.borderFocus;
+  const cBorder     = COLORS.border;
+  const cError      = COLORS.error;
+  const cTextMuted  = COLORS.textMuted;
+  const hasError    = !!error;
+
+  // Animated label style — moves up and shrinks when focused.
   const labelStyle = useAnimatedStyle(() => ({
     transform: [
       {
@@ -57,16 +84,17 @@ export function AnimatedInput({
         scale: interpolate(labelAnim.value, [0, 1], [1, 0.82]),
       },
     ],
-    color: borderAnim.value === 1 ? COLORS.primary : COLORS.textMuted,
+    // primitives only — no singleton object captured
+    color: borderAnim.value === 1 ? cPrimary : cTextMuted,
   }));
 
   // Animated border color
   const containerStyle = useAnimatedStyle(() => ({
-    borderColor: error
-      ? COLORS.error
+    borderColor: hasError
+      ? cError
       : borderAnim.value === 1
-      ? COLORS.borderFocus
-      : COLORS.border,
+      ? cBorderFocus
+      : cBorder,
     borderWidth: borderAnim.value === 1 ? 1.5 : 1,
   }));
 

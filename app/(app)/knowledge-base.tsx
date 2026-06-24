@@ -22,6 +22,32 @@
 //     • Use KeyboardAvoidingView with behavior 'padding' on BOTH platforms and a
 //       keyboardVerticalOffset so the input rises cleanly above the keyboard. The
 //       Reanimated keyboard inset from safe-area-context 5.x makes this reliable.
+//
+// ── Part 55.1 — THEME SYSTEM ──────────────────────────────────────────────────
+//   • The screen styles were a module-level StyleSheet.create with `${COLORS.x}`
+//     template literals → frozen to the default palette. Converted to a
+//     makeStyles() factory read at render, and the screen now subscribes to
+//     useTheme() so it (and its RenameModal) recolour on a theme switch.
+//   • Hardcoded header orb gradient ['#7C3AED','#6C63FF'] and rename glow
+//     ['#6C63FF','#8B5CF6'] → kbBrandGradient() (COLORS.gradientPrimary).
+//
+// ── SCROLL FIX ────────────────────────────────────────────────────────────────
+//   Issue: scrolling only worked from some areas of the screen.
+//
+//   ROOT CAUSE (empty state): The !hasMessages branch wrapped KBEmptyState in a
+//   bare <Pressable> — no ScrollView existed, so suggested queries couldn't scroll.
+//
+//   ROOT CAUSE (messages): The messages ScrollView was missing nestedScrollEnabled
+//   (required on Android so child Pressable/Text nodes inside KBMessageBubble don't
+//   starve the parent scroll gesture) and scrollEventThrottle (needed on iOS so
+//   the scroll event fires often enough to feel native).
+//
+//   THE FIX:
+//     • Empty state → wrapped in a ScrollView (contentContainerStyle flexGrow:1)
+//       so the entire surface is scroll-capable. The inner Pressable still fires
+//       Keyboard.dismiss() on tap; its style is flexGrow:1 so it fills the view.
+//     • Messages ScrollView → added nestedScrollEnabled={true} and
+//       scrollEventThrottle={16}.
 
 import React, {
   useRef, useEffect, useCallback, useState,
@@ -51,7 +77,11 @@ import {
   KBInputRow,
 }                               from '../../src/components/knowledgeBase/KBInputRow';
 import { KBSessionsPanel }      from '../../src/components/knowledgeBase/KBSessionsPanel';
+import { useTheme }             from '../../src/context/ThemeContext';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { kbBrandGradient }      from '../../src/components/knowledgeBase/kbTheme';
+
+type Styles = ReturnType<typeof makeStyles>;
 
 // ─── Subtle status dot (no float/bounce) ──────────────────────────────────────
 function StatusDot({ active }: { active: boolean }) {
@@ -79,9 +109,11 @@ function StatusDot({ active }: { active: boolean }) {
 interface RenameModalProps {
   visible: boolean; current: string;
   onConfirm: (t: string) => void; onClose: () => void;
+  styles: Styles;
 }
-function RenameModal({ visible, current, onConfirm, onClose }: RenameModalProps) {
+function RenameModal({ visible, current, onConfirm, onClose, styles }: RenameModalProps) {
   const [value, setValue] = useState(current);
+  const brand = kbBrandGradient();
   useEffect(() => { if (visible) setValue(current); }, [visible, current]);
   const handleConfirm = () => {
     const t = value.trim();
@@ -118,7 +150,7 @@ function RenameModal({ visible, current, onConfirm, onClose }: RenameModalProps)
               <Text style={styles.renameCancelText}>Cancel</Text>
             </Pressable>
             <Pressable onPress={handleConfirm} style={styles.renameSaveBtn}>
-              <LinearGradient colors={COLORS.gradientPrimary} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.renameSaveGrad}>
+              <LinearGradient colors={brand as [string, string]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.renameSaveGrad}>
                 <Ionicons name="checkmark" size={14} color="#FFF" />
                 <Text style={styles.renameSaveText}>Save</Text>
               </LinearGradient>
@@ -132,6 +164,11 @@ function RenameModal({ visible, current, onConfirm, onClose }: RenameModalProps)
 
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function KnowledgeBaseScreen() {
+  // Part 55.1: subscribe so the screen + RenameModal recolour on a theme switch.
+  useTheme();
+  const styles = makeStyles();
+  const brand  = kbBrandGradient();
+
   const kb     = useKnowledgeBase();
   const kbSess = useKBSessions();
   const insets = useSafeAreaInsets();
@@ -232,7 +269,7 @@ export default function KnowledgeBaseScreen() {
             {/* Center — tappable to rename */}
             <Pressable onPress={() => setRenameModalOpen(true)} style={styles.headerCenter} hitSlop={6}>
               <View style={styles.headerTitleRow}>
-                <LinearGradient colors={['#7C3AED', '#6C63FF']} style={styles.headerIconOrb}>
+                <LinearGradient colors={brand as [string, string]} style={styles.headerIconOrb}>
                   <Ionicons name="library" size={12} color="#FFF" />
                 </LinearGradient>
                 <Text style={styles.headerTitle} numberOfLines={1}>{displayTitle}</Text>
@@ -291,21 +328,52 @@ export default function KnowledgeBaseScreen() {
 
           {/* ── Messages / Empty state ──────────────────────────────────── */}
           {!hasMessages ? (
-            // FIX: tapping the empty area dismisses the keyboard on Android.
-            <Pressable style={{ flex: 1 }} onPress={() => Keyboard.dismiss()} android_disableSound>
-              <KBEmptyState
-                hasReports={hasReports} indexedCount={indexedCount}
-                totalCount={totalCount} onQueryPress={handleSuggestedQuery}
-                onStartSearch={handleFocusInput}
-              />
-            </Pressable>
-          ) : (
+            // SCROLL FIX: Previously a bare <Pressable> with no ScrollView — users
+            // couldn't scroll KBEmptyState's content (e.g. suggested queries).
+            // Wrapping in a ScrollView makes the full empty-state surface scrollable.
+            // contentContainerStyle flexGrow:1 keeps KBEmptyState filling the screen
+            // when its content is shorter than the viewport (no visual change), but
+            // allows natural scroll when it overflows.
+            // The inner Pressable still handles Keyboard.dismiss() on tap; flexGrow:1
+            // replaces the old flex:1 because flex doesn't size correctly inside a
+            // ScrollView's content container.
             <ScrollView
-              ref={scrollRef} style={{ flex: 1 }}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ flexGrow: 1 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              scrollEventThrottle={16}
+            >
+              <Pressable
+                style={{ flexGrow: 1 }}
+                onPress={() => Keyboard.dismiss()}
+                android_disableSound
+              >
+                <KBEmptyState
+                  hasReports={hasReports} indexedCount={indexedCount}
+                  totalCount={totalCount} onQueryPress={handleSuggestedQuery}
+                  onStartSearch={handleFocusInput}
+                />
+              </Pressable>
+            </ScrollView>
+          ) : (
+            // SCROLL FIX: Added nestedScrollEnabled={true} so Android does not let
+            // touch events consumed by child Pressable/Text nodes inside
+            // KBMessageBubble starve the parent scroll gesture — the single most
+            // common cause of "can only scroll from the gaps between bubbles".
+            // scrollEventThrottle={16} keeps iOS scroll callbacks firing at ~60 fps
+            // so the list feels native throughout.
+            <ScrollView
+              ref={scrollRef}
+              style={{ flex: 1 }}
               contentContainerStyle={styles.messageListContent}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
+              nestedScrollEnabled
+              scrollEventThrottle={16}
               onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
             >
               {kb.messages.map(msg => (
@@ -362,71 +430,75 @@ export default function KnowledgeBaseScreen() {
       <RenameModal
         visible={renameModalOpen} current={kb.activeSessionTitle}
         onConfirm={handleRenameConfirm} onClose={() => setRenameModalOpen(false)}
+        styles={styles}
       />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  // Header
-  header: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: SPACING.md, paddingVertical: 10,
-    backgroundColor: COLORS.backgroundCard,
-    borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}18`,
-    gap: SPACING.xs,
-  },
-  headerBtn: {
-    width: 38, height: 38, borderRadius: 11,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: COLORS.backgroundElevated,
-    borderWidth: 1, borderColor: COLORS.border,
-    flexShrink: 0, position: 'relative',
-  },
-  headerBtnPrimary: {
-    backgroundColor: `${COLORS.primary}12`,
-    borderColor: `${COLORS.primary}30`,
-  },
-  headerCenter: { flex: 1, alignItems: 'center', paddingHorizontal: SPACING.xs, gap: 3 },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  headerIconOrb: { width: 22, height: 22, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '800', maxWidth: 150, letterSpacing: -0.2 },
-  headerSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  headerSubtitle: { color: COLORS.textMuted, fontSize: 10 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs, flexShrink: 0 },
-  sessionBadge: {
-    position: 'absolute', top: -4, right: -4,
-    minWidth: 15, height: 15, borderRadius: 8,
-    backgroundColor: COLORS.primary,
-    alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 3, borderWidth: 1.5,
-    borderColor: COLORS.backgroundCard,
-  },
-  sessionBadgeText: { color: '#FFF', fontSize: 8, fontWeight: '800', lineHeight: 11 },
-  // Messages
-  messageListContent: { paddingHorizontal: SPACING.md, paddingTop: SPACING.md, paddingBottom: SPACING.sm },
-  // Error
-  errorBanner: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    padding: SPACING.sm, borderRadius: RADIUS.lg,
-    backgroundColor: `${COLORS.error}10`, borderWidth: 1,
-    borderColor: `${COLORS.error}25`, marginBottom: SPACING.sm,
-  },
-  errorText: { color: COLORS.error, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 17 },
-  retryBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.error}18`, borderWidth: 1, borderColor: `${COLORS.error}35` },
-  retryText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '700' },
-  // Rename modal
-  renameOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center', padding: SPACING.xl },
-  renameBox: { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: `${COLORS.primary}28`, padding: SPACING.lg, width: '100%', gap: SPACING.md, overflow: 'hidden' },
-  renameGlow: { position: 'absolute', top: 0, left: 0, right: 0, height: 1.5 },
-  renameHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  renameIconOrb: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}15`, borderWidth: 1, borderColor: `${COLORS.primary}28` },
-  renameTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '700' },
-  renameInput: { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, borderWidth: 1.5, borderColor: `${COLORS.primary}45`, paddingHorizontal: SPACING.md, paddingVertical: 12, color: COLORS.textPrimary, fontSize: FONTS.sizes.base },
-  renameBtnRow: { flexDirection: 'row', gap: SPACING.sm },
-  renameCancelBtn: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border },
-  renameCancelText: { color: COLORS.textMuted, fontWeight: '600', fontSize: FONTS.sizes.sm },
-  renameSaveBtn: { flex: 2, borderRadius: RADIUS.lg, overflow: 'hidden' },
-  renameSaveGrad: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: RADIUS.lg },
-  renameSaveText: { color: '#FFF', fontWeight: '700', fontSize: FONTS.sizes.sm },
-});
+// Part 55.1: factory reads the LIVE COLORS each render → theme-aware.
+function makeStyles() {
+  return StyleSheet.create({
+    // Header
+    header: {
+      flexDirection: 'row', alignItems: 'center',
+      paddingHorizontal: SPACING.md, paddingVertical: 10,
+      backgroundColor: COLORS.backgroundCard,
+      borderBottomWidth: 1, borderBottomColor: `${COLORS.primary}18`,
+      gap: SPACING.xs,
+    },
+    headerBtn: {
+      width: 38, height: 38, borderRadius: 11,
+      alignItems: 'center', justifyContent: 'center',
+      backgroundColor: COLORS.backgroundElevated,
+      borderWidth: 1, borderColor: COLORS.border,
+      flexShrink: 0, position: 'relative',
+    },
+    headerBtnPrimary: {
+      backgroundColor: `${COLORS.primary}12`,
+      borderColor: `${COLORS.primary}30`,
+    },
+    headerCenter: { flex: 1, alignItems: 'center', paddingHorizontal: SPACING.xs, gap: 3 },
+    headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    headerIconOrb: { width: 22, height: 22, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+    headerTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '800', maxWidth: 150, letterSpacing: -0.2 },
+    headerSubRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    headerSubtitle: { color: COLORS.textMuted, fontSize: 10 },
+    headerRight: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs, flexShrink: 0 },
+    sessionBadge: {
+      position: 'absolute', top: -4, right: -4,
+      minWidth: 15, height: 15, borderRadius: 8,
+      backgroundColor: COLORS.primary,
+      alignItems: 'center', justifyContent: 'center',
+      paddingHorizontal: 3, borderWidth: 1.5,
+      borderColor: COLORS.backgroundCard,
+    },
+    sessionBadgeText: { color: '#FFF', fontSize: 8, fontWeight: '800', lineHeight: 11 },
+    // Messages
+    messageListContent: { paddingHorizontal: SPACING.md, paddingTop: SPACING.md, paddingBottom: SPACING.sm },
+    // Error
+    errorBanner: {
+      flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+      padding: SPACING.sm, borderRadius: RADIUS.lg,
+      backgroundColor: `${COLORS.error}10`, borderWidth: 1,
+      borderColor: `${COLORS.error}25`, marginBottom: SPACING.sm,
+    },
+    errorText: { color: COLORS.error, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 17 },
+    retryBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.full, backgroundColor: `${COLORS.error}18`, borderWidth: 1, borderColor: `${COLORS.error}35` },
+    retryText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+    // Rename modal
+    renameOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center', padding: SPACING.xl },
+    renameBox: { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: `${COLORS.primary}28`, padding: SPACING.lg, width: '100%', gap: SPACING.md, overflow: 'hidden' },
+    renameGlow: { position: 'absolute', top: 0, left: 0, right: 0, height: 1.5 },
+    renameHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+    renameIconOrb: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: `${COLORS.primary}15`, borderWidth: 1, borderColor: `${COLORS.primary}28` },
+    renameTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '700' },
+    renameInput: { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, borderWidth: 1.5, borderColor: `${COLORS.primary}45`, paddingHorizontal: SPACING.md, paddingVertical: 12, color: COLORS.textPrimary, fontSize: FONTS.sizes.base },
+    renameBtnRow: { flexDirection: 'row', gap: SPACING.sm },
+    renameCancelBtn: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border },
+    renameCancelText: { color: COLORS.textMuted, fontWeight: '600', fontSize: FONTS.sizes.sm },
+    renameSaveBtn: { flex: 2, borderRadius: RADIUS.lg, overflow: 'hidden' },
+    renameSaveGrad: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: RADIUS.lg },
+    renameSaveText: { color: '#FFF', fontWeight: '700', fontSize: FONTS.sizes.sm },
+  });
+}

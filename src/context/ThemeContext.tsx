@@ -21,11 +21,26 @@
 //   root (above the navigation stack), bumping it re-renders the whole app once,
 //   and every screen re-reads the freshly-mutated COLORS.
 //
-//   We also key the provider's children <View> with `version` (in _layout, Part
-//   55B) as a belt-and-suspenders remount for any memoized subtree that wouldn't
-//   otherwise re-render. The counter alone is sufficient for the inline-style
-//   majority; the keyed remount additionally refreshes module-level styles after
-//   they're patched in 55B.
+// ── Part 55.1A FIX (Feature 1) ────────────────────────────────────────────────
+//   Previously the "re-apply on change" effect compared nothing and relied purely
+//   on React firing the effect. If a near-simultaneous re-render elsewhere (e.g.
+//   refreshProfile() in the profile Edit flow) coalesced with a theme change, the
+//   palette could end up applied to COLORS but the version-bump render could be
+//   superseded, so the UI kept the old colors until the next paint — the
+//   "change name, then theme won't apply" bug.
+//
+//   The fix makes applying IDEMPOTENT and SELF-RECONCILING:
+//     • We track the last-applied signature (`<themeId>:<resolvedMode>`) in a ref.
+//     • An effect runs on every relevant change; if the current signature differs
+//       from the last applied one, it applies + bumps. Because it compares against
+//       a ref (not React state), it always converges to the correct palette even
+//       if an unrelated re-render interleaves — there is no "missed" apply.
+//     • The dedicated setters still apply immediately for snappy UX, but the
+//       reconciling effect is the safety net that guarantees correctness.
+//
+//   We deliberately NO LONGER key the navigation Stack by version in _layout
+//   (see app/_layout.tsx) — that remount was what raced with refreshProfile().
+//   The version bump + getter-based module styles are sufficient to recolor.
 //
 // PUBLIC API (useTheme):
 //   themeId        current theme id ('cosmic' | 'ocean' | …)
@@ -92,15 +107,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [version, setVersion] = useState(0);
   const [isReady, setIsReady] = useState(false);
 
+  // Part 55.1A: the signature of the palette currently written into COLORS.
+  // Used to make applying idempotent + self-reconciling.
+  const appliedSigRef = useRef<string>('');
+
   const bump = useCallback(() => setVersion(v => v + 1), []);
 
   // ── Apply the current (themeId, mode, systemScheme) to the live engine ──────
-  // Whenever any of these change, mutate COLORS in place and force a re-render.
   const resolvedMode = resolveMode(mode, systemScheme);
 
-  const applyAndBump = useCallback((id: string, m: ThemeMode) => {
+  // Part 55.1A: idempotent apply — only mutates COLORS + bumps when the resolved
+  // (id, mode) actually differs from what is already written. Safe to call as
+  // often as we like; it converges to the correct palette.
+  const applyIfNeeded = useCallback((id: string, m: ThemeMode) => {
+    const sig = `${id}:${m}`;
+    if (appliedSigRef.current === sig) return false;
     applyTheme(id, m);
+    appliedSigRef.current = sig;
     bump();
+    return true;
   }, [bump]);
 
   // ── Initial load of the saved preference ────────────────────────────────────
@@ -114,10 +139,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setSystemScheme(sys);
       setThemeIdState(pref.themeId);
       setModeState(pref.mode);
-      applyAndBump(pref.themeId, resolveMode(pref.mode, sys));
+      applyIfNeeded(pref.themeId, resolveMode(pref.mode, sys));
       setIsReady(true);
     })();
-  }, [applyAndBump]);
+  }, [applyIfNeeded]);
 
   // ── Follow the OS color scheme while 'system' is selected ───────────────────
   useEffect(() => {
@@ -127,25 +152,31 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => sub.remove();
   }, []);
 
-  // ── Re-apply whenever the resolved (id, mode) actually changes ──────────────
-  // (Skips the very first run because the initial load already applied once.)
-  const firstApply = useRef(true);
+  // ── Reconciling effect (Part 55.1A) ─────────────────────────────────────────
+  // Runs on every relevant change. Because applyIfNeeded compares against a ref,
+  // this ALWAYS converges to the correct palette even if an unrelated re-render
+  // (e.g. refreshProfile()) interleaves with a theme change. There is no longer a
+  // first-run skip guard: the signature check makes a redundant apply a no-op, so
+  // the initial-load apply above will simply be recognised as already-applied.
   useEffect(() => {
     if (!isReady) return;
-    if (firstApply.current) { firstApply.current = false; return; }
-    applyAndBump(themeId, resolvedMode);
-  }, [themeId, resolvedMode, isReady, applyAndBump]);
+    applyIfNeeded(themeId, resolvedMode);
+  }, [themeId, resolvedMode, isReady, applyIfNeeded]);
 
-  // ── Public setters (persist + apply) ────────────────────────────────────────
+  // ── Public setters (apply immediately for snappy UX + persist) ──────────────
   const setThemeId = useCallback((id: string) => {
     setThemeIdState(id);
+    // Apply right away so the change is instant; the reconciling effect will
+    // recognise it as already-applied and not double-bump.
+    applyIfNeeded(id, resolvedMode);
     saveThemePreference({ themeId: id, mode });
-  }, [mode]);
+  }, [mode, resolvedMode, applyIfNeeded]);
 
   const setMode = useCallback((m: ThemeModePreference) => {
     setModeState(m);
+    applyIfNeeded(themeId, resolveMode(m, systemScheme));
     saveThemePreference({ themeId, mode: m });
-  }, [themeId]);
+  }, [themeId, systemScheme, applyIfNeeded]);
 
   const value: ThemeContextValue = {
     themeId,

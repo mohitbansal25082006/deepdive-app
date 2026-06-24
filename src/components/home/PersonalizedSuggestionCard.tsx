@@ -3,6 +3,17 @@
 //            holographic source badge, and improved typography hierarchy.
 //
 // All props/exports are unchanged — drop-in replacement.
+//
+// ── Part 55.1A — THEME SYSTEM ─────────────────────────────────────────────────
+//   The module-level SOURCE_CONFIG object captured COLORS at import time, so the
+//   badge tints / glows were frozen to the default (dark) palette and never
+//   recolored on a theme switch. It is now produced by getSourceConfig(), a
+//   function called inside render that reads the LIVE COLORS. The card body
+//   gradient (previously hardcoded ['#14142A','#0F0F22']) now uses
+//   COLORS.gradientCard so it follows the theme too.
+//
+//   The press-scale animated style only touches a shared value — it never reads
+//   COLORS — so it is already worklet-safe.
 
 import React, { useCallback } from 'react';
 import { TouchableOpacity, View, Text } from 'react-native';
@@ -10,7 +21,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons }       from '@expo/vector-icons';
 import Animated, {
   useSharedValue, useAnimatedStyle,
-  withSpring, withTiming,
+  withSpring,
 } from 'react-native-reanimated';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 import { PersonalizedSuggestion } from '../../services/homePersonalizationService';
@@ -20,54 +31,59 @@ interface Props {
   onPress:    (query: string) => void;
 }
 
-// ── Source config ──────────────────────────────────────────────────────────────
+// ── Source config (Part 55.1A: render-time function over live COLORS) ─────────
 
-const SOURCE_CONFIG: Record<string, {
-  badgeBg:    string;
-  badgeText:  string;
-  badgeBorder:string;
-  borderGlow: string;
-  iconBg:     string;
-  dotColor:   string;
-  label:      string;
-}> = {
-  affinity: {
-    badgeBg:     `${COLORS.primary}18`,
-    badgeText:   COLORS.primary,
-    badgeBorder: `${COLORS.primary}35`,
-    borderGlow:  `${COLORS.primary}20`,
-    iconBg:      `${COLORS.primary}15`,
-    dotColor:    COLORS.primary,
-    label:       '★ Your Interest',
-  },
-  recent: {
-    badgeBg:     `${COLORS.info}18`,
-    badgeText:   COLORS.info,
-    badgeBorder: `${COLORS.info}35`,
-    borderGlow:  `${COLORS.info}18`,
-    iconBg:      `${COLORS.info}15`,
-    dotColor:    COLORS.info,
-    label:       '🕐 Recent',
-  },
-  trending: {
-    badgeBg:     `${COLORS.accent}15`,
-    badgeText:   COLORS.accent,
-    badgeBorder: `${COLORS.accent}30`,
-    borderGlow:  `${COLORS.accent}12`,
-    iconBg:      `${COLORS.accent}15`,
-    dotColor:    COLORS.accent,
-    label:       '🔥 Trending',
-  },
-  followup: {
-    badgeBg:     `${COLORS.warning}15`,
-    badgeText:   COLORS.warning,
-    badgeBorder: `${COLORS.warning}30`,
-    borderGlow:  `${COLORS.warning}12`,
-    iconBg:      `${COLORS.warning}15`,
-    dotColor:    COLORS.warning,
-    label:       '💡 Follow-up',
-  },
+type SourceCfg = {
+  badgeBg:     string;
+  badgeText:   string;
+  badgeBorder: string;
+  borderGlow:  string;
+  iconBg:      string;
+  dotColor:    string;
+  label:       string;
 };
+
+function getSourceConfig(source: string): SourceCfg {
+  const map: Record<string, SourceCfg> = {
+    affinity: {
+      badgeBg:     `${COLORS.primary}18`,
+      badgeText:   COLORS.primary,
+      badgeBorder: `${COLORS.primary}35`,
+      borderGlow:  `${COLORS.primary}20`,
+      iconBg:      `${COLORS.primary}15`,
+      dotColor:    COLORS.primary,
+      label:       '★ Your Interest',
+    },
+    recent: {
+      badgeBg:     `${COLORS.info}18`,
+      badgeText:   COLORS.info,
+      badgeBorder: `${COLORS.info}35`,
+      borderGlow:  `${COLORS.info}18`,
+      iconBg:      `${COLORS.info}15`,
+      dotColor:    COLORS.info,
+      label:       '🕐 Recent',
+    },
+    trending: {
+      badgeBg:     `${COLORS.accent}15`,
+      badgeText:   COLORS.accent,
+      badgeBorder: `${COLORS.accent}30`,
+      borderGlow:  `${COLORS.accent}12`,
+      iconBg:      `${COLORS.accent}15`,
+      dotColor:    COLORS.accent,
+      label:       '🔥 Trending',
+    },
+    followup: {
+      badgeBg:     `${COLORS.warning}15`,
+      badgeText:   COLORS.warning,
+      badgeBorder: `${COLORS.warning}30`,
+      borderGlow:  `${COLORS.warning}12`,
+      iconBg:      `${COLORS.warning}15`,
+      dotColor:    COLORS.warning,
+      label:       '💡 Follow-up',
+    },
+  };
+  return map[source] ?? map.trending;
+}
 
 function timeAgo(isoString?: string): string {
   if (!isoString) return '';
@@ -83,7 +99,7 @@ function timeAgo(isoString?: string): string {
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
 export function PersonalizedSuggestionCard({ suggestion, onPress }: Props) {
-  const cfg = SOURCE_CONFIG[suggestion.source] ?? SOURCE_CONFIG.trending;
+  const cfg = getSourceConfig(suggestion.source);
 
   // Press spring
   const scale = useSharedValue(1);
@@ -116,7 +132,7 @@ export function PersonalizedSuggestionCard({ suggestion, onPress }: Props) {
         borderColor:     cfg.badgeBorder,
       }}>
         <LinearGradient
-          colors={['#14142A', '#0F0F22']}
+          colors={COLORS.gradientCard as [string, string]}
           style={{
             borderRadius:  RADIUS.lg,
             padding:       SPACING.md,
