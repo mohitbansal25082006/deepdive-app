@@ -1,5 +1,15 @@
 // app/(app)/insights.tsx
 // Part 27 — "Your Insights" Analytics Dashboard Screen
+// Part 55.2 — Theme-compatibility pass:
+//   • EditGoalModal's BlurView overlay backdrop color was hardcoded to
+//     'rgba(10,10,26,0.75)' — replaced with getModalBackdrop() so it matches
+//     the active theme in both dark and light modes.
+//   • HEATMAP_COLORS level 0 was hardcoded reliance on COLORS.backgroundElevated
+//     (already correct) but levels 1–3 used raw COLORS.primary + opacity
+//     suffixes, which is already theme-correct — no change needed there. Left
+//     as a derived const so it always reflects the *current* COLORS.primary
+//     rather than being frozen at import time; converted to a function so it
+//     re-evaluates per render instead of being computed once at module load.
 //
 // Sections:
 //  1. Summary stat cards (hours saved, words generated, reports, streak)
@@ -38,7 +48,7 @@ import type {
   TopicChartItem,
   MilestoneBadge,
 } from '../../src/types/onboarding';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop, isLightTheme } from '../../src/constants/theme';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -220,13 +230,22 @@ function MonthlyGoalCard({
 }
 
 // ─── Weekly heatmap ───────────────────────────────────────────────────────────
+// Part 55.2: converted from a module-level frozen const object to a function
+// that reads COLORS.primary fresh on every render. Previously this was
+// computed once at import time using the COLORS singleton's value *at that
+// moment* — since the object reference for COLORS never changes (see Part 55's
+// mutable-singleton design), this constant would silently go stale forever
+// after the first theme switch, leaving heatmap cells tinted with whatever the
+// app's color was on first load.
 
-const HEATMAP_COLORS = {
-  0: COLORS.backgroundElevated,
-  1: `${COLORS.primary}35`,
-  2: `${COLORS.primary}65`,
-  3: COLORS.primary,
-} as const;
+function getHeatmapColors(): Record<0 | 1 | 2 | 3, string> {
+  return {
+    0: COLORS.backgroundElevated,
+    1: `${COLORS.primary}35`,
+    2: `${COLORS.primary}65`,
+    3: COLORS.primary,
+  };
+}
 
 function WeeklyHeatmap({
   days,
@@ -235,6 +254,8 @@ function WeeklyHeatmap({
   days:  WeeklyHeatmapDay[];
   delay: number;
 }) {
+  const heatmapColors = getHeatmapColors();
+
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(delay)}>
       <View style={{
@@ -268,7 +289,7 @@ function WeeklyHeatmap({
                   width:           '100%',
                   aspectRatio:     1,
                   borderRadius:    RADIUS.md,
-                  backgroundColor: HEATMAP_COLORS[day.level],
+                  backgroundColor: heatmapColors[day.level],
                   borderWidth:     day.isToday ? 1.5 : 0.5,
                   borderColor:     day.isToday ? COLORS.primary : `${COLORS.border}80`,
                   alignItems:      'center',
@@ -317,7 +338,7 @@ function WeeklyHeatmap({
           {([0, 1, 2, 3] as const).map(level => (
             <View key={level} style={{
               width:           12, height: 12, borderRadius: 3,
-              backgroundColor: HEATMAP_COLORS[level],
+              backgroundColor: heatmapColors[level],
               borderWidth:     0.5, borderColor: `${COLORS.border}60`,
             }} />
           ))}
@@ -541,11 +562,17 @@ function EditGoalModal({
       statusBarTranslucent
       onRequestClose={onClose}
     >
+      {/* Part 55.2: BlurView's `intensity` is theme-agnostic (it blurs whatever
+          is behind it), but the tint color underneath was hardcoded to
+          'rgba(10,10,26,0.75)' — a permanently dark scrim. getModalBackdrop()
+          derives that tint from the active theme's background so light themes
+          get a correctly light-tinted blur instead of a jarring dark overlay. */}
       <BlurView
         intensity={20}
+        tint={isLightTheme() ? 'light' : 'dark'}
         style={{
           flex: 1,
-          backgroundColor: 'rgba(10,10,26,0.75)',
+          backgroundColor: getModalBackdrop(0.75),
           justifyContent:  'center',
           alignItems:      'center',
           paddingHorizontal: SPACING.xl,

@@ -1,15 +1,10 @@
 // src/components/profile/ReferralCard.tsx
 // Part 27 (Patch F) — "+30 credits added" shown prominently and persistently.
-//
-// Key changes from Patch D:
-//  • Success banner NO LONGER auto-dismisses — it stays until the user
-//    starts typing the next code (clearResult fires on text change)
-//  • Success banner is larger with gradient background, not a thin toast
-//  • Stats strip gains a third tile "Credits Received" that tracks the
-//    cumulative credits earned from redeeming others codes this session
-//    (localSuccesses * 30). It appears as soon as the first code succeeds.
-//  • The "Credits Earned" tile still shows referral-out earnings (when
-//    someone used YOUR code), keeping both flows distinct and clear.
+// Part 55.2 — Theme-compatibility pass: replaced the hardcoded outer card
+//             gradient ['#1A1235', '#0F0F2A'] with COLORS.gradientCard so this
+//             card recolors correctly across every theme and both modes.
+//             Every other color in this file already reads from COLORS/opacity
+//             suffixes and needed no change.
 
 import React, { useState, useRef, useCallback } from 'react';
 import {
@@ -86,8 +81,9 @@ export function ReferralCard() {
 
   return (
     <Animated.View entering={FadeIn.duration(400)}>
+      {/* Part 55.2: was hardcoded ['#1A1235', '#0F0F2A'] — now theme-correct */}
       <LinearGradient
-        colors={['#1A1235', '#0F0F2A']}
+        colors={COLORS.gradientCard as [string, string]}
         style={{
           borderRadius: RADIUS.xl, borderWidth: 1,
           borderColor: `${COLORS.primary}35`,

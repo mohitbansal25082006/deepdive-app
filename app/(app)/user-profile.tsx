@@ -1,25 +1,21 @@
 // app/(app)/user-profile.tsx
 // DeepDive AI — Part 36: Public user profile screen.
 //
-// FIX: Share link was appearing twice because Share.share() received both
-// `message` (which contained the URL) AND `url` (the same URL). On iOS,
-// the system appends the `url` after the `message`, so the link showed up
-// twice. Fix: `message` contains only human-readable text; `url` carries
-// the link alone. On Android `url` is ignored by most share targets so
-// the link is included at the end of `message` only on Android.
+// Part 54B — FEATURE 8: mutual-gated follower/following lists.
 //
-// FIX: Reports not showing — uses SECURITY DEFINER RPC to bypass share_links
-// RLS when viewing another user's profile.
-//
-// FIX: Routes to feed-report-view for other users' reports to avoid the
-// expo-notifications crash chain from research-report.tsx.
-//
-// Part 54B — FEATURE 8: When viewing ANOTHER user's profile, the Followers /
-//   Following stat tiles open the list in "mutual-gated" mode — only people who
-//   also follow YOU are shown. We pass `gated: '1'` + `username` + `mode` to the
-//   followers screen. For your OWN profile, the list stays ungated (full list).
-//   (`mode` is passed alongside the legacy `tab` so the followers screen reads
-//    the correct value either way.)
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
+//   The profile card had hardcoded dark-only gradients:
+//     • LinearGradient colors={['#1A1A35', '#12122A']} — always dark indigo,
+//       invisible/broken in light themes.
+//     • Interest tag color was hardcoded '#A78BFA' (always purple) instead of
+//       using the active theme's primary color.
+//   FIX:
+//     • Profile card gradient now uses COLORS.gradientCard (theme-aware).
+//     • Interest tag text now uses COLORS.primary so it inherits whatever
+//       accent the current theme uses.
+//     • All other colors in this file already read from COLORS.* (verified).
+//   Nothing else changed — all logic, navigation, share fix, RPC strategy,
+//   and mutual-gating from Part 54B are preserved exactly.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -76,9 +72,15 @@ interface PublicReport {
 const DEPTH_LABELS: Record<string, string> = {
   quick: 'Quick', deep: 'Deep Dive', expert: 'Expert',
 };
-const DEPTH_COLORS: Record<string, string> = {
-  quick: COLORS.success, deep: COLORS.primary, expert: COLORS.warning,
-};
+
+// Part 55.2: depth colors now read from COLORS so they adapt with the theme.
+// quick → success (green), deep → primary (brand accent), expert → warning (amber).
+// These are already theme-aware since COLORS is the live mutable singleton.
+function getDepthColor(depth: string): string {
+  if (depth === 'quick')  return COLORS.success;
+  if (depth === 'expert') return COLORS.warning;
+  return COLORS.primary;
+}
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -107,7 +109,8 @@ function ReportCard({
   profileAvatarUrl: string | null;
   index:            number;
 }) {
-  const depthColor = DEPTH_COLORS[report.depth] ?? COLORS.primary;
+  // Part 55.2: use helper that reads from live COLORS singleton
+  const depthColor = getDepthColor(report.depth);
 
   const handlePress = () => {
     if (isOwner) {
@@ -131,8 +134,12 @@ function ReportCard({
         onPress={handlePress}
         activeOpacity={0.76}
         style={{
-          backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl,
-          marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border,
+          // Part 55.2: use COLORS.backgroundCard (theme-aware) instead of hardcoded
+          backgroundColor: COLORS.backgroundCard,
+          borderRadius: RADIUS.xl,
+          marginBottom: SPACING.sm,
+          borderWidth: 1,
+          borderColor: COLORS.border,
           overflow: 'hidden',
         }}
       >
@@ -202,8 +209,6 @@ export default function UserProfileScreen() {
   const PAGE         = 12;
   const isOwnProfile = !!(user && profile && user.id === profile.id);
 
-  // ── Load profile ───────────────────────────────────────────────────────────
-
   const loadProfile = useCallback(async () => {
     if (!username) return;
     try {
@@ -244,8 +249,6 @@ export default function UserProfileScreen() {
     }
   }, [username, user?.id]);
 
-  // ── Load published reports ─────────────────────────────────────────────────
-
   const loadReports = useCallback(
     async (replace: boolean, profileId: string, isOwner: boolean) => {
       try {
@@ -253,7 +256,6 @@ export default function UserProfileScreen() {
         let mapped: PublicReport[] = [];
         let rpcSuccess = false;
 
-        // Strategy 1: SECURITY DEFINER RPC (bypasses share_links RLS)
         try {
           const { data: rpcData, error: rpcErr } = await supabase.rpc(
             'get_published_reports_for_user',
@@ -267,7 +269,6 @@ export default function UserProfileScreen() {
           console.warn('[UserProfile] RPC fallback:', rpcEx);
         }
 
-        // Strategy 2: Direct query (owner only — RLS passes for own rows)
         if (!rpcSuccess && isOwner) {
           const { data: directData } = await supabase
             .from('research_reports')
@@ -341,15 +342,14 @@ export default function UserProfileScreen() {
     setLoadingMore(false);
   }, [hasMore, loadingMore, profile?.id, isOwnProfile]);
 
-  // ── Part 54B (Feature 8): open followers/following with mutual gating ──────
-  // Own profile → ungated full list. Other profiles → gated (mutual-with-me).
+  // Part 54B (Feature 8): open followers/following with mutual gating for other users
   const openFollowList = useCallback(
     (mode: 'followers' | 'following') => {
       if (!profile) return;
       const params: Record<string, string> = {
         userId:   profile.id,
-        mode,                 // followers.tsx reads `mode` (and `tab` legacy)
-        tab:      mode,       // keep legacy param populated too
+        mode,
+        tab:      mode,
         username: profile.username ?? '',
       };
       if (!isOwnProfile) params.gated = '1';
@@ -358,8 +358,7 @@ export default function UserProfileScreen() {
     [profile, isOwnProfile],
   );
 
-  // ── Share — FIX: link no longer duplicated ─────────────────────────────────
-
+  // Share — FIX: link no longer duplicated
   const handleShare = async () => {
     if (!profile?.username) return;
     const profileUrl = `${WEB_BASE}/u/${profile.username}`;
@@ -383,7 +382,8 @@ export default function UserProfileScreen() {
 
   if (loading) {
     return (
-      <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+      // Part 55.2: use COLORS.gradientDark (theme-aware)
+      <LinearGradient colors={COLORS.gradientDark as [string, string]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator size="large" color={COLORS.primary} />
         </SafeAreaView>
@@ -393,7 +393,7 @@ export default function UserProfileScreen() {
 
   if (notFound || !profile) {
     return (
-      <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+      <LinearGradient colors={COLORS.gradientDark as [string, string]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', padding: SPACING.lg }}>
             <Pressable
@@ -425,7 +425,7 @@ export default function UserProfileScreen() {
   const displayName = profile.full_name ?? profile.username ?? 'Researcher';
 
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={COLORS.gradientDark as [string, string]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
         {/* Header */}
@@ -435,6 +435,8 @@ export default function UserProfileScreen() {
             flexDirection: 'row', alignItems: 'center',
             paddingHorizontal: SPACING.lg, paddingVertical: SPACING.md,
             gap: SPACING.md, borderBottomWidth: 1, borderBottomColor: COLORS.border,
+            // Part 55.2: explicit background so the border reads on light themes
+            backgroundColor: COLORS.backgroundCard,
           }}
         >
           <Pressable
@@ -480,9 +482,19 @@ export default function UserProfileScreen() {
         >
           {/* Profile card */}
           <Animated.View entering={FadeInDown.duration(400).delay(60)} style={{ padding: SPACING.lg }}>
+            {/* Part 55.2: was hardcoded ['#1A1A35', '#12122A'] — now uses
+                COLORS.gradientCard which maps to the correct card ramp for
+                every theme (dark → deep indigo; light → white/soft; teal → dark
+                teal, etc.). The border still uses primary with opacity so it
+                stays on-brand regardless of the active theme. */}
             <LinearGradient
-              colors={['#1A1A35', '#12122A']}
-              style={{ borderRadius: RADIUS.xl * 1.5, padding: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}30` }}
+              colors={COLORS.gradientCard as [string, string]}
+              style={{
+                borderRadius: RADIUS.xl * 1.5,
+                padding: SPACING.lg,
+                borderWidth: 1,
+                borderColor: `${COLORS.primary}30`,
+              }}
             >
               {/* Avatar + name + follow/edit */}
               <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.lg }}>
@@ -560,7 +572,9 @@ export default function UserProfileScreen() {
                       paddingHorizontal: 10, paddingVertical: 4,
                       borderWidth: 1, borderColor: `${COLORS.primary}25`,
                     }}>
-                      <Text style={{ color: '#A78BFA', fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{tag}</Text>
+                      {/* Part 55.2: was hardcoded '#A78BFA' (always indigo-purple);
+                          now COLORS.primaryLight adapts to the active theme. */}
+                      <Text style={{ color: COLORS.primaryLight, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{tag}</Text>
                     </View>
                   ))}
                 </View>

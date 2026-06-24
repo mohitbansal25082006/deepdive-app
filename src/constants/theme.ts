@@ -1,6 +1,12 @@
 // src/constants/theme.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // Part 55 — App-wide Theme System (runtime engine)
+// Part 55.2 — Added derived, theme-aware decoration helpers (getModalBackdrop,
+//             getStickyBarBackdrop) used to remove hardcoded dark-only hex
+//             literals from Profile, CacheManagerModal, Insights, and
+//             Credits Store. These are pure functions — NOT new palette
+//             fields — so none of the 12 palette definitions in themes.ts
+//             need to change shape.
 //
 // WHY THIS FILE LOOKS DIFFERENT NOW (but is 100% backward compatible)
 //   Before Part 55, COLORS / SHADOWS were plain frozen-ish objects with a single
@@ -228,4 +234,55 @@ export function applyTheme(id: string, mode: ThemeMode): ThemePalette {
   activeThemeId   = safeId;
   activeThemeMode = mode;
   return palette;
+}
+
+// ─── Part 55.2 — Derived, theme-aware decoration helpers ──────────────────────
+// Pure functions (NOT stored palette properties) that read the live COLORS
+// singleton fresh on every call. Introducing these as functions — rather than
+// new fields on ThemePalette — means none of the 12 palette definitions in
+// themes.ts need to be touched, and the change surface stays minimal.
+//
+// Use these in place of any hardcoded 'rgba(10,10,26,0.x)'-style literal that
+// was previously assuming a permanently-dark background.
+
+function hexToRgbTriplet(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace('#', '');
+  const full =
+    clean.length === 3
+      ? clean.split('').map(c => c + c).join('')
+      : clean;
+  const r = parseInt(full.substring(0, 2), 16) || 0;
+  const g = parseInt(full.substring(2, 4), 16) || 0;
+  const b = parseInt(full.substring(4, 6), 16) || 0;
+  return { r, g, b };
+}
+
+/**
+ * A modal/sheet/backdrop scrim tinted with the active theme's background color.
+ * Works correctly in both dark and light themes — dark themes produce a deep
+ * near-black scrim (as before), light themes produce a softer scrim that still
+ * reads as "dimmed" without looking muddy or mismatched.
+ *
+ * Replaces hardcoded literals like 'rgba(10,10,26,0.75)'.
+ */
+export function getModalBackdrop(opacity: number = 0.72): string {
+  const { r, g, b } = hexToRgbTriplet(COLORS.background);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+/**
+ * A near-opaque variant tuned for sticky headers/bars that need to occlude
+ * scrolled content cleanly behind them (e.g. Profile's collapsing sticky bar).
+ */
+export function getStickyBarBackdrop(opacity: number = 0.97): string {
+  return getModalBackdrop(opacity);
+}
+
+/**
+ * Two-stop gradient for hero/aurora backgrounds, derived from the theme's own
+ * background + primary tones so the glow always matches the active theme
+ * instead of being hardcoded to indigo/purple.
+ */
+export function getAuroraGradient(): [string, string] {
+  return [COLORS.backgroundElevated, COLORS.background];
 }

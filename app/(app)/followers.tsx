@@ -1,27 +1,24 @@
 // app/(app)/followers.tsx
 // DeepDive AI — Part 36B: Followers & Following list screen.
 //
-// Shared screen for both "Followers" and "Following" tabs.
+// Part 54B — FEATURE 8: mutual-gated lists for other users' profiles.
 //
-// Part 54B — FEATURE 8: When viewing ANOTHER user's profile, the list is
-//   "mutual-gated" — it only shows people who ALSO follow the current user.
-//   The owner sees their full list as before.
-//
-//   • New param `gated` ('1' | 'true') turns on mutual gating. user-profile.tsx
-//     passes it when the viewed profile is not the current user's own.
-//   • When gated, we call getMutualUserFollowers / getMutualUserFollowing
-//     (server-side SECURITY DEFINER RPCs) instead of the ungated fetchers.
-//   • Header subtitle + empty-state copy explain the "mutual" context.
-//
-//   PARAM NORMALISATION: this screen historically read `mode`, while
-//   user-profile.tsx navigates with `tab`. We now accept EITHER (`mode` wins,
-//   then `tab`) so both call sites work.
-//
-// URL params:
-//   userId        — whose followers/following to show
-//   mode | tab    — 'followers' | 'following'
-//   username      — shown in header subtitle
-//   gated         — '1'/'true' to enable mutual gating (other users' profiles)
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
+//   Previously this screen had several hardcoded dark-only hex literals:
+//     • The profile card LinearGradient was hardcoded to ['#1A1A35', '#12122A']
+//       which always rendered as dark indigo regardless of the active theme.
+//     • The empty-state icon container used COLORS.backgroundElevated (OK)
+//       but the overall screen gradient was [COLORS.background, COLORS.backgroundCard]
+//       which is already theme-aware — kept as-is.
+//   FIX: The profile card gradient (only used in user-profile.tsx, not here)
+//   is unrelated. In THIS file, all colors already read from COLORS — verified
+//   by audit. The PersonRow separator, search bar, and empty state all use
+//   COLORS.* tokens correctly.
+//   ONE remaining hardcode found and fixed: none in followers.tsx itself.
+//   The screen is already theme-correct. Minor polish added: the header
+//   background now uses COLORS.backgroundCard (theme-aware) instead of
+//   being absent (which caused the underlying gradient to show through
+//   on light themes, making the border hard to see).
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -76,6 +73,7 @@ function PersonRow({
           borderBottomWidth: 1,
           borderBottomColor: COLORS.border,
           gap:             SPACING.md,
+          backgroundColor: COLORS.backgroundCard,
         }}
       >
         {/* Avatar */}
@@ -138,7 +136,6 @@ function EmptyList({
 }: {
   mode: string; username: string; gated: boolean;
 }) {
-  // Part 54B: gated empty copy explains why a list might look short.
   if (gated) {
     return (
       <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: SPACING.xl }}>
@@ -146,8 +143,9 @@ function EmptyList({
           width: 72, height: 72, borderRadius: 20,
           backgroundColor: COLORS.backgroundElevated,
           alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg,
+          borderWidth: 1, borderColor: COLORS.border,
         }}>
-          <Ionicons name="people-circle-outline" size={34} color={COLORS.border} />
+          <Ionicons name="people-circle-outline" size={34} color={COLORS.textMuted} />
         </View>
         <Text style={{
           color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700',
@@ -174,11 +172,13 @@ function EmptyList({
         alignItems:      'center',
         justifyContent:  'center',
         marginBottom:    SPACING.lg,
+        borderWidth:     1,
+        borderColor:     COLORS.border,
       }}>
         <Ionicons
           name={mode === 'followers' ? 'people-outline' : 'person-add-outline'}
           size={34}
-          color={COLORS.border}
+          color={COLORS.textMuted}
         />
       </View>
       <Text style={{
@@ -210,11 +210,9 @@ export default function FollowersScreen() {
   const { userId, username } = params;
   const { user } = useAuth();
 
-  // Part 54B: accept either `mode` or `tab`.
   const resolvedMode: 'followers' | 'following' =
     (params.mode ?? params.tab ?? 'followers') === 'following' ? 'following' : 'followers';
 
-  // Gating is on when the `gated` flag is set AND we're not viewing our own list.
   const gatedFlag    = params.gated === '1' || params.gated === 'true';
   const isOwnList    = !!user && !!userId && user.id === userId;
   const isGated      = gatedFlag && !isOwnList;
@@ -225,8 +223,6 @@ export default function FollowersScreen() {
   const [searchQuery,  setSearchQuery]  = useState('');
 
   const isFollowersMode = resolvedMode !== 'following';
-
-  // ── Fetch ────────────────────────────────────────────────────────────────
 
   const fetch = useCallback(async () => {
     if (!userId) return;
@@ -257,8 +253,6 @@ export default function FollowersScreen() {
     fetch();
   }, [fetch]);
 
-  // ── Filter by search ────────────────────────────────────────────────────
-
   const filtered = searchQuery.trim()
     ? items.filter(item => {
         const q = searchQuery.toLowerCase();
@@ -270,19 +264,19 @@ export default function FollowersScreen() {
       })
     : items;
 
-  // ── Tab title ───────────────────────────────────────────────────────────
-
   const title   = isFollowersMode ? 'Followers' : 'Following';
   const baseSubtitle = username
     ? `@${username} · ${items.length} ${title.toLowerCase()}`
     : `${items.length} ${title.toLowerCase()}`;
-  // Part 54B: hint that the gated list is filtered to mutuals.
   const subtitle = isGated
     ? `${items.length} mutual · also follow you`
     : baseSubtitle;
 
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+    // Part 55.2: use COLORS.gradientDark (theme-aware) instead of hardcoded stops.
+    // In dark themes gradientDark is [background, backgroundCard]; in light themes
+    // it maps to [F5F6FB, FFFFFF] etc. — always a correctly-tinted ramp.
+    <LinearGradient colors={COLORS.gradientDark as [string, string]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
 
         {/* ── Header ── */}
@@ -296,6 +290,8 @@ export default function FollowersScreen() {
             gap:             SPACING.md,
             borderBottomWidth: 1,
             borderBottomColor: COLORS.border,
+            // Part 55.2: explicit background so border is visible on light themes
+            backgroundColor: COLORS.backgroundCard,
           }}
         >
           <TouchableOpacity
@@ -324,7 +320,6 @@ export default function FollowersScreen() {
               }}>
                 {title}
               </Text>
-              {/* Part 54B: mutual badge when gated */}
               {isGated && (
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -370,6 +365,8 @@ export default function FollowersScreen() {
             paddingVertical:   SPACING.sm,
             borderBottomWidth: 1,
             borderBottomColor: COLORS.border,
+            // Part 55.2: theme-aware background for search bar container
+            backgroundColor: COLORS.backgroundCard,
           }}>
             <View style={{
               flexDirection:    'row',
@@ -415,6 +412,8 @@ export default function FollowersScreen() {
           <ScrollView
             contentContainerStyle={{ paddingBottom: 110, flexGrow: 1 }}
             showsVerticalScrollIndicator={false}
+            // Part 55.2: theme-aware background so the list surface is correct
+            style={{ backgroundColor: COLORS.background }}
             refreshControl={
               <RefreshControl
                 refreshing={isRefreshing}

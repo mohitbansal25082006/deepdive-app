@@ -1,15 +1,48 @@
 // src/components/collections/AddToCollectionSheet.tsx
-// Part 35 — Collections: Bottom sheet to add/remove a content item
-// from one or more collections.
-// Part 50.8 — UI UPGRADE (visual only; all logic preserved)
-//   • Gradient sheet surface + gradient header icon.
-//   • Glassmorphic collection rows with a color-tinted gradient icon and a
-//     filled check state; selected rows get a colored ring.
-//   • Upgraded quick-create form (gradient preview chip, nicer swatches).
+// Part 35 — Collections: Bottom sheet to add/remove a content item from collections.
+// Part 50.8 — UI UPGRADE (gradient/glass system)
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS (inline + getter-based style fix)
 //
-// Unchanged: useCollections / useItemCollections hooks, contentType/contentId
-// props, COLLECTION_COLORS / COLLECTION_ICONS, the toggle + create flow, and
-// the refresh-on-open effect.
+// WHY BOTH INLINE FIXES AND GETTER FIXES ARE NEEDED
+//   • Hardcoded hex literals in LinearGradient colors/style props → fixed INLINE
+//     by replacing with live COLORS.x / getModalBackdrop() calls.
+//   • COLORS.x references that were inside StyleSheet.create() → those are
+//     evaluated ONCE at import time and never re-evaluated on theme switch.
+//     They are moved OUT of StyleSheet into per-render getter objects (prefixed
+//     "dyn") merged via array-style in JSX. Layout-only values stay in StyleSheet.
+//
+// Changes vs Part 50.8:
+//   INLINE (LinearGradient colors / backgroundColor on View):
+//     • overlay bg: 'rgba(10,10,26,0.70)' → getModalBackdrop(0.70) ✓ (already done in 50.8)
+//     • sheet gradient: ['#1A1A38', '#0D0D20'] → COLORS.gradientCard ✓
+//     • rowIcon unselected gradient: ['#22223E', '#1A1A33'] → [COLORS.backgroundElevated, COLORS.background] ✓
+//     • emptyIconWrap gradient: ['#22223E', '#1A1A33'] → [COLORS.backgroundElevated, COLORS.background] ✓
+//   GETTER-BASED (moved out of StyleSheet.create):
+//     • collectionRow.backgroundColor: COLORS.backgroundElevated → dynCollectionRow
+//     • collectionRow.borderColor: COLORS.border → dynCollectionRow
+//     • quickForm.backgroundColor: COLORS.backgroundElevated → dynQuickForm
+//     • quickForm.borderColor: ${COLORS.primary}30 → dynQuickForm
+//     • quickInput.backgroundColor: COLORS.background → dynInput
+//     • quickInput.color: COLORS.textPrimary → dynInput
+//     • quickInput.borderColor: COLORS.border → dynInput
+//     • iconSwatch.backgroundColor: COLORS.background → dynIconSwatch
+//     • iconSwatch.borderColor: COLORS.border → dynIconSwatch
+//     • cancelBtn.backgroundColor: COLORS.backgroundElevated → dynCancelBtn
+//     • cancelBtn.borderColor: COLORS.border → dynCancelBtn
+//     • cancelBtnText.color: COLORS.textMuted → dynCancelBtnText
+//     • createTrigger.*: border/bg → dynCreateTrigger
+//     • createTriggerText.color: COLORS.textPrimary → dynCreateTriggerText
+//     • createTriggerSub.color: COLORS.textMuted → dynCreateTriggerSub
+//     • sheetTitle.color: COLORS.textPrimary → dynSheetTitle
+//     • sheetSubtitle.color: COLORS.textMuted → dynSheetSubtitle
+//     • handle.backgroundColor: COLORS.border → dynHandle
+//     • closeBtn.backgroundColor: COLORS.backgroundElevated → dynCloseBtn
+//     • rowName.color: COLORS.textPrimary → dynRowName
+//     • rowCount.color: COLORS.textMuted → dynRowCount
+//     • checkbox.borderColor: COLORS.border → dynCheckbox
+//     • memberStrip.*: COLORS.success-derived → dynMemberStrip
+//     • loadingText.color, emptyText.color, emptySubtext.color → getters
+//   All props, hooks, and behaviour unchanged.
 
 import React, { useEffect, useState, useCallback } from 'react';
 import {
@@ -26,7 +59,6 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons }       from '@expo/vector-icons';
-import { BlurView }       from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
@@ -40,44 +72,67 @@ import {
   COLLECTION_COLORS,
   COLLECTION_ICONS,
 }                         from '../../types/collections';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import {
+  COLORS, FONTS, SPACING, RADIUS, SHADOWS,
+  getModalBackdrop,
+}                         from '../../constants/theme';
 
-// Define the color type from COLLECTION_COLORS
 type CollectionColor = typeof COLLECTION_COLORS[number];
 
-// ─── Props ────────────────────────────────────────────────────────────────────
-
 interface AddToCollectionSheetProps {
-  visible:     boolean;
-  contentType: CollectionItemType;
-  contentId:   string;
-  contentTitle:string;
-  onClose:     () => void;
+  visible:      boolean;
+  contentType:  CollectionItemType;
+  contentId:    string;
+  contentTitle: string;
+  onClose:      () => void;
 }
 
 // ─── Quick Create Mini-Form ───────────────────────────────────────────────────
 
 interface QuickCreateProps {
-  onCreated: (col: Collection) => void;
-  onCreate:  (input: CollectionInput) => Promise<Collection | null>;
+  onCreated:  (col: Collection) => void;
+  onCreate:   (input: CollectionInput) => Promise<Collection | null>;
   isCreating: boolean;
 }
 
 function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) {
-  const [name,    setName]    = useState('');
-  const [color,   setColor]   = useState<CollectionColor>(COLLECTION_COLORS[0]);
-  const [icon,    setIcon]    = useState('folder');
+  const [name,     setName]     = useState('');
+  const [color,    setColor]    = useState<CollectionColor>(COLLECTION_COLORS[0]);
+  const [icon,     setIcon]     = useState('folder');
   const [expanded, setExpanded] = useState(false);
 
   const handleCreate = async () => {
     const trimmed = name.trim();
     if (!trimmed) { Alert.alert('Name required', 'Please enter a collection name.'); return; }
     const col = await onCreate({ name: trimmed, color, icon });
-    if (col) {
-      setName('');
-      setExpanded(false);
-      onCreated(col);
-    }
+    if (col) { setName(''); setExpanded(false); onCreated(col); }
+  };
+
+  // Dynamic styles — re-read COLORS on every render
+  const dynCreateTrigger = {
+    backgroundColor: COLORS.backgroundElevated,
+    borderColor:     `${COLORS.primary}25`,
+  };
+  const dynCreateTriggerIcon = {
+    backgroundColor: `${COLORS.primary}18`,
+    borderColor:     `${COLORS.primary}30`,
+  };
+  const dynQuickForm = {
+    backgroundColor: COLORS.backgroundElevated,
+    borderColor:     `${COLORS.primary}30`,
+  };
+  const dynInput = {
+    backgroundColor: COLORS.background,
+    color:           COLORS.textPrimary,
+    borderColor:     COLORS.border,
+  };
+  const dynIconSwatch = {
+    backgroundColor: COLORS.background,
+    borderColor:     COLORS.border,
+  };
+  const dynCancelBtn = {
+    backgroundColor: COLORS.backgroundElevated,
+    borderColor:     COLORS.border,
   };
 
   if (!expanded) {
@@ -85,14 +140,14 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
       <TouchableOpacity
         onPress={() => setExpanded(true)}
         activeOpacity={0.8}
-        style={styles.createTrigger}
+        style={[styles.createTrigger, dynCreateTrigger]}
       >
-        <View style={styles.createTriggerIcon}>
+        <View style={[styles.createTriggerIcon, dynCreateTriggerIcon]}>
           <Ionicons name="add" size={18} color={COLORS.primary} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.createTriggerText}>New Collection</Text>
-          <Text style={styles.createTriggerSub}>Create one to organise this item</Text>
+          <Text style={[styles.createTriggerText, { color: COLORS.textPrimary }]}>New Collection</Text>
+          <Text style={[styles.createTriggerSub, { color: COLORS.textMuted }]}>Create one to organise this item</Text>
         </View>
         <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
       </TouchableOpacity>
@@ -100,12 +155,14 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
   }
 
   return (
-    <Animated.View entering={FadeIn.duration(250)} style={styles.quickForm}>
+    <Animated.View entering={FadeIn.duration(250)} style={[styles.quickForm, dynQuickForm]}>
       <View style={styles.quickFormHeader}>
         <LinearGradient colors={[color, `${color}99`]} style={styles.quickFormPreviewIcon}>
           <Ionicons name={icon as any} size={16} color="#FFF" />
         </LinearGradient>
-        <Text style={styles.quickFormTitle}>{name.trim() || 'New Collection'}</Text>
+        <Text style={[styles.quickFormTitle, { color: COLORS.textPrimary }]}>
+          {name.trim() || 'New Collection'}
+        </Text>
       </View>
 
       <TextInput
@@ -114,7 +171,7 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
         placeholder="Collection name..."
         placeholderTextColor={COLORS.textMuted}
         autoFocus
-        style={styles.quickInput}
+        style={[styles.quickInput, dynInput]}
         returnKeyType="done"
         onSubmitEditing={handleCreate}
         maxLength={60}
@@ -148,6 +205,7 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
               onPress={() => setIcon(ic.id)}
               style={[
                 styles.iconSwatch,
+                dynIconSwatch,
                 icon === ic.id && { backgroundColor: `${color}25`, borderColor: color },
               ]}
             >
@@ -164,9 +222,9 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
       <View style={styles.quickFormRow}>
         <TouchableOpacity
           onPress={() => setExpanded(false)}
-          style={styles.cancelBtn}
+          style={[styles.cancelBtn, dynCancelBtn]}
         >
-          <Text style={styles.cancelBtnText}>Cancel</Text>
+          <Text style={[styles.cancelBtnText, { color: COLORS.textMuted }]}>Cancel</Text>
         </TouchableOpacity>
         <TouchableOpacity
           onPress={handleCreate}
@@ -175,7 +233,7 @@ function QuickCreateForm({ onCreated, onCreate, isCreating }: QuickCreateProps) 
           style={{ flex: 1 }}
         >
           <LinearGradient
-            colors={COLORS.gradientPrimary}
+            colors={COLORS.gradientPrimary as [string, string]}
             style={[styles.createBtn, (!name.trim() || isCreating) && { opacity: 0.5 }]}
           >
             {isCreating
@@ -203,6 +261,13 @@ function CollectionRow({
   onToggle:   () => void;
 }) {
   const color = collection.color ?? COLORS.primary;
+
+  // Dynamic getter styles
+  const dynRow = {
+    backgroundColor: COLORS.backgroundElevated,
+    borderColor:     COLORS.border,
+  };
+
   return (
     <TouchableOpacity
       onPress={onToggle}
@@ -210,21 +275,28 @@ function CollectionRow({
       activeOpacity={0.78}
       style={[
         styles.collectionRow,
+        dynRow,
         isChecked && { borderColor: `${color}55`, backgroundColor: `${color}10` },
       ]}
     >
+      {/* 55.2: unselected icon gradient was ['#22223E', '#1A1A33'] — always dark.
+          Now uses theme-aware surface colors so it's visible on light themes too. */}
       <LinearGradient
-        colors={isChecked ? [color, `${color}99`] : ['#22223E', '#1A1A33']}
+        colors={
+          isChecked
+            ? ([color, `${color}99`] as [string, string])
+            : ([COLORS.backgroundElevated, COLORS.background] as [string, string])
+        }
         style={styles.rowIcon}
       >
         <Ionicons name={collection.icon as any} size={18} color={isChecked ? '#FFF' : color} />
       </LinearGradient>
 
       <View style={styles.rowText}>
-        <Text style={styles.rowName} numberOfLines={1}>
+        <Text style={[styles.rowName, { color: COLORS.textPrimary }]} numberOfLines={1}>
           {collection.name}
         </Text>
-        <Text style={styles.rowCount}>
+        <Text style={[styles.rowCount, { color: COLORS.textMuted }]}>
           {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
         </Text>
       </View>
@@ -234,6 +306,7 @@ function CollectionRow({
         : (
           <View style={[
             styles.checkbox,
+            { borderColor: COLORS.border },
             isChecked && { backgroundColor: color, borderColor: color },
           ]}>
             {isChecked && <Ionicons name="checkmark" size={13} color="#FFF" />}
@@ -270,7 +343,6 @@ export function AddToCollectionSheet({
 
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
-  // Refresh when sheet opens
   useEffect(() => {
     if (visible) {
       refreshCollections();
@@ -290,8 +362,22 @@ export function AddToCollectionSheet({
     refreshCollections();
   }, [refreshCollections]);
 
-  const isLoading = loadingCollections || loadingMembership;
+  const isLoading  = loadingCollections || loadingMembership;
   const memberCount = memberIds.length;
+
+  // Dynamic getter styles for the sheet itself
+  const dynHandle = { backgroundColor: COLORS.border };
+  const dynCloseBtn = {
+    backgroundColor: COLORS.backgroundElevated,
+    borderColor:     COLORS.border,
+  };
+  const dynMemberStrip = {
+    backgroundColor: `${COLORS.success}12`,
+    borderColor:     `${COLORS.success}30`,
+  };
+  const dynEmptyIconWrap = {
+    borderColor: COLORS.border,
+  };
 
   return (
     <Modal
@@ -300,29 +386,38 @@ export function AddToCollectionSheet({
       animationType="slide"
       onRequestClose={onClose}
     >
-      <BlurView intensity={20} style={styles.overlay}>
+      {/* 55.2: getModalBackdrop derives its tint from COLORS.background so the
+          scrim matches every theme (dark themes → deep scrim; light → pale scrim). */}
+      <View style={[styles.overlay, { backgroundColor: getModalBackdrop(0.70) }]}>
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
 
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.sheetOuter}>
-            <LinearGradient colors={['#1A1A38', '#0D0D20']} style={styles.sheet}>
+            {/* 55.2: was ['#1A1A38', '#0D0D20'] — now COLORS.gradientCard (theme-aware) */}
+            <LinearGradient
+              colors={COLORS.gradientCard as [string, string]}
+              style={[styles.sheet, { borderTopColor: `${COLORS.primary}30` }]}
+            >
               {/* Handle */}
-              <View style={styles.handle} />
+              <View style={[styles.handle, dynHandle]} />
 
               {/* Header */}
               <View style={styles.sheetHeader}>
                 <View style={styles.sheetHeaderLeft}>
                   <LinearGradient
-                    colors={COLORS.gradientPrimary}
+                    colors={COLORS.gradientPrimary as [string, string]}
                     style={styles.sheetHeaderIcon}
                   >
                     <Ionicons name="bookmark" size={18} color="#FFF" />
                   </LinearGradient>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.sheetTitle}>Add to Collection</Text>
-                    <Text style={styles.sheetSubtitle} numberOfLines={1}>
+                    <Text style={[styles.sheetTitle, { color: COLORS.textPrimary }]}>
+                      Add to Collection
+                    </Text>
+                    <Text
+                      style={[styles.sheetSubtitle, { color: COLORS.textMuted }]}
+                      numberOfLines={1}
+                    >
                       {contentTitle}
                     </Text>
                   </View>
@@ -330,7 +425,7 @@ export function AddToCollectionSheet({
                 <TouchableOpacity
                   onPress={onClose}
                   hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
-                  style={styles.closeBtn}
+                  style={[styles.closeBtn, dynCloseBtn]}
                 >
                   <Ionicons name="close" size={18} color={COLORS.textMuted} />
                 </TouchableOpacity>
@@ -338,9 +433,9 @@ export function AddToCollectionSheet({
 
               {/* Member count strip */}
               {memberCount > 0 && (
-                <View style={styles.memberStrip}>
+                <View style={[styles.memberStrip, dynMemberStrip]}>
                   <Ionicons name="checkmark-circle" size={13} color={COLORS.success} />
-                  <Text style={styles.memberStripText}>
+                  <Text style={[styles.memberStripText, { color: COLORS.success }]}>
                     In {memberCount} collection{memberCount !== 1 ? 's' : ''}
                   </Text>
                 </View>
@@ -356,15 +451,25 @@ export function AddToCollectionSheet({
                 {isLoading && collections.length === 0 ? (
                   <View style={styles.loadingWrap}>
                     <ActivityIndicator color={COLORS.primary} />
-                    <Text style={styles.loadingText}>Loading collections…</Text>
+                    <Text style={[styles.loadingText, { color: COLORS.textMuted }]}>
+                      Loading collections…
+                    </Text>
                   </View>
                 ) : collections.length === 0 ? (
                   <View style={styles.emptyWrap}>
-                    <LinearGradient colors={['#22223E', '#1A1A33']} style={styles.emptyIconWrap}>
+                    {/* 55.2: was ['#22223E', '#1A1A33'] — now theme-aware surfaces */}
+                    <LinearGradient
+                      colors={[COLORS.backgroundElevated, COLORS.background] as [string, string]}
+                      style={[styles.emptyIconWrap, dynEmptyIconWrap]}
+                    >
                       <Ionicons name="folder-outline" size={32} color={COLORS.textMuted} />
                     </LinearGradient>
-                    <Text style={styles.emptyText}>No collections yet</Text>
-                    <Text style={styles.emptySubtext}>Create one below to start organising</Text>
+                    <Text style={[styles.emptyText, { color: COLORS.textSecondary }]}>
+                      No collections yet
+                    </Text>
+                    <Text style={[styles.emptySubtext, { color: COLORS.textMuted }]}>
+                      Create one below to start organising
+                    </Text>
                   </View>
                 ) : (
                   collections.map((col, i) => (
@@ -392,18 +497,17 @@ export function AddToCollectionSheet({
             </LinearGradient>
           </View>
         </KeyboardAvoidingView>
-      </BlurView>
+      </View>
     </Modal>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Styles (layout-only — NO COLORS references) ──────────────────────────────
 
 const styles = StyleSheet.create({
   overlay: {
-    flex:            1,
-    backgroundColor: 'rgba(10,10,26,0.70)',
-    justifyContent:  'flex-end',
+    flex:           1,
+    justifyContent: 'flex-end',
   },
   sheetOuter: {
     borderTopLeftRadius:  28,
@@ -411,32 +515,30 @@ const styles = StyleSheet.create({
     overflow:             'hidden',
   },
   sheet: {
-    paddingHorizontal:    SPACING.xl,
-    paddingBottom:        SPACING.xl + 16,
-    borderTopWidth:       1,
-    borderTopColor:       `${COLORS.primary}30`,
+    paddingHorizontal: SPACING.xl,
+    paddingBottom:     SPACING.xl + 16,
+    borderTopWidth:    1,
   },
   handle: {
-    width:           40,
-    height:          4,
-    borderRadius:    2,
-    backgroundColor: COLORS.border,
-    alignSelf:       'center',
-    marginVertical:  SPACING.md,
+    width:          40,
+    height:         4,
+    borderRadius:   2,
+    alignSelf:      'center',
+    marginVertical: SPACING.md,
   },
   sheetHeader: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    justifyContent:  'space-between',
-    marginBottom:    SPACING.md,
-    gap:             SPACING.sm,
+    flexDirection:  'row',
+    alignItems:     'center',
+    justifyContent: 'space-between',
+    marginBottom:   SPACING.md,
+    gap:            SPACING.sm,
   },
   sheetHeaderLeft: {
     flexDirection: 'row',
     alignItems:    'center',
-    gap:            SPACING.sm,
-    flex:           1,
-    minWidth:       0,
+    gap:           SPACING.sm,
+    flex:          1,
+    minWidth:      0,
   },
   sheetHeaderIcon: {
     width:          40,
@@ -448,55 +550,44 @@ const styles = StyleSheet.create({
     ...SHADOWS.small,
   },
   sheetTitle: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '800',
   },
   sheetSubtitle: {
-    color:    COLORS.textMuted,
-    fontSize: FONTS.sizes.xs,
+    fontSize:  FONTS.sizes.xs,
     marginTop: 1,
   },
   closeBtn: {
-    width:           32,
-    height:          32,
-    borderRadius:    10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems:      'center',
-    justifyContent:  'center',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
-    flexShrink:      0,
+    width:          32,
+    height:         32,
+    borderRadius:   10,
+    alignItems:     'center',
+    justifyContent: 'center',
+    borderWidth:    1,
+    flexShrink:     0,
   },
   memberStrip: {
     flexDirection:     'row',
     alignItems:        'center',
     gap:               6,
     alignSelf:         'flex-start',
-    backgroundColor:   `${COLORS.success}12`,
     borderRadius:      RADIUS.full,
     paddingHorizontal: 11,
     paddingVertical:   5,
     borderWidth:       1,
-    borderColor:       `${COLORS.success}30`,
     marginBottom:      SPACING.md,
   },
   memberStripText: {
-    color:      COLORS.success,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '700',
   },
-
-  // Collection row
   collectionRow: {
     flexDirection:  'row',
     alignItems:     'center',
     padding:        SPACING.md,
-    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:   RADIUS.lg,
     marginBottom:   SPACING.sm,
     borderWidth:    1,
-    borderColor:    COLORS.border,
     gap:            SPACING.md,
   },
   rowIcon: {
@@ -512,66 +603,53 @@ const styles = StyleSheet.create({
     gap:  2,
   },
   rowName: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '700',
   },
   rowCount: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
   },
   checkbox: {
     width:          22,
     height:         22,
-    borderRadius:    7,
-    borderWidth:     1.5,
-    borderColor:    COLORS.border,
+    borderRadius:   7,
+    borderWidth:    1.5,
     alignItems:     'center',
     justifyContent: 'center',
     flexShrink:     0,
   },
-
-  // Quick create
   createTrigger: {
-    flexDirection:  'row',
-    alignItems:     'center',
-    gap:             SPACING.sm,
-    paddingVertical: SPACING.md,
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               SPACING.sm,
+    paddingVertical:   SPACING.md,
     paddingHorizontal: SPACING.md,
-    marginTop:       SPACING.xs,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius:    RADIUS.lg,
-    borderWidth:     1,
-    borderColor:     `${COLORS.primary}25`,
-    borderStyle:     'dashed',
+    marginTop:         SPACING.xs,
+    borderRadius:      RADIUS.lg,
+    borderWidth:       1,
+    borderStyle:       'dashed',
   },
   createTriggerIcon: {
     width:          36,
     height:         36,
     borderRadius:   11,
-    backgroundColor: `${COLORS.primary}18`,
     alignItems:     'center',
     justifyContent: 'center',
     borderWidth:    1,
-    borderColor:    `${COLORS.primary}30`,
   },
   createTriggerText: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '700',
   },
   createTriggerSub: {
-    color:    COLORS.textMuted,
-    fontSize: FONTS.sizes.xs,
+    fontSize:  FONTS.sizes.xs,
     marginTop: 1,
   },
   quickForm: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius:    RADIUS.xl,
-    padding:         SPACING.md,
-    borderWidth:     1,
-    borderColor:     `${COLORS.primary}30`,
-    marginTop:       SPACING.sm,
+    borderRadius: RADIUS.xl,
+    padding:      SPACING.md,
+    borderWidth:  1,
+    marginTop:    SPACING.sm,
   },
   quickFormHeader: {
     flexDirection: 'row',
@@ -588,31 +666,27 @@ const styles = StyleSheet.create({
   },
   quickFormTitle: {
     flex:       1,
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '800',
   },
   quickInput: {
-    backgroundColor:   'rgba(0,0,0,0.25)',
     borderRadius:      RADIUS.lg,
     paddingHorizontal: SPACING.md,
     paddingVertical:   10,
-    color:             COLORS.textPrimary,
     fontSize:          FONTS.sizes.base,
     borderWidth:       1,
-    borderColor:       COLORS.border,
     marginBottom:      SPACING.sm,
   },
   colorSwatch: {
     width:          28,
     height:         28,
-    borderRadius:    9,
+    borderRadius:   9,
     alignItems:     'center',
     justifyContent: 'center',
   },
   colorSwatchActive: {
-    borderWidth: 2.5,
-    borderColor: '#FFF',
+    borderWidth:  2.5,
+    borderColor:  '#FFF',
   },
   iconSwatch: {
     width:          36,
@@ -620,27 +694,22 @@ const styles = StyleSheet.create({
     borderRadius:   10,
     alignItems:     'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.25)',
     borderWidth:    1,
-    borderColor:    COLORS.border,
   },
   quickFormRow: {
     flexDirection: 'row',
-    gap:            SPACING.sm,
+    gap:           SPACING.sm,
     marginTop:     SPACING.sm,
   },
   cancelBtn: {
-    backgroundColor:   'rgba(255,255,255,0.05)',
     borderRadius:      RADIUS.lg,
     paddingVertical:   12,
     paddingHorizontal: SPACING.lg,
     borderWidth:       1,
-    borderColor:       COLORS.border,
     alignItems:        'center',
     justifyContent:    'center',
   },
   cancelBtnText: {
-    color:      COLORS.textMuted,
     fontWeight: '600',
     fontSize:   FONTS.sizes.base,
   },
@@ -655,21 +724,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize:   FONTS.sizes.base,
   },
-
-  // States
   loadingWrap: {
-    alignItems:    'center',
+    alignItems:      'center',
     paddingVertical: SPACING.xl,
-    gap:            SPACING.sm,
+    gap:             SPACING.sm,
   },
   loadingText: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.sm,
   },
   emptyWrap: {
-    alignItems:    'center',
+    alignItems:      'center',
     paddingVertical: SPACING.xl,
-    gap:            SPACING.sm,
+    gap:             SPACING.sm,
   },
   emptyIconWrap: {
     width:          64,
@@ -679,15 +745,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom:   SPACING.xs,
     borderWidth:    1,
-    borderColor:    COLORS.border,
   },
   emptyText: {
-    color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '700',
   },
   emptySubtext: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.sm,
   },
 });

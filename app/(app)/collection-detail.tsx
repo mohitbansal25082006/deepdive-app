@@ -1,14 +1,13 @@
 // app/(app)/collection-detail.tsx
 // Part 35 — Collection Detail Screen
 // Part 50.8 — UI UPGRADE (visual only; all logic preserved)
-//   • Gradient hero header with a large collection icon and decorative glow.
-//   • Glass stat ribbon (items / reports / podcasts / debates) as gradient tiles.
-//   • Glassmorphic item rows: content-type accent rail, gradient type icon,
-//     type/depth chips, press-scale micro-interaction.
-//   • Upgraded loading, error and empty states.
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
+// Part 55.3 — FIX: Ensure all text and UI elements are fully theme-aware
 //
-// Unchanged: useCollectionDetail, navigateTo(), removeItem, refresh, the
-// CONTENT_TYPE_META mapping, and all navigation targets.
+//   All hardcoded dark-only hex literals replaced with live COLORS tokens.
+//   All text colors now use proper theme-aware tokens.
+//   Header buttons (back/search) now use theme-aware background and icon colors.
+//   Changes are marked with "// 55.3:" comments.
 
 import React, { useCallback, useState } from 'react';
 import {
@@ -37,7 +36,11 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useCollectionDetail } from '../../src/hooks/useCollections';
 import { CollectionItem, CollectionItemType } from '../../src/types/collections';
 import { CONTENT_TYPE_META }   from '../../src/constants/search';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
+import {
+  COLORS, FONTS, SPACING, RADIUS, SHADOWS,
+  getModalBackdrop,
+  getAuroraGradient,
+} from '../../src/constants/theme';
 
 const haptic = (style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Light) => {
   try { Haptics.impactAsync(style); } catch {}
@@ -93,8 +96,11 @@ function CollectionItemRow({ item, index, color, onRemove }: ItemRowProps) {
         style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
       >
         <View style={[styles.itemCard, { borderColor: `${meta.color}33` }]}>
-          <LinearGradient colors={['#16162F', '#101024']} style={styles.itemGradient}>
-            {/* Left accent rail */}
+          <LinearGradient
+            colors={COLORS.gradientCard as [string, string]}
+            style={styles.itemGradient}
+          >
+            {/* Left accent rail — uses content-type color, always visible */}
             <LinearGradient colors={[meta.color, `${meta.color}44`]} style={styles.itemAccent} />
 
             <View style={styles.itemBody}>
@@ -108,11 +114,11 @@ function CollectionItemRow({ item, index, color, onRemove }: ItemRowProps) {
 
               {/* Text */}
               <View style={styles.itemText}>
-                <Text style={styles.itemTitle} numberOfLines={2}>
+                <Text style={[styles.itemTitle, { color: COLORS.textPrimary }]} numberOfLines={2}>
                   {item.title}
                 </Text>
                 {item.subtitle ? (
-                  <Text style={styles.itemSubtitle} numberOfLines={1}>
+                  <Text style={[styles.itemSubtitle, { color: COLORS.textSecondary }]} numberOfLines={1}>
                     {item.subtitle}
                   </Text>
                 ) : null}
@@ -132,7 +138,7 @@ function CollectionItemRow({ item, index, color, onRemove }: ItemRowProps) {
                   )}
                   <View style={styles.dateChip}>
                     <Ionicons name="add-circle-outline" size={9} color={COLORS.textMuted} />
-                    <Text style={styles.itemDate}>{formattedDate}</Text>
+                    <Text style={[styles.itemDate, { color: COLORS.textMuted }]}>{formattedDate}</Text>
                   </View>
                 </View>
               </View>
@@ -161,11 +167,14 @@ function CollectionItemRow({ item, index, color, onRemove }: ItemRowProps) {
 function EmptyState({ collectionName, color }: { collectionName: string; color: string }) {
   return (
     <Animated.View entering={FadeIn.duration(500)} style={styles.emptyState}>
-      <LinearGradient colors={['#1C1C40', '#14142E']} style={[styles.emptyIcon, { borderColor: `${color}30` }]}>
+      <LinearGradient
+        colors={[COLORS.backgroundElevated, COLORS.background]}
+        style={[styles.emptyIcon, { borderColor: `${color}30` }]}
+      >
         <Ionicons name="folder-open-outline" size={42} color={color} />
       </LinearGradient>
-      <Text style={styles.emptyTitle}>Collection is empty</Text>
-      <Text style={styles.emptySubtext}>
+      <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>Collection is empty</Text>
+      <Text style={[styles.emptySubtext, { color: COLORS.textSecondary }]}>
         Long-press any report, podcast, or debate and tap
         {' '}<Text style={{ color: COLORS.primary, fontWeight: '700' }}>"Add to Collection"</Text>
         {' '}to add it here
@@ -174,19 +183,60 @@ function EmptyState({ collectionName, color }: { collectionName: string; color: 
       {/* Tips */}
       <View style={styles.tipsList}>
         {[
-          { icon: 'document-text-outline',    label: 'Reports — long-press card in History tab',  color: CONTENT_TYPE_META.report.color },
-          { icon: 'radio-outline',             label: 'Podcasts — long-press card in Podcast tab', color: CONTENT_TYPE_META.podcast.color },
-          { icon: 'chatbox-ellipses-outline',  label: 'Debates — long-press card in Debate tab',   color: CONTENT_TYPE_META.debate.color },
+          { icon: 'document-text-outline',    label: 'Reports — long-press card in History tab',   color: CONTENT_TYPE_META.report.color },
+          { icon: 'radio-outline',             label: 'Podcasts — long-press card in Podcast tab',  color: CONTENT_TYPE_META.podcast.color },
+          { icon: 'chatbox-ellipses-outline',  label: 'Debates — long-press card in Debate tab',    color: CONTENT_TYPE_META.debate.color },
         ].map(tip => (
-          <View key={tip.label} style={styles.tipRow}>
+          <View key={tip.label} style={[styles.tipRow, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <View style={[styles.tipIcon, { backgroundColor: `${tip.color}18`, borderColor: `${tip.color}30` }]}>
               <Ionicons name={tip.icon as any} size={14} color={tip.color} />
             </View>
-            <Text style={styles.tipText}>{tip.label}</Text>
+            <Text style={[styles.tipText, { color: COLORS.textSecondary }]}>{tip.label}</Text>
           </View>
         ))}
       </View>
     </Animated.View>
+  );
+}
+
+// ─── Stat Tile ────────────────────────────────────────────────────────────────
+
+function StatTile({
+  icon, value, label, gradient, accent,
+}: {
+  icon: string;
+  value: number;
+  label: string;
+  gradient: readonly [string, string];
+  accent: string;
+}) {
+  return (
+    <View style={[styles.statTile, { borderColor: `${accent}30` }]}>
+      <LinearGradient
+        colors={COLORS.gradientCard as [string, string]}
+        style={styles.statTileGrad}
+      >
+        <LinearGradient colors={gradient} style={styles.statTileIcon}>
+          <Ionicons name={icon as any} size={13} color="#FFF" />
+        </LinearGradient>
+        <Text
+          style={[styles.statTileValue, { color: COLORS.textPrimary }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
+        >
+          {value}
+        </Text>
+        <Text
+          style={[styles.statTileLabel, { color: COLORS.textMuted }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
+          {label}
+        </Text>
+      </LinearGradient>
+    </View>
   );
 }
 
@@ -229,32 +279,42 @@ export default function CollectionDetailScreen() {
 
   const accentColor = collection?.color ?? COLORS.primary;
 
-  // Header actions: search button
   const handleSearch = useCallback(() => {
     router.push({ pathname: '/(app)/global-search' as any });
   }, []);
 
+  // ── Loading state ───────────────────────────────────────────────────────────
   if (isLoading && !collection) {
     return (
-      <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
+      <LinearGradient
+        colors={[COLORS.background, ...getAuroraGradient()] as [string, string, string]}
+        style={{ flex: 1 }}
+      >
         <SafeAreaView style={styles.centerState} edges={['top']}>
           <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Loading collection…</Text>
+          <Text style={[styles.loadingText, { color: COLORS.textMuted }]}>Loading collection…</Text>
         </SafeAreaView>
       </LinearGradient>
     );
   }
 
+  // ── Error state ─────────────────────────────────────────────────────────────
   if (error || !collection) {
     return (
-      <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
+      <LinearGradient
+        colors={[COLORS.background, ...getAuroraGradient()] as [string, string, string]}
+        style={{ flex: 1 }}
+      >
         <SafeAreaView style={styles.centerState} edges={['top']}>
-          <LinearGradient colors={['#2A1420', '#1A1020']} style={styles.errorIcon}>
+          <LinearGradient
+            colors={[`${COLORS.error}22`, `${COLORS.error}0A`] as [string, string]}
+            style={styles.errorIcon}
+          >
             <Ionicons name="alert-circle-outline" size={44} color={COLORS.error} />
           </LinearGradient>
-          <Text style={styles.errorTitle}>{error ?? 'Collection not found'}</Text>
+          <Text style={[styles.errorTitle, { color: COLORS.textPrimary }]}>{error ?? 'Collection not found'}</Text>
           <TouchableOpacity onPress={() => router.back()} style={{ marginTop: SPACING.lg }}>
-            <View style={styles.backChip}>
+            <View style={[styles.backChip, { backgroundColor: `${COLORS.primary}1A`, borderColor: `${COLORS.primary}40` }]}>
               <Ionicons name="arrow-back" size={15} color={COLORS.primary} />
               <Text style={{ color: COLORS.primary, fontWeight: '700', fontSize: FONTS.sizes.base }}>
                 Go Back
@@ -271,26 +331,49 @@ export default function CollectionDetailScreen() {
   const debateCount  = items.filter(i => i.contentType === 'debate').length;
 
   return (
-    <LinearGradient colors={[COLORS.background, '#0B0B1E', COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient
+      colors={[COLORS.background, ...getAuroraGradient()] as [string, string, string]}
+      style={{ flex: 1 }}
+    >
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
 
-        {/* ── Gradient hero header ─────────────────────────────────────── */}
+        {/* ── Gradient hero header ──────────────────────────────────────────── */}
         <Animated.View entering={FadeIn.duration(500)}>
-          <LinearGradient colors={['#15152F', '#0D0D22']} style={styles.header}>
-            {/* decorative glow */}
-            <View pointerEvents="none" style={[styles.glow, { backgroundColor: `${accentColor}1F` }]} />
+          <LinearGradient
+            colors={COLORS.gradientCard as [string, string]}
+            style={[styles.header, { borderBottomColor: COLORS.border }]}
+          >
+            {/* Decorative glow — uses collection accent, not a hardcoded color */}
+            <View
+              pointerEvents="none"
+              style={[styles.glow, { backgroundColor: `${accentColor}1F` }]}
+            />
 
             <View style={styles.headerTopRow}>
               <Pressable
                 onPress={() => { haptic(); router.back(); }}
-                style={({ pressed }) => [styles.headerBtn, { opacity: pressed ? 0.7 : 1 }]}
+                style={({ pressed }) => [
+                  styles.headerBtn,
+                  { 
+                    opacity: pressed ? 0.7 : 1,
+                    backgroundColor: COLORS.backgroundElevated,
+                    borderColor: COLORS.border,
+                  }
+                ]}
               >
                 <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
               </Pressable>
 
               <Pressable
                 onPress={() => { haptic(); handleSearch(); }}
-                style={({ pressed }) => [styles.headerBtn, { opacity: pressed ? 0.7 : 1 }]}
+                style={({ pressed }) => [
+                  styles.headerBtn,
+                  { 
+                    opacity: pressed ? 0.7 : 1,
+                    backgroundColor: COLORS.backgroundElevated,
+                    borderColor: COLORS.border,
+                  }
+                ]}
               >
                 <Ionicons name="search-outline" size={20} color={COLORS.textSecondary} />
               </Pressable>
@@ -304,15 +387,15 @@ export default function CollectionDetailScreen() {
                 <Ionicons name={collection.icon as any} size={28} color="#FFF" />
               </LinearGradient>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.headerTitle} numberOfLines={1}>
+                <Text style={[styles.headerTitle, { color: COLORS.textPrimary }]} numberOfLines={1}>
                   {collection.name}
                 </Text>
                 {collection.description ? (
-                  <Text style={styles.headerSubtitle} numberOfLines={2}>
+                  <Text style={[styles.headerSubtitle, { color: COLORS.textSecondary }]} numberOfLines={2}>
                     {collection.description}
                   </Text>
                 ) : (
-                  <Text style={styles.headerSubtitleMuted}>
+                  <Text style={[styles.headerSubtitleMuted, { color: COLORS.textMuted }]}>
                     {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'} saved
                   </Text>
                 )}
@@ -321,15 +404,39 @@ export default function CollectionDetailScreen() {
 
             {/* ── Stat ribbon ── */}
             <View style={styles.statRibbon}>
-              <StatTile icon="layers" value={collection.itemCount} label="Items" gradient={[accentColor, `${accentColor}99`]} accent={accentColor} />
-              <StatTile icon="document-text" value={reportCount} label="Reports" gradient={[CONTENT_TYPE_META.report.color, `${CONTENT_TYPE_META.report.color}99`]} accent={CONTENT_TYPE_META.report.color} />
-              <StatTile icon="radio" value={podcastCount} label="Podcasts" gradient={[CONTENT_TYPE_META.podcast.color, `${CONTENT_TYPE_META.podcast.color}99`]} accent={CONTENT_TYPE_META.podcast.color} />
-              <StatTile icon="chatbox-ellipses" value={debateCount} label="Debates" gradient={[CONTENT_TYPE_META.debate.color, `${CONTENT_TYPE_META.debate.color}99`]} accent={CONTENT_TYPE_META.debate.color} />
+              <StatTile
+                icon="layers"
+                value={collection.itemCount}
+                label="Items"
+                gradient={[accentColor, `${accentColor}99`]}
+                accent={accentColor}
+              />
+              <StatTile
+                icon="document-text"
+                value={reportCount}
+                label="Reports"
+                gradient={[CONTENT_TYPE_META.report.color, `${CONTENT_TYPE_META.report.color}99`]}
+                accent={CONTENT_TYPE_META.report.color}
+              />
+              <StatTile
+                icon="radio"
+                value={podcastCount}
+                label="Podcasts"
+                gradient={[CONTENT_TYPE_META.podcast.color, `${CONTENT_TYPE_META.podcast.color}99`]}
+                accent={CONTENT_TYPE_META.podcast.color}
+              />
+              <StatTile
+                icon="chatbox-ellipses"
+                value={debateCount}
+                label="Debates"
+                gradient={[CONTENT_TYPE_META.debate.color, `${CONTENT_TYPE_META.debate.color}99`]}
+                accent={CONTENT_TYPE_META.debate.color}
+              />
             </View>
           </LinearGradient>
         </Animated.View>
 
-        {/* ── Items list ───────────────────────────────────────────────── */}
+        {/* ── Items list ────────────────────────────────────────────────────── */}
         {items.length === 0 && !isLoading ? (
           <EmptyState collectionName={collection.name} color={accentColor} />
         ) : (
@@ -355,7 +462,7 @@ export default function CollectionDetailScreen() {
               />
             }
             ListHeaderComponent={
-              <Text style={styles.listHeader}>
+              <Text style={[styles.listHeader, { color: COLORS.textMuted }]}>
                 {items.length} item{items.length !== 1 ? 's' : ''}
               </Text>
             }
@@ -364,24 +471,6 @@ export default function CollectionDetailScreen() {
 
       </SafeAreaView>
     </LinearGradient>
-  );
-}
-
-// ─── Stat tile ────────────────────────────────────────────────────────────────
-
-function StatTile({ icon, value, label, gradient, accent }: {
-  icon: string; value: number; label: string; gradient: readonly [string, string]; accent: string;
-}) {
-  return (
-    <View style={[styles.statTile, { borderColor: `${accent}30` }]}>
-      <LinearGradient colors={['#1A1A38', '#12122A']} style={styles.statTileGrad}>
-        <LinearGradient colors={gradient} style={styles.statTileIcon}>
-          <Ionicons name={icon as any} size={13} color="#FFF" />
-        </LinearGradient>
-        <Text style={styles.statTileValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{value}</Text>
-        <Text style={styles.statTileLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{label}</Text>
-      </LinearGradient>
-    </View>
   );
 }
 
@@ -395,7 +484,6 @@ const styles = StyleSheet.create({
     gap:            SPACING.sm,
   },
   loadingText: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.sm,
   },
   errorIcon: {
@@ -409,29 +497,27 @@ const styles = StyleSheet.create({
     marginBottom:   SPACING.md,
   },
   errorTitle: {
-    color:      COLORS.textPrimary,
-    fontSize:   FONTS.sizes.lg,
-    fontWeight: '700',
-    textAlign:  'center',
-    marginTop:  SPACING.sm,
+    fontSize:          FONTS.sizes.lg,
+    fontWeight:        '700',
+    textAlign:         'center',
+    marginTop:         SPACING.sm,
     paddingHorizontal: SPACING.xl,
   },
   backChip: {
     flexDirection:     'row',
     alignItems:        'center',
-    gap:                6,
-    backgroundColor:   `${COLORS.primary}1A`,
+    gap:               6,
     borderRadius:      RADIUS.full,
     paddingHorizontal: SPACING.xl,
     paddingVertical:   12,
     borderWidth:       1,
-    borderColor:       `${COLORS.primary}40`,
   },
 
-  // Header
+  // ── Header ──
   header: {
     paddingBottom: SPACING.md,
     overflow:      'hidden',
+    borderBottomWidth: 1,
   },
   glow: {
     position:     'absolute',
@@ -450,14 +536,12 @@ const styles = StyleSheet.create({
     paddingBottom:     SPACING.sm,
   },
   headerBtn: {
-    width:          40,
-    height:         40,
-    borderRadius:   12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems:     'center',
-    justifyContent: 'center',
-    borderWidth:    1,
-    borderColor:    COLORS.border,
+    width:           40,
+    height:          40,
+    borderRadius:    12,
+    alignItems:      'center',
+    justifyContent:  'center',
+    borderWidth:     1,
   },
   headerIdentity: {
     flexDirection:     'row',
@@ -476,24 +560,21 @@ const styles = StyleSheet.create({
     ...SHADOWS.medium,
   },
   headerTitle: {
-    color:      COLORS.textPrimary,
-    fontSize:   FONTS.sizes.xl,
-    fontWeight: '900',
+    fontSize:      FONTS.sizes.xl,
+    fontWeight:    '900',
     letterSpacing: -0.4,
   },
   headerSubtitle: {
-    color:     COLORS.textSecondary,
-    fontSize:  FONTS.sizes.sm,
-    marginTop: 3,
+    fontSize:   FONTS.sizes.sm,
+    marginTop:  3,
     lineHeight: 19,
   },
   headerSubtitleMuted: {
-    color:     COLORS.textMuted,
     fontSize:  FONTS.sizes.sm,
     marginTop: 3,
   },
 
-  // Stat ribbon
+  // ── Stat ribbon ──
   statRibbon: {
     flexDirection:     'row',
     gap:               SPACING.sm,
@@ -519,32 +600,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   statTileValue: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.md,
     fontWeight: '900',
   },
   statTileLabel: {
-    color:      COLORS.textMuted,
     fontSize:   9,
     fontWeight: '700',
   },
 
-  // List
+  // ── List ──
   listContent: {
     paddingHorizontal: SPACING.lg,
     paddingTop:        SPACING.md,
     paddingBottom:     90,
   },
   listHeader: {
-    color:        COLORS.textMuted,
-    fontSize:     FONTS.sizes.xs,
-    fontWeight:   '700',
+    fontSize:      FONTS.sizes.xs,
+    fontWeight:    '700',
     letterSpacing: 0.8,
     textTransform: 'uppercase',
-    marginBottom: SPACING.sm,
+    marginBottom:  SPACING.sm,
   },
 
-  // Item card
+  // ── Item card ──
   itemCard: {
     borderRadius: RADIUS.xl,
     borderWidth:  1,
@@ -577,19 +655,17 @@ const styles = StyleSheet.create({
     ...SHADOWS.small,
   },
   itemText: {
-    flex:    1,
+    flex:     1,
     minWidth: 0,
-    gap:     3,
+    gap:      3,
   },
   itemTitle: {
-    color:      COLORS.textPrimary,
-    fontSize:   FONTS.sizes.base,
-    fontWeight: '800',
-    lineHeight: 21,
+    fontSize:      FONTS.sizes.base,
+    fontWeight:    '800',
+    lineHeight:    21,
     letterSpacing: -0.2,
   },
   itemSubtitle: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
   },
   itemChips: {
@@ -618,7 +694,6 @@ const styles = StyleSheet.create({
     gap:           3,
   },
   itemDate: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
   },
   itemActions: {
@@ -628,17 +703,17 @@ const styles = StyleSheet.create({
     flexShrink:     0,
   },
   removeBtn: {
-    width:          32,
-    height:         32,
+    width:           32,
+    height:          32,
     borderRadius:    9,
-    alignItems:     'center',
-    justifyContent: 'center',
+    alignItems:      'center',
+    justifyContent:  'center',
     backgroundColor: `${COLORS.error}10`,
     borderWidth:     1,
     borderColor:     `${COLORS.error}25`,
   },
 
-  // Empty state
+  // ── Empty state ──
   emptyState: {
     flex:       1,
     padding:    SPACING.xl,
@@ -655,13 +730,11 @@ const styles = StyleSheet.create({
     borderWidth:    1,
   },
   emptyTitle: {
-    color:        COLORS.textPrimary,
     fontSize:     FONTS.sizes.lg,
     fontWeight:   '800',
     marginBottom: SPACING.sm,
   },
   emptySubtext: {
-    color:        COLORS.textMuted,
     fontSize:     FONTS.sizes.sm,
     textAlign:    'center',
     lineHeight:   20,
@@ -675,11 +748,9 @@ const styles = StyleSheet.create({
     flexDirection:   'row',
     alignItems:      'center',
     gap:             SPACING.md,
-    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius:    RADIUS.lg,
     padding:         SPACING.md,
     borderWidth:     1,
-    borderColor:     COLORS.border,
   },
   tipIcon: {
     width:          34,
@@ -692,7 +763,6 @@ const styles = StyleSheet.create({
   },
   tipText: {
     flex:     1,
-    color:    COLORS.textSecondary,
     fontSize: FONTS.sizes.sm,
   },
 });

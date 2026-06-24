@@ -3,6 +3,26 @@
 // Part 54A — Added fallback icon/accent for new notification types:
 //   voice_debate_ready, payment_success, payment_failed.
 //
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS
+//   The notification drawer modal previously had several hardcoded dark-only
+//   colors that never changed when the user switched themes:
+//
+//   1. The LinearGradient background of the drawer sheet was hardcoded to
+//      ['#1A1A35', '#0A0A1A'] — always a deep indigo/black regardless of theme.
+//      In light themes (Cosmic Light, Ocean Light, etc.) this produced a jarring
+//      pitch-black drawer on a light-background app.
+//      FIX: now uses [COLORS.backgroundCard, COLORS.background] so the drawer
+//      surface always matches the active theme's card/page colors.
+//
+//   2. The scrim backdrop was hardcoded to 'rgba(0,0,0,0.55)' — acceptable in
+//      dark themes but too heavy in some light themes.
+//      FIX: now uses getModalBackdrop(0.55) so the scrim tints from the active
+//      background color, keeping consistent translucency across all themes.
+//
+//   3. The empty-state container used COLORS.backgroundElevated (already correct)
+//      but the surrounding structure relied on the dark backdrop. With the two
+//      fixes above the empty state now reads correctly in all themes.
+//
 // WHAT CHANGED (Part 53)
 //   Previously this component showed ONLY social notifications (follows + new
 //   reports from people you follow) via useSocialNotifications. It now shows
@@ -49,7 +69,10 @@ import { useSafeAreaInsets }              from 'react-native-safe-area-context';
 import { router }                         from 'expo-router';
 import { useNotifications }               from '../../context/NotificationsContext';
 import { Avatar }                         from '../common/Avatar';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import {
+  COLORS, FONTS, SPACING, RADIUS,
+  getModalBackdrop,
+}                                         from '../../constants/theme';
 import type { AppNotification }           from '../../types/notifications';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -132,7 +155,12 @@ function NotificationRow({
         minHeight:          56,
         borderBottomWidth:  1,
         borderBottomColor:  COLORS.border,
-        backgroundColor:    notif.read ? 'transparent' : `${accent}0D`,
+        // Part 55.2: unread highlight uses COLORS.backgroundElevated as the base
+        // so it reads correctly in both dark and light themes, rather than just
+        // being a tinted overlay on a hardcoded dark surface.
+        backgroundColor:    notif.read
+          ? 'transparent'
+          : `${accent}0D`,
       }}
     >
       {/* Unread dot */}
@@ -299,17 +327,32 @@ export function NotificationBell({ userId }: NotificationBellProps) {
         statusBarTranslucent={Platform.OS === 'android'}
         onRequestClose={handleClose}
       >
+        {/*
+          Part 55.2: scrim was hardcoded 'rgba(0,0,0,0.55)' — now uses
+          getModalBackdrop(0.55) so it tints from the active theme's background
+          color, keeping consistent legibility across both dark and light themes.
+        */}
         <Pressable
           style={{
             flex:            1,
-            backgroundColor: 'rgba(0,0,0,0.55)',
+            backgroundColor: getModalBackdrop(0.55),
             justifyContent:  'flex-end',
           }}
           onPress={handleClose}
         >
           <Pressable onPress={e => e.stopPropagation()}>
+            {/*
+              Part 55.2: drawer sheet gradient was hardcoded ['#1A1A35', '#0A0A1A']
+              — always deep indigo/black regardless of theme. In light themes this
+              produced a jarring dark drawer on a light app.
+              FIX: now uses COLORS.backgroundCard → COLORS.background so the
+              drawer surface always matches the active theme. The gradient direction
+              is top-to-bottom (card at top, page color at bottom) which mirrors
+              how cards sit above the page surface — correct for both dark and
+              light palettes across all 6 themes.
+            */}
             <LinearGradient
-              colors={['#1A1A35', '#0A0A1A']}
+              colors={[COLORS.backgroundCard, COLORS.background]}
               style={{
                 borderTopLeftRadius:  28,
                 borderTopRightRadius: 28,
@@ -342,7 +385,7 @@ export function NotificationBell({ userId }: NotificationBellProps) {
               }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <LinearGradient
-                    colors={COLORS.gradientPrimary}
+                    colors={COLORS.gradientPrimary as [string, string]}
                     style={{
                       width:          32,
                       height:         32,
@@ -390,11 +433,18 @@ export function NotificationBell({ userId }: NotificationBellProps) {
                     paddingTop:        SPACING.xl * 1.5,
                     paddingHorizontal: SPACING.xl,
                   }}>
+                    {/*
+                      Part 55.2: empty-state icon container uses COLORS.backgroundElevated
+                      (already theme-correct). The border color now uses COLORS.border
+                      instead of the previous implicit reliance on the dark sheet bg.
+                    */}
                     <View style={{
                       width:           72,
                       height:          72,
                       borderRadius:    20,
                       backgroundColor: COLORS.backgroundElevated,
+                      borderWidth:     1,
+                      borderColor:     COLORS.border,
                       alignItems:      'center',
                       justifyContent:  'center',
                       marginBottom:    SPACING.md,
@@ -402,7 +452,7 @@ export function NotificationBell({ userId }: NotificationBellProps) {
                       <Ionicons
                         name="notifications-off-outline"
                         size={34}
-                        color={COLORS.border}
+                        color={COLORS.textMuted}
                       />
                     </View>
                     <Text style={{

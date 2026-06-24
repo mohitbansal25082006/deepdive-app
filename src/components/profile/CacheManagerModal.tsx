@@ -18,6 +18,13 @@
 //   Fix: Replace BlurView backdrop with a plain View using a semi-transparent
 //   background color. This matches every other modal in the project.
 //
+// Part 55.2 — Theme-compatibility pass:
+//   • Backdrop changed from hardcoded 'rgba(10,10,26,0.72)' to
+//     getModalBackdrop() — correct in both dark and light themes.
+//   • Header icon gradient changed from hardcoded ['#29B6F6', '#0085D2'] to
+//     COLORS.gradientPrimary so it follows the active theme's brand color
+//     instead of always being blue regardless of theme.
+//
 // All features from Part 45 preserved: voice debate toggle, voice_debate type
 // row, "Cache Specific Items" button, usage ring badges, items tab filters.
 
@@ -44,7 +51,7 @@ import {
   isAudioCacheEnabled,
   isVoiceDebateCacheEnabled,
 } from '../../lib/cacheSettings';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
 import type { CachedContentType, CacheFilterType } from '../../types/cache';
 
 // BUG 2 FIX: Static imports — replacing dynamic await import() in handleCacheAll
@@ -292,8 +299,12 @@ export function CacheManagerModal({ visible, onClose, onOpenSelectiveCache }: Ca
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      {/* FIX 2: Plain View backdrop — no BlurView (prevents freeze on dismiss) */}
-      <View style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.72)', justifyContent: 'flex-end' }}>
+      {/* FIX 2: Plain View backdrop — no BlurView (prevents freeze on dismiss).
+          Part 55.2: backdrop tint now derives from the active theme's
+          background via getModalBackdrop() instead of a hardcoded indigo hex,
+          so light themes get a correctly-tinted scrim instead of an
+          incongruous dark-purple one. */}
+      <View style={{ flex: 1, backgroundColor: getModalBackdrop(0.72), justifyContent: 'flex-end' }}>
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
         <View style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: SHEET_MAX_H, borderTopWidth: 1, borderTopColor: COLORS.border, paddingBottom: insets.bottom }}>
           <View style={{ alignItems: 'center', paddingTop: SPACING.sm, marginBottom: SPACING.sm }}>
@@ -301,7 +312,9 @@ export function CacheManagerModal({ visible, onClose, onOpenSelectiveCache }: Ca
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.md, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
             <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: SPACING.sm }}>
-              <LinearGradient colors={['#29B6F6', '#0085D2']} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              {/* Part 55.2: was hardcoded ['#29B6F6', '#0085D2'] (always blue) —
+                  now follows the active theme's brand gradient. */}
+              <LinearGradient colors={COLORS.gradientPrimary as [string, string]} style={{ width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 <Ionicons name="cloud-offline-outline" size={16} color="#FFF" />
               </LinearGradient>
               <View style={{ flex: 1, minWidth: 0 }}>

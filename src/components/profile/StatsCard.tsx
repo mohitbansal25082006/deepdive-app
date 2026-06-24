@@ -1,16 +1,16 @@
 // src/components/profile/StatsCard.tsx
-// Part 27 — REDESIGNED: Full 4-metric visual stats card.
+// Part 27 — Full 4-metric visual stats card.
+// Part 55.2 — Theme-compatibility pass: replaced the hardcoded card gradient
+//             ['#1A1235', '#0F0F2A'] with COLORS.gradientCard, which already
+//             carries a correct light/dark variant per theme (see themes.ts).
+//             All other colors here already read from COLORS and recolor
+//             automatically — only the literal gradient needed fixing.
 //
-// Previous version showed a plain horizontal strip.
-// New version shows:
-//   Row 1: Reports (total) · Hours Saved (derived from depth)
-//   Row 2: Streak (current day streak) · Sources (total across all reports)
-//   Bottom: Favourite topic chip + "View Full Insights →" button
+// Row 1: Reports (total) · Hours Saved (derived from depth)
+// Row 2: Streak (current day streak) · Sources (total across all reports)
+// Bottom: Favourite topic chip + "View Full Insights →" button
 //
 // All values come from UserStats (existing shape — no breaking changes).
-// Hours saved is derived client-side from totalReports as a quick estimate
-// (the precise value lives in the analytics service and is shown on the
-// Insights screen).
 
 import React from 'react';
 import {
@@ -132,8 +132,10 @@ export function StatsCard({ stats }: Props) {
 
   return (
     <Animated.View entering={FadeInDown.duration(500).delay(30)}>
+      {/* Part 55.2: was hardcoded ['#1A1235', '#0F0F2A'] — now follows the
+          active theme's card gradient (correct in both dark and light themes). */}
       <LinearGradient
-        colors={['#1A1235', '#0F0F2A']}
+        colors={COLORS.gradientCard as [string, string]}
         style={{
           borderRadius: RADIUS.xl,
           borderWidth:  1,

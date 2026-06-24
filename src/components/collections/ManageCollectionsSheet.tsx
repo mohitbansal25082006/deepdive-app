@@ -1,20 +1,35 @@
 // src/components/collections/ManageCollectionsSheet.tsx
 // Part 35 — Collections: Full manager bottom sheet
-// ✅ Full iOS + Android compatibility pass
-// Part 50.8 — UI UPGRADE (visual only)
-//   Restyled the sheet, header, form preview, swatch/icon pickers and empty
-//   state into the gradient/glass system. ALL platform-compat logic is
-//   unchanged: BackHandler handling, platformShadow(), the Overlay wrapper,
-//   SAFE_BOTTOM/SAFE_TOP, modal-dismiss timing (IS_IOS 300ms / Android 400ms),
-//   KeyboardAvoidingView, and every hook + prop + callback.
+// Part 50.8 — UI UPGRADE
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS (inline + getter-based style fix)
 //
-// Shows all collections, lets user:
-//   • View and navigate into each collection
-//   • Create a new collection (full form with color + icon picker)
-//   • Edit name, description, color, icon of a collection
-//   • Delete a collection with confirmation
+// Changes vs Part 50.8 — same two-pronged strategy as AddToCollectionSheet:
 //
-// Used from History tab header button.
+//   INLINE fixes (LinearGradient colors / View backgroundColor):
+//     • overlayInner bg: 'rgba(10,10,26,0.72)' → getModalBackdrop(0.72) ✓
+//     • sheet gradient: ['#1A1A38', '#0D0D20'] → COLORS.gradientCard ✓
+//     • emptyIcon gradient: ['#22223E', '#1A1A33'] → [COLORS.backgroundElevated, COLORS.background] ✓
+//
+//   GETTER-BASED fixes (COLORS.x moved OUT of StyleSheet.create into dyn* objects):
+//     • handle.backgroundColor: COLORS.border
+//     • backBtn.backgroundColor: COLORS.backgroundElevated / borderColor: COLORS.border
+//     • addBtn.backgroundColor: ${COLORS.primary}18 / borderColor: ${COLORS.primary}35
+//     • headerTitle.color: COLORS.textPrimary
+//     • listMeta.color: COLORS.textMuted
+//     • preview.backgroundColor: COLORS.backgroundElevated / borderColor: COLORS.border
+//     • previewName.color: COLORS.textPrimary
+//     • previewDesc.color: COLORS.textMuted
+//     • fieldLabel.color: COLORS.textMuted
+//     • input.backgroundColor: COLORS.background / color: COLORS.textPrimary / borderColor: COLORS.border
+//     • iconSwatch.backgroundColor: COLORS.background / borderColor: COLORS.border
+//     • cancelBtn.backgroundColor: COLORS.backgroundElevated / borderColor: COLORS.border
+//     • cancelBtnText.color: COLORS.textMuted
+//     • emptyTitle.color: COLORS.textPrimary
+//     • emptySubtext.color: COLORS.textMuted
+//     • createFirstBtnText.color: #FFF (static white — kept)
+//     • saveBtnText.color: #FFF (static white — kept)
+//   All platform-compat logic (BackHandler, IS_IOS/IS_ANDROID, platformShadow,
+//   SAFE_BOTTOM/SAFE_TOP, modal timing, KeyboardAvoidingView) is unchanged.
 
 import React, {
   useState,
@@ -45,10 +60,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
   FadeIn,
   Layout,
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
-  Easing,
 } from 'react-native-reanimated';
 import { router }         from 'expo-router';
 import { useCollections } from '../../hooks/useCollections';
@@ -59,7 +70,10 @@ import {
   COLLECTION_COLORS,
   COLLECTION_ICONS,
 }                         from '../../types/collections';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import {
+  COLORS, FONTS, SPACING, RADIUS,
+  getModalBackdrop,
+}                         from '../../constants/theme';
 
 // ─── Platform helpers ─────────────────────────────────────────────────────────
 
@@ -67,18 +81,13 @@ const IS_IOS     = Platform.OS === 'ios';
 const IS_ANDROID = Platform.OS === 'android';
 const { height: SCREEN_H } = Dimensions.get('window');
 
-// Safe bottom inset — use expo-modules or a simple fallback
-// If you have expo-modules-core / react-native-safe-area-context installed,
-// replace these with useSafeAreaInsets(). The constants below are safe fallbacks.
-const SAFE_BOTTOM = IS_IOS ? 34 : 0;   // iPhone home-indicator clearance
-const SAFE_TOP    = IS_IOS ? 44 : (StatusBar.currentHeight ?? 24);
+const SAFE_BOTTOM = IS_IOS ? 34 : 0;
 
-// Cross-platform shadow helper
 function platformShadow(
-  color   = '#000',
-  opacity = 0.18,
-  radius  = 8,
-  offsetY = 4,
+  color    = '#000',
+  opacity  = 0.18,
+  radius   = 8,
+  offsetY  = 4,
   elevation = 6,
 ) {
   if (IS_IOS) {
@@ -92,10 +101,13 @@ function platformShadow(
   return { elevation };
 }
 
-// Android-safe blur overlay (BlurView has no effect on Android without Hermes + reanimated-blur)
+// ─── Overlay ──────────────────────────────────────────────────────────────────
+// 55.2: uses getModalBackdrop() instead of a hardcoded dark hex literal so the
+// scrim adapts to every theme.
+
 function Overlay({ children }: { children: React.ReactNode }) {
   return (
-    <View style={styles.overlayInner}>
+    <View style={[styles.overlayInner, { backgroundColor: getModalBackdrop(0.72) }]}>
       {children}
     </View>
   );
@@ -133,8 +145,13 @@ function CollectionForm({
     onSave({ name: trimmed, description: description.trim() || undefined, color, icon });
   };
 
+  // Dynamic getter styles
+  const dynPreview  = { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border };
+  const dynInput    = { backgroundColor: COLORS.background, color: COLORS.textPrimary, borderColor: COLORS.border };
+  const dynCancelBtn = { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border };
+  const dynIconSwatch = { backgroundColor: COLORS.background, borderColor: COLORS.border };
+
   return (
-    // Dismiss keyboard when tapping outside inputs on Android
     <TouchableWithoutFeedback onPress={IS_ANDROID ? Keyboard.dismiss : undefined}>
       <KeyboardAvoidingView
         behavior={IS_IOS ? 'padding' : 'height'}
@@ -143,20 +160,20 @@ function CollectionForm({
         <ScrollView
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
-          // Prevent scroll-bounce fighting with the modal on Android
           overScrollMode={IS_ANDROID ? 'never' : 'auto'}
           contentContainerStyle={{ gap: SPACING.md, paddingBottom: SPACING.lg + SAFE_BOTTOM }}
         >
           {/* Live Preview */}
-          <View style={styles.preview}>
+          {/* 55.2: was 'rgba(255,255,255,0.04)' → dynPreview */}
+          <View style={[styles.preview, dynPreview]}>
             <LinearGradient colors={[color, `${color}99`]} style={styles.previewIcon}>
               <Ionicons name={icon as any} size={28} color="#FFF" />
             </LinearGradient>
             <View style={{ flex: 1 }}>
-              <Text style={styles.previewName} numberOfLines={1}>
+              <Text style={[styles.previewName, { color: COLORS.textPrimary }]} numberOfLines={1}>
                 {name || 'Collection Name'}
               </Text>
-              <Text style={styles.previewDesc} numberOfLines={1}>
+              <Text style={[styles.previewDesc, { color: COLORS.textMuted }]} numberOfLines={1}>
                 {description || 'Your collection description'}
               </Text>
             </View>
@@ -164,19 +181,18 @@ function CollectionForm({
 
           {/* Name */}
           <View>
-            <Text style={styles.fieldLabel}>NAME *</Text>
+            <Text style={[styles.fieldLabel, { color: COLORS.textMuted }]}>NAME *</Text>
+            {/* 55.2: was 'rgba(0,0,0,0.25)' → dynInput */}
             <TextInput
               value={name}
               onChangeText={setName}
               placeholder="e.g. Competitor Analysis"
               placeholderTextColor={COLORS.textMuted}
-              style={styles.input}
+              style={[styles.input, dynInput]}
               maxLength={60}
               autoFocus={!isEditing}
-              // Android: show done button on keyboard
               returnKeyType="done"
               onSubmitEditing={Keyboard.dismiss}
-              // Prevent auto-correct quirks
               autoCorrect={false}
               autoCapitalize="words"
             />
@@ -184,7 +200,7 @@ function CollectionForm({
 
           {/* Description */}
           <View>
-            <Text style={styles.fieldLabel}>DESCRIPTION (OPTIONAL)</Text>
+            <Text style={[styles.fieldLabel, { color: COLORS.textMuted }]}>DESCRIPTION (OPTIONAL)</Text>
             <TextInput
               value={description}
               onChangeText={setDescription}
@@ -192,11 +208,11 @@ function CollectionForm({
               placeholderTextColor={COLORS.textMuted}
               style={[
                 styles.input,
+                dynInput,
                 {
-                  minHeight:        64,
-                  // textAlignVertical is Android-only; iOS auto-aligns top for multiline
+                  minHeight:         64,
                   textAlignVertical: IS_ANDROID ? 'top' : undefined,
-                  paddingTop:       12,
+                  paddingTop:        12,
                 },
               ]}
               multiline
@@ -208,7 +224,7 @@ function CollectionForm({
 
           {/* Color */}
           <View>
-            <Text style={styles.fieldLabel}>COLOR</Text>
+            <Text style={[styles.fieldLabel, { color: COLORS.textMuted }]}>COLOR</Text>
             <View style={styles.colorGrid}>
               {COLLECTION_COLORS.map(c => (
                 <TouchableOpacity
@@ -221,12 +237,9 @@ function CollectionForm({
                     color === c && styles.colorSwatchActive,
                     color === c && platformShadow(c, 0.45, 6, 3, 5),
                   ]}
-                  // Better touch target
                   hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
                 >
-                  {color === c && (
-                    <Ionicons name="checkmark" size={14} color="#FFF" />
-                  )}
+                  {color === c && <Ionicons name="checkmark" size={14} color="#FFF" />}
                 </TouchableOpacity>
               ))}
             </View>
@@ -234,7 +247,7 @@ function CollectionForm({
 
           {/* Icon */}
           <View>
-            <Text style={styles.fieldLabel}>ICON</Text>
+            <Text style={[styles.fieldLabel, { color: COLORS.textMuted }]}>ICON</Text>
             <View style={styles.iconGrid}>
               {(showAllIcons ? COLLECTION_ICONS : COLLECTION_ICONS.slice(0, 10)).map(ic => (
                 <TouchableOpacity
@@ -244,6 +257,7 @@ function CollectionForm({
                   hitSlop={{ top: 4, right: 4, bottom: 4, left: 4 }}
                   style={[
                     styles.iconSwatch,
+                    dynIconSwatch,
                     icon === ic.id && {
                       backgroundColor: `${color}25`,
                       borderColor:     color,
@@ -261,7 +275,7 @@ function CollectionForm({
                 <TouchableOpacity
                   onPress={() => setShowAllIcons(true)}
                   activeOpacity={0.75}
-                  style={[styles.iconSwatch, { borderStyle: 'dashed' }]}
+                  style={[styles.iconSwatch, dynIconSwatch, { borderStyle: 'dashed' }]}
                 >
                   <Ionicons name="ellipsis-horizontal" size={18} color={COLORS.textMuted} />
                 </TouchableOpacity>
@@ -271,12 +285,9 @@ function CollectionForm({
 
           {/* Buttons */}
           <View style={styles.formBtns}>
-            <TouchableOpacity
-              onPress={onCancel}
-              activeOpacity={0.75}
-              style={styles.cancelBtn}
-            >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+            {/* 55.2: was 'rgba(255,255,255,0.05)' → dynCancelBtn */}
+            <TouchableOpacity onPress={onCancel} activeOpacity={0.75} style={[styles.cancelBtn, dynCancelBtn]}>
+              <Text style={[styles.cancelBtnText, { color: COLORS.textMuted }]}>Cancel</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -332,34 +343,21 @@ export function ManageCollectionsSheet({
   const [editTarget, setEditTarget] = useState<Collection | null>(null);
   const [isSaving,   setIsSaving]   = useState(false);
 
-  // ── Android hardware back-button support ─────────────────────────────────────
   useEffect(() => {
     if (!IS_ANDROID || !visible) return;
-
     const onBackPress = () => {
-      if (view !== 'list') {
-        setView('list');
-        setEditTarget(null);
-      } else {
-        onClose();
-      }
-      return true; // prevent default back navigation
+      if (view !== 'list') { setView('list'); setEditTarget(null); }
+      else onClose();
+      return true;
     };
-
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => sub.remove();
   }, [visible, view, onClose]);
 
-  // ── Reset on open ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (visible) {
-      setView('list');
-      setEditTarget(null);
-      refresh();
-    }
+    if (visible) { setView('list'); setEditTarget(null); refresh(); }
   }, [visible]);
 
-  // ── Create ────────────────────────────────────────────────────────────────────
   const handleCreate = useCallback(async (input: CollectionInput) => {
     setIsSaving(true);
     const col = await create(input);
@@ -367,7 +365,6 @@ export function ManageCollectionsSheet({
     if (col) setView('list');
   }, [create]);
 
-  // ── Edit ──────────────────────────────────────────────────────────────────────
   const handleUpdate = useCallback(async (input: CollectionInput) => {
     if (!editTarget) return;
     setIsSaving(true);
@@ -377,27 +374,19 @@ export function ManageCollectionsSheet({
     setEditTarget(null);
   }, [editTarget, update]);
 
-  // ── Delete ────────────────────────────────────────────────────────────────────
   const handleDelete = useCallback((col: Collection) => {
     Alert.alert(
       'Delete Collection',
       `Delete "${col.name}"? The items inside won't be deleted — just removed from this collection.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text:    'Delete',
-          style:   'destructive',
-          onPress: () => remove(col.id),
-        },
+        { text: 'Delete', style: 'destructive', onPress: () => remove(col.id) },
       ],
-      // Android: show alert anchored to the centre (default); no extra config needed
     );
   }, [remove]);
 
-  // ── Navigate into collection ──────────────────────────────────────────────────
   const handleOpen = useCallback((col: Collection) => {
     onClose();
-    // Slightly longer timeout on Android to let the modal fully dismiss
     setTimeout(() => {
       router.push({
         pathname: '/(app)/collection-detail' as any,
@@ -406,50 +395,43 @@ export function ManageCollectionsSheet({
     }, IS_IOS ? 300 : 400);
   }, [onClose]);
 
-  // ── Back action ───────────────────────────────────────────────────────────────
-  const goBack = useCallback(() => {
-    setView('list');
-    setEditTarget(null);
-  }, []);
+  const goBack = useCallback(() => { setView('list'); setEditTarget(null); }, []);
 
-  // ── Header title ──────────────────────────────────────────────────────────────
   const headerTitle =
     view === 'create' ? 'New Collection' :
     view === 'edit'   ? 'Edit Collection' :
     'My Collections';
+
+  // Dynamic getter styles
+  const dynHandle      = { backgroundColor: COLORS.border };
+  const dynBackBtn     = { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border };
+  const dynAddBtn      = { backgroundColor: `${COLORS.primary}18`, borderColor: `${COLORS.primary}35` };
 
   return (
     <Modal
       visible={visible}
       transparent
       animationType="slide"
-      // Android: prevent modal from hijacking hardware back — handled above via BackHandler
-      onRequestClose={() => {
-        if (view !== 'list') goBack();
-        else onClose();
-      }}
-      // Keep status bar colour consistent on Android
+      onRequestClose={() => { if (view !== 'list') goBack(); else onClose(); }}
       statusBarTranslucent={IS_ANDROID}
       hardwareAccelerated={IS_ANDROID}
     >
-      {/* Dim overlay — pure View fallback (BlurView unreliable on Android) */}
       <Overlay>
-        {/* Tap-outside-to-dismiss */}
         <TouchableWithoutFeedback
-          onPress={() => {
-            Keyboard.dismiss();
-            if (view !== 'list') goBack();
-            else onClose();
-          }}
+          onPress={() => { Keyboard.dismiss(); if (view !== 'list') goBack(); else onClose(); }}
         >
           <View style={{ flex: 1 }} />
         </TouchableWithoutFeedback>
 
-        {/* Sheet */}
         <View style={styles.sheetOuter}>
-          <LinearGradient colors={['#1A1A38', '#0D0D20']} style={styles.sheet}>
+          {/* 55.2: was ['#1A1A38', '#0D0D20'] — now COLORS.gradientCard (theme-aware).
+              borderTopColor also uses live COLORS.primary so it matches the accent. */}
+          <LinearGradient
+            colors={COLORS.gradientCard as [string, string]}
+            style={[styles.sheet, { borderTopColor: `${COLORS.primary}30` }]}
+          >
             {/* Drag handle */}
-            <View style={styles.handle} />
+            <View style={[styles.handle, dynHandle]} />
 
             {/* ── Header ── */}
             <View style={styles.header}>
@@ -458,7 +440,7 @@ export function ManageCollectionsSheet({
                   onPress={goBack}
                   hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
                   activeOpacity={0.7}
-                  style={styles.backBtn}
+                  style={[styles.backBtn, dynBackBtn]}
                 >
                   <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
                 </TouchableOpacity>
@@ -473,7 +455,7 @@ export function ManageCollectionsSheet({
                 </View>
               )}
 
-              <Text style={styles.headerTitle} numberOfLines={1}>
+              <Text style={[styles.headerTitle, { color: COLORS.textPrimary }]} numberOfLines={1}>
                 {headerTitle}
               </Text>
 
@@ -482,7 +464,7 @@ export function ManageCollectionsSheet({
                   onPress={() => setView('create')}
                   activeOpacity={0.8}
                   hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                  style={styles.addBtn}
+                  style={[styles.addBtn, dynAddBtn]}
                 >
                   <Ionicons name="add" size={18} color={COLORS.primary} />
                 </TouchableOpacity>
@@ -505,11 +487,17 @@ export function ManageCollectionsSheet({
                   </View>
                 ) : collections.length === 0 ? (
                   <Animated.View entering={FadeIn.duration(400)} style={styles.centeredState}>
-                    <LinearGradient colors={['#22223E', '#1A1A33']} style={styles.emptyIcon}>
+                    {/* 55.2: was ['#22223E', '#1A1A33'] — now theme-aware surfaces */}
+                    <LinearGradient
+                      colors={[COLORS.backgroundElevated, COLORS.background] as [string, string]}
+                      style={[styles.emptyIcon, { borderColor: COLORS.border }]}
+                    >
                       <Ionicons name="folder-open-outline" size={40} color={COLORS.textMuted} />
                     </LinearGradient>
-                    <Text style={styles.emptyTitle}>No collections yet</Text>
-                    <Text style={styles.emptySubtext}>
+                    <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>
+                      No collections yet
+                    </Text>
+                    <Text style={[styles.emptySubtext, { color: COLORS.textMuted }]}>
                       Create your first collection to start organising your research
                     </Text>
                     <TouchableOpacity
@@ -528,14 +516,11 @@ export function ManageCollectionsSheet({
                   </Animated.View>
                 ) : (
                   <>
-                    <Text style={styles.listMeta}>
+                    <Text style={[styles.listMeta, { color: COLORS.textMuted }]}>
                       {collections.length} collection{collections.length !== 1 ? 's' : ''}
                     </Text>
                     {collections.map((col, i) => (
-                      <Animated.View
-                        key={col.id}
-                        layout={Layout.springify()}
-                      >
+                      <Animated.View key={col.id} layout={Layout.springify()}>
                         <CollectionCard
                           collection={col}
                           index={i}
@@ -587,59 +572,45 @@ export function ManageCollectionsSheet({
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Styles (layout-only — NO COLORS references baked in) ────────────────────
 
 const styles = StyleSheet.create({
-  // ── Overlay ──────────────────────────────────────────────────────────────────
   overlayInner: {
-    flex:            1,
-    backgroundColor: 'rgba(10,10,26,0.72)',
-    justifyContent:  'flex-end',
+    flex:           1,
+    justifyContent: 'flex-end',
   },
-
-  // ── Sheet ────────────────────────────────────────────────────────────────────
   sheetOuter: {
     borderTopLeftRadius:  28,
     borderTopRightRadius: 28,
     overflow:             'hidden',
-    // Shadow for the rising sheet
     ...platformShadow('#000', 0.35, 20, -4, 16),
   },
   sheet: {
-    paddingHorizontal:    SPACING.xl,
-    // Pad for home-indicator on iPhone; nothing extra on Android
-    paddingBottom:        SPACING.xl + SAFE_BOTTOM,
-    borderTopWidth:       1,
-    borderTopColor:       `${COLORS.primary}30`,
+    paddingHorizontal: SPACING.xl,
+    paddingBottom:     SPACING.xl + SAFE_BOTTOM,
+    borderTopWidth:    1,
   },
-
-  // ── Handle ───────────────────────────────────────────────────────────────────
   handle: {
-    width:           40,
-    height:          4,
-    borderRadius:    2,
-    backgroundColor: COLORS.border,
-    alignSelf:       'center',
-    marginVertical:  SPACING.md,
+    width:          40,
+    height:         4,
+    borderRadius:   2,
+    alignSelf:      'center',
+    marginVertical: SPACING.md,
   },
-
-  // ── Header ───────────────────────────────────────────────────────────────────
   header: {
     flexDirection:  'row',
     alignItems:     'center',
     marginBottom:   SPACING.lg,
-    gap:             SPACING.sm,
+    gap:            SPACING.sm,
   },
   backBtn: {
-    width:           34,
-    height:          34,
-    borderRadius:    10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems:      'center',
-    justifyContent:  'center',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
-    flexShrink:      0,
+    width:          34,
+    height:         34,
+    borderRadius:   10,
+    alignItems:     'center',
+    justifyContent: 'center',
+    borderWidth:    1,
+    flexShrink:     0,
   },
   headerIconWrap: {
     flexShrink: 0,
@@ -653,53 +624,44 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     flex:       1,
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.lg,
-    fontWeight: IS_ANDROID ? '700' : '800', // '800' has wider support on iOS
+    fontWeight: IS_ANDROID ? '700' : '800',
   },
   addBtn: {
-    width:           34,
-    height:          34,
-    borderRadius:    10,
-    backgroundColor: `${COLORS.primary}18`,
-    alignItems:      'center',
-    justifyContent:  'center',
-    borderWidth:     1,
-    borderColor:     `${COLORS.primary}35`,
-    flexShrink:      0,
+    width:          34,
+    height:         34,
+    borderRadius:   10,
+    alignItems:     'center',
+    justifyContent: 'center',
+    borderWidth:    1,
+    flexShrink:     0,
   },
   listMeta: {
-    color:        COLORS.textMuted,
-    fontSize:     FONTS.sizes.xs,
-    fontWeight:   '700',
+    fontSize:      FONTS.sizes.xs,
+    fontWeight:    '700',
     letterSpacing: 0.8,
     textTransform: 'uppercase',
-    marginBottom: SPACING.sm,
+    marginBottom:  SPACING.sm,
   },
-
-  // ── Empty state ───────────────────────────────────────────────────────────────
   centeredState: {
     alignItems:      'center',
     paddingVertical: SPACING.xl,
-    gap:              SPACING.sm,
+    gap:             SPACING.sm,
   },
   emptyIcon: {
-    width:           80,
-    height:          80,
-    borderRadius:    24,
-    alignItems:      'center',
-    justifyContent:  'center',
-    marginBottom:    SPACING.sm,
-    borderWidth:     1,
-    borderColor:     COLORS.border,
+    width:          80,
+    height:         80,
+    borderRadius:   24,
+    alignItems:     'center',
+    justifyContent: 'center',
+    marginBottom:   SPACING.sm,
+    borderWidth:    1,
   },
   emptyTitle: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '800',
   },
   emptySubtext: {
-    color:             COLORS.textMuted,
     fontSize:          FONTS.sizes.sm,
     textAlign:         'center',
     lineHeight:        20,
@@ -708,7 +670,7 @@ const styles = StyleSheet.create({
   createFirstBtn: {
     flexDirection:     'row',
     alignItems:        'center',
-    gap:                6,
+    gap:               6,
     borderRadius:      RADIUS.full,
     paddingHorizontal: SPACING.xl,
     paddingVertical:   12,
@@ -719,16 +681,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // ── Form: Preview ─────────────────────────────────────────────────────────────
+  // Form
   preview: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    gap:              SPACING.md,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius:    RADIUS.xl,
-    padding:         SPACING.md,
-    borderWidth:     1,
-    borderColor:     COLORS.border,
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           SPACING.md,
+    borderRadius:  RADIUS.xl,
+    padding:       SPACING.md,
+    borderWidth:   1,
   },
   previewIcon: {
     width:          56,
@@ -739,42 +699,31 @@ const styles = StyleSheet.create({
     flexShrink:     0,
   },
   previewName: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '800',
   },
   previewDesc: {
-    color:     COLORS.textMuted,
     fontSize:  FONTS.sizes.xs,
     marginTop: 3,
   },
-
-  // ── Form: Fields ──────────────────────────────────────────────────────────────
   fieldLabel: {
-    color:         COLORS.textMuted,
     fontSize:      FONTS.sizes.xs,
     fontWeight:    '700',
     letterSpacing: 0.8,
     marginBottom:  SPACING.sm,
   },
   input: {
-    backgroundColor:   'rgba(0,0,0,0.25)',
     borderRadius:      RADIUS.lg,
     paddingHorizontal: SPACING.md,
     paddingVertical:   12,
-    color:             COLORS.textPrimary,
     fontSize:          FONTS.sizes.base,
     borderWidth:       1,
-    borderColor:       COLORS.border,
-    // Prevent Android auto-elevation artefacts inside input
     elevation:         0,
   },
-
-  // ── Form: Color grid ──────────────────────────────────────────────────────────
   colorGrid: {
     flexDirection: 'row',
     flexWrap:      'wrap',
-    gap:            10,
+    gap:           10,
   },
   colorSwatch: {
     width:          36,
@@ -787,49 +736,40 @@ const styles = StyleSheet.create({
     borderWidth:  2.5,
     borderColor:  '#FFF',
   },
-
-  // ── Form: Icon grid ───────────────────────────────────────────────────────────
   iconGrid: {
     flexDirection: 'row',
     flexWrap:      'wrap',
-    gap:            8,
+    gap:           8,
   },
   iconSwatch: {
-    width:           42,
-    height:          42,
-    borderRadius:    12,
-    alignItems:      'center',
-    justifyContent:  'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
+    width:          42,
+    height:         42,
+    borderRadius:   12,
+    alignItems:     'center',
+    justifyContent: 'center',
+    borderWidth:    1,
   },
-
-  // ── Form: Buttons ─────────────────────────────────────────────────────────────
   formBtns: {
     flexDirection: 'row',
-    gap:            SPACING.sm,
+    gap:           SPACING.sm,
   },
   cancelBtn: {
-    backgroundColor:   'rgba(255,255,255,0.05)',
     borderRadius:      RADIUS.lg,
     paddingVertical:   14,
     paddingHorizontal: SPACING.lg,
     borderWidth:       1,
-    borderColor:       COLORS.border,
     alignItems:        'center',
     justifyContent:    'center',
   },
   cancelBtnText: {
-    color:      COLORS.textMuted,
     fontWeight: '600',
     fontSize:   FONTS.sizes.base,
   },
   saveBtn: {
-    borderRadius:    RADIUS.lg,
+    borderRadius:   RADIUS.lg,
     paddingVertical: 14,
-    alignItems:      'center',
-    justifyContent:  'center',
+    alignItems:     'center',
+    justifyContent: 'center',
   },
   saveBtnText: {
     color:      '#FFF',

@@ -1,10 +1,33 @@
 // src/components/collections/CollectionCard.tsx
 // Part 35 — Collections: Card displayed in the list/grid
-// Part 50.8 — UI UPGRADE
-//   Restyled into the gradient/glass system shared with the History tab:
-//   gradient card body, color-tinted gradient icon, left accent rail, glass
-//   count badge, and a press-scale micro-interaction. All props and behaviour
-//   (onPress, onLongPress, showMenu, onEdit, onDelete) are unchanged.
+// Part 50.8 — UI UPGRADE (gradient/glass system)
+// Part 55.2 — FULL THEME-COMPATIBILITY PASS (including module-level style fix)
+//
+// WHY THIS FILE HAS GETTER-BASED STYLES
+//   StyleSheet.create() is evaluated ONCE at module import time, before the
+//   ThemeProvider has a chance to mutate COLORS. That means any color reference
+//   baked into a StyleSheet.create() call keeps its value from the first
+//   evaluation — so if the user switches themes, the card background/text/borders
+//   don't update even though every inline COLORS.x reference does.
+//
+//   The fix (used throughout DeepDive when a component has StyleSheet styles
+//   that reference COLORS): convert the affected StyleSheet entries to plain
+//   object getters — functions that re-read COLORS on every render — and merge
+//   them with the static part in the JSX. This is exactly the same technique
+//   used in theme.ts for module-level styles.
+//
+//   ONLY the entries that reference COLORS need to be converted; the ones that
+//   hold only layout values (padding, flexDirection, etc.) stay in StyleSheet.
+//
+// Part 55.2 specific changes vs Part 50.8:
+//   • cardGradient: was ['#16162F', '#101024'] → now COLORS.gradientCard (inline prop)
+//   • actionBtn background: was 'rgba(255,255,255,0.05)' → now getter-based COLORS.backgroundElevated
+//   • actionBtn borderColor: was rgba white → now COLORS.border
+//   • chevronWrap background: was 'rgba(255,255,255,0.04)' → getter-based COLORS.backgroundElevated
+//   • footer date text, name text, description text: now read live COLORS tokens
+//     (they were already using COLORS.x references but were in StyleSheet so needed
+//      the getter pattern to update on theme-switch)
+//   All props and behaviour unchanged.
 
 import React, { memo } from 'react';
 import {
@@ -21,13 +44,13 @@ import { Collection }    from '../../types/collections';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
 interface CollectionCardProps {
-  collection: Collection;
-  index:      number;
-  onPress:    () => void;
+  collection:  Collection;
+  index:       number;
+  onPress:     () => void;
   onLongPress?: () => void;
-  showMenu?:  boolean;
-  onEdit?:    () => void;
-  onDelete?:  () => void;
+  showMenu?:   boolean;
+  onEdit?:     () => void;
+  onDelete?:   () => void;
 }
 
 function CollectionCardComponent({
@@ -39,18 +62,60 @@ function CollectionCardComponent({
   onEdit,
   onDelete,
 }: CollectionCardProps) {
-  const color = collection.color ?? '#6C63FF';
+  const color = collection.color ?? COLORS.primary;
+
+  // ── Getter-based styles that must re-read COLORS on each render ─────────────
+  // These are plain objects (NOT cached by StyleSheet.create) so they always
+  // pick up the freshly-mutated COLORS values after a theme switch.
+
+  const dynActionBtn = {
+    backgroundColor: COLORS.backgroundElevated,
+    borderColor:     COLORS.border,
+  };
+
+  const dynChevronWrap = {
+    backgroundColor: COLORS.backgroundElevated,
+  };
+
+  const dynName = {
+    color: COLORS.textPrimary,
+  };
+
+  const dynDescription = {
+    color: COLORS.textSecondary,
+  };
+
+  const dynDescriptionMuted = {
+    color: COLORS.textMuted,
+  };
+
+  const dynDateText = {
+    color: COLORS.textMuted,
+  };
+
+  const dynCardBorder = {
+    borderColor: `${color}40`,
+  };
 
   return (
     <Animated.View entering={FadeInDown.duration(350).delay(Math.min(index, 8) * 55)}>
       <Pressable
         onPress={onPress}
         onLongPress={onLongPress}
-        style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm }]}
+        style={({ pressed }) => [
+          { transform: [{ scale: pressed ? 0.985 : 1 }], marginBottom: SPACING.sm },
+        ]}
       >
-        <View style={[styles.card, { borderColor: `${color}40` }]}>
-          <LinearGradient colors={['#16162F', '#101024']} style={styles.cardGradient}>
-            {/* Left accent rail */}
+        <View style={[styles.card, dynCardBorder]}>
+          {/* 55.2: was ['#16162F', '#101024'] — always dark-indigo. Now
+              COLORS.gradientCard which adapts to every theme (dark: deep surfaces;
+              light: white/pale grey). Applied as an inline prop so it re-reads
+              COLORS on every render. */}
+          <LinearGradient
+            colors={COLORS.gradientCard as [string, string]}
+            style={styles.cardGradient}
+          >
+            {/* Left accent rail — uses the collection's own color, always correct */}
             <LinearGradient
               colors={[color, `${color}44`]}
               style={styles.accentRail}
@@ -67,15 +132,15 @@ function CollectionCardComponent({
 
               {/* Text block */}
               <View style={styles.textBlock}>
-                <Text style={styles.name} numberOfLines={1}>
+                <Text style={[styles.name, dynName]} numberOfLines={1}>
                   {collection.name}
                 </Text>
                 {collection.description ? (
-                  <Text style={styles.description} numberOfLines={2}>
+                  <Text style={[styles.description, dynDescription]} numberOfLines={2}>
                     {collection.description}
                   </Text>
                 ) : (
-                  <Text style={styles.descriptionMuted} numberOfLines={1}>
+                  <Text style={[styles.descriptionMuted, dynDescriptionMuted]} numberOfLines={1}>
                     Tap to view items
                   </Text>
                 )}
@@ -88,20 +153,27 @@ function CollectionCardComponent({
                     <TouchableOpacity
                       onPress={onEdit}
                       hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                      style={styles.actionBtn}
+                      style={[styles.actionBtn, dynActionBtn]}
                     >
                       <Ionicons name="pencil-outline" size={15} color={COLORS.textSecondary} />
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={onDelete}
                       hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-                      style={[styles.actionBtn, { backgroundColor: `${COLORS.error}12`, borderColor: `${COLORS.error}30` }]}
+                      style={[
+                        styles.actionBtn,
+                        dynActionBtn,
+                        {
+                          backgroundColor: `${COLORS.error}12`,
+                          borderColor:     `${COLORS.error}30`,
+                        },
+                      ]}
                     >
                       <Ionicons name="trash-outline" size={15} color={COLORS.error} />
                     </TouchableOpacity>
                   </>
                 ) : (
-                  <View style={styles.chevronWrap}>
+                  <View style={[styles.chevronWrap, dynChevronWrap]}>
                     <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
                   </View>
                 )}
@@ -110,7 +182,10 @@ function CollectionCardComponent({
 
             {/* Footer: item count + date */}
             <View style={styles.footer}>
-              <View style={[styles.countBadge, { backgroundColor: `${color}18`, borderColor: `${color}35` }]}>
+              <View style={[
+                styles.countBadge,
+                { backgroundColor: `${color}18`, borderColor: `${color}35` },
+              ]}>
                 <Ionicons name="layers-outline" size={10} color={color} />
                 <Text style={[styles.countText, { color }]}>
                   {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
@@ -118,7 +193,7 @@ function CollectionCardComponent({
               </View>
               <View style={styles.dateWrap}>
                 <Ionicons name="time-outline" size={10} color={COLORS.textMuted} />
-                <Text style={styles.dateText}>
+                <Text style={[styles.dateText, dynDateText]}>
                   {new Date(collection.updatedAt).toLocaleDateString('en-US', {
                     month: 'short',
                     day:   'numeric',
@@ -135,7 +210,9 @@ function CollectionCardComponent({
 
 export const CollectionCard = memo(CollectionCardComponent);
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Styles ────────────────────────────────────────────────────────────────────
+// Only layout/structural values here — no COLORS references, since those need
+// the getter pattern above to stay reactive to theme changes.
 
 const styles = StyleSheet.create({
   card: {
@@ -145,7 +222,7 @@ const styles = StyleSheet.create({
     ...SHADOWS.small,
   },
   cardGradient: {
-    paddingLeft: 6,   // room for accent rail
+    paddingLeft: 6, // room for accent rail
   },
   accentRail: {
     position: 'absolute',
@@ -170,60 +247,57 @@ const styles = StyleSheet.create({
     ...SHADOWS.small,
   },
   textBlock: {
-    flex:    1,
+    flex:     1,
     minWidth: 0,
-    gap:     4,
+    gap:      4,
   },
+  // 55.2: color values moved to getter pattern above — only non-color props here
   name: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '800',
     letterSpacing: -0.2,
   },
   description: {
-    color:      COLORS.textSecondary,
-    fontSize:   FONTS.sizes.xs,
+    fontSize:  FONTS.sizes.xs,
     lineHeight: 17,
   },
   descriptionMuted: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
   },
   actions: {
     alignItems:     'center',
-    gap:             6,
+    gap:            6,
     justifyContent: 'center',
     flexShrink:     0,
   },
+  // 55.2: backgroundColor and borderColor moved to dynActionBtn getter above
   actionBtn: {
     width:          30,
     height:         30,
-    borderRadius:    9,
+    borderRadius:   9,
     alignItems:     'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth:     1,
-    borderColor:     COLORS.border,
+    borderWidth:    1,
   },
+  // 55.2: backgroundColor moved to dynChevronWrap getter above
   chevronWrap: {
     width:          30,
     height:         30,
-    borderRadius:    9,
+    borderRadius:   9,
     alignItems:     'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
   },
   footer: {
-    flexDirection:  'row',
-    alignItems:     'center',
-    justifyContent: 'space-between',
+    flexDirection:     'row',
+    alignItems:        'center',
+    justifyContent:    'space-between',
     paddingHorizontal: SPACING.md,
-    paddingBottom:   SPACING.sm,
+    paddingBottom:     SPACING.sm,
   },
   countBadge: {
     flexDirection:     'row',
     alignItems:        'center',
-    gap:                4,
+    gap:               4,
     borderRadius:      RADIUS.full,
     paddingHorizontal: 9,
     paddingVertical:   4,
@@ -238,8 +312,8 @@ const styles = StyleSheet.create({
     alignItems:    'center',
     gap:           4,
   },
+  // 55.2: color moved to dynDateText getter above
   dateText: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
   },
 });
