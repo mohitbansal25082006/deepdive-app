@@ -30,6 +30,22 @@
 //   are plain strings recomputed each render → recolor on theme change, and they
 //   are passed as backgroundColor (not via a COLORS-object reference), so no
 //   worklet captures the singleton.
+//
+// ── DUPLICATE KEY FIX ─────────────────────────────────────────────────────────
+//   Root cause: `groupedSuggestions` was pushing a "remaining" catch-all bucket
+//   with source='trending' — colliding with any real trending group. Additionally
+//   suggestions with auto-generated IDs like `trending_0` could appear in
+//   multiple render paths simultaneously (grouped + flat fallback).
+//
+//   Fixes applied:
+//     1. `groupedSuggestions` deduplicates via a shared `seen` Set so `remaining`
+//        truly contains only items not already emitted. The catch-all bucket now
+//        uses source='other' to prevent key collision with a real trending group.
+//     2. Group container keys use `${source}-${gi}` (dash separator) instead of
+//        concatenation, and are further suffixed with the first item's id to be
+//        globally unique even if the same source appears twice.
+//     3. The flat (non-grouped) render path deduplicates the suggestions array
+//        before mapping, as a belt-and-suspenders guard.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -125,83 +141,14 @@ const SOURCE_HEADER: Record<string, string> = {
   recent:   '🕐  Recently Researched',
   followup: '💡  AI Follow-up Angles',
   trending: '🔥  Trending Topics',
+  other:    '🔥  More Topics',
 };
-
-// ─── Floating Orb Component ───────────────────────────────────────────────────
-// Pure Reanimated, no BlurView. Each orb drifts on a unique path. `color` is a
-// plain rgba string (theme-derived) — no COLORS object reference is captured.
-
-function FloatingOrb({
-  size, color, x, y, driftX, driftY, duration, delay,
-}: {
-  size: number; color: string; x: number; y: number;
-  driftX: number; driftY: number; duration: number; delay: number;
-}) {
-  const translateX = useSharedValue(0);
-  const translateY = useSharedValue(0);
-  const opacity    = useSharedValue(0);
-
-  useEffect(() => {
-    opacity.value = withDelay(delay, withTiming(1, { duration: 1200 }));
-    translateX.value = withDelay(
-      delay,
-      withRepeat(
-        withSequence(
-          withTiming(driftX,  { duration, easing: Easing.inOut(Easing.sin) }),
-          withTiming(-driftX, { duration, easing: Easing.inOut(Easing.sin) }),
-        ),
-        -1, true,
-      ),
-    );
-    translateY.value = withDelay(
-      delay + duration * 0.3,
-      withRepeat(
-        withSequence(
-          withTiming(driftY,  { duration: duration * 1.3, easing: Easing.inOut(Easing.sin) }),
-          withTiming(-driftY, { duration: duration * 1.3, easing: Easing.inOut(Easing.sin) }),
-        ),
-        -1, true,
-      ),
-    );
-    return () => {
-      cancelAnimation(translateX);
-      cancelAnimation(translateY);
-      cancelAnimation(opacity);
-    };
-  }, []);
-
-  const style = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-    ],
-    opacity: opacity.value,
-  }));
-
-  return (
-    <Animated.View
-      style={[
-        {
-          position:     'absolute',
-          left:         x - size / 2,
-          top:          y - size / 2,
-          width:        size,
-          height:       size,
-          borderRadius: size / 2,
-          backgroundColor: color,
-          pointerEvents: 'none',
-        },
-        style,
-      ]}
-    />
-  );
-}
 
 // ─── Breathing dot ────────────────────────────────────────────────────────────
 function BreathingDot({ color }: { color?: string }) {
   const dotColor = color ?? COLORS.accent;
-  const scale   = useSharedValue(1);
-  const opacity = useSharedValue(0.6);
+  const scale    = useSharedValue(1);
+  const opacity  = useSharedValue(0.6);
 
   useEffect(() => {
     scale.value = withRepeat(
@@ -371,12 +318,12 @@ export default function HomeScreen() {
   // recolor immediately on a theme change.
   useTheme();
 
-  const [query,            setQuery]            = useState('');
-  const [isRecording,      setIsRecording]      = useState(false);
-  const [recordingMs,      setRecordingMs]      = useState(0);
-  const [transcribing,     setTranscribing]     = useState(false);
-  const [cachedCount,      setCachedCount]      = useState(0);
-  const [placeholderIdx,   setPlaceholderIdx]   = useState(0);
+  const [query,          setQuery]          = useState('');
+  const [isRecording,    setIsRecording]    = useState(false);
+  const [recordingMs,    setRecordingMs]    = useState(0);
+  const [transcribing,   setTranscribing]   = useState(false);
+  const [cachedCount,    setCachedCount]    = useState(0);
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
 
   const firstName = profile?.full_name?.split(' ')[0] || 'Researcher';
 
@@ -521,20 +468,43 @@ export default function HomeScreen() {
   };
 
   // ── Grouped suggestions ────────────────────────────────────────────────────
+  // FIX: Use a single shared `seen` Set across the entire grouping pass so that
+  // the catch-all bucket only receives items genuinely not emitted yet. The
+  // catch-all uses source='other' to avoid key collision with a real 'trending'
+  // group. Group container keys include the first item's id as a collision-proof
+  // suffix even when the same source string appears more than once.
   const groupedSuggestions = React.useMemo(() => {
-    const groups: { source: string; items: typeof suggestions }[] = [];
+    type Group = { source: string; items: typeof suggestions };
+    const groups: Group[] = [];
     const seen = new Set<string>();
     const order = ['affinity', 'followup', 'recent', 'trending'];
+
     order.forEach(source => {
-      const items = suggestions.filter(s => s.source === source);
+      const items = suggestions.filter(s => s.source === source && !seen.has(s.id));
       if (items.length > 0) {
-        groups.push({ source, items });
         items.forEach(s => seen.add(s.id));
+        groups.push({ source, items });
       }
     });
+
+    // Catch-all: anything not covered by the ordered sources.
+    // Use 'other' as source to avoid colliding with the real 'trending' group.
     const remaining = suggestions.filter(s => !seen.has(s.id));
-    if (remaining.length > 0) groups.push({ source: 'trending', items: remaining });
+    if (remaining.length > 0) {
+      groups.push({ source: 'other', items: remaining });
+    }
+
     return groups;
+  }, [suggestions]);
+
+  // Belt-and-suspenders: deduplicated flat list for the non-grouped render path.
+  const uniqueSuggestions = React.useMemo(() => {
+    const seen = new Set<string>();
+    return suggestions.filter(s => {
+      if (seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
   }, [suggestions]);
 
   // ── Tab bar height ─────────────────────────────────────────────────────────
@@ -543,25 +513,6 @@ export default function HomeScreen() {
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-
-      {/* ── Animated orb background (theme-tinted) ──────────────────────── */}
-      <View style={{ ...StyleSheet.absoluteFillObject, overflow: 'hidden', pointerEvents: 'none' }}>
-        <FloatingOrb
-          size={260} color={hexWithAlpha(COLORS.primary, 0.13)}
-          x={-40} y={60} driftX={30} driftY={20}
-          duration={7000} delay={0}
-        />
-        <FloatingOrb
-          size={200} color={hexWithAlpha(COLORS.secondary, 0.10)}
-          x={SCREEN_W + 20} y={180} driftX={-25} driftY={35}
-          duration={9000} delay={800}
-        />
-        <FloatingOrb
-          size={180} color={hexWithAlpha(COLORS.accent, 0.08)}
-          x={SCREEN_W * 0.55} y={500} driftX={20} driftY={-30}
-          duration={11000} delay={400}
-        />
-      </View>
 
       <SafeAreaView style={{ flex: 1 }}>
         <ScrollView
@@ -770,11 +721,11 @@ export default function HomeScreen() {
                   <Animated.Text
                     style={[
                       {
-                        position:  'absolute',
-                        left:      0,
-                        right:     0,
-                        color:     COLORS.textMuted,
-                        fontSize:  FONTS.sizes.sm,
+                        position:      'absolute',
+                        left:          0,
+                        right:         0,
+                        color:         COLORS.textMuted,
+                        fontSize:      FONTS.sizes.sm,
                         pointerEvents: 'none',
                       },
                       placeholderStyle,
@@ -1091,38 +1042,58 @@ export default function HomeScreen() {
             {/* Loading skeletons */}
             {suggestionsLoading && suggestions.length === 0 && (
               [0, 80, 160, 240].map(delay => (
-                <SkeletonCard key={delay} delay={delay} />
+                <SkeletonCard key={`skeleton-${delay}`} delay={delay} />
               ))
             )}
 
-            {/* Suggestion cards */}
+            {/* Suggestion cards
+                ─────────────────────────────────────────────────────────────
+                GROUPED PATH (personalized + multiple groups):
+                  - Group container key: `group-${source}-${gi}-${firstItemId}`
+                    Three-part key guarantees uniqueness even if the same source
+                    appears twice (gi differentiates) and even if gi resets
+                    across re-renders (firstItemId differentiates).
+                  - Card key: `${source}-${suggestion.id}` — namespaces the card
+                    id under its group so two groups with colliding raw ids can't
+                    produce duplicate React keys.
+
+                FLAT PATH (non-personalized or single group):
+                  - Uses `uniqueSuggestions` which has already been deduplicated
+                    by the useMemo above.
+                  - Card key: `flat-${suggestion.id}` — namespaced to avoid
+                    collision if this path ever coexists with the grouped path
+                    in the same render tree (it doesn't today, but future-proof).
+            */}
             {(!suggestionsLoading || suggestions.length > 0) ? (
               isPersonalized && groupedSuggestions.length > 1 ? (
-                groupedSuggestions.map((group, gi) => (
-                  <View key={group.source + gi}>
-                    {gi > 0 && (
-                      <SectionLabel
-                        text={SOURCE_HEADER[group.source] ?? group.source}
-                        delay={0}
-                      />
-                    )}
-                    {group.items.map((suggestion, si) => (
-                      <Animated.View
-                        key={suggestion.id}
-                        entering={FadeInDown.springify().delay(si * 60).damping(14).stiffness(100)}
-                      >
-                        <PersonalizedSuggestionCard
-                          suggestion={suggestion}
-                          onPress={handleSearch}
+                groupedSuggestions.map((group, gi) => {
+                  const firstItemId = group.items[0]?.id ?? gi;
+                  return (
+                    <View key={`group-${group.source}-${gi}-${firstItemId}`}>
+                      {gi > 0 && (
+                        <SectionLabel
+                          text={SOURCE_HEADER[group.source] ?? group.source}
+                          delay={0}
                         />
-                      </Animated.View>
-                    ))}
-                  </View>
-                ))
+                      )}
+                      {group.items.map((suggestion, si) => (
+                        <Animated.View
+                          key={`${group.source}-${suggestion.id}`}
+                          entering={FadeInDown.springify().delay(si * 60).damping(14).stiffness(100)}
+                        >
+                          <PersonalizedSuggestionCard
+                            suggestion={suggestion}
+                            onPress={handleSearch}
+                          />
+                        </Animated.View>
+                      ))}
+                    </View>
+                  );
+                })
               ) : (
-                suggestions.map((suggestion, si) => (
+                uniqueSuggestions.map((suggestion, si) => (
                   <Animated.View
-                    key={suggestion.id}
+                    key={`flat-${suggestion.id}`}
                     entering={FadeInDown.springify().delay(si * 60).damping(14).stiffness(100)}
                   >
                     <PersonalizedSuggestionCard
@@ -1140,11 +1111,3 @@ export default function HomeScreen() {
     </View>
   );
 }
-
-// Inline StyleSheet to avoid module-level import cycle issues
-const StyleSheet = {
-  absoluteFillObject: {
-    position: 'absolute' as const,
-    top: 0, left: 0, right: 0, bottom: 0,
-  },
-};

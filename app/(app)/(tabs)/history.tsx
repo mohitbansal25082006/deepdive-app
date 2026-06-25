@@ -491,9 +491,8 @@ export default function HistoryScreen() {
           {/* ═══════════ 0 · HEADER (scrolls away) ═══════════ */}
           <Animated.View entering={FadeIn.duration(500)}>
             <LinearGradient colors={headerBg()} style={{ paddingBottom: SPACING.sm }}>
-              <View pointerEvents="none" style={{ position: 'absolute', top: -40, right: -30, width: 140, height: 140, borderRadius: 70, backgroundColor: `${COLORS.primary}1A` }} />
-              <View pointerEvents="none" style={{ position: 'absolute', top: 10, left: -40, width: 120, height: 120, borderRadius: 60, backgroundColor: `${COLORS.secondary}12` }} />
-
+              {/* Removed background circles */}
+              
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.xl, paddingTop: SPACING.md, paddingBottom: SPACING.sm, gap: SPACING.md }}>
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '900', lineHeight: 28, letterSpacing: -0.4 }} numberOfLines={1}>Research History</Text>

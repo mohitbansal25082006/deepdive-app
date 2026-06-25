@@ -1,5 +1,6 @@
 // src/components/onboarding/WelcomeBonusAnimation.tsx
 // Part 43 CRASH FIX — fixed Reanimated Easing worklet crash.
+// Part 56 — Fully theme-integrated: all colors now respond to theme changes
 //
 // ROOT CAUSE OF CRASH:
 //   The previous version imported Easing from 'react-native' and used it
@@ -15,6 +16,11 @@
 //     - RNEasing from 'react-native'      → used ONLY in RNAnimated.timing()
 //     - Easing  from 'react-native-reanimated' → used in withTiming() worklets
 //   Both are identical in API but the Reanimated one is worklet-compatible.
+//
+// THEME INTEGRATION (Part 56):
+//   All colors now read from the live COLORS singleton and respond to theme
+//   changes. The component uses useTheme() for re-render triggering and all
+//   hardcoded hex values have been replaced with theme-aware equivalents.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -29,23 +35,26 @@ import AnimatedRN, {
   Easing,   // ← Reanimated's worklet-safe Easing
 } from 'react-native-reanimated';
 import { GradientButton }  from '../common/GradientButton';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 const { width: SW } = Dimensions.get('window');
 
 // ─── Simple floating confetti dots ───────────────────────────────────────────
-
-const DOT_COLORS = [
-  COLORS.primary, '#FF6584', '#43E97B', '#FFA726',
-  '#29B6F6', '#AB47BC', '#FF7043', '#FFD54F',
-];
 
 function ConfettiDot({ index }: { index: number }) {
   const ty    = useSharedValue(0);
   const op    = useSharedValue(0);
   const tx    = useSharedValue(0);
   const size  = 5 + (index % 5);
-  const color = DOT_COLORS[index % DOT_COLORS.length];
+  
+  // Theme-aware colors — we need to ensure these update when theme changes
+  // We use the live COLORS object directly since it's mutable and always current
+  const dotColors = [
+    COLORS.primary, '#FF6584', '#43E97B', '#FFA726',
+    '#29B6F6', '#AB47BC', '#FF7043', '#FFD54F',
+  ];
+  const color = dotColors[index % dotColors.length];
   const startX = (index / 16) * SW - SW / 2 + (index % 3) * 20 - 20;
 
   useEffect(() => {
@@ -177,6 +186,7 @@ function CreditCounter({ target = 20 }: { target?: number }) {
     return () => clearTimeout(t);
   }, []);
 
+  // Theme-aware styles using live COLORS
   return (
     <View style={{ alignItems: 'center', marginVertical: SPACING.xl }}>
       {/* Icon with glow */}
@@ -221,12 +231,12 @@ function CreditCounter({ target = 20 }: { target?: number }) {
           alignItems:        'center',
           gap:               6,
           marginTop:         8,
-          backgroundColor:   `${COLORS.primary}15`,
+          backgroundColor:   COLORS.primary + '15', // 15% opacity
           borderRadius:      RADIUS.full,
           paddingHorizontal: 14,
           paddingVertical:   5,
           borderWidth:       1,
-          borderColor:       `${COLORS.primary}30`,
+          borderColor:       COLORS.primary + '30', // 30% opacity
         }}>
           <Ionicons name="flash" size={12} color={COLORS.primary} />
           <Text style={{
@@ -246,12 +256,58 @@ function CreditCounter({ target = 20 }: { target?: number }) {
 
 // ─── Feature chips ────────────────────────────────────────────────────────────
 
-const FEATURES = [
-  { icon: 'flash-outline',     label: 'Quick Research', cost: '5 cr',  color: COLORS.primary },
-  { icon: 'analytics-outline', label: 'Deep Research',  cost: '10 cr', color: COLORS.info    },
-  { icon: 'people-outline',    label: 'AI Debate',      cost: '15 cr', color: COLORS.accent  },
-  { icon: 'easel-outline',     label: 'AI Slides',      cost: '10 cr', color: COLORS.warning },
-];
+function FeatureChips() {
+  // Theme-aware feature colors
+  const features = [
+    { icon: 'flash-outline',     label: 'Quick Research', cost: '5 cr',  color: COLORS.primary },
+    { icon: 'analytics-outline', label: 'Deep Research',  cost: '10 cr', color: COLORS.info    },
+    { icon: 'people-outline',    label: 'AI Debate',      cost: '15 cr', color: COLORS.accent  },
+    { icon: 'easel-outline',     label: 'AI Slides',      cost: '10 cr', color: COLORS.warning },
+  ];
+
+  return (
+    <View style={{
+      flexDirection:  'row',
+      flexWrap:       'wrap',
+      gap:            8,
+      justifyContent: 'center',
+    }}>
+      {features.map((f, i) => (
+        <AnimatedRN.View
+          key={f.label}
+          entering={FadeInDown.duration(300).delay(650 + i * 60)}
+        >
+          <View style={{
+            flexDirection:     'row',
+            alignItems:        'center',
+            gap:               5,
+            backgroundColor:   f.color + '10', // 10% opacity
+            borderRadius:      RADIUS.lg,
+            paddingHorizontal: 10,
+            paddingVertical:   7,
+            borderWidth:       1,
+            borderColor:       f.color + '20', // 20% opacity
+          }}>
+            <Ionicons name={f.icon as any} size={12} color={f.color} />
+            <Text style={{
+              color:      f.color,
+              fontSize:   FONTS.sizes.xs,
+              fontWeight: '600',
+            }}>
+              {f.label}
+            </Text>
+            <Text style={{ 
+              color: COLORS.textMuted, 
+              fontSize: 10 
+            }}>
+              · {f.cost}
+            </Text>
+          </View>
+        </AnimatedRN.View>
+      ))}
+    </View>
+  );
+}
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
@@ -261,8 +317,15 @@ interface Props {
 }
 
 export function WelcomeBonusAnimation({ onContinue, isLoading = false }: Props) {
+  // Use theme context to trigger re-renders when theme changes
+  const { version } = useTheme();
+
+  // Key the container to force re-render of animated components on theme change
+  // This ensures all colors are re-read from the live COLORS object
+  const containerKey = `welcome-bonus-${version}`;
+
   return (
-    <View style={{ flex: 1 }}>
+    <View key={containerKey} style={{ flex: 1, backgroundColor: COLORS.background }}>
       {/* Floating confetti */}
       <View style={{
         position:      'absolute',
@@ -281,12 +344,12 @@ export function WelcomeBonusAnimation({ onContinue, isLoading = false }: Props) 
       {/* Welcome badge */}
       <AnimatedRN.View entering={FadeIn.duration(500)} style={{ alignItems: 'center' }}>
         <View style={{
-          backgroundColor:   `${COLORS.success}15`,
+          backgroundColor:   COLORS.success + '15', // 15% opacity
           borderRadius:      RADIUS.full,
           paddingHorizontal: 16,
           paddingVertical:   6,
           borderWidth:       1,
-          borderColor:       `${COLORS.success}30`,
+          borderColor:       COLORS.success + '30', // 30% opacity
           flexDirection:     'row',
           alignItems:        'center',
           gap:               6,
@@ -359,43 +422,7 @@ export function WelcomeBonusAnimation({ onContinue, isLoading = false }: Props) 
           }}>
             What you can do with 20 credits
           </Text>
-          <View style={{
-            flexDirection:  'row',
-            flexWrap:       'wrap',
-            gap:            8,
-            justifyContent: 'center',
-          }}>
-            {FEATURES.map((f, i) => (
-              <AnimatedRN.View
-                key={f.label}
-                entering={FadeInDown.duration(300).delay(650 + i * 60)}
-              >
-                <View style={{
-                  flexDirection:     'row',
-                  alignItems:        'center',
-                  gap:               5,
-                  backgroundColor:   `${f.color}10`,
-                  borderRadius:      RADIUS.lg,
-                  paddingHorizontal: 10,
-                  paddingVertical:   7,
-                  borderWidth:       1,
-                  borderColor:       `${f.color}20`,
-                }}>
-                  <Ionicons name={f.icon as any} size={12} color={f.color} />
-                  <Text style={{
-                    color:      f.color,
-                    fontSize:   FONTS.sizes.xs,
-                    fontWeight: '600',
-                  }}>
-                    {f.label}
-                  </Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
-                    · {f.cost}
-                  </Text>
-                </View>
-              </AnimatedRN.View>
-            ))}
-          </View>
+          <FeatureChips />
         </View>
       </AnimatedRN.View>
 

@@ -1,8 +1,11 @@
 // app/(app)/profile-setup.tsx
 // Profile Setup — shown ONLY ONCE to new users after registration.
 // FIXED: Duplicate username shows "Username already taken" instead of raw DB error.
+// UPGRADED: Full theme integration with animated transitions and modern UI
+// FIXED: Step 3 content now displays correctly
+// FIXED: pickImage function reference error
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +13,9 @@ import {
   TouchableOpacity,
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
 } from 'react-native';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -18,7 +24,13 @@ import * as ImagePicker from 'expo-image-picker';
 import Animated, {
   FadeIn,
   FadeInDown,
-  SlideInRight,
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSpring,
+  withSequence,
+  withRepeat,
+  Easing,
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
@@ -26,7 +38,8 @@ import { useProfile } from '../../src/hooks/useProfile';
 import { AnimatedInput } from '../../src/components/common/AnimatedInput';
 import { GradientButton } from '../../src/components/common/GradientButton';
 import { LoadingOverlay } from '../../src/components/common/LoadingOverlay';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 const INTEREST_OPTIONS = [
   'Technology', 'Science', 'Business', 'Finance', 'Health',
@@ -34,9 +47,367 @@ const INTEREST_OPTIONS = [
   'Education', 'Sports', 'Entertainment', 'Travel', 'Food',
 ];
 
+// ─── Step Indicator ───────────────────────────────────────────────────────────
+
+function StepIndicator({ currentStep, totalSteps }: { currentStep: number; totalSteps: number }) {
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginVertical: SPACING.md }}>
+      {Array.from({ length: totalSteps }).map((_, index) => {
+        const isActive = index + 1 === currentStep;
+        const isCompleted = index + 1 < currentStep;
+        return (
+          <View
+            key={index}
+            style={{
+              width: isActive ? 32 : 8,
+              height: 8,
+              borderRadius: 4,
+              backgroundColor: isCompleted || isActive ? COLORS.primary : COLORS.border,
+              opacity: isActive ? 1 : isCompleted ? 0.8 : 0.3,
+            }}
+          />
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── Interest Chip ────────────────────────────────────────────────────────────
+
+function InterestChip({
+  label,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const scale = useSharedValue(1);
+
+  const handlePress = () => {
+    scale.value = withSequence(
+      withTiming(0.92, { duration: 100 }),
+      withTiming(1, { duration: 100, easing: Easing.out(Easing.quad) }),
+    );
+    onToggle();
+  };
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <TouchableOpacity
+        onPress={handlePress}
+        activeOpacity={0.7}
+        style={{
+          paddingHorizontal: 16,
+          paddingVertical: 10,
+          borderRadius: RADIUS.full,
+          backgroundColor: selected ? COLORS.primary : COLORS.backgroundCard,
+          borderWidth: 1.5,
+          borderColor: selected ? COLORS.primary : COLORS.border,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          ...SHADOWS.small,
+          shadowOpacity: selected ? 0.2 : 0,
+        }}
+      >
+        {selected && <Ionicons name="checkmark-circle" size={14} color="#FFF" />}
+        <Text style={{
+          color: selected ? '#FFFFFF' : COLORS.textSecondary,
+          fontSize: FONTS.sizes.sm,
+          fontWeight: selected ? '600' : '400',
+        }}>
+          {label}
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// ─── Avatar Picker ────────────────────────────────────────────────────────────
+
+function AvatarPicker({
+  avatarUri,
+  onPickImage,
+}: {
+  avatarUri: string | null;
+  onPickImage: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const pulse = useSharedValue(1);
+
+  React.useEffect(() => {
+    pulse.value = withRepeat(
+      withSequence(
+        withTiming(1.05, { duration: 2000 }),
+        withTiming(1, { duration: 2000 }),
+      ),
+      -1,
+      true,
+    );
+  }, []);
+
+  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  const handlePress = () => {
+    scale.value = withSequence(
+      withTiming(0.92, { duration: 150 }),
+      withSpring(1, { damping: 12, stiffness: 150 }),
+    );
+    onPickImage();
+  };
+
+  return (
+    <TouchableOpacity onPress={handlePress} activeOpacity={0.8}>
+      <Animated.View style={animatedStyle}>
+        {avatarUri ? (
+          <View>
+            <Image
+              source={{ uri: avatarUri }}
+              style={{
+                width: 140,
+                height: 140,
+                borderRadius: 70,
+                borderWidth: 4,
+                borderColor: COLORS.primary,
+                ...SHADOWS.medium,
+              }}
+            />
+            <Animated.View style={[{
+              position: 'absolute',
+              bottom: 4,
+              right: 4,
+              backgroundColor: COLORS.primary,
+              borderRadius: 20,
+              padding: 10,
+              borderWidth: 2,
+              borderColor: COLORS.background,
+              ...SHADOWS.small,
+            }, pulseStyle]}>
+              <Ionicons name="camera" size={20} color="#FFF" />
+            </Animated.View>
+          </View>
+        ) : (
+          <View style={{
+            width: 140,
+            height: 140,
+            borderRadius: 70,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: 2,
+            borderColor: COLORS.border,
+            borderStyle: 'dashed',
+            backgroundColor: COLORS.backgroundCard,
+            ...SHADOWS.medium,
+            shadowOpacity: 0.1,
+          }}>
+            <Ionicons name="person-add-outline" size={48} color={COLORS.textMuted} />
+            <Text style={{
+              color: COLORS.textMuted,
+              fontSize: FONTS.sizes.xs,
+              marginTop: 8,
+              fontWeight: '500',
+            }}>
+              Tap to upload
+            </Text>
+          </View>
+        )}
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── Step content components ──────────────────────────────────────────────────
+
+function Step1Content({
+  username, setUsername,
+  occupation, setOccupation,
+  bio, setBio,
+  errors, setErrors,
+}: any) {
+  return (
+    <View>
+      <Text style={[stepStyles.title, { color: COLORS.textPrimary }]}>
+        Basic Information
+      </Text>
+      <Text style={[stepStyles.subtitle, { color: COLORS.textSecondary }]}>
+        Let's start with the basics
+      </Text>
+
+      <AnimatedInput
+        label="Username"
+        value={username}
+        onChangeText={(text: string) => {
+          setUsername(text.toLowerCase().replace(/\s/g, ''));
+          setErrors({});
+        }}
+        autoCapitalize="none"
+        autoCorrect={false}
+        leftIcon="at"
+        error={errors.username}
+        placeholder="Choose a unique username"
+        returnKeyType="next"
+      />
+
+      <AnimatedInput
+        label="Occupation (optional)"
+        value={occupation}
+        onChangeText={setOccupation}
+        leftIcon="briefcase-outline"
+        placeholder="e.g., Software Engineer, Student"
+        returnKeyType="next"
+      />
+
+      <AnimatedInput
+        label="Bio (optional)"
+        value={bio}
+        onChangeText={setBio}
+        leftIcon="document-text-outline"
+        multiline
+        numberOfLines={3}
+        placeholder="Tell us a bit about yourself..."
+        style={{
+          minHeight: 80,
+          textAlignVertical: 'top',
+        }}
+        returnKeyType="done"
+        blurOnSubmit
+      />
+    </View>
+  );
+}
+
+function Step2Content({ avatarUri, onPickImage }: any) {
+  return (
+    <View style={{ alignItems: 'center' }}>
+      <Text style={[stepStyles.title, { color: COLORS.textPrimary, textAlign: 'center' }]}>
+        Profile Photo
+      </Text>
+      <Text style={[stepStyles.subtitle, { color: COLORS.textSecondary, textAlign: 'center' }]}>
+        Add a photo to personalise your profile
+      </Text>
+
+      <AvatarPicker avatarUri={avatarUri} onPickImage={onPickImage} />
+
+      <View style={{
+        marginTop: SPACING.xl,
+        padding: SPACING.md,
+        backgroundColor: COLORS.backgroundCard,
+        borderRadius: RADIUS.lg,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        width: '100%',
+      }}>
+        <Text style={{
+          color: COLORS.textMuted,
+          fontSize: FONTS.sizes.xs,
+          textAlign: 'center',
+          lineHeight: 18,
+        }}>
+          💡 Tip: A clear, professional photo helps build trust with other researchers
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function Step3Content({ selectedInterests, toggleInterest }: any) {
+  return (
+    <View>
+      <Text style={[stepStyles.title, { color: COLORS.textPrimary }]}>
+        Your Interests
+      </Text>
+      <Text style={[stepStyles.subtitle, { color: COLORS.textSecondary }]}>
+        Select topics you want to research. This helps personalise your experience.
+      </Text>
+
+      <View style={{
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+        marginTop: SPACING.md,
+      }}>
+        {INTEREST_OPTIONS.map((interest) => (
+          <InterestChip
+            key={interest}
+            label={interest}
+            selected={selectedInterests.includes(interest)}
+            onToggle={() => toggleInterest(interest)}
+          />
+        ))}
+      </View>
+
+      {selectedInterests.length > 0 && (
+        <Animated.View
+          entering={FadeInDown.duration(300)}
+          style={{
+            marginTop: SPACING.lg,
+            padding: SPACING.md,
+            backgroundColor: COLORS.primary + '10',
+            borderRadius: RADIUS.lg,
+            borderWidth: 1,
+            borderColor: COLORS.primary + '20',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Text style={{
+            color: COLORS.primary,
+            fontSize: FONTS.sizes.sm,
+            fontWeight: '600',
+          }}>
+            {selectedInterests.length} interest{selectedInterests.length !== 1 ? 's' : ''} selected
+          </Text>
+          <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />
+        </Animated.View>
+      )}
+    </View>
+  );
+}
+
+// ─── Step Transition Component ──────────────────────────────────────────────
+
+function StepTransition({ step, children }: { step: number; children: React.ReactNode }) {
+  const opacity = useSharedValue(0);
+  const translateY = useSharedValue(20);
+
+  useEffect(() => {
+    // Animate in when step changes
+    opacity.value = withTiming(1, { duration: 300, easing: Easing.out(Easing.cubic) });
+    translateY.value = withSpring(0, { damping: 18, stiffness: 120, mass: 0.8 });
+    
+    // Cleanup function to reset animation values when unmounting
+    return () => {
+      opacity.value = 0;
+      translateY.value = 20;
+    };
+  }, [step]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ translateY: translateY.value }],
+  }));
+
+  return (
+    <Animated.View style={animatedStyle}>
+      {children}
+    </Animated.View>
+  );
+}
+
+// ─── Main Component ──────────────────────────────────────────────────────────
+
 export default function ProfileSetupScreen() {
   const { user, refreshProfile } = useAuth();
   const { updateProfile, uploadAvatar, updating, uploading } = useProfile();
+  const { version } = useTheme();
 
   const [step, setStep] = useState(1);
   const [username, setUsername] = useState('');
@@ -45,6 +416,7 @@ export default function ProfileSetupScreen() {
   const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [errors, setErrors] = useState<{ username?: string }>({});
+  const scrollViewRef = useRef<ScrollView>(null);
 
   const totalSteps = 3;
 
@@ -60,16 +432,14 @@ export default function ProfileSetupScreen() {
       aspect: [1, 1],
       quality: 0.8,
     });
-    if (!result.canceled) {
-      setAvatarUri(result.assets[0].uri);
-    }
+    if (!result.canceled) setAvatarUri(result.assets[0].uri);
   };
 
   const toggleInterest = (interest: string) => {
     setSelectedInterests((prev) =>
       prev.includes(interest)
         ? prev.filter((i) => i !== interest)
-        : [...prev, interest]
+        : [...prev, interest],
     );
   };
 
@@ -90,18 +460,12 @@ export default function ProfileSetupScreen() {
     if (!user) return;
 
     let avatarUrl: string | null = null;
-
-    // Upload avatar if selected
     if (avatarUri) {
       const { url, error } = await uploadAvatar(user.id, avatarUri);
-      if (error) {
-        Alert.alert('Upload Error', error);
-        return;
-      }
+      if (error) { Alert.alert('Upload Error', error); return; }
       avatarUrl = url;
     }
 
-    // Save profile to database
     const { error } = await updateProfile(user.id, {
       username: username.trim().toLowerCase(),
       bio: bio.trim() || null,
@@ -112,18 +476,14 @@ export default function ProfileSetupScreen() {
     });
 
     if (error) {
-      // ── FIXED: Catch duplicate username DB error and show friendly message ──
-      // Supabase returns "duplicate key value violates unique constraint"
-      // when the username is already taken. We catch that and show a clear
-      // message instead of the raw database error.
       if (
         error.toLowerCase().includes('duplicate key') ||
         error.toLowerCase().includes('unique constraint') ||
         error.toLowerCase().includes('profiles_username_key')
       ) {
-        // Go back to step 1 and show the error under the username field
         setStep(1);
         setErrors({ username: 'This username is already taken. Please choose another.' });
+        scrollViewRef.current?.scrollTo({ y: 0, animated: true });
       } else {
         Alert.alert('Error', error);
       }
@@ -134,246 +494,231 @@ export default function ProfileSetupScreen() {
     router.replace('/(app)/(tabs)/home');
   };
 
-  // ── STEP 1: Basic info ──────────────────────────────────────────────────────
-  const renderStep1 = () => (
-    <Animated.View entering={SlideInRight.duration(400)}>
-      <Text style={styles.stepTitle}>Basic Information</Text>
-      <Text style={styles.stepSubtitle}>Let's start with the basics</Text>
+  const scrollToTop = () => scrollViewRef.current?.scrollTo({ y: 0, animated: true });
 
-      <AnimatedInput
-        label="Username"
-        value={username}
-        onChangeText={(text) => {
-          setUsername(text.toLowerCase().replace(/\s/g, ''));
-          setErrors({});
-        }}
-        autoCapitalize="none"
-        leftIcon="at"
-        error={errors.username}
-      />
+  const handleNext = () => {
+    Keyboard.dismiss();
+    if (step === 1) {
+      if (validateStep1()) { setStep(2); scrollToTop(); }
+    } else if (step === 2) {
+      setStep(3); scrollToTop();
+    } else {
+      handleComplete();
+    }
+  };
 
-      <AnimatedInput
-        label="Occupation (optional)"
-        value={occupation}
-        onChangeText={setOccupation}
-        leftIcon="briefcase-outline"
-      />
+  const handleBack = () => {
+    Keyboard.dismiss();
+    if (step > 1) { setStep(step - 1); scrollToTop(); }
+  };
 
-      <AnimatedInput
-        label="Bio (optional)"
-        value={bio}
-        onChangeText={setBio}
-        leftIcon="document-text-outline"
-        multiline
-        numberOfLines={3}
-      />
-    </Animated.View>
-  );
+  const getStepTitle = (): string => {
+    switch (step) {
+      case 1: return 'Basic Information';
+      case 2: return 'Profile Photo';
+      case 3: return 'Your Interests';
+      default: return '';
+    }
+  };
 
-  // ── STEP 2: Profile photo ───────────────────────────────────────────────────
-  const renderStep2 = () => (
-    <Animated.View entering={SlideInRight.duration(400)} style={{ alignItems: 'center' }}>
-      <Text style={styles.stepTitle}>Profile Photo</Text>
-      <Text style={styles.stepSubtitle}>
-        Add a photo to personalise your profile
-      </Text>
+  const getStepIcon = (): React.ComponentProps<typeof Ionicons>['name'] => {
+    switch (step) {
+      case 2: return 'camera-outline';
+      case 3: return 'bulb-outline';
+      default: return 'person-outline';
+    }
+  };
 
-      <TouchableOpacity onPress={pickImage} style={{ marginVertical: SPACING.xl }}>
-        {avatarUri ? (
-          <View>
-            <Image
-              source={{ uri: avatarUri }}
-              style={{
-                width: 140,
-                height: 140,
-                borderRadius: 70,
-                borderWidth: 3,
-                borderColor: COLORS.primary,
-              }}
-            />
-            <View style={{
-              position: 'absolute', bottom: 4, right: 4,
-              backgroundColor: COLORS.primary, borderRadius: 20, padding: 8,
-            }}>
-              <Ionicons name="camera" size={18} color="#FFF" />
-            </View>
-          </View>
-        ) : (
-          <LinearGradient
-            colors={['#1A1A35', '#12122A']}
-            style={{
-              width: 140, height: 140, borderRadius: 70,
-              alignItems: 'center', justifyContent: 'center',
-              borderWidth: 2, borderColor: COLORS.border,
-              borderStyle: 'dashed',
-            }}
-          >
-            <Ionicons name="camera-outline" size={40} color={COLORS.textMuted} />
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 8 }}>
-              Tap to upload
-            </Text>
-          </LinearGradient>
-        )}
-      </TouchableOpacity>
-
-      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center' }}>
-        You can skip this step and add a photo later
-      </Text>
-    </Animated.View>
-  );
-
-  // ── STEP 3: Interests ───────────────────────────────────────────────────────
-  const renderStep3 = () => (
-    <Animated.View entering={SlideInRight.duration(400)}>
-      <Text style={styles.stepTitle}>Your Interests</Text>
-      <Text style={styles.stepSubtitle}>
-        Select topics you want to research. This helps personalise your experience.
-      </Text>
-
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: SPACING.md }}>
-        {INTEREST_OPTIONS.map((interest) => {
-          const isSelected = selectedInterests.includes(interest);
-          return (
-            <TouchableOpacity
-              key={interest}
-              onPress={() => toggleInterest(interest)}
-              style={{
-                margin: 4,
-                paddingHorizontal: 16,
-                paddingVertical: 10,
-                borderRadius: RADIUS.full,
-                backgroundColor: isSelected ? COLORS.primary : COLORS.backgroundCard,
-                borderWidth: 1,
-                borderColor: isSelected ? COLORS.primary : COLORS.border,
-              }}
-            >
-              <Text style={{
-                color: isSelected ? '#FFFFFF' : COLORS.textSecondary,
-                fontSize: FONTS.sizes.sm,
-                fontWeight: isSelected ? '600' : '400',
-              }}>
-                {interest}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {selectedInterests.length > 0 && (
-        <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, marginTop: SPACING.md }}>
-          {selectedInterests.length} interest{selectedInterests.length !== 1 ? 's' : ''} selected
-        </Text>
-      )}
-    </Animated.View>
-  );
-
-  const styles = {
-    stepTitle: {
-      color: COLORS.textPrimary,
-      fontSize: FONTS.sizes['2xl'],
-      fontWeight: '800' as const,
-      marginBottom: SPACING.sm,
-    },
-    stepSubtitle: {
-      color: COLORS.textSecondary,
-      fontSize: FONTS.sizes.base,
-      lineHeight: 22,
-      marginBottom: SPACING.xl,
-    },
+  // Render the appropriate step content
+  const renderStepContent = () => {
+    switch (step) {
+      case 1:
+        return (
+          <Step1Content
+            username={username}
+            setUsername={setUsername}
+            occupation={occupation}
+            setOccupation={setOccupation}
+            bio={bio}
+            setBio={setBio}
+            errors={errors}
+            setErrors={setErrors}
+          />
+        );
+      case 2:
+        return <Step2Content avatarUri={avatarUri} onPickImage={pickImage} />;
+      case 3:
+        return (
+          <Step3Content
+            selectedInterests={selectedInterests}
+            toggleInterest={toggleInterest}
+          />
+        );
+      default:
+        return null;
+    }
   };
 
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-      <SafeAreaView style={{ flex: 1 }}>
-        <LoadingOverlay visible={updating || uploading} message="Setting up profile..." />
+    <LinearGradient
+      colors={[COLORS.background, COLORS.backgroundElevated]}
+      style={{ flex: 1 }}
+    >
+      <SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
+        <LoadingOverlay visible={updating || uploading} message="Setting up your profile..." />
 
-        <ScrollView
-          contentContainerStyle={{ flexGrow: 1, padding: SPACING.xl }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
         >
-          {/* Header with progress bar */}
-          <Animated.View entering={FadeIn.duration(600)} style={{ marginBottom: SPACING.xl }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.xl }}>
-              <LinearGradient
-                colors={COLORS.gradientPrimary}
-                style={{
-                  width: 44, height: 44, borderRadius: 12,
-                  alignItems: 'center', justifyContent: 'center', marginRight: 12,
-                }}
-              >
-                <Ionicons name="person" size={22} color="#FFF" />
-              </LinearGradient>
-              <View>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700' }}>
-                  Profile Setup
-                </Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
-                  Step {step} of {totalSteps}
-                </Text>
+          <ScrollView
+            ref={scrollViewRef}
+            contentContainerStyle={{
+              flexGrow: 1,
+              paddingHorizontal: SPACING.xl,
+              paddingTop: SPACING.lg,
+              paddingBottom: Platform.OS === 'android' ? SPACING['2xl'] : SPACING.lg,
+            }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            horizontal={false}
+            alwaysBounceHorizontal={false}
+            overScrollMode="never"
+          >
+            {/* Header — static, never part of the step animation */}
+            <Animated.View
+              entering={FadeIn.duration(600)}
+              style={{ marginBottom: SPACING.xl }}
+            >
+              <View style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                marginBottom: SPACING.lg,
+              }}>
+                <LinearGradient
+                  colors={COLORS.gradientPrimary}
+                  style={{
+                    width: 48,
+                    height: 48,
+                    borderRadius: 14,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginRight: 14,
+                    ...SHADOWS.medium,
+                    shadowOpacity: 0.2,
+                  }}
+                >
+                  <Ionicons name={getStepIcon()} size={24} color="#FFF" />
+                </LinearGradient>
+                <View style={{ flex: 1 }}>
+                  <Text style={{
+                    color: COLORS.textPrimary,
+                    fontSize: FONTS.sizes.lg,
+                    fontWeight: '700',
+                  }}>
+                    {getStepTitle()}
+                  </Text>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
+                    Step {step} of {totalSteps}
+                  </Text>
+                </View>
               </View>
-            </View>
 
-            {/* Progress bar */}
-            <View style={{ height: 4, backgroundColor: COLORS.border, borderRadius: 2 }}>
-              <LinearGradient
-                colors={COLORS.gradientPrimary}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={{
-                  height: 4,
-                  borderRadius: 2,
-                  width: `${(step / totalSteps) * 100}%`,
-                }}
+              {/* Progress bar */}
+              <View style={{
+                height: 4,
+                backgroundColor: COLORS.border,
+                borderRadius: 2,
+                overflow: 'hidden',
+              }}>
+                <LinearGradient
+                  colors={COLORS.gradientPrimary}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={{
+                    height: 4,
+                    borderRadius: 2,
+                    width: `${(step / totalSteps) * 100}%`,
+                  }}
+                />
+              </View>
+
+              <StepIndicator currentStep={step} totalSteps={totalSteps} />
+            </Animated.View>
+
+            {/* Step content with transition */}
+            <StepTransition step={step}>
+              {renderStepContent()}
+            </StepTransition>
+
+            {/* Navigation buttons */}
+            <Animated.View
+              entering={FadeInDown.duration(400).delay(100)}
+              style={{ marginTop: SPACING['2xl'] }}
+            >
+              <GradientButton
+                title={step === totalSteps ? 'Complete Setup 🎉' : 'Continue →'}
+                onPress={handleNext}
+                loading={updating || uploading}
               />
-            </View>
-          </Animated.View>
 
-          {/* Step content */}
-          {step === 1 && renderStep1()}
-          {step === 2 && renderStep2()}
-          {step === 3 && renderStep3()}
+              <View style={{
+                flexDirection: 'row',
+                justifyContent: 'center',
+                gap: SPACING.lg,
+                marginTop: SPACING.md,
+              }}>
+                {step > 1 && (
+                  <TouchableOpacity onPress={handleBack} style={{ padding: SPACING.sm }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Ionicons name="arrow-back" size={16} color={COLORS.textSecondary} />
+                      <Text style={{
+                        color: COLORS.textSecondary,
+                        fontSize: FONTS.sizes.base,
+                        fontWeight: '500',
+                      }}>
+                        Back
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
 
-          {/* Navigation buttons */}
-          <View style={{ marginTop: SPACING.xl }}>
-            <GradientButton
-              title={step === totalSteps ? 'Complete Setup' : 'Continue'}
-              onPress={() => {
-                if (step === 1) {
-                  if (validateStep1()) setStep(2);
-                } else if (step === 2) {
-                  setStep(3);
-                } else {
-                  handleComplete();
-                }
-              }}
-              loading={updating || uploading}
-            />
-
-            {step > 1 && (
-              <TouchableOpacity
-                onPress={() => setStep(step - 1)}
-                style={{ alignItems: 'center', marginTop: SPACING.md }}
-              >
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base }}>
-                  ← Back
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            {step >= 2 && (
-              <TouchableOpacity
-                onPress={step === totalSteps ? handleComplete : () => setStep(step + 1)}
-                style={{ alignItems: 'center', marginTop: SPACING.sm }}
-              >
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>
-                  Skip this step
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </ScrollView>
+                {step >= 2 && step < totalSteps && (
+                  <TouchableOpacity
+                    onPress={() => { Keyboard.dismiss(); setStep(step + 1); scrollToTop(); }}
+                    style={{ padding: SPACING.sm }}
+                  >
+                    <Text style={{
+                      color: COLORS.textMuted,
+                      fontSize: FONTS.sizes.base,
+                      fontWeight: '500',
+                    }}>
+                      Skip →
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </Animated.View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </LinearGradient>
   );
 }
+
+// ─── Shared step text styles ──────────────────────────────────────────────────
+
+const stepStyles = {
+  title: {
+    fontSize: FONTS.sizes['2xl'],
+    fontWeight: '800' as const,
+    marginBottom: SPACING.sm,
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    fontSize: FONTS.sizes.base,
+    lineHeight: 24,
+    marginBottom: SPACING.xl,
+  },
+};

@@ -712,11 +712,6 @@ export default function ProfileScreen() {
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Part 55.2: was [COLORS.background, '#0B0B1E', COLORS.backgroundCard] —
-          the middle stop was a hardcoded near-black that never followed the
-          theme. Now every stop tracks the active theme via COLORS, so light
-          themes get a correctly light page background instead of a dark band
-          bleeding through the middle of the screen. */}
       <LinearGradient colors={[COLORS.background, COLORS.backgroundElevated, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
           <LoadingOverlay visible={updating || uploading} message="Saving..." />
@@ -758,7 +753,7 @@ export default function ProfileScreen() {
             <SocialNotificationBell userId={user?.id ?? null} />
           </Animated.View>
 
-          {/* ══ Collapsing aurora hero ══ */}
+          {/* ══ Collapsing hero ══ */}
           <Animated.View
             pointerEvents="box-none"
             style={[
@@ -766,27 +761,11 @@ export default function ProfileScreen() {
               heroStyle,
             ]}
           >
-            {/* Aurora glow background (parallax).
-                Part 55.2: the base wash was hardcoded ['#1E1B4B', '#171644',
-                'transparent'] — always a deep indigo regardless of theme. Now
-                built from COLORS.backgroundElevated → COLORS.background so the
-                wash itself follows the active theme; the two accent blobs below
-                already used COLORS.primary/secondary and needed no change. */}
+            {/* Aurora glow background (parallax) - now just a clean gradient without the blobs */}
             <Animated.View pointerEvents="none" style={[{ position: 'absolute', top: 0, left: 0, right: 0, height: HERO_MAX + 80 }, auroraStyle]}>
               <LinearGradient
                 colors={[COLORS.backgroundElevated, COLORS.background, 'transparent']}
                 style={{ flex: 1 }}
-              />
-              {/* two soft radial-ish blobs faked with rounded gradients */}
-              <LinearGradient
-                colors={[`${COLORS.primary}55`, 'transparent']}
-                start={{ x: 0.2, y: 0 }} end={{ x: 0.8, y: 1 }}
-                style={{ position: 'absolute', top: -60, left: -40, width: 240, height: 240, borderRadius: 120, opacity: 0.7 }}
-              />
-              <LinearGradient
-                colors={[`${COLORS.secondary}40`, 'transparent']}
-                start={{ x: 0.8, y: 0 }} end={{ x: 0.2, y: 1 }}
-                style={{ position: 'absolute', top: -30, right: -50, width: 220, height: 220, borderRadius: 110, opacity: 0.6 }}
               />
             </Animated.View>
 
