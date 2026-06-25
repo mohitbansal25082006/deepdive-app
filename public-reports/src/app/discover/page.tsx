@@ -674,9 +674,7 @@ function DiscoverClient() {
             </span>
           </Link>
           
-          <div style={{ flex: 1, maxWidth: 420, display: 'none' }} className="nav-search-desktop">
-            <PublicSearchBar mode="dropdown" placeholder="Search all research…" style={{ width: '100%' }} />
-          </div>
+          <div style={{ flex: 1 }} />
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
@@ -697,9 +695,6 @@ function DiscoverClient() {
               Get App
             </a>
           </div>
-        </div>
-        <div className="nav-search-mobile" style={{ paddingBottom: 10, maxWidth: '1000px', margin: '0 auto' }}>
-          <PublicSearchBar mode="dropdown" placeholder="Search all research…" style={{ width: '100%' }} />
         </div>
       </header>
 
@@ -989,12 +984,6 @@ function DiscoverClient() {
 
       <style>{`
         ${GLOBAL_STYLES}
-        @media (min-width: 560px) {
-          .nav-search-desktop { display: block !important; }
-          .nav-search-mobile  { display: none  !important; }
-        }
-        .nav-search-desktop { display: none; }
-        .nav-search-mobile  { display: block; }
       `}</style>
     </div>
   );
