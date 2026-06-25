@@ -24,7 +24,6 @@ import {
   RefreshControl,
   Alert,
   Dimensions,
-  useColorScheme,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -39,7 +38,7 @@ import { supabase } from '../../src/lib/supabase';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { ResearchReport } from '../../src/types';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
 
 const SCREEN_W = Dimensions.get('window').width;
 
@@ -460,19 +459,6 @@ export default function BookmarksScreen() {
         {/* ── Header ── */}
         <Animated.View entering={FadeIn.duration(500)}>
           <LinearGradient colors={headerGradient} style={{ paddingBottom: SPACING.sm }}>
-            <View
-              pointerEvents="none"
-              style={{
-                position: 'absolute',
-                top: -40,
-                right: -30,
-                width: 140,
-                height: 140,
-                borderRadius: 70,
-                backgroundColor: `${COLORS.primary}1A`,
-              }}
-            />
-
             <View style={{
               flexDirection: 'row',
               alignItems: 'center',

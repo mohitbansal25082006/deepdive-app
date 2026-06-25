@@ -343,12 +343,6 @@ export default function CollectionDetailScreen() {
             colors={COLORS.gradientCard as [string, string]}
             style={[styles.header, { borderBottomColor: COLORS.border }]}
           >
-            {/* Decorative glow — uses collection accent, not a hardcoded color */}
-            <View
-              pointerEvents="none"
-              style={[styles.glow, { backgroundColor: `${accentColor}1F` }]}
-            />
-
             <View style={styles.headerTopRow}>
               <Pressable
                 onPress={() => { haptic(); router.back(); }}
@@ -518,14 +512,6 @@ const styles = StyleSheet.create({
     paddingBottom: SPACING.md,
     overflow:      'hidden',
     borderBottomWidth: 1,
-  },
-  glow: {
-    position:     'absolute',
-    top:          -40,
-    right:        -30,
-    width:        160,
-    height:       160,
-    borderRadius: 80,
   },
   headerTopRow: {
     flexDirection:     'row',
