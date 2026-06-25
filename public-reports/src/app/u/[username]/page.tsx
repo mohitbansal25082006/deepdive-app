@@ -1,4 +1,5 @@
 // Public-Reports/src/app/u/[username]/page.tsx
+// Part 55.9 — Fully Themed Public Profile Page
 // DeepDive AI — Part 36 (fixed in Part 41.3)
 //
 // Part 41.3 fixes:
@@ -15,39 +16,40 @@
 //  3. get_public_profile RPC now grants anon role (schema_part41_3.sql)
 //     so service-role Next.js calls always succeed.
 
-import { notFound }      from 'next/navigation';
+import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import Link              from 'next/link';
+import Link from 'next/link';
+import Image from 'next/image';
 import { createSupabaseServer } from '@/lib/supabase-server';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface WebPublicProfile {
-  id:              string;
-  username:        string | null;
-  full_name:       string | null;
-  avatar_url:      string | null;
-  bio:             string | null;
-  occupation:      string | null;
-  interests:       string[] | null;
-  is_public:       boolean;
-  follower_count:  number;
+  id: string;
+  username: string | null;
+  full_name: string | null;
+  avatar_url: string | null;
+  bio: string | null;
+  occupation: string | null;
+  interests: string[] | null;
+  is_public: boolean;
+  follower_count: number;
   following_count: number;
-  public_reports:  number;
-  total_views:     number;
+  public_reports: number;
+  total_views: number;
 }
 
 interface WebPublicReport {
-  share_id:          string;
-  title:             string;
-  query:             string;
-  depth:             'quick' | 'deep' | 'expert';
+  share_id: string;
+  title: string;
+  query: string;
+  depth: 'quick' | 'deep' | 'expert';
   executive_summary: string;
-  tags:              string[];
-  sources_count:     number;
+  tags: string[];
+  sources_count: number;
   reliability_score: number;
-  view_count:        number;
-  created_at:        string;
+  view_count: number;
+  created_at: string;
 }
 
 // ─── Data fetching ────────────────────────────────────────────────────────────
@@ -62,18 +64,18 @@ async function fetchProfile(username: string): Promise<WebPublicProfile | null> 
     }
     const raw = data as Record<string, unknown>;
     return {
-      id:              String(raw.id              ?? ''),
-      username:        raw.username  != null ? String(raw.username)  : null,
-      full_name:       raw.full_name != null ? String(raw.full_name) : null,
-      avatar_url:      raw.avatar_url != null ? String(raw.avatar_url) : null,
-      bio:             raw.bio        != null ? String(raw.bio)        : null,
-      occupation:      raw.occupation != null ? String(raw.occupation) : null,
-      interests:       Array.isArray(raw.interests) ? (raw.interests as string[]) : [],
-      is_public:       Boolean(raw.is_public      ?? false),
-      follower_count:  Number(raw.follower_count  ?? 0),
+      id: String(raw.id ?? ''),
+      username: raw.username != null ? String(raw.username) : null,
+      full_name: raw.full_name != null ? String(raw.full_name) : null,
+      avatar_url: raw.avatar_url != null ? String(raw.avatar_url) : null,
+      bio: raw.bio != null ? String(raw.bio) : null,
+      occupation: raw.occupation != null ? String(raw.occupation) : null,
+      interests: Array.isArray(raw.interests) ? (raw.interests as string[]) : [],
+      is_public: Boolean(raw.is_public ?? false),
+      follower_count: Number(raw.follower_count ?? 0),
       following_count: Number(raw.following_count ?? 0),
-      public_reports:  Number(raw.public_reports  ?? 0),
-      total_views:     Number(raw.total_views      ?? 0),
+      public_reports: Number(raw.public_reports ?? 0),
+      total_views: Number(raw.total_views ?? 0),
     };
   } catch (e) {
     console.error('[profile] fetch error:', e);
@@ -86,8 +88,8 @@ async function fetchReports(username: string): Promise<WebPublicReport[]> {
   try {
     const { data, error } = await sb.rpc('get_public_reports_for_user', {
       p_username: username,
-      p_limit:    30,
-      p_offset:   0,
+      p_limit: 30,
+      p_offset: 0,
     });
     if (error) console.error('[reports] RPC error:', error.message);
 
@@ -96,20 +98,20 @@ async function fetchReports(username: string): Promise<WebPublicReport[]> {
       : [];
 
     return rows.map(raw => ({
-      share_id:          String(raw.share_id          ?? ''),
-      title:             String(raw.title             ?? ''),
-      query:             String(raw.query             ?? ''),
-      depth:             ((raw.depth as string) ?? 'quick') as WebPublicReport['depth'],
+      share_id: String(raw.share_id ?? ''),
+      title: String(raw.title ?? ''),
+      query: String(raw.query ?? ''),
+      depth: ((raw.depth as string) ?? 'quick') as WebPublicReport['depth'],
       executive_summary: String(raw.executive_summary ?? ''),
       tags: Array.isArray(raw.tags)
         ? (raw.tags as string[])
         : typeof raw.tags === 'string'
           ? (() => { try { return JSON.parse(raw.tags as string) as string[]; } catch { return []; } })()
           : [],
-      sources_count:     Number(raw.sources_count     ?? 0),
+      sources_count: Number(raw.sources_count ?? 0),
       reliability_score: Number(raw.reliability_score ?? 0),
-      view_count:        Number(raw.view_count        ?? 0),
-      created_at:        String(raw.created_at        ?? new Date().toISOString()),
+      view_count: Number(raw.view_count ?? 0),
+      created_at: String(raw.created_at ?? new Date().toISOString()),
     }));
   } catch (e) {
     console.error('[reports] fetch error:', e);
@@ -132,21 +134,21 @@ export async function generateMetadata(
   const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://public-reports-three.vercel.app';
 
   return {
-    title:       `${displayName} | DeepDive AI`,
+    title: `${displayName} | DeepDive AI`,
     description,
     openGraph: {
-      type:        'profile',
-      siteName:    'DeepDive AI',
-      title:       `${displayName} on DeepDive AI`,
+      type: 'profile',
+      siteName: 'DeepDive AI',
+      title: `${displayName} on DeepDive AI`,
       description,
-      images:      profile.avatar_url ? [{ url: profile.avatar_url, width: 400, height: 400, alt: displayName }] : [],
-      url:         `${APP_URL}/u/${username}`,
+      images: profile.avatar_url ? [{ url: profile.avatar_url, width: 400, height: 400, alt: displayName }] : [],
+      url: `${APP_URL}/u/${username}`,
     },
     twitter: {
-      card:        'summary',
-      title:       `${displayName} on DeepDive AI`,
+      card: 'summary',
+      title: `${displayName} on DeepDive AI`,
       description,
-      images:      profile.avatar_url ? [profile.avatar_url] : [],
+      images: profile.avatar_url ? [profile.avatar_url] : [],
     },
     alternates: { canonical: `${APP_URL}/u/${username}` },
   };
@@ -155,9 +157,9 @@ export async function generateMetadata(
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const DEPTH_CONFIG: Record<string, { label: string; color: string; bg: string; border: string }> = {
-  quick:  { label: 'Quick',     color: '#10B981', bg: 'rgba(16,185,129,0.12)',  border: 'rgba(16,185,129,0.3)'  },
-  deep:   { label: 'Deep Dive', color: '#6C63FF', bg: 'rgba(108,99,255,0.12)', border: 'rgba(108,99,255,0.3)' },
-  expert: { label: 'Expert',    color: '#F59E0B', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)'  },
+  quick: { label: 'Quick', color: '#10B981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.3)' },
+  deep: { label: 'Deep Dive', color: '#6C63FF', bg: 'rgba(108,99,255,0.12)', border: 'rgba(108,99,255,0.3)' },
+  expert: { label: 'Expert', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)' },
 };
 
 function formatDate(iso: string): string {
@@ -168,44 +170,44 @@ function formatDate(iso: string): string {
 
 function formatCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
 }
 
-// ─── SVG icons (inline, no extra deps) ───────────────────────────────────────
+// ─── SVG icons ─────────────────────────────────────────────────────────────────
 
 const SearchIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+    <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
   </svg>
 );
 
 const DocIcon = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-    <polyline points="14 2 14 8 20 8"/>
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
   </svg>
 );
 
 const EyeIcon = () => (
   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-    <circle cx="12" cy="12" r="3"/>
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
   </svg>
 );
 
 const PlayIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
-    <path d="M3 18.5v-13c0-.83.95-1.3 1.6-.8l11 6.5c.6.35.6 1.25 0 1.6l-11 6.5c-.65.5-1.6.03-1.6-.8z"/>
+    <path d="M3 18.5v-13c0-.83.95-1.3 1.6-.8l11 6.5c.6.35.6 1.25 0 1.6l-11 6.5c-.65.5-1.6.03-1.6-.8z" />
   </svg>
 );
 
 const PersonAddIcon = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-    <circle cx="9" cy="7" r="4"/>
-    <line x1="19" y1="8" x2="19" y2="14"/>
-    <line x1="22" y1="11" x2="16" y2="11"/>
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <line x1="19" y1="8" x2="19" y2="14" />
+    <line x1="22" y1="11" x2="16" y2="11" />
   </svg>
 );
 
@@ -226,9 +228,9 @@ export default async function PublicProfilePage({
 
   if (!profile) notFound();
 
-  const displayName    = profile.full_name ?? `@${username}`;
-  const firstName      = profile.full_name?.split(' ')[0] ?? username;
-  const APP_URL        = process.env.NEXT_PUBLIC_APP_URL ?? 'https://public-reports-three.vercel.app';
+  const displayName = profile.full_name ?? `@${username}`;
+  const firstName = profile.full_name?.split(' ')[0] ?? username;
+  const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://public-reports-three.vercel.app';
   const PLAY_STORE_URL = process.env.DEEPDIVE_PLAY_STORE_URL ?? '#';
 
   const initials = displayName
@@ -242,10 +244,10 @@ export default async function PublicProfilePage({
         dangerouslySetInnerHTML={{
           __html: JSON.stringify({
             '@context': 'https://schema.org',
-            '@type':    'Person',
-            name:       displayName,
-            url:        `${APP_URL}/u/${username}`,
-            image:      profile.avatar_url ?? undefined,
+            '@type': 'Person',
+            name: displayName,
+            url: `${APP_URL}/u/${username}`,
+            image: profile.avatar_url ?? undefined,
             description: profile.bio ?? undefined,
           }),
         }}
@@ -255,18 +257,18 @@ export default async function PublicProfilePage({
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         :root {
-          --bg:        #0A0A1A;
-          --bg-card:   #0F0F23;
-          --bg-elev:   #141430;
-          --border:    rgba(255,255,255,0.07);
-          --border-hi: rgba(108,99,255,0.35);
-          --text-1:    #F0F0FF;
-          --text-2:    #B0B0D0;
-          --text-3:    #6060A0;
-          --purple:    #6C63FF;
-          --purple-lt: #A78BFA;
-          --green:     #10B981;
-          --amber:     #F59E0B;
+          --theme-bg:        #0A0A1A;
+          --theme-bg-card:   #0F0F23;
+          --theme-bg-elev:   #141430;
+          --theme-border:    rgba(255,255,255,0.07);
+          --theme-border-hi: rgba(108,99,255,0.35);
+          --theme-text-1:    #F0F0FF;
+          --theme-text-2:    #B0B0D0;
+          --theme-text-3:    #6060A0;
+          --theme-primary:    #6C63FF;
+          --theme-primary-lt: #A78BFA;
+          --theme-success:     #10B981;
+          --theme-warning:     #F59E0B;
           --radius-sm: 10px;
           --radius-md: 14px;
           --radius-lg: 20px;
@@ -275,43 +277,62 @@ export default async function PublicProfilePage({
 
         html { scroll-behavior: smooth; }
         body {
-          background: var(--bg);
-          color: var(--text-1);
+          background: var(--theme-bg);
+          color: var(--theme-text-1);
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           -webkit-font-smoothing: antialiased;
           min-height: 100vh;
         }
         a { text-decoration: none; color: inherit; }
 
+        .dd-text-gradient {
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+
         /* ── Navbar ── */
         .nav {
           position: sticky; top: 0; z-index: 40;
-          background: rgba(10,10,26,0.88);
+          background: var(--theme-bg);
           backdrop-filter: blur(18px);
           -webkit-backdrop-filter: blur(18px);
-          border-bottom: 1px solid var(--border);
+          border-bottom: 1px solid var(--theme-border);
+          transition: all 0.3s ease;
         }
         .nav-inner {
           max-width: 1120px; margin: 0 auto;
           padding: 0 20px; height: 56px;
           display: flex; align-items: center; gap: 12px;
         }
-        .nav-brand { display: flex; align-items: center; gap: 9px; }
+        .nav-brand { display: flex; align-items: center; gap: 9px; transition: transform 0.2s ease; }
+        .nav-brand:hover { transform: scale(1.02); }
         .nav-brand-icon {
           width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
-          display: flex; align-items: center; justify-content: center;
+          background: #FFFFFF;
+          border: 1px solid var(--theme-border);
+          overflow: hidden;
         }
-        .nav-brand-name { font-size: 0.9rem; font-weight: 700; color: var(--text-1); }
+        .nav-brand-name { 
+          font-size: 0.9rem; font-weight: 800; 
+          color: var(--theme-text-1); 
+        }
         .nav-spacer { flex: 1; }
         .nav-link {
           display: flex; align-items: center; gap: 5px;
-          padding: 6px 12px; border-radius: var(--radius-sm);
-          background: var(--bg-elev); border: 1px solid var(--border);
-          color: var(--text-3); font-size: 0.78rem; font-weight: 600;
-          transition: color 0.18s, border-color 0.18s;
+          padding: 6px 14px; border-radius: var(--radius-sm);
+          background: var(--theme-bg-elev); 
+          border: 1px solid var(--theme-border);
+          color: var(--theme-text-3); 
+          font-size: 0.78rem; font-weight: 700;
+          transition: all 0.2s ease;
         }
-        .nav-link:hover { color: var(--text-1); border-color: var(--border-hi); }
+        .nav-link:hover { 
+          color: var(--theme-text-1); 
+          border-color: var(--theme-primary);
+          transform: scale(1.02);
+        }
 
         /* ── Page shell ── */
         .shell { max-width: 1120px; margin: 0 auto; padding: 32px 20px 100px; }
@@ -328,22 +349,28 @@ export default async function PublicProfilePage({
 
         /* ── Profile card ── */
         .profile-card {
-          background: var(--bg-card);
-          border: 1px solid var(--border);
+          background: var(--theme-bg-card);
+          border: 1px solid var(--theme-border);
           border-radius: var(--radius-xl);
           overflow: hidden;
+          transition: all 0.3s ease;
+        }
+        .profile-card:hover {
+          border-color: var(--theme-primary);
+          box-shadow: 0 8px 32px rgba(108,99,255,0.08);
         }
         @media (min-width: 769px) { .profile-card { position: sticky; top: 72px; } }
 
         .banner {
           height: 72px;
-          background: linear-gradient(135deg, #1A1A40 0%, #0E0E2E 100%);
+          background: linear-gradient(135deg, var(--theme-bg-elev) 0%, var(--theme-bg-card) 100%);
           position: relative; overflow: hidden;
         }
         .banner::after {
           content: '';
           position: absolute; inset: 0;
-          background: radial-gradient(ellipse 80% 120% at 50% 110%, rgba(108,99,255,0.28) 0%, transparent 65%);
+          background: radial-gradient(ellipse 80% 120% at 50% 110%, var(--theme-primary) 0%, transparent 65%);
+          opacity: 0.15;
         }
 
         .avatar-section {
@@ -353,108 +380,190 @@ export default async function PublicProfilePage({
         }
         .avatar-ring {
           width: 74px; height: 74px; border-radius: 50%;
-          border: 3px solid var(--bg-card);
-          background: var(--bg); flex-shrink: 0; overflow: hidden;
+          border: 3px solid var(--theme-bg-card);
+          background: var(--theme-bg); flex-shrink: 0; overflow: hidden;
         }
         .avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .avatar-initials {
           width: 100%; height: 100%;
           display: flex; align-items: center; justify-content: center;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
           color: #fff; font-weight: 800; font-size: 1.6rem; letter-spacing: -0.02em;
         }
         .follow-pill {
           display: inline-flex; align-items: center; gap: 6px;
           padding: 8px 16px; border-radius: 999px;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
           color: #fff; font-size: 0.78rem; font-weight: 700;
-          transition: opacity 0.18s, transform 0.15s;
+          transition: all 0.2s ease;
           white-space: nowrap; flex-shrink: 0; margin-top: 4px;
+          box-shadow: 0 2px 12px var(--theme-primary);
         }
-        .follow-pill:hover { opacity: 0.88; transform: translateY(-1px); }
+        .follow-pill:hover { 
+          opacity: 0.9; 
+          transform: translateY(-2px) scale(1.02);
+          box-shadow: 0 4px 20px var(--theme-primary);
+        }
 
         .profile-body { padding: 12px 20px 22px; }
-        .profile-name { font-size: 1.18rem; font-weight: 800; color: var(--text-1); letter-spacing: -0.015em; line-height: 1.2; margin-bottom: 2px; }
-        .profile-handle { color: var(--purple-lt); font-size: 0.8rem; margin-bottom: 10px; }
-        .profile-occupation { display: flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 0.75rem; margin-bottom: 10px; }
-        .profile-bio { color: var(--text-2); font-size: 0.8rem; line-height: 1.65; margin-bottom: 14px; }
+        .profile-name { 
+          font-size: 1.18rem; font-weight: 800; 
+          color: var(--theme-text-1); 
+          letter-spacing: -0.015em; 
+          line-height: 1.2; 
+          margin-bottom: 2px; 
+        }
+        .profile-handle { 
+          color: var(--theme-primary-lt); 
+          font-size: 0.8rem; 
+          margin-bottom: 10px; 
+        }
+        .profile-occupation { 
+          display: flex; align-items: center; gap: 5px; 
+          color: var(--theme-text-3); 
+          font-size: 0.75rem; 
+          margin-bottom: 10px; 
+        }
+        .profile-bio { 
+          color: var(--theme-text-2); 
+          font-size: 0.8rem; 
+          line-height: 1.65; 
+          margin-bottom: 14px; 
+        }
 
         .interests { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 16px; }
         .interest-tag {
-          padding: 3px 9px; border-radius: 999px;
-          background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.22);
-          color: var(--purple); font-size: 0.68rem; font-weight: 600;
+          padding: 3px 10px; border-radius: 999px;
+          background: var(--theme-primary);
+          border: 1px solid var(--theme-primary);
+          color: #FFFFFF;
+          font-size: 0.68rem; font-weight: 600;
+          transition: all 0.2s ease;
+        }
+        .interest-tag:hover {
+          transform: scale(1.05);
+          box-shadow: 0 2px 12px var(--theme-primary);
         }
 
         .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
         .stat-box {
-          background: var(--bg-elev); border: 1px solid var(--border);
-          border-radius: var(--radius-sm); padding: 10px 12px; text-align: center;
+          background: var(--theme-bg-elev); 
+          border: 1px solid var(--theme-border);
+          border-radius: var(--radius-sm); 
+          padding: 10px 12px; 
+          text-align: center;
+          transition: all 0.2s ease;
         }
-        .stat-val { font-size: 1.1rem; font-weight: 800; color: var(--text-1); line-height: 1; }
-        .stat-lbl { font-size: 0.6rem; color: var(--text-3); margin-top: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
+        .stat-box:hover {
+          border-color: var(--theme-primary);
+          transform: translateY(-2px);
+        }
+        .stat-val { 
+          font-size: 1.1rem; font-weight: 800; 
+          color: var(--theme-text-1); 
+          line-height: 1; 
+        }
+        .stat-lbl { 
+          font-size: 0.6rem; 
+          color: var(--theme-text-3); 
+          margin-top: 3px; 
+          font-weight: 600; 
+          text-transform: uppercase; 
+          letter-spacing: 0.07em; 
+        }
 
         /* ── CTA card ── */
         .cta-card {
           margin-top: 16px;
-          background: linear-gradient(135deg, #1A1A35 0%, #0E0E28 100%);
-          border: 1px solid rgba(108,99,255,0.22);
-          border-radius: var(--radius-xl); padding: 24px 20px;
-          text-align: center; position: relative; overflow: hidden;
+          background: linear-gradient(135deg, var(--theme-bg-elev), var(--theme-bg-card));
+          border: 2px solid var(--theme-primary);
+          border-radius: var(--radius-xl); 
+          padding: 24px 20px;
+          text-align: center; 
+          position: relative; 
+          overflow: hidden;
         }
         .cta-card::before {
-          content: ''; position: absolute; inset: 0; pointer-events: none;
-          background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(108,99,255,0.18) 0%, transparent 70%);
+          content: ''; 
+          position: absolute; 
+          inset: 0; 
+          pointer-events: none;
+          background: radial-gradient(ellipse 70% 40% at 50% 0%, var(--theme-primary) 0%, transparent 70%);
+          opacity: 0.08;
         }
         .cta-inner { position: relative; }
         .cta-app-icon {
           width: 50px; height: 50px; border-radius: 14px; margin: 0 auto 12px;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
           display: flex; align-items: center; justify-content: center;
-          box-shadow: 0 0 28px rgba(108,99,255,0.3);
+          box-shadow: 0 0 28px var(--theme-primary);
+          transition: transform 0.3s ease;
         }
-        .cta-title { font-size: 1rem; font-weight: 800; color: var(--text-1); letter-spacing: -0.01em; margin-bottom: 6px; line-height: 1.3; }
-        .cta-desc { color: var(--text-3); font-size: 0.75rem; line-height: 1.6; margin-bottom: 16px; }
+        .cta-app-icon:hover { transform: scale(1.05) rotate(-5deg); }
+        .cta-title { 
+          font-size: 1rem; font-weight: 800; 
+          color: var(--theme-text-1); 
+          letter-spacing: -0.01em; 
+          margin-bottom: 6px; 
+          line-height: 1.3; 
+        }
+        .cta-desc { 
+          color: var(--theme-text-2); 
+          font-size: 0.75rem; 
+          line-height: 1.6; 
+          margin-bottom: 16px; 
+        }
         .play-btn {
           display: inline-flex; align-items: center; gap: 9px;
           padding: 11px 20px; border-radius: 11px;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
           color: #fff; font-weight: 700; font-size: 0.85rem;
-          transition: opacity 0.18s, transform 0.15s; margin-bottom: 8px;
+          transition: all 0.2s ease;
+          margin-bottom: 8px;
+          box-shadow: 0 4px 16px var(--theme-primary);
         }
-        .play-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+        .play-btn:hover { 
+          opacity: 0.9; 
+          transform: translateY(-2px) scale(1.02);
+          box-shadow: 0 6px 24px var(--theme-primary);
+        }
         .play-top { font-size: 0.58rem; opacity: 0.7; line-height: 1; }
         .play-main { line-height: 1.2; }
-        .cta-note { font-size: 0.67rem; color: var(--text-3); }
+        .cta-note { font-size: 0.67rem; color: var(--theme-text-3); }
 
         /* ── Reports column ── */
         .reports-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-        .reports-heading { display: flex; align-items: center; gap: 10px; font-size: 1rem; font-weight: 700; color: var(--text-1); }
+        .reports-heading { display: flex; align-items: center; gap: 10px; font-size: 1rem; font-weight: 700; color: var(--theme-text-1); }
         .heading-icon {
           width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
           display: flex; align-items: center; justify-content: center;
         }
         .count-badge {
-          padding: 2px 9px; border-radius: 999px;
-          background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.22);
-          color: var(--purple); font-size: 0.68rem; font-weight: 700;
+          padding: 2px 10px; border-radius: 999px;
+          background: var(--theme-primary);
+          border: 1px solid var(--theme-primary);
+          color: #FFFFFF; 
+          font-size: 0.68rem; 
+          font-weight: 700;
         }
+
         .reports-list { display: grid; gap: 11px; }
 
-        /* ── Report card — FIXED: uses div + stretched cover link ── */
+        /* ── Report card ── */
         .rcard {
-          position: relative;       /* FIX: needed for the cover link */
-          background: var(--bg-card); border: 1px solid var(--border);
-          border-radius: var(--radius-md); overflow: hidden;
-          transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
+          position: relative;
+          background: var(--theme-bg-card); 
+          border: 1px solid var(--theme-border);
+          border-radius: var(--radius-md); 
+          overflow: hidden;
+          transition: all 0.3s ease;
         }
         .rcard:hover {
-          border-color: rgba(108,99,255,0.38);
-          transform: translateY(-2px);
-          box-shadow: 0 8px 24px rgba(108,99,255,0.1);
+          border-color: var(--theme-primary);
+          transform: translateY(-3px);
+          box-shadow: 0 8px 32px rgba(108,99,255,0.12);
         }
-        /* Full-cover invisible link — makes the whole card clickable */
         .rcard-cover {
           position: absolute; inset: 0; z-index: 0;
           border-radius: var(--radius-md);
@@ -462,51 +571,74 @@ export default async function PublicProfilePage({
         .rcard-accent { height: 3px; }
         .rcard-body { padding: 14px 16px; position: relative; }
         .rcard-title {
-          font-size: 0.88rem; font-weight: 700; color: var(--text-1);
+          font-size: 0.88rem; font-weight: 700; 
+          color: var(--theme-text-1);
           line-height: 1.45; margin-bottom: 6px;
           display: -webkit-box; -webkit-line-clamp: 2;
           -webkit-box-orient: vertical; overflow: hidden;
         }
         .rcard-summary {
-          color: var(--text-3); font-size: 0.74rem; line-height: 1.6; margin-bottom: 9px;
+          color: var(--theme-text-2); 
+          font-size: 0.74rem; 
+          line-height: 1.6; 
+          margin-bottom: 9px;
           display: -webkit-box; -webkit-line-clamp: 2;
           -webkit-box-orient: vertical; overflow: hidden;
         }
         .rcard-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
-        /* FIX: position:relative + z-index:1 so tags sit above the cover link */
         .rcard-tag {
           position: relative; z-index: 1;
-          padding: 2px 8px;
-          background: rgba(108,99,255,0.09); border: 1px solid rgba(108,99,255,0.18);
-          border-radius: 999px; font-size: 0.63rem;
-          color: var(--purple-lt); font-weight: 600;
-          transition: background 0.15s;
+          padding: 2px 10px;
+          background: var(--theme-primary);
+          border: 1px solid var(--theme-primary);
+          border-radius: 999px; 
+          font-size: 0.63rem;
+          color: #FFFFFF; 
+          font-weight: 600;
+          transition: all 0.2s ease;
         }
-        .rcard-tag:hover { background: rgba(108,99,255,0.18); }
+        .rcard-tag:hover { 
+          transform: scale(1.05);
+          box-shadow: 0 2px 12px var(--theme-primary);
+        }
         .rcard-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; position: relative; z-index: 1; }
-        .depth-chip { padding: 2px 8px; border-radius: 999px; font-size: 0.63rem; font-weight: 700; }
-        .view-ct { display: flex; align-items: center; gap: 3px; font-size: 0.68rem; color: var(--text-3); }
-        .rcard-date { font-size: 0.63rem; color: var(--text-3); margin-left: auto; }
+        .depth-chip { padding: 2px 10px; border-radius: 999px; font-size: 0.63rem; font-weight: 700; }
+        .view-ct { display: flex; align-items: center; gap: 3px; font-size: 0.68rem; color: var(--theme-text-2); }
+        .rcard-date { font-size: 0.63rem; color: var(--theme-text-3); margin-left: auto; }
 
         /* Empty state */
         .empty {
           text-align: center; padding: 48px 20px;
-          background: var(--bg-card); border-radius: var(--radius-lg);
-          border: 1px dashed rgba(255,255,255,0.06);
+          background: var(--theme-bg-card); border-radius: var(--radius-lg);
+          border: 1px dashed var(--theme-border);
         }
         .empty-icon {
-          width: 44px; height: 44px; border-radius: 12px; background: var(--bg-elev);
-          display: flex; align-items: center; justify-content: center; margin: 0 auto 14px;
+          width: 44px; height: 44px; border-radius: 12px; 
+          background: var(--theme-bg-elev);
+          display: flex; align-items: center; justify-content: center; 
+          margin: 0 auto 14px;
         }
-        .empty-title { font-size: 0.92rem; font-weight: 700; color: var(--text-1); margin-bottom: 5px; }
-        .empty-desc  { font-size: 0.77rem; color: var(--text-3); line-height: 1.6; max-width: 260px; margin: 0 auto; }
+        .empty-title { 
+          font-size: 0.92rem; font-weight: 700; 
+          color: var(--theme-text-1); 
+          margin-bottom: 5px; 
+        }
+        .empty-desc { 
+          font-size: 0.77rem; 
+          color: var(--theme-text-3); 
+          line-height: 1.6; 
+          max-width: 260px; 
+          margin: 0 auto; 
+        }
 
         /* ── Sticky footer ── */
         .footer {
           position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
-          background: rgba(10,10,26,0.95);
-          backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-          border-top: 1px solid var(--border); padding: 10px 20px;
+          background: var(--theme-bg);
+          backdrop-filter: blur(18px); 
+          -webkit-backdrop-filter: blur(18px);
+          border-top: 1px solid var(--theme-border); 
+          padding: 10px 20px;
         }
         .footer-inner {
           max-width: 1120px; margin: 0 auto;
@@ -515,35 +647,76 @@ export default async function PublicProfilePage({
         .footer-brand { display: flex; align-items: center; gap: 9px; }
         .footer-icon {
           width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
-          display: flex; align-items: center; justify-content: center;
+          background: #FFFFFF;
+          border: 1px solid var(--theme-border);
+          overflow: hidden;
         }
-        .footer-name { font-size: 0.82rem; font-weight: 700; color: var(--text-1); line-height: 1; }
-        .footer-tag  { font-size: 0.62rem; color: var(--text-3); margin-top: 2px; line-height: 1; }
+        .footer-name { 
+          font-size: 0.82rem; font-weight: 700; 
+          color: var(--theme-text-1); 
+          line-height: 1; 
+        }
+        .footer-tag { 
+          font-size: 0.62rem; 
+          color: var(--theme-text-3); 
+          margin-top: 2px; 
+          line-height: 1; 
+        }
         .footer-cta {
           padding: 8px 18px; border-radius: 999px;
-          background: linear-gradient(135deg,#6C63FF,#8B5CF6);
+          background: linear-gradient(135deg, var(--theme-primary), #8B5CF6);
           color: #fff; font-size: 0.78rem; font-weight: 700;
-          white-space: nowrap; flex-shrink: 0; transition: opacity 0.18s;
+          white-space: nowrap; flex-shrink: 0; 
+          transition: all 0.2s ease;
+          box-shadow: 0 2px 12px var(--theme-primary);
         }
-        .footer-cta:hover { opacity: 0.88; }
+        .footer-cta:hover { 
+          opacity: 0.9; 
+          transform: scale(1.02);
+          box-shadow: 0 4px 20px var(--theme-primary);
+        }
 
-        @media (max-width: 480px) { .profile-name { font-size: 1rem; } .footer-tag { display: none; } }
+        @media (max-width: 480px) { 
+          .profile-name { font-size: 1rem; } 
+          .footer-tag { display: none; } 
+        }
+
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .profile-card { animation: fadeInUp 0.5s ease-out both; }
+        .reports-list > * { animation: fadeInUp 0.5s ease-out both; }
+        .reports-list > *:nth-child(1) { animation-delay: 0.05s; }
+        .reports-list > *:nth-child(2) { animation-delay: 0.1s; }
+        .reports-list > *:nth-child(3) { animation-delay: 0.15s; }
+        .reports-list > *:nth-child(4) { animation-delay: 0.2s; }
+        .reports-list > *:nth-child(5) { animation-delay: 0.25s; }
+        .reports-list > *:nth-child(6) { animation-delay: 0.3s; }
+
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+          }
+        }
       ` }} />
 
-      <div style={{ minHeight: '100vh', background: '#0A0A1A' }}>
+      <div style={{ minHeight: '100vh', background: 'var(--theme-bg)' }}>
 
         {/* Navbar */}
         <header className="nav">
           <div className="nav-inner">
             <Link href="/" className="nav-brand">
-              <div className="nav-brand-icon"><SearchIcon /></div>
-              <span className="nav-brand-name">DeepDive AI</span>
+              <div className="nav-brand-icon">
+                <Image src="/icon.png" alt="DeepDive AI" width={30} height={30} style={{ objectFit: 'contain' }} priority />
+              </div>
+              <span className="nav-brand-name">DeepDive <span className="dd-text-gradient">AI</span></span>
             </Link>
             <div className="nav-spacer" />
             <Link href="/discover" className="nav-link">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
               </svg>
               Discover
             </Link>
@@ -561,7 +734,6 @@ export default async function PublicProfilePage({
                 <div className="avatar-section">
                   <div className="avatar-ring">
                     {profile.avatar_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
                       <img src={profile.avatar_url} alt={displayName} className="avatar-img" />
                     ) : (
                       <div className="avatar-initials">{initials || '?'}</div>
@@ -585,8 +757,8 @@ export default async function PublicProfilePage({
                   {profile.occupation && (
                     <p className="profile-occupation">
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                        <rect x="2" y="7" width="20" height="14" rx="2"/>
-                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                        <rect x="2" y="7" width="20" height="14" rx="2" />
+                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
                       </svg>
                       {profile.occupation}
                     </p>
@@ -604,10 +776,10 @@ export default async function PublicProfilePage({
 
                   <div className="stats-grid">
                     {[
-                      { label: 'Followers', value: formatCount(profile.follower_count)  },
+                      { label: 'Followers', value: formatCount(profile.follower_count) },
                       { label: 'Following', value: formatCount(profile.following_count) },
-                      { label: 'Reports',   value: String(reports.length)               },
-                      { label: 'Views',     value: formatCount(profile.total_views)     },
+                      { label: 'Reports', value: String(reports.length) },
+                      { label: 'Views', value: formatCount(profile.total_views) },
                     ].map(s => (
                       <div key={s.label} className="stat-box">
                         <div className="stat-val">{s.value}</div>
@@ -634,7 +806,7 @@ export default async function PublicProfilePage({
                         <div className="play-main">Google Play</div>
                       </div>
                     </a>
-                    <p className="cta-note">Free · 20 credits on signup</p>
+                    <p className="cta-note">🎁 Free · 20 credits on signup</p>
                   </div>
                 </div>
               </div>
@@ -655,9 +827,9 @@ export default async function PublicProfilePage({
               {reports.length === 0 ? (
                 <div className="empty">
                   <div className="empty-icon">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" strokeWidth="1.5" strokeLinecap="round">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                      <polyline points="14 2 14 8 20 8"/>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--theme-text-3)" strokeWidth="1.5" strokeLinecap="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
                     </svg>
                   </div>
                   <p className="empty-title">No public reports yet</p>
@@ -670,16 +842,7 @@ export default async function PublicProfilePage({
                   {reports.map(report => {
                     const dc = DEPTH_CONFIG[report.depth] ?? DEPTH_CONFIG.deep;
                     return (
-                      /*
-                       * FIX: Card is now a <div> with position:relative.
-                       * A full-cover <a class="rcard-cover"> makes the whole
-                       * card clickable. Tag links have z-index:1 so they sit
-                       * above the cover and remain independently clickable.
-                       * This replaces the old pattern of an <a> card wrapping
-                       * inner <a> chips (invalid HTML + Server Component onClick).
-                       */
                       <div key={report.share_id} className="rcard">
-                        {/* Full-cover invisible link */}
                         <a
                           href={`${APP_URL}/r/${report.share_id}`}
                           className="rcard-cover"
@@ -698,11 +861,6 @@ export default async function PublicProfilePage({
                           {report.tags.length > 0 && (
                             <div className="rcard-tags">
                               {report.tags.slice(0, 3).map(tag => (
-                                /*
-                                 * FIX: No onClick here — this is a Server Component.
-                                 * The tag link navigates independently because it has
-                                 * position:relative + z-index:1 (above rcard-cover).
-                                 */
                                 <a
                                   key={tag}
                                   href={`/topic/${encodeURIComponent(tag.toLowerCase())}`}
@@ -732,9 +890,9 @@ export default async function PublicProfilePage({
                             {report.sources_count > 0 && (
                               <span className="view-ct">
                                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                                  <circle cx="12" cy="12" r="10"/>
-                                  <line x1="2" y1="12" x2="22" y2="12"/>
-                                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                                  <circle cx="12" cy="12" r="10" />
+                                  <line x1="2" y1="12" x2="22" y2="12" />
+                                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
                                 </svg>
                                 {report.sources_count}
                               </span>
@@ -758,9 +916,11 @@ export default async function PublicProfilePage({
       <footer className="footer">
         <div className="footer-inner">
           <div className="footer-brand">
-            <div className="footer-icon"><SearchIcon /></div>
+            <div className="footer-icon">
+              <Image src="/icon.png" alt="DeepDive AI" width={30} height={30} style={{ objectFit: 'contain' }} />
+            </div>
             <div>
-              <p className="footer-name">DeepDive AI</p>
+              <p className="footer-name">DeepDive <span className="dd-text-gradient">AI</span></p>
               <p className="footer-tag">Follow {displayName} &amp; run your own research</p>
             </div>
           </div>

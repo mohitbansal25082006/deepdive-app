@@ -1,27 +1,38 @@
-// src/app/layout.tsx
-// Public-Reports — Root Layout
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.9 — Public Reports Root Layout with Theme Support
+// ─────────────────────────────────────────────────────────────────────────────
 
 import type { Metadata } from 'next';
 import { Inter, Playfair_Display } from 'next/font/google';
 import './globals.css';
+import { ThemeProvider } from '../context/ThemeContext';
+import { initializeTheme } from '../constants/theme';
+
+// Initialize theme on server (sets CSS vars for SSR)
+// This runs during build/request time
+if (typeof window === 'undefined') {
+  // We can't actually call initializeTheme on the server because it uses document
+  // But we import it here to ensure the module is loaded
+  // The actual theme application happens client-side
+}
 
 // Body font — clean, readable
 const inter = Inter({
-  subsets:   ['latin'],
-  variable:  '--font-body',
-  display:   'swap',
+  subsets: ['latin'],
+  variable: '--font-body',
+  display: 'swap',
 });
 
 // Display font — editorial feel for titles
 const playfair = Playfair_Display({
-  subsets:   ['latin'],
-  variable:  '--font-display',
-  display:   'swap',
+  subsets: ['latin'],
+  variable: '--font-display',
+  display: 'swap',
 });
 
 export const metadata: Metadata = {
   title: {
-    default:  'DeepDive AI — Research Report',
+    default: 'DeepDive AI — Research Report',
     template: '%s | DeepDive AI',
   },
   description:
@@ -32,22 +43,22 @@ export const metadata: Metadata = {
     process.env.NEXT_PUBLIC_APP_URL ?? 'https://deepdive-reports.vercel.app'
   ),
   openGraph: {
-    type:      'website',
-    siteName:  'DeepDive AI',
-    locale:    'en_US',
+    type: 'website',
+    siteName: 'DeepDive AI',
+    locale: 'en_US',
   },
   twitter: {
     card: 'summary_large_image',
   },
   robots: {
-    index:  true,
+    index: true,
     follow: true,
     googleBot: {
-      index:               true,
-      follow:              true,
+      index: true,
+      follow: true,
       'max-video-preview': -1,
       'max-image-preview': 'large',
-      'max-snippet':       -1,
+      'max-snippet': -1,
     },
   },
 };
@@ -60,7 +71,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${playfair.variable}`} suppressHydrationWarning>
       <body className="antialiased" suppressHydrationWarning>
-        {children}
+        <ThemeProvider>
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -1,29 +1,34 @@
 'use client';
 // Public-Reports/src/app/discover/page.tsx
-// Part 34 — Initial discover feed (Trending / Recent tabs, tag filtering, search)
-// Part 37 — Added: "Researchers" tab showing public researcher directory.
-//           All Part 34 feed functionality is 100% preserved.
+// Part 55.9 — Redesigned Discover Page with Full Theme Integration
+// Features: Trending/Recent/Researchers tabs, tag filtering, search, theme-aware
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
-import { useRouter, useSearchParams }  from 'next/navigation';
-import ReportCard                      from '@/components/ReportCard';
-import ResearcherCard                  from '@/components/ResearcherCard';
-import PublicSearchBar                 from '@/components/PublicSearchBar';
+import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import Image from 'next/image';
+import ReportCard from '@/components/ReportCard';
+import ResearcherCard from '@/components/ResearcherCard';
+import PublicSearchBar from '@/components/PublicSearchBar';
 import type { PublicFeedReport, TagCount } from '@/types/report';
-import type { ResearcherRow }          from '@/app/api/researchers/route';
+import type { ResearcherRow } from '@/app/api/researchers/route';
 
 const PLAY_STORE_URL =
   typeof window !== 'undefined'
     ? (process.env.NEXT_PUBLIC_DEEPDIVE_PLAY_STORE_URL ?? process.env.NEXT_PUBLIC_PLAY_STORE_URL ?? '#')
     : '#';
 
-// ─── Global mobile + grid styles ──────────────────────────────────────────────
+// ─── Global styles ──────────────────────────────────────────────────────────────
 
 const GLOBAL_STYLES = `
-  @keyframes spin    { to { transform: rotate(360deg); } }
+  @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes shimmer {
-    0%   { background-position: -400px 0; }
-    100% { background-position:  400px 0; }
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   * { -webkit-tap-highlight-color: transparent; }
@@ -41,7 +46,6 @@ const GLOBAL_STYLES = `
   }
   .scroll-row > * { flex-shrink: 0; }
 
-  /* Report grid */
   .report-grid {
     display: grid;
     gap: 14px;
@@ -54,7 +58,6 @@ const GLOBAL_STYLES = `
     .report-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
   }
 
-  /* Researcher grid (Part 37) */
   .researcher-grid {
     display: grid;
     gap: 14px;
@@ -70,7 +73,7 @@ const GLOBAL_STYLES = `
   .shimmer-card {
     height: 200px;
     border-radius: 16px;
-    background: linear-gradient(90deg, var(--bg-elevated) 25%, rgba(108,99,255,0.06) 50%, var(--bg-elevated) 75%);
+    background: linear-gradient(90deg, var(--theme-background-elevated) 25%, var(--theme-primary) 50%, var(--theme-background-elevated) 75%);
     background-size: 800px 100%;
     animation: shimmer 1.4s infinite linear;
   }
@@ -78,20 +81,31 @@ const GLOBAL_STYLES = `
   .shimmer-researcher {
     height: 260px;
     border-radius: 20px;
-    background: linear-gradient(90deg, var(--bg-elevated) 25%, rgba(108,99,255,0.06) 50%, var(--bg-elevated) 75%);
+    background: linear-gradient(90deg, var(--theme-background-elevated) 25%, var(--theme-primary) 50%, var(--theme-background-elevated) 75%);
     background-size: 800px 100%;
     animation: shimmer 1.4s infinite linear;
   }
 
   .tap-btn:active { opacity: 0.7; transform: scale(0.97); }
-  .tag-panel-wrap { width: 100%; }
+  .tap-btn { transition: all 0.2s ease; }
+
+  .dd-text-gradient {
+    background: linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .discover-fade-in {
+    animation: fadeInUp 0.5s ease-out both;
+  }
 
   @media (max-width: 479px) {
-    .hero-badge  { font-size: 0.7rem !important; }
-    .hero-title  { font-size: 1.5rem !important; }
-    .hero-sub    { font-size: 0.875rem !important; }
-    .sort-row    { gap: 6px !important; }
-    .tag-chip    { font-size: 0.75rem !important; padding: 6px 10px !important; }
+    .hero-badge { font-size: 0.7rem !important; }
+    .hero-title { font-size: 1.5rem !important; }
+    .hero-sub { font-size: 0.875rem !important; }
+    .sort-row { gap: 6px !important; }
+    .tag-chip { font-size: 0.75rem !important; padding: 6px 10px !important; }
   }
 `;
 
@@ -105,26 +119,34 @@ function TagChip({ tag, count, active, onClick }: {
       onClick={onClick}
       className="tap-btn tag-chip"
       style={{
-        display:      'inline-flex',
-        alignItems:   'center',
-        gap:          4,
-        padding:      '7px 13px',
-        minHeight:    36,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '7px 13px',
+        minHeight: 36,
         borderRadius: '999px',
-        border:       '1px solid ' + (active ? 'rgba(108,99,255,0.5)' : 'var(--border)'),
-        background:   active ? 'rgba(108,99,255,0.15)' : 'var(--bg-elevated)',
-        cursor:       'pointer',
-        fontSize:     '0.8125rem',
-        fontWeight:   active ? 700 : 500,
-        color:        active ? '#A78BFA' : 'var(--text-muted)',
-        transition:   'all 0.15s ease',
-        whiteSpace:   'nowrap',
-        userSelect:   'none',
+        border: active 
+          ? '2px solid var(--theme-primary)' 
+          : '1px solid var(--theme-border)',
+        background: active 
+          ? 'var(--theme-primary)' 
+          : 'var(--theme-background-card)',
+        cursor: 'pointer',
+        fontSize: '0.8125rem',
+        fontWeight: active ? 700 : 500,
+        color: active ? '#FFFFFF' : 'var(--theme-text-secondary)',
+        transition: 'all 0.15s ease',
+        whiteSpace: 'nowrap',
+        userSelect: 'none',
       }}
     >
       #{tag}
       {count !== undefined && count > 0 && (
-        <span style={{ fontSize: '0.6rem', color: active ? 'rgba(167,139,250,0.7)' : 'rgba(255,255,255,0.25)', fontWeight: 600 }}>
+        <span style={{ 
+          fontSize: '0.6rem', 
+          color: active ? 'rgba(255,255,255,0.7)' : 'var(--theme-text-muted)', 
+          fontWeight: 600 
+        }}>
           {count}
         </span>
       )}
@@ -142,22 +164,22 @@ function MainTab({ label, icon, active, onClick }: {
       onClick={onClick}
       className="tap-btn"
       style={{
-        display:    'inline-flex',
+        display: 'inline-flex',
         alignItems: 'center',
-        gap:        6,
-        padding:    '8px 15px',
-        minHeight:  40,
+        gap: 6,
+        padding: '9px 16px',
+        minHeight: 40,
         borderRadius: '10px',
-        border:     'none',
-        background: active
-          ? 'linear-gradient(135deg, #6C63FF, #8B5CF6)'
-          : 'var(--bg-elevated)',
-        cursor:     'pointer',
-        fontSize:   '0.8125rem',
+        border: active ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+        background: active 
+          ? 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))'
+          : 'var(--theme-background-card)',
+        cursor: 'pointer',
+        fontSize: '0.8125rem',
         fontWeight: 700,
-        color:      active ? '#fff' : 'var(--text-muted)',
+        color: active ? '#FFFFFF' : 'var(--theme-text-secondary)',
         transition: 'all 0.15s ease',
-        boxShadow:  active ? '0 4px 12px rgba(108,99,255,0.3)' : 'none',
+        boxShadow: active ? '0 4px 12px var(--theme-primary)' : 'none',
         whiteSpace: 'nowrap',
         userSelect: 'none',
       }}
@@ -167,14 +189,14 @@ function MainTab({ label, icon, active, onClick }: {
   );
 }
 
-// ─── Tag browse panel (Part 34 — unchanged) ───────────────────────────────────
+// ─── Tag browse panel ─────────────────────────────────────────────────────────
 
 function TagBrowsePanel({ tags, onTagClick, onClose }: {
   tags: TagCount[]; onTagClick: (tag: string) => void; onClose: () => void;
 }) {
   const router = useRouter();
   if (tags.length === 0) return (
-    <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)' }}>
+    <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--theme-text-muted)' }}>
       <p style={{ fontSize: '1.5rem', marginBottom: 8 }}>🏷</p>
       <p style={{ fontSize: '0.875rem' }}>No topic tags yet. Share a report to add tags!</p>
     </div>
@@ -182,21 +204,33 @@ function TagBrowsePanel({ tags, onTagClick, onClose }: {
 
   return (
     <div className="tag-panel-wrap" style={{
-      background: 'var(--bg-card)', border: '1px solid rgba(108,99,255,0.3)',
-      borderRadius: '16px', overflow: 'hidden', marginBottom: 12,
+      background: 'var(--theme-background-card)',
+      border: '2px solid var(--theme-primary)',
+      borderRadius: '16px',
+      overflow: 'hidden',
+      marginBottom: 12,
     }}>
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 14px', borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-elevated)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '12px 14px',
+        borderBottom: '1px solid var(--theme-border)',
+        background: 'var(--theme-background-elevated)',
       }}>
-        <p style={{ color: 'var(--text-primary)', fontSize: '0.875rem', fontWeight: 700, margin: 0 }}>
+        <p style={{ color: 'var(--theme-text-primary)', fontSize: '0.875rem', fontWeight: 700, margin: 0 }}>
           Browse by Topic
         </p>
         <button onClick={onClose} className="tap-btn" style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          color: 'var(--text-muted)', padding: '8px',
-          display: 'flex', alignItems: 'center', minWidth: 40, minHeight: 40,
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          color: 'var(--theme-text-muted)',
+          padding: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          minWidth: 40,
+          minHeight: 40,
         }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -210,14 +244,15 @@ function TagBrowsePanel({ tags, onTagClick, onClose }: {
               className="tap-btn" style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
                 padding: '8px 14px', minHeight: 40, borderRadius: '999px',
-                border: '1px solid var(--border)', background: 'var(--bg-elevated)',
+                border: '1px solid var(--theme-border)',
+                background: 'var(--theme-background-elevated)',
                 cursor: 'pointer', fontSize: '0.8125rem', fontWeight: 600,
-                color: 'var(--text-secondary)', userSelect: 'none',
+                color: 'var(--theme-text-secondary)', userSelect: 'none',
               }}>
               #{t.tag}
               <span style={{
-                fontSize: '0.65rem', color: 'rgba(255,255,255,0.25)', fontWeight: 600,
-                background: 'rgba(255,255,255,0.06)', borderRadius: 6, padding: '1px 5px',
+                fontSize: '0.65rem', color: 'var(--theme-text-muted)', fontWeight: 600,
+                background: 'var(--theme-background-card)', borderRadius: 6, padding: '1px 5px',
               }}>{t.count}</span>
             </button>
           ))}
@@ -227,7 +262,7 @@ function TagBrowsePanel({ tags, onTagClick, onClose }: {
   );
 }
 
-// ─── Researcher sort options (Part 37) ────────────────────────────────────────
+// ─── Researcher sort options ──────────────────────────────────────────────────
 
 type ResearcherSort = 'followers' | 'active' | 'newest';
 
@@ -236,8 +271,8 @@ function ResearcherSortBar({ sort, onChange }: {
 }) {
   const options: { value: ResearcherSort; label: string }[] = [
     { value: 'followers', label: '⭐ Most Followed' },
-    { value: 'active',    label: '🔥 Most Active'   },
-    { value: 'newest',    label: '🆕 Newest'         },
+    { value: 'active',    label: '🔥 Most Active' },
+    { value: 'newest',    label: '🆕 Newest' },
   ];
   return (
     <div className="scroll-row" style={{ marginBottom: 14 }}>
@@ -246,10 +281,10 @@ function ResearcherSortBar({ sort, onChange }: {
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '7px 14px', minHeight: 36, borderRadius: '10px',
-            border: '1px solid ' + (sort === opt.value ? 'rgba(108,99,255,0.45)' : 'var(--border)'),
-            background: sort === opt.value ? 'rgba(108,99,255,0.12)' : 'var(--bg-elevated)',
+            border: sort === opt.value ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+            background: sort === opt.value ? 'var(--theme-primary)' : 'var(--theme-background-card)',
             cursor: 'pointer', fontSize: '0.8125rem', fontWeight: 700,
-            color: sort === opt.value ? '#A78BFA' : 'var(--text-muted)',
+            color: sort === opt.value ? '#FFFFFF' : 'var(--theme-text-secondary)',
             whiteSpace: 'nowrap', userSelect: 'none',
           }}
         >
@@ -260,29 +295,32 @@ function ResearcherSortBar({ sort, onChange }: {
   );
 }
 
-// ─── Researchers CTA strip (Part 37) ─────────────────────────────────────────
+// ─── Researchers CTA strip ────────────────────────────────────────────────────
 
 function ResearchersCTAStrip() {
   return (
     <div style={{
       marginBottom: 20,
-      background:   'linear-gradient(135deg, #1A1A35 0%, #0E0E28 100%)',
-      border:       '1px solid rgba(108,99,255,0.25)',
+      background: 'linear-gradient(135deg, var(--theme-background-elevated), var(--theme-background-card))',
+      border: '2px solid var(--theme-primary)',
       borderRadius: 16,
-      padding:      '16px 20px',
-      display:      'flex',
-      alignItems:   'center',
-      gap:          16,
-      flexWrap:     'wrap',
+      padding: '16px 20px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 16,
+      flexWrap: 'wrap',
     }}>
       <div style={{ flex: 1, minWidth: 200 }}>
         <p style={{
-          color: 'var(--text-primary, #F0F0FF)', fontSize: '0.9375rem',
-          fontWeight: 800, marginBottom: 4, letterSpacing: '-0.01em',
+          color: 'var(--theme-text-primary)',
+          fontSize: '0.9375rem',
+          fontWeight: 800,
+          marginBottom: 4,
+          letterSpacing: '-0.01em',
         }}>
           Join DeepDive to follow researchers
         </p>
-        <p style={{ color: 'var(--text-muted, #6060A0)', fontSize: '0.8rem', lineHeight: 1.5 }}>
+        <p style={{ color: 'var(--theme-text-secondary)', fontSize: '0.8rem', lineHeight: 1.5 }}>
           Get notified when your favourite researchers publish new AI-powered reports.
           Free to join — 20 credits on signup.
         </p>
@@ -293,18 +331,19 @@ function ResearchersCTAStrip() {
         rel="noopener noreferrer"
         className="tap-btn"
         style={{
-          display:        'inline-flex',
-          alignItems:     'center',
-          gap:            8,
-          padding:        '10px 20px',
-          borderRadius:   '999px',
-          background:     'linear-gradient(135deg, #6C63FF, #8B5CF6)',
-          color:          '#fff',
-          fontWeight:     700,
-          fontSize:       '0.875rem',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 20px',
+          borderRadius: '999px',
+          background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+          color: '#FFFFFF',
+          fontWeight: 700,
+          fontSize: '0.875rem',
           textDecoration: 'none',
-          whiteSpace:     'nowrap',
-          flexShrink:     0,
+          whiteSpace: 'nowrap',
+          flexShrink: 0,
+          boxShadow: '0 4px 16px var(--theme-primary)',
         }}
       >
         Get DeepDive Free →
@@ -313,42 +352,42 @@ function ResearchersCTAStrip() {
   );
 }
 
-// ─── Researchers section (Part 37) ────────────────────────────────────────────
+// ─── Researchers section ──────────────────────────────────────────────────────
 
 function ResearchersSection() {
-  const [sort,           setSort]           = useState<ResearcherSort>('followers');
-  const [searchQuery,    setSearchQuery]    = useState('');
-  const [researchers,    setResearchers]    = useState<ResearcherRow[]>([]);
-  const [isLoading,      setIsLoading]      = useState(true);
-  const [hasMore,        setHasMore]        = useState(false);
-  const [offset,         setOffset]         = useState(0);
-  const [isLoadingMore,  setIsLoadingMore]  = useState(false);
+  const [sort, setSort] = useState<ResearcherSort>('followers');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [researchers, setResearchers] = useState<ResearcherRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   const PAGE_SIZE = 24;
 
   const fetchResearchers = useCallback(async (
-    newSort:   ResearcherSort,
+    newSort: ResearcherSort,
     newSearch: string,
     newOffset: number,
-    append:    boolean,
+    append: boolean,
   ) => {
     if (newOffset === 0) setIsLoading(true); else setIsLoadingMore(true);
     try {
       const params = new URLSearchParams({
-        sort:   newSort,
-        limit:  String(PAGE_SIZE),
+        sort: newSort,
+        limit: String(PAGE_SIZE),
         offset: String(newOffset),
       });
       if (newSearch.trim()) params.set('search', newSearch.trim());
 
-      const res  = await fetch(`/api/researchers?${params}`);
+      const res = await fetch(`/api/researchers?${params}`);
       const data = await res.json() as {
         researchers: ResearcherRow[];
-        hasMore:     boolean;
+        hasMore: boolean;
       };
       const rows = data.researchers ?? [];
       if (append) setResearchers(prev => [...prev, ...rows]);
-      else        setResearchers(rows);
+      else setResearchers(rows);
       setHasMore(data.hasMore ?? false);
       setOffset(newOffset + rows.length);
     } catch {
@@ -359,13 +398,11 @@ function ResearchersSection() {
     }
   }, []);
 
-  // Fetch on sort/search change
   useEffect(() => {
     setOffset(0);
     fetchResearchers(sort, searchQuery, 0, false);
   }, [sort, searchQuery, fetchResearchers]);
 
-  // Debounce search input
   const [rawSearch, setRawSearch] = useState('');
   useEffect(() => {
     const t = setTimeout(() => setSearchQuery(rawSearch), 300);
@@ -374,21 +411,19 @@ function ResearchersSection() {
 
   return (
     <div>
-      {/* CTA strip */}
       <ResearchersCTAStrip />
 
-      {/* Search bar */}
       <div style={{ marginBottom: 14 }}>
         <div style={{
-          display:         'flex',
-          alignItems:      'center',
-          gap:             10,
-          backgroundColor: 'var(--bg-elevated, #141430)',
-          border:          '1px solid var(--border)',
-          borderRadius:    12,
-          padding:         '10px 14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          background: 'var(--theme-background-card)',
+          border: '1px solid var(--theme-border)',
+          borderRadius: 12,
+          padding: '10px 14px',
         }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--theme-text-muted)" strokeWidth="2" strokeLinecap="round">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
           </svg>
           <input
@@ -396,12 +431,12 @@ function ResearchersSection() {
             onChange={e => setRawSearch(e.target.value)}
             placeholder="Search by name, username, or interest…"
             style={{
-              flex:        1,
-              background:  'none',
-              border:      'none',
-              outline:     'none',
-              color:       'var(--text-primary, #F0F0FF)',
-              fontSize:    '0.875rem',
+              flex: 1,
+              background: 'none',
+              border: 'none',
+              outline: 'none',
+              color: 'var(--theme-text-primary)',
+              fontSize: '0.875rem',
             }}
           />
           {rawSearch && (
@@ -409,7 +444,7 @@ function ResearchersSection() {
               onClick={() => setRawSearch('')}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
-                color: 'var(--text-muted)', display: 'flex', padding: 4,
+                color: 'var(--theme-text-muted)', display: 'flex', padding: 4,
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -420,10 +455,8 @@ function ResearchersSection() {
         </div>
       </div>
 
-      {/* Sort bar */}
       <ResearcherSortBar sort={sort} onChange={newSort => { setSort(newSort); setOffset(0); }} />
 
-      {/* Grid */}
       {isLoading ? (
         <div className="researcher-grid">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -433,18 +466,21 @@ function ResearchersSection() {
       ) : researchers.length === 0 ? (
         <div style={{ textAlign: 'center', paddingTop: 60, paddingBottom: 60 }}>
           <p style={{ fontSize: '2.5rem', marginBottom: 14 }}>👩‍🔬</p>
-          <h2 style={{ fontSize: 'clamp(1rem, 4vw, 1.25rem)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
+          <h2 style={{ fontSize: 'clamp(1rem, 4vw, 1.25rem)', fontWeight: 700, color: 'var(--theme-text-primary)', marginBottom: 8 }}>
             {rawSearch ? `No researchers matching "${rawSearch}"` : 'No public researchers yet'}
           </h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', maxWidth: 320, margin: '0 auto 24px' }}>
+          <p style={{ color: 'var(--theme-text-secondary)', fontSize: '0.875rem', maxWidth: 320, margin: '0 auto 24px' }}>
             {rawSearch
               ? 'Try a different search term.'
               : 'Be the first to make your profile public in the DeepDive app!'}
           </p>
           {rawSearch && (
             <button onClick={() => setRawSearch('')} className="tap-btn" style={{
-              padding: '10px 24px', borderRadius: '999px', border: '1px solid var(--border)',
-              background: 'transparent', cursor: 'pointer', color: 'var(--text-secondary)',
+              padding: '10px 24px', borderRadius: '999px',
+              border: '1px solid var(--theme-border)',
+              background: 'var(--theme-background-card)',
+              cursor: 'pointer',
+              color: 'var(--theme-text-secondary)',
               fontSize: '0.875rem', fontWeight: 600,
             }}>
               Clear search
@@ -453,7 +489,7 @@ function ResearchersSection() {
         </div>
       ) : (
         <>
-          <p style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: 12 }}>
+          <p style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--theme-text-muted)', marginBottom: 12 }}>
             {researchers.length}{hasMore ? '+' : ''} researchers
             {rawSearch ? ` matching "${rawSearch}"` : ''}
           </p>
@@ -474,10 +510,11 @@ function ResearchersSection() {
                 className="tap-btn"
                 style={{
                   padding: '12px 32px', borderRadius: '999px',
-                  border: '1px solid var(--border)',
-                  background: isLoadingMore ? 'var(--bg-elevated)' : 'transparent',
+                  border: '1px solid var(--theme-border)',
+                  background: isLoadingMore ? 'var(--theme-background-elevated)' : 'var(--theme-background-card)',
                   cursor: isLoadingMore ? 'wait' : 'pointer',
-                  color: 'var(--text-secondary)', fontSize: '0.875rem', fontWeight: 600,
+                  color: 'var(--theme-text-secondary)',
+                  fontSize: '0.875rem', fontWeight: 600,
                   display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 48,
                 }}
               >
@@ -485,8 +522,9 @@ function ResearchersSection() {
                   <>
                     <div style={{
                       width: 14, height: 14,
-                      border: '2px solid rgba(108,99,255,0.3)',
-                      borderTopColor: '#6C63FF', borderRadius: '50%',
+                      border: '2px solid var(--theme-primary)',
+                      borderTopColor: 'transparent',
+                      borderRadius: '50%',
                       animation: 'spin 0.6s linear infinite',
                     }} />
                     Loading…
@@ -504,41 +542,38 @@ function ResearchersSection() {
 // ─── DiscoverClient ────────────────────────────────────────────────────────────
 
 function DiscoverClient() {
-  const router       = useRouter();
+  const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Part 37: tab is now 'trending' | 'recent' | 'researchers'
-  const [activeTab,    setActiveTab]    = useState<DiscoverTab>(() => {
+  const [activeTab, setActiveTab] = useState<DiscoverTab>(() => {
     const t = searchParams.get('tab');
     if (t === 'researchers') return 'researchers';
-    if (t === 'recent')      return 'recent';
+    if (t === 'recent') return 'recent';
     return 'trending';
   });
-  const [activeTag,    setActiveTag]    = useState<string | null>(() => searchParams.get('tag') || null);
+  const [activeTag, setActiveTag] = useState<string | null>(() => searchParams.get('tag') || null);
   const [activeSearch, setActiveSearch] = useState<string>(() => searchParams.get('q') || '');
   const [showTagPanel, setShowTagPanel] = useState(false);
 
-  const [reports,       setReports]       = useState<PublicFeedReport[]>([]);
-  const [tags,          setTags]          = useState<TagCount[]>([]);
-  const [isLoading,     setIsLoading]     = useState(true);
-  const [hasMore,       setHasMore]       = useState(false);
-  const [offset,        setOffset]        = useState(0);
+  const [reports, setReports] = useState<PublicFeedReport[]>([]);
+  const [tags, setTags] = useState<TagCount[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   const isSearchMode = activeSearch.trim().length >= 2;
-  const isReportTab  = activeTab === 'trending' || activeTab === 'recent';
+  const isReportTab = activeTab === 'trending' || activeTab === 'recent';
 
-  // Sync URL params
   useEffect(() => {
     const p = new URLSearchParams();
     if (activeTab !== 'trending') p.set('tab', activeTab);
-    if (activeTag)                p.set('tag', activeTag);
-    if (activeSearch)             p.set('q',   activeSearch);
+    if (activeTag) p.set('tag', activeTag);
+    if (activeSearch) p.set('q', activeSearch);
     const qs = p.toString();
     router.replace(qs ? `/discover?${qs}` : '/discover', { scroll: false });
   }, [activeTab, activeTag, activeSearch, router]);
 
-  // Fetch tags on mount
   useEffect(() => {
     fetch('/api/discover/tags')
       .then(r => r.ok ? r.json() : { tags: [] })
@@ -546,21 +581,20 @@ function DiscoverClient() {
       .catch(() => {});
   }, []);
 
-  // Fetch feed (reports only)
   const fetchReports = useCallback(async (
-    sort:      'trending' | 'recent',
-    tag:       string | null,
-    off:       number,
-    append:    boolean,
+    sort: 'trending' | 'recent',
+    tag: string | null,
+    off: number,
+    append: boolean,
   ) => {
     if (off === 0) setIsLoading(true); else setIsLoadingMore(true);
     try {
       const params = new URLSearchParams({ sort, limit: '24', offset: String(off) });
       if (tag) params.set('tag', tag);
-      const res  = await fetch(`/api/discover?${params}`);
+      const res = await fetch(`/api/discover?${params}`);
       const data = await res.json() as { reports: PublicFeedReport[]; hasMore: boolean };
       if (append) setReports(prev => [...prev, ...(data.reports ?? [])]);
-      else        setReports(data.reports ?? []);
+      else setReports(data.reports ?? []);
       setHasMore(data.hasMore ?? false);
       setOffset(off + (data.reports?.length ?? 0));
     } catch {
@@ -571,7 +605,6 @@ function DiscoverClient() {
     }
   }, []);
 
-  // Re-fetch when feed tab / tag changes
   useEffect(() => {
     if (!isReportTab || isSearchMode) return;
     setOffset(0);
@@ -592,43 +625,78 @@ function DiscoverClient() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-base)', overflowX: 'hidden' }}>
+    <div style={{ 
+      minHeight: '100vh', 
+      background: 'var(--theme-background)', 
+      overflowX: 'hidden' 
+    }}>
 
       {/* ── Navbar ── */}
       <header className="sticky top-0 z-40" style={{
-        background: 'rgba(10,10,26,0.92)', backdropFilter: 'blur(20px)',
-        borderBottom: '1px solid var(--border)', padding: '0 12px',
+        background: 'var(--theme-background)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderBottom: '1px solid var(--theme-border)',
+        padding: '0 12px',
       }}>
         <div style={{
-          maxWidth: '1000px', margin: '0 auto',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          gap: 10, height: 52,
+          maxWidth: '1000px',
+          margin: '0 auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+          height: 56,
         }}>
-          <a href="/" style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
+          <Link href="/" style={{ 
+            textDecoration: 'none', 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 8, 
+            flexShrink: 0 
+          }}>
             <div style={{
-              width: 30, height: 30, borderRadius: 10,
-              background: 'linear-gradient(135deg, #6C63FF, #8B5CF6)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 32,
+              height: 32,
+              borderRadius: 10,
+              overflow: 'hidden',
+              background: '#FFFFFF',
+              border: '1px solid var(--theme-border)',
             }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-              </svg>
+              <Image src="/icon.png" alt="DeepDive AI" width={32} height={32} style={{ objectFit: 'contain' }} priority />
             </div>
-            <span style={{ color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 700 }}>
-              DeepDive AI
+            <span style={{ 
+              color: 'var(--theme-text-primary)', 
+              fontSize: '0.9rem', 
+              fontWeight: 800 
+            }}>
+              DeepDive <span className="dd-text-gradient">AI</span>
             </span>
-          </a>
+          </Link>
+          
           <div style={{ flex: 1, maxWidth: 420, display: 'none' }} className="nav-search-desktop">
             <PublicSearchBar mode="dropdown" placeholder="Search all research…" style={{ width: '100%' }} />
           </div>
-          <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
-            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
-            padding: '7px 14px', minHeight: 36, borderRadius: '999px',
-            background: 'linear-gradient(135deg, #6C63FF, #8B5CF6)',
-            color: '#fff', fontSize: '0.8125rem', fontWeight: 700, textDecoration: 'none',
-          }}>
-            Get App
-          </a>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '7px 14px',
+              minHeight: 36,
+              borderRadius: '999px',
+              background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+              color: '#FFFFFF',
+              fontSize: '0.8125rem',
+              fontWeight: 700,
+              textDecoration: 'none',
+              boxShadow: '0 2px 12px var(--theme-primary)',
+            }}>
+              Get App
+            </a>
+          </div>
         </div>
         <div className="nav-search-mobile" style={{ paddingBottom: 10, maxWidth: '1000px', margin: '0 auto' }}>
           <PublicSearchBar mode="dropdown" placeholder="Search all research…" style={{ width: '100%' }} />
@@ -638,25 +706,39 @@ function DiscoverClient() {
       <main style={{ maxWidth: '1000px', margin: '0 auto', padding: '24px 12px 120px' }}>
 
         {/* ── Hero ── */}
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }} className="discover-fade-in">
           <div className="hero-badge" style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '5px 14px', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 700,
-            marginBottom: 12, background: 'rgba(108,99,255,0.12)',
-            border: '1px solid rgba(108,99,255,0.3)', color: '#6C63FF',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '5px 14px',
+            borderRadius: '999px',
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            marginBottom: 12,
+            background: 'var(--theme-primary)',
+            color: '#FFFFFF',
+            border: '1px solid var(--theme-primary)',
           }}>
             ✦ Research Discovery
           </div>
           <h1 className="hero-title" style={{
-            fontFamily: 'var(--font-display)', fontSize: 'clamp(1.5rem, 5vw, 2.5rem)',
-            fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em',
-            marginBottom: 10, lineHeight: 1.15,
+            fontFamily: 'var(--font-display)',
+            fontSize: 'clamp(1.5rem, 5vw, 2.5rem)',
+            fontWeight: 800,
+            color: 'var(--theme-text-primary)',
+            letterSpacing: '-0.02em',
+            marginBottom: 10,
+            lineHeight: 1.15,
           }}>
-            Discover Public Research
+            Discover <span className="dd-text-gradient">Public Research</span>
           </h1>
           <p className="hero-sub" style={{
-            color: 'var(--text-muted)', fontSize: 'clamp(0.875rem, 2.5vw, 1rem)',
-            maxWidth: 460, margin: '0 auto', lineHeight: 1.5,
+            color: 'var(--theme-text-secondary)',
+            fontSize: 'clamp(0.875rem, 2.5vw, 1rem)',
+            maxWidth: 460,
+            margin: '0 auto',
+            lineHeight: 1.5,
           }}>
             Browse AI-generated research reports shared by the DeepDive community.
           </p>
@@ -673,7 +755,7 @@ function DiscoverClient() {
           />
         </div>
 
-        {/* ── Tab bar: Trending | Recent | Researchers (Part 37) ── */}
+        {/* ── Tab bar ── */}
         <div style={{ marginBottom: 18 }}>
           <div className="scroll-row sort-row" style={{ marginBottom: 10 }}>
             <MainTab
@@ -696,7 +778,6 @@ function DiscoverClient() {
                 </svg>
               }
             />
-            {/* Part 37 — Researchers tab */}
             <MainTab
               label="Researchers"
               active={activeTab === 'researchers'}
@@ -710,16 +791,16 @@ function DiscoverClient() {
               }
             />
 
-            {/* Browse by Tags — only show on report tabs */}
             {isReportTab && (
               <button onClick={() => { setShowTagPanel(v => !v); setActiveSearch(''); }}
                 className="tap-btn" style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
-                  padding: '8px 14px', minHeight: 40, borderRadius: '10px',
-                  border: '1px solid ' + (showTagPanel ? 'rgba(108,99,255,0.5)' : 'var(--border)'),
-                  background: showTagPanel ? 'rgba(108,99,255,0.12)' : 'var(--bg-elevated)',
+                  padding: '9px 14px', minHeight: 40, borderRadius: '10px',
+                  border: showTagPanel ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                  background: showTagPanel ? 'var(--theme-primary)' : 'var(--theme-background-card)',
                   cursor: 'pointer', fontSize: '0.8125rem', fontWeight: 700,
-                  color: showTagPanel ? '#A78BFA' : 'var(--text-muted)', whiteSpace: 'nowrap',
+                  color: showTagPanel ? '#FFFFFF' : 'var(--theme-text-secondary)',
+                  whiteSpace: 'nowrap',
                 }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                   <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
@@ -728,26 +809,30 @@ function DiscoverClient() {
                 Browse by Tags
                 {tags.length > 0 && (
                   <span style={{
-                    background: 'rgba(108,99,255,0.15)', borderRadius: '999px',
-                    padding: '1px 7px', fontSize: '0.65rem', fontWeight: 700,
+                    background: showTagPanel ? 'rgba(255,255,255,0.2)' : 'var(--theme-primary)',
+                    borderRadius: '999px',
+                    padding: '1px 7px',
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
                   }}>{tags.length}</span>
                 )}
               </button>
             )}
 
-            {/* Active tag clear */}
             {activeTag && isReportTab && (
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: 7,
                 padding: '6px 12px', minHeight: 40, borderRadius: '999px',
-                background: 'rgba(108,99,255,0.1)', border: '1px solid rgba(108,99,255,0.3)',
+                background: 'var(--theme-primary)',
+                border: '1px solid var(--theme-primary)',
               }}>
-                <span style={{ color: '#A78BFA', fontSize: '0.8125rem', fontWeight: 600 }}>
+                <span style={{ color: '#FFFFFF', fontSize: '0.8125rem', fontWeight: 600 }}>
                   #{activeTag}
                 </span>
                 <button onClick={() => setActiveTag(null)} className="tap-btn" style={{
                   background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'rgba(167,139,250,0.6)', display: 'flex', padding: '4px',
+                  color: 'rgba(255,255,255,0.6)', display: 'flex', padding: '4px',
                   minWidth: 28, minHeight: 28, alignItems: 'center', justifyContent: 'center',
                 }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -758,12 +843,10 @@ function DiscoverClient() {
             )}
           </div>
 
-          {/* Tag browse panel (report tabs only) */}
           {showTagPanel && isReportTab && (
             <TagBrowsePanel tags={tags} onTagClick={handleTagClick} onClose={() => setShowTagPanel(false)} />
           )}
 
-          {/* Quick tag chips (report tabs, no panel) */}
           {!showTagPanel && tags.length > 0 && isReportTab && (
             <div className="scroll-row">
               <TagChip tag="all" active={!activeTag} onClick={() => setActiveTag(null)} />
@@ -775,11 +858,11 @@ function DiscoverClient() {
           )}
         </div>
 
-        {/* ── Researchers tab content (Part 37) ── */}
+        {/* ── Researchers tab ── */}
         {activeTab === 'researchers' ? (
           <ResearchersSection />
         ) : (
-          /* ── Report feed (Part 34 — unchanged) ── */
+          /* ── Report feed ── */
           isLoading ? (
             <div className="report-grid">
               {Array.from({ length: 8 }).map((_, i) => (
@@ -789,17 +872,19 @@ function DiscoverClient() {
           ) : reports.length === 0 && !isSearchMode ? (
             <div style={{ textAlign: 'center', paddingTop: 60, paddingBottom: 60 }}>
               <p style={{ fontSize: '2.5rem', marginBottom: 14 }}>{activeTag ? '🔖' : '🔬'}</p>
-              <h2 style={{ fontSize: 'clamp(1rem, 4vw, 1.25rem)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
+              <h2 style={{ fontSize: 'clamp(1rem, 4vw, 1.25rem)', fontWeight: 700, color: 'var(--theme-text-primary)', marginBottom: 8 }}>
                 {activeTag ? `No reports tagged #${activeTag} yet` : 'No public reports yet'}
               </h2>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: 24, maxWidth: 320, margin: '0 auto 24px' }}>
+              <p style={{ color: 'var(--theme-text-secondary)', fontSize: '0.9rem', marginBottom: 24, maxWidth: 320, margin: '0 auto 24px' }}>
                 {activeTag ? 'Try clearing the tag filter.' : 'Be the first to share a research report!'}
               </p>
               <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
                 display: 'inline-flex', alignItems: 'center', gap: 8,
                 padding: '12px 24px', borderRadius: '999px',
-                background: 'linear-gradient(135deg, #6C63FF, #8B5CF6)',
-                color: '#fff', textDecoration: 'none', fontWeight: 700, fontSize: '0.875rem',
+                background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+                color: '#FFFFFF',
+                textDecoration: 'none', fontWeight: 700, fontSize: '0.875rem',
+                boxShadow: '0 4px 16px var(--theme-primary)',
               }}>
                 Download DeepDive AI →
               </a>
@@ -807,7 +892,7 @@ function DiscoverClient() {
           ) : (
             <>
               {!isSearchMode && (
-                <p style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: 12 }}>
+                <p style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--theme-text-muted)', marginBottom: 12 }}>
                   {activeTag
                     ? `Reports tagged #${activeTag}`
                     : activeTab === 'trending' ? 'Most viewed reports' : 'Latest reports'}
@@ -827,10 +912,11 @@ function DiscoverClient() {
                     className="tap-btn"
                     style={{
                       padding: '12px 32px', borderRadius: '999px',
-                      border: '1px solid var(--border)',
-                      background: isLoadingMore ? 'var(--bg-elevated)' : 'transparent',
+                      border: '1px solid var(--theme-border)',
+                      background: isLoadingMore ? 'var(--theme-background-elevated)' : 'var(--theme-background-card)',
                       cursor: isLoadingMore ? 'wait' : 'pointer',
-                      color: 'var(--text-secondary)', fontSize: '0.875rem', fontWeight: 600,
+                      color: 'var(--theme-text-secondary)',
+                      fontSize: '0.875rem', fontWeight: 600,
                       display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 48,
                     }}
                   >
@@ -838,8 +924,9 @@ function DiscoverClient() {
                       <>
                         <div style={{
                           width: 14, height: 14,
-                          border: '2px solid rgba(108,99,255,0.3)',
-                          borderTopColor: '#6C63FF', borderRadius: '50%',
+                          border: '2px solid var(--theme-primary)',
+                          borderTopColor: 'transparent',
+                          borderRadius: '50%',
                           animation: 'spin 0.6s linear infinite',
                         }} />
                         Loading…
@@ -855,24 +942,46 @@ function DiscoverClient() {
 
       {/* ── Sticky app CTA ── */}
       <div style={{
-        position: 'fixed', bottom: 0, left: 0, right: 0,
-        background: 'rgba(10,10,26,0.97)', backdropFilter: 'blur(20px)',
-        borderTop: '1px solid var(--border)',
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        background: 'var(--theme-background)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderTop: '1px solid var(--theme-border)',
         padding: 'calc(10px + env(safe-area-inset-bottom)) 14px 10px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        gap: 10, zIndex: 40,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 10,
+        zIndex: 40,
       }}>
-        <p style={{ margin: 0, fontSize: 'clamp(0.7rem, 2.5vw, 0.8125rem)', color: 'var(--text-muted)', lineHeight: 1.3 }}>
+        <p style={{ 
+          margin: 0, 
+          fontSize: 'clamp(0.7rem, 2.5vw, 0.8125rem)', 
+          color: 'var(--theme-text-secondary)', 
+          lineHeight: 1.3 
+        }}>
           {activeTab === 'researchers'
             ? 'Follow researchers & get notified'
             : 'Create reports like these'}
         </p>
         <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
-          flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
-          padding: '9px 16px', minHeight: 40, borderRadius: '999px',
-          background: 'linear-gradient(135deg, #6C63FF, #8B5CF6)',
-          color: '#fff', fontWeight: 700, fontSize: '0.8125rem',
-          textDecoration: 'none', whiteSpace: 'nowrap',
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '9px 16px',
+          minHeight: 40,
+          borderRadius: '999px',
+          background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+          color: '#FFFFFF',
+          fontWeight: 700,
+          fontSize: '0.8125rem',
+          textDecoration: 'none',
+          whiteSpace: 'nowrap',
+          boxShadow: '0 4px 16px var(--theme-primary)',
         }}>
           Get DeepDive AI Free →
         </a>
@@ -894,10 +1003,19 @@ function DiscoverClient() {
 export default function DiscoverPage() {
   return (
     <Suspense fallback={
-      <div style={{ minHeight: '100vh', background: 'var(--bg-base)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ 
+        minHeight: '100vh', 
+        background: 'var(--theme-background)', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center' 
+      }}>
         <div style={{
-          width: 32, height: 32, border: '3px solid rgba(108,99,255,0.3)',
-          borderTopColor: '#6C63FF', borderRadius: '50%', animation: 'spin 0.7s linear infinite',
+          width: 32, height: 32,
+          border: '3px solid var(--theme-primary)',
+          borderTopColor: 'transparent',
+          borderRadius: '50%',
+          animation: 'spin 0.7s linear infinite',
         }} />
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>

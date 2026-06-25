@@ -1,11 +1,16 @@
 // src/components/DeepDiveBanner.tsx
-// Public-Reports — Sticky branding + download CTA banner
+// Public-Reports — Part 55.9 Fully Themed Sticky Branding + Download CTA Banner
 // - App Store: greyed out "Coming Soon" (no redirect)
 // - Play Store: redirects to NEXT_PUBLIC_DEEPDIVE_PLAY_STORE_URL
+// Fix (this pass): removed onMouseEnter/onMouseLeave from the Play Store <a>
+// tag — event handlers were being passed to elements in a way that broke the
+// Server/Client boundary ("Event handlers cannot be passed to Client Component
+// props"). Replaced with a pure CSS hover class.
 
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 
 export default function DeepDiveBanner() {
   const [visible, setVisible] = useState(false);
@@ -19,45 +24,42 @@ export default function DeepDiveBanner() {
 
   return (
     <div
-      className="fixed bottom-0 inset-x-0 z-50 transition-all duration-500"
+      className="fixed bottom-0 inset-x-0 z-50 transition-all duration-700 ease-out"
       style={{
         transform: visible ? 'translateY(0)' : 'translateY(100%)',
-        opacity:   visible ? 1 : 0,
+        opacity: visible ? 1 : 0,
       }}
     >
       <div
         className="w-full px-4 py-3"
         style={{
-          background:     'rgba(10, 10, 26, 0.95)',
+          background: 'var(--theme-background)',
           backdropFilter: 'blur(20px)',
-          borderTop:      '1px solid rgba(108,99,255,0.2)',
+          WebkitBackdropFilter: 'blur(20px)',
+          borderTop: '2px solid var(--theme-primary)',
+          boxShadow: '0 -4px 30px var(--theme-primary)',
         }}
       >
         <div className="max-w-4xl mx-auto flex items-center justify-between gap-4 flex-wrap">
           {/* Branding */}
           <div className="flex items-center gap-3 min-w-0">
             <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{ background: 'linear-gradient(135deg, #6C63FF 0%, #8B5CF6 100%)' }}
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden transition-all duration-300 hover:scale-105"
+              style={{
+                background: '#FFFFFF',
+                border: '1px solid var(--theme-border)',
+              }}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                   stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"/>
-                <path d="m21 21-4.35-4.35"/>
-              </svg>
+              <Image src="/icon.png" alt="DeepDive AI" width={36} height={36} style={{ objectFit: 'contain' }} />
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-bold leading-none mb-0.5" style={{ color: 'var(--text-primary)' }}>
+              <p className="text-sm font-bold leading-none mb-0.5" style={{ color: 'var(--theme-text-primary)' }}>
                 Made with{' '}
-                <span style={{
-                  background:           'linear-gradient(135deg, #6C63FF, #A78BFA)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor:  'transparent',
-                }}>
+                <span className="dd-text-gradient">
                   DeepDive AI
                 </span>
               </p>
-              <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+              <p className="text-xs truncate" style={{ color: 'var(--theme-text-secondary)' }}>
                 Autonomous research · Multi-agent analysis · AI reports
               </p>
             </div>
@@ -68,13 +70,13 @@ export default function DeepDiveBanner() {
 
             {/* App Store — disabled */}
             <div
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-300"
               style={{
-                background:  'rgba(255,255,255,0.03)',
-                border:      '1px solid rgba(255,255,255,0.08)',
-                color:       'rgba(255,255,255,0.25)',
-                cursor:      'default',
-                opacity:     0.6,
+                background: 'var(--theme-background-elevated)',
+                border: '1px solid var(--theme-border)',
+                color: 'var(--theme-text-muted)',
+                cursor: 'default',
+                opacity: 0.5,
               }}
               title="Not on App Store yet"
             >
@@ -89,11 +91,12 @@ export default function DeepDiveBanner() {
               href={playStoreUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-80"
+              className="dd-play-store-link flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-300 hover:scale-105 hover:shadow-lg"
               style={{
-                background:     'linear-gradient(135deg, #6C63FF 0%, #8B5CF6 100%)',
-                color:          '#fff',
+                background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+                color: '#FFFFFF',
                 textDecoration: 'none',
+                boxShadow: '0 2px 12px var(--theme-primary)',
               }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
@@ -104,6 +107,41 @@ export default function DeepDiveBanner() {
           </div>
         </div>
       </div>
+
+      <style>{`
+        .dd-text-gradient {
+          background: linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2));
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+
+        .dd-play-store-link:hover {
+          box-shadow: 0 4px 20px var(--theme-primary);
+        }
+
+        @keyframes slideUp {
+          from {
+            transform: translateY(100%);
+            opacity: 0;
+          }
+          to {
+            transform: translateY(0);
+            opacity: 1;
+          }
+        }
+
+        .dd-banner-slide {
+          animation: slideUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          * {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }
