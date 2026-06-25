@@ -1,17 +1,13 @@
 // src/components/offline/OfflinePresentationViewer.tsx
-// Part 41.7 — Full offline export: local asset resolution before capture.
-//
-// CHANGES from the earlier Part 41.7 rewrite (bottom export bar):
-//   1. resolveLocalAssets() called at mount time (async, non-blocking) to load
-//      the asset manifest and patch all slide block URLs to local file:// paths.
-//   2. captureAllSlides() uses the patched `resolvedPresentation` (not the raw
-//      `presentation` prop) so SlideExportRenderer renders local images/SVGs.
-//   3. A thin "Resolving assets…" indicator shown briefly while manifest loads.
-//   4. All layout, design, header, thumbnail strip, export bar, nav, notes
-//      remain IDENTICAL to the earlier Part 41.7 rewrite.
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55 — FULL THEME SYSTEM integration
+//   All colors now derive from the active theme via COLORS object.
+//   Uses useTheme() for light/dark mode awareness.
+//   All hardcoded hex values replaced with theme-aware colors.
+//   Module-level styles replaced with factory pattern.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -23,35 +19,31 @@ import {
   FlatList,
   Dimensions,
   PanResponder,
+  StyleSheet,
 } from 'react-native';
-import { LinearGradient }    from 'expo-linear-gradient';
-import { Ionicons }          from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 import { SlideCard } from '../research/SlideCard';
-
 import {
   SlideExportRenderer,
   type SlideExportRendererRef,
 } from '../research/SlideExportRenderer';
-
 import {
   generatePPTXFromImages,
   exportAsSlidePDFFromImages,
   exportAsHTMLSlidesFromImages,
 } from '../../services/slideCaptureExport';
-
 import {
   getThemeTokens,
   generatePPTX,
   exportAsSlidePDF,
   exportAsHTMLSlides,
 } from '../../services/pptxExport';
-
-// Part 41.7: local asset resolution
 import { resolveLocalAssets } from '../../lib/presentationAssetCache';
-
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 import type { GeneratedPresentation, PresentationSlide, PresentationThemeTokens } from '../../types';
 import type { CacheEntry } from '../../types/cache';
 
@@ -59,28 +51,28 @@ import type { CacheEntry } from '../../types/cache';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
-const SLIDE_W     = SCREEN_W - SPACING.lg * 2;
+const SLIDE_W = SCREEN_W - SPACING.lg * 2;
 const SLIDE_SCALE = SLIDE_W / 320;
-const SLIDE_H     = Math.round(180 * SLIDE_SCALE);
+const SLIDE_H = Math.round(180 * SLIDE_SCALE);
 
-const THUMB_W     = 96;
+const THUMB_W = 96;
 const THUMB_SCALE = THUMB_W / 320;
-const THUMB_H     = Math.round(180 * THUMB_SCALE);
+const THUMB_H = Math.round(180 * THUMB_SCALE);
 
 // ─── Layout badge labels ──────────────────────────────────────────────────────
 
 const LAYOUT_LABELS: Record<string, string> = {
-  title:       'Title',
-  agenda:      'Agenda',
-  section:     'Section',
-  content:     'Content',
-  bullets:     'Key Points',
-  stats:       'Statistics',
-  quote:       'Pull Quote',
-  chart_ref:   'Chart',
+  title: 'Title',
+  agenda: 'Agenda',
+  section: 'Section',
+  content: 'Content',
+  bullets: 'Key Points',
+  stats: 'Statistics',
+  quote: 'Pull Quote',
+  chart_ref: 'Chart',
   predictions: 'Predictions',
-  references:  'References',
-  closing:     'Closing',
+  references: 'References',
+  closing: 'Closing',
 };
 
 // ─── Thumbnail ────────────────────────────────────────────────────────────────
@@ -93,24 +85,29 @@ function SlideThumbnail({
   index,
   onPress,
 }: {
-  slide:       PresentationSlide;
-  tokens:      PresentationThemeTokens;
+  slide: PresentationSlide;
+  tokens: PresentationThemeTokens;
   fontFamily?: string;
-  isActive:    boolean;
-  index:       number;
-  onPress:     () => void;
+  isActive: boolean;
+  index: number;
+  onPress: () => void;
 }) {
+  const { isLight } = useTheme();
   const ac = slide.accentColor ?? tokens.primary;
+
+  const cardBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
+
   return (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.8}
       style={{
-        marginRight:  8,
+        marginRight: 8,
         borderRadius: 6,
-        overflow:     'hidden',
-        borderWidth:  isActive ? 2 : 1,
-        borderColor:  isActive ? ac : COLORS.border,
+        overflow: 'hidden',
+        borderWidth: isActive ? 2 : 1,
+        borderColor: isActive ? ac : COLORS.border,
+        ...SHADOWS.small,
       }}
     >
       <View style={{ width: THUMB_W, height: THUMB_H, overflow: 'hidden' }}>
@@ -122,15 +119,17 @@ function SlideThumbnail({
         />
       </View>
       <View style={{
-        backgroundColor:   isActive ? `${ac}22` : COLORS.backgroundElevated,
-        paddingVertical:   3,
+        backgroundColor: isActive ? `${ac}22` : cardBg,
+        paddingVertical: 3,
         paddingHorizontal: 4,
+        borderTopWidth: 1,
+        borderTopColor: COLORS.border,
       }}>
         <Text style={{
-          color:      isActive ? ac : COLORS.textMuted,
-          fontSize:   9,
+          color: isActive ? ac : COLORS.textMuted,
+          fontSize: 9,
           fontWeight: isActive ? '700' : '400',
-          textAlign:  'center',
+          textAlign: 'center',
         }}>
           {slide.slideNumber ?? index + 1}
         </Text>
@@ -147,10 +146,10 @@ type ExportFormat = 'pptx' | 'pdf' | 'html';
 
 interface OfflinePresentationViewerProps {
   presentation: GeneratedPresentation;
-  entry:        CacheEntry;
-  onClose:      () => void;
-  onExport:     () => void;
-  exporting:    boolean;
+  entry: CacheEntry;
+  onClose: () => void;
+  onExport: () => void;
+  exporting: boolean;
 }
 
 export function OfflinePresentationViewer({
@@ -158,22 +157,26 @@ export function OfflinePresentationViewer({
   entry,
   onClose,
 }: OfflinePresentationViewerProps) {
-  const insets   = useSafeAreaInsets();
+  const insets = useSafeAreaInsets();
+  const { isLight, version } = useTheme();
   const thumbRef = useRef<FlatList>(null);
 
-  const [currentIndex,      setCurrentIndex]     = useState(0);
-  const [showNotes,         setShowNotes]         = useState(false);
-  const [exportingFmt,      setExportingFmt]      = useState<ExportFormat | null>(null);
-  const [captureProgress,   setCaptureProgress]   = useState<{ done: number; total: number } | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [showNotes, setShowNotes] = useState(false);
+  const [exportingFmt, setExportingFmt] = useState<ExportFormat | null>(null);
+  const [captureProgress, setCaptureProgress] = useState<{ done: number; total: number } | null>(null);
 
-  // Part 41.7: resolved presentation with local file paths patched in
+  // Resolved presentation with local file paths patched in
   const [resolvedPresentation, setResolvedPresentation] = useState<GeneratedPresentation>(presentation);
-  const [assetsReady,          setAssetsReady]           = useState(false);
+  const [assetsReady, setAssetsReady] = useState(false);
 
   // Off-screen renderer for screenshot-based export
   const rendererRef = useRef<SlideExportRendererRef>(null);
 
-  // Resolve local assets on mount (async, non-blocking for the viewer)
+  // Rebuild styles on theme change
+  const styles = useMemo(() => createStyles(isLight), [version, isLight]);
+
+  // Resolve local assets on mount
   useEffect(() => {
     let cancelled = false;
     async function resolve() {
@@ -219,8 +222,7 @@ export function OfflinePresentationViewer({
     },
   })).current;
 
-  // ── Part 41.7: Screenshot-based export using resolved (local) presentation ─
-
+  // Screenshot-based export using resolved (local) presentation
   const captureAllSlides = useCallback(async (): Promise<(string | null)[]> => {
     const renderer = rendererRef.current;
     if (!renderer) {
@@ -238,12 +240,11 @@ export function OfflinePresentationViewer({
     setExportingFmt(format);
 
     try {
-      // Use resolvedPresentation so local file paths are in the blocks
-      const images    = await captureAllSlides();
+      const images = await captureAllSlides();
       const allFailed = images.every(i => i === null);
 
       if (allFailed) {
-        // Vector fallback also uses resolvedPresentation (local images for pptxExport)
+        // Vector fallback also uses resolvedPresentation
         switch (format) {
           case 'pptx':
             try {
@@ -253,13 +254,13 @@ export function OfflinePresentationViewer({
               Alert.alert('Note', 'PPTX export fell back to PDF.');
             }
             break;
-          case 'pdf':  await exportAsSlidePDF(resolvedPresentation);   break;
+          case 'pdf': await exportAsSlidePDF(resolvedPresentation); break;
           case 'html': await exportAsHTMLSlides(resolvedPresentation); break;
         }
       } else {
         switch (format) {
-          case 'pptx': await generatePPTXFromImages(images, resolvedPresentation);       break;
-          case 'pdf':  await exportAsSlidePDFFromImages(images, resolvedPresentation);   break;
+          case 'pptx': await generatePPTXFromImages(images, resolvedPresentation); break;
+          case 'pdf': await exportAsSlidePDFFromImages(images, resolvedPresentation); break;
           case 'html': await exportAsHTMLSlidesFromImages(images, resolvedPresentation); break;
         }
       }
@@ -274,8 +275,6 @@ export function OfflinePresentationViewer({
     }
   }, [resolvedPresentation, exportingFmt, captureAllSlides]);
 
-  // ── Button label helpers ──────────────────────────────────────────────────
-
   function exportLabel(format: ExportFormat, defaultLabel: string): string {
     if (!exportingFmt || exportingFmt !== format) return defaultLabel;
     if (captureProgress) {
@@ -287,52 +286,30 @@ export function OfflinePresentationViewer({
   if (!slide) return null;
 
   const noteText = slide.speakerNotes || 'No speaker notes for this slide.';
-  const ac       = slide.accentColor ?? tokens.primary;
+  const ac = slide.accentColor ?? tokens.primary;
+
+  const headerBg = isLight ? '#FFFFFF' : 'rgba(5,5,20,0.97)';
+  const controlsBg = isLight ? '#FFFFFF' : 'rgba(5,5,20,0.97)';
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#04040E' }}>
+    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
 
-      {/*
-        Off-screen renderer — uses resolvedPresentation so local images/SVGs
-        are rendered instead of remote URLs when capturing for export.
-      */}
+      {/* Off-screen renderer */}
       <SlideExportRenderer
         ref={rendererRef}
         presentation={resolvedPresentation}
         onProgress={(done, total) => setCaptureProgress({ done, total })}
       />
 
-      {/* ── HEADER — Back + title/badges + Notes toggle only ── */}
-      <View style={{
-        paddingTop:        insets.top + SPACING.sm,
-        paddingHorizontal: SPACING.lg,
-        paddingBottom:     SPACING.sm,
-        borderBottomWidth: 1,
-        borderBottomColor: COLORS.border,
-        flexDirection:     'row',
-        alignItems:        'center',
-        gap:               10,
-        backgroundColor:   'rgba(5,5,20,0.97)',
-      }}>
-        {/* Back */}
+      {/* ── HEADER ── */}
+      <View style={[styles.header, { paddingTop: insets.top + SPACING.sm, backgroundColor: headerBg }]}>
         <TouchableOpacity
           onPress={onClose}
-          style={{
-            width:           36,
-            height:          36,
-            borderRadius:    10,
-            backgroundColor: COLORS.backgroundElevated,
-            alignItems:      'center',
-            justifyContent:  'center',
-            borderWidth:     1,
-            borderColor:     COLORS.border,
-            flexShrink:      0,
-          }}
+          style={[styles.backBtn, { backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated }]}
         >
           <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
         </TouchableOpacity>
 
-        {/* Title + badges */}
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text
             numberOfLines={1}
@@ -342,20 +319,19 @@ export function OfflinePresentationViewer({
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
             <View style={{
-              backgroundColor:   `${COLORS.info}20`,
-              borderRadius:      RADIUS.sm,
+              backgroundColor: `${COLORS.info}20`,
+              borderRadius: RADIUS.sm,
               paddingHorizontal: 6,
-              paddingVertical:   1,
+              paddingVertical: 1,
             }}>
               <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '700' }}>OFFLINE</Text>
             </View>
-            {/* Asset ready indicator */}
             {assetsReady && (
               <View style={{
-                backgroundColor:   `${COLORS.success}18`,
-                borderRadius:      RADIUS.sm,
+                backgroundColor: `${COLORS.success}18`,
+                borderRadius: RADIUS.sm,
                 paddingHorizontal: 6,
-                paddingVertical:   1,
+                paddingVertical: 1,
               }}>
                 <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>
                   EXPORT READY
@@ -377,16 +353,10 @@ export function OfflinePresentationViewer({
         {/* Speaker Notes toggle */}
         <TouchableOpacity
           onPress={() => setShowNotes(v => !v)}
-          style={{
-            width:           34,
-            height:          34,
-            borderRadius:    10,
-            backgroundColor: showNotes ? `${COLORS.primary}22` : COLORS.backgroundElevated,
-            alignItems:      'center',
-            justifyContent:  'center',
-            borderWidth:     1,
-            borderColor:     showNotes ? `${COLORS.primary}50` : COLORS.border,
-          }}
+          style={[styles.notesBtn, {
+            backgroundColor: showNotes ? `${COLORS.primary}22` : (isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated),
+            borderColor: showNotes ? `${COLORS.primary}50` : COLORS.border,
+          }]}
         >
           <Ionicons
             name="document-text-outline"
@@ -397,35 +367,26 @@ export function OfflinePresentationViewer({
       </View>
 
       {/* ── PROGRESS BAR ── */}
-      <View style={{ height: 3, backgroundColor: 'rgba(255,255,255,0.06)' }}>
+      <View style={{ height: 3, backgroundColor: COLORS.backgroundElevated }}>
         <View style={{
-          width:           `${((currentIndex + 1) / total) * 100}%` as any,
-          height:          '100%',
+          width: `${((currentIndex + 1) / total) * 100}%` as any,
+          height: '100%',
           backgroundColor: ac,
-          borderRadius:    1,
+          borderRadius: 1,
         }} />
       </View>
 
       {/* ── MAIN SLIDE ── */}
       <View
-        style={{
-          flex:              1,
-          alignItems:        'center',
-          justifyContent:    'center',
-          paddingHorizontal: SPACING.lg,
-          paddingVertical:   SPACING.md,
-        }}
+        style={[styles.slideContainer, { paddingHorizontal: SPACING.lg, paddingVertical: SPACING.md }]}
         {...panResponder.panHandlers}
       >
-        <View style={{
-          width:        SLIDE_W,
-          height:       SLIDE_H,
-          borderRadius: 10,
-          overflow:     'hidden',
+        <View style={[styles.slideWrapper, {
+          width: SLIDE_W,
+          height: SLIDE_H,
+          borderColor: isLight ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.07)',
           ...SHADOWS.large,
-          borderWidth:  1,
-          borderColor:  'rgba(255,255,255,0.07)',
-        }}>
+        }]}>
           <SlideCard
             slide={slide}
             tokens={tokens}
@@ -436,17 +397,10 @@ export function OfflinePresentationViewer({
         </View>
 
         {/* Layout badge overlay */}
-        <View style={{
-          position:          'absolute',
-          bottom:            SPACING.md + 8,
-          right:             SPACING.lg + 8,
-          backgroundColor:   `${ac}22`,
-          borderRadius:      RADIUS.full,
-          paddingHorizontal: 10,
-          paddingVertical:   3,
-          borderWidth:       1,
-          borderColor:       `${ac}40`,
-        }}>
+        <View style={[styles.layoutBadge, {
+          backgroundColor: `${ac}22`,
+          borderColor: `${ac}40`,
+        }]}>
           <Text style={{ color: ac, fontSize: 9, fontWeight: '700' }}>
             {LAYOUT_LABELS[slide.layout] ?? slide.layout}
           </Text>
@@ -455,22 +409,11 @@ export function OfflinePresentationViewer({
 
       {/* ── SPEAKER NOTES ── */}
       {showNotes && (
-        <View style={{
-          backgroundColor:   'rgba(8,8,24,0.97)',
-          borderTopWidth:    1,
-          borderTopColor:    COLORS.border,
-          maxHeight:         110,
-          paddingHorizontal: SPACING.lg,
-          paddingVertical:   SPACING.sm,
-        }}>
-          <Text style={{
-            color:         COLORS.primary,
-            fontSize:      10,
-            fontWeight:    '700',
-            letterSpacing: 1.2,
-            textTransform: 'uppercase',
-            marginBottom:  4,
-          }}>
+        <View style={[styles.notesPanel, {
+          backgroundColor: isLight ? 'rgba(245,246,251,0.97)' : 'rgba(8,8,24,0.97)',
+          borderTopColor: COLORS.border,
+        }]}>
+          <Text style={[styles.notesLabel, { color: COLORS.primary }]}>
             🎙 Speaker Notes
           </Text>
           <ScrollView showsVerticalScrollIndicator={false}>
@@ -482,12 +425,10 @@ export function OfflinePresentationViewer({
       )}
 
       {/* ── THUMBNAIL STRIP ── */}
-      <View style={{
-        backgroundColor: 'rgba(5,5,20,0.96)',
-        borderTopWidth:  1,
-        borderTopColor:  COLORS.border,
-        paddingVertical: SPACING.sm,
-      }}>
+      <View style={[styles.thumbStrip, {
+        backgroundColor: isLight ? '#FFFFFF' : 'rgba(5,5,20,0.96)',
+        borderTopColor: COLORS.border,
+      }]}>
         <FlatList
           ref={thumbRef}
           horizontal
@@ -514,48 +455,33 @@ export function OfflinePresentationViewer({
         />
       </View>
 
-      {/* ── EXPORT BAR — matches online slide-preview.tsx layout ── */}
-      <View style={{
-        paddingHorizontal: SPACING.lg,
-        paddingTop:        SPACING.sm,
-        paddingBottom:     SPACING.sm,
-        backgroundColor:   'rgba(5,5,20,0.97)',
-        borderTopWidth:    1,
-        borderTopColor:    COLORS.border,
-        gap:               SPACING.sm,
-      }}>
+      {/* ── EXPORT BAR ── */}
+      <View style={[styles.exportBar, {
+        backgroundColor: controlsBg,
+        borderTopColor: COLORS.border,
+      }]}>
         {/* Primary export row: PPTX (gradient) + PDF */}
         <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-
-          {/* PPTX */}
           <Pressable
             onPress={() => handleExport('pptx')}
             disabled={!!exportingFmt}
             style={{
-              flex:    1.6,
+              flex: 1.6,
               opacity: exportingFmt && exportingFmt !== 'pptx' ? 0.5 : 1,
             }}
           >
             <LinearGradient
-              colors={['#6C63FF', '#8B5CF6']}
+              colors={COLORS.gradientPrimary}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
-              style={{
-                borderRadius:    RADIUS.lg,
-                paddingVertical: 13,
-                flexDirection:   'row',
-                alignItems:      'center',
-                justifyContent:  'center',
-                gap:             8,
-                ...SHADOWS.medium,
-              }}
+              style={[styles.exportGradientBtn, SHADOWS.medium]}
             >
               {exportingFmt === 'pptx' ? (
                 <ActivityIndicator size="small" color="#FFF" />
               ) : (
                 <Ionicons name="desktop-outline" size={17} color="#FFF" />
               )}
-              <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
+              <Text style={styles.exportGradientText}>
                 {exportLabel('pptx', 'Export PPTX')}
               </Text>
             </LinearGradient>
@@ -566,27 +492,20 @@ export function OfflinePresentationViewer({
             onPress={() => handleExport('pdf')}
             disabled={!!exportingFmt}
             style={{
-              flex:    1,
+              flex: 1,
               opacity: exportingFmt && exportingFmt !== 'pdf' ? 0.5 : 1,
             }}
           >
-            <View style={{
-              borderRadius:    RADIUS.lg,
-              paddingVertical: 13,
-              flexDirection:   'row',
-              alignItems:      'center',
-              justifyContent:  'center',
-              gap:             7,
+            <View style={[styles.exportBtn, {
               backgroundColor: COLORS.backgroundElevated,
-              borderWidth:     1.5,
-              borderColor:     COLORS.border,
-            }}>
+              borderColor: COLORS.border,
+            }]}>
               {exportingFmt === 'pdf' ? (
                 <ActivityIndicator size="small" color={COLORS.textSecondary} />
               ) : (
                 <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />
               )}
-              <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' }}>
+              <Text style={[styles.exportBtnText, { color: COLORS.textSecondary }]}>
                 {exportLabel('pdf', 'PDF')}
               </Text>
             </View>
@@ -595,23 +514,15 @@ export function OfflinePresentationViewer({
 
         {/* Secondary row: HTML + Prev + counter + Next */}
         <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
-
           {/* HTML */}
           <Pressable
             onPress={() => handleExport('html')}
             disabled={!!exportingFmt}
             style={[
+              styles.htmlBtn,
               {
-                flex:            1,
-                paddingVertical: 10,
-                borderRadius:    RADIUS.lg,
-                flexDirection:   'row',
-                alignItems:      'center',
-                justifyContent:  'center',
-                gap:             7,
                 backgroundColor: COLORS.backgroundElevated,
-                borderWidth:     1,
-                borderColor:     COLORS.border,
+                borderColor: COLORS.border,
               },
               exportingFmt && exportingFmt !== 'html' ? { opacity: 0.5 } : {},
             ]}
@@ -630,19 +541,11 @@ export function OfflinePresentationViewer({
           <TouchableOpacity
             onPress={() => goTo(currentIndex - 1)}
             disabled={currentIndex === 0}
-            style={{
-              flex:            1,
-              flexDirection:   'row',
-              alignItems:      'center',
-              justifyContent:  'center',
-              gap:             6,
-              paddingVertical: 10,
-              borderRadius:    RADIUS.lg,
+            style={[styles.navBtn, {
               backgroundColor: COLORS.backgroundElevated,
-              borderWidth:     1,
-              borderColor:     COLORS.border,
-              opacity:         currentIndex === 0 ? 0.3 : 1,
-            }}
+              borderColor: COLORS.border,
+              opacity: currentIndex === 0 ? 0.3 : 1,
+            }]}
           >
             <Ionicons name="arrow-back" size={14} color={COLORS.textSecondary} />
             <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
@@ -651,16 +554,10 @@ export function OfflinePresentationViewer({
           </TouchableOpacity>
 
           {/* Counter */}
-          <View style={{
-            alignItems:        'center',
-            justifyContent:    'center',
-            paddingHorizontal: 12,
-            borderRadius:      RADIUS.lg,
-            backgroundColor:   `${ac}1A`,
-            borderWidth:       1,
-            borderColor:       `${ac}35`,
-            minWidth:          56,
-          }}>
+          <View style={[styles.counter, {
+            backgroundColor: `${ac}1A`,
+            borderColor: `${ac}35`,
+          }]}>
             <Text style={{ color: ac, fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
               {currentIndex + 1}/{total}
             </Text>
@@ -670,19 +567,11 @@ export function OfflinePresentationViewer({
           <TouchableOpacity
             onPress={() => goTo(currentIndex + 1)}
             disabled={currentIndex === total - 1}
-            style={{
-              flex:            1,
-              flexDirection:   'row',
-              alignItems:      'center',
-              justifyContent:  'center',
-              gap:             6,
-              paddingVertical: 10,
-              borderRadius:    RADIUS.lg,
+            style={[styles.navBtn, {
               backgroundColor: COLORS.backgroundElevated,
-              borderWidth:     1,
-              borderColor:     COLORS.border,
-              opacity:         currentIndex === total - 1 ? 0.3 : 1,
-            }}
+              borderColor: COLORS.border,
+              opacity: currentIndex === total - 1 ? 0.3 : 1,
+            }]}
           >
             <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
               Next
@@ -692,13 +581,7 @@ export function OfflinePresentationViewer({
         </View>
 
         {/* Quality note + safe area padding */}
-        <View style={{
-          flexDirection:  'row',
-          alignItems:     'center',
-          gap:            5,
-          justifyContent: 'center',
-          paddingBottom:  insets.bottom,
-        }}>
+        <View style={[styles.qualityNote, { paddingBottom: insets.bottom }]}>
           <Ionicons name="camera-outline" size={11} color={COLORS.textMuted} />
           <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
             {assetsReady
@@ -707,7 +590,145 @@ export function OfflinePresentationViewer({
           </Text>
         </View>
       </View>
-
     </View>
   );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+// Factory pattern to support theme changes
+
+function createStyles(isLight: boolean) {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: SPACING.lg,
+      paddingBottom: SPACING.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: COLORS.border,
+      gap: 10,
+    },
+    backBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: COLORS.border,
+      flexShrink: 0,
+    },
+    notesBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      flexShrink: 0,
+    },
+    slideContainer: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    slideWrapper: {
+      borderRadius: 10,
+      overflow: 'hidden',
+      borderWidth: 1,
+    },
+    layoutBadge: {
+      position: 'absolute',
+      bottom: SPACING.md + 8,
+      right: SPACING.lg + 8,
+      borderRadius: RADIUS.full,
+      paddingHorizontal: 10,
+      paddingVertical: 3,
+      borderWidth: 1,
+    },
+    notesPanel: {
+      borderTopWidth: 1,
+      maxHeight: 110,
+      paddingHorizontal: SPACING.lg,
+      paddingVertical: SPACING.sm,
+    },
+    notesLabel: {
+      fontSize: 10,
+      fontWeight: '700',
+      letterSpacing: 1.2,
+      textTransform: 'uppercase',
+      marginBottom: 4,
+    },
+    thumbStrip: {
+      borderTopWidth: 1,
+      paddingVertical: SPACING.sm,
+    },
+    exportBar: {
+      paddingHorizontal: SPACING.lg,
+      paddingTop: SPACING.sm,
+      paddingBottom: SPACING.sm,
+      borderTopWidth: 1,
+      gap: SPACING.sm,
+    },
+    exportGradientBtn: {
+      borderRadius: RADIUS.lg,
+      paddingVertical: 13,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+    },
+    exportGradientText: {
+      color: '#FFF',
+      fontSize: FONTS.sizes.sm,
+      fontWeight: '800',
+    },
+    exportBtn: {
+      borderRadius: RADIUS.lg,
+      paddingVertical: 13,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 7,
+      borderWidth: 1.5,
+    },
+    exportBtnText: {
+      fontSize: FONTS.sizes.sm,
+      fontWeight: '700',
+    },
+    htmlBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: RADIUS.lg,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 7,
+      borderWidth: 1,
+    },
+    navBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      paddingVertical: 10,
+      borderRadius: RADIUS.lg,
+      borderWidth: 1,
+    },
+    counter: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 12,
+      borderRadius: RADIUS.lg,
+      borderWidth: 1,
+      minWidth: 56,
+    },
+    qualityNote: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      justifyContent: 'center',
+    },
+  });
 }

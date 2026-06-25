@@ -1,15 +1,9 @@
 // src/components/offline/OfflineScreen.tsx
-// Part 45 — Updated: added 'voice_debate' filter chip + OfflineVoiceDebateViewer routing.
-//
-// CHANGES from Part 23:
-//   • FILTERS array includes voice_debate chip
-//   • TYPE_LABEL includes voice_debate
-//   • exportOffline() handles voice_debate type (PDF export)
-//   • Viewer routing handles voice_debate → OfflineVoiceDebateViewer
-//   • getCachedItem for voice_debate falls back to voiceDebateCache.ts if
-//     the main index miss (covers items cached before Part 45 index migration)
-//
-// All other code is byte-for-byte identical to Part 23.
+// ─────────────────────────────────────────────────────────────────────────────
+// Offline Screen — Beautiful, modern offline content browser
+// Part 45 — Added 'voice_debate' filter chip + OfflineVoiceDebateViewer routing
+// Part 55 — FULL THEME SYSTEM with redesigned UI
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
@@ -23,22 +17,32 @@ import {
   Alert,
   Animated,
   Dimensions,
+  Modal,
+  Pressable,
 } from 'react-native';
-import { LinearGradient }          from 'expo-linear-gradient';
-import { Ionicons }                from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
+
+// Theme
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 // Cache utilities
 import { getCacheIndex, getCachedItem, formatBytes } from '../../lib/cacheStorage';
-import { getCacheStats }                              from '../../lib/cacheSettings';
-import { useNetwork }                                 from '../../context/NetworkContext';
+import { getCacheStats } from '../../lib/cacheSettings';
+import { useNetwork } from '../../context/NetworkContext';
+
+// Offline Report Viewer
+import { OfflineReportViewer } from './offlinereportviewer';
 
 // Rich viewers
-import { OfflinePodcastViewer }        from './OfflinePodcastViewer';
-import { OfflineDebateViewer }         from './OfflineDebateViewer';
-import { OfflineAcademicPaperViewer }  from './OfflineAcademicPaperViewer';
-import { OfflinePresentationViewer }   from './OfflinePresentationViewer';
-import { OfflineVoiceDebateViewer }    from './OfflineVoiceDebateViewer';  // Part 45
+import { OfflinePodcastViewer } from './OfflinePodcastViewer';
+import { OfflineDebateViewer } from './OfflineDebateViewer';
+import { OfflineAcademicPaperViewer } from './OfflineAcademicPaperViewer';
+import { OfflinePresentationViewer } from './OfflinePresentationViewer';
+import { OfflineVoiceDebateViewer } from './OfflineVoiceDebateViewer';
 
 // Offline-safe export service
 import {
@@ -48,50 +52,71 @@ import {
   exportAcademicPaperOffline,
   exportPresentationOffline,
 } from '../../services/offlineExportService';
-import { exportVoiceDebateAsPDF } from '../../services/voiceDebateExport';  // Part 45
+import { exportVoiceDebateAsPDF } from '../../services/voiceDebateExport';
 
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+// Types
 import type { CacheEntry, CachedContentType, CacheFilterType } from '../../types/cache';
 import type {
-  ResearchReport, Podcast, DebateSession, AcademicPaper, GeneratedPresentation,
+  ResearchReport,
+  Podcast,
+  DebateSession,
+  AcademicPaper,
+  GeneratedPresentation,
 } from '../../types';
 import type { VoiceDebate } from '../../types/voiceDebate';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
 // ─── Filter config ────────────────────────────────────────────────────────────
-// Part 45: voice_debate added
 
-const FILTERS: { id: CacheFilterType; label: string; icon: string; color: string }[] = [
-  { id: 'all',            label: 'All',           icon: 'layers-outline',           color: COLORS.primary },
-  { id: 'report',         label: 'Reports',        icon: 'document-text-outline',    color: '#6C63FF'      },
-  { id: 'podcast',        label: 'Podcasts',        icon: 'radio-outline',            color: '#FF6584'      },
-  { id: 'debate',         label: 'Debates',         icon: 'chatbox-ellipses-outline', color: '#F97316'      },
-  { id: 'academic_paper', label: 'Papers',          icon: 'school-outline',           color: '#43E97B'      },
-  { id: 'presentation',   label: 'Slides',          icon: 'easel-outline',            color: '#29B6F6'      },
-  { id: 'voice_debate',   label: 'Voice Debates',   icon: 'mic-circle-outline',       color: '#8B5CF6'      },
+const FILTERS: { id: CacheFilterType; label: string; icon: string; color: string; gradient: readonly [string, string] }[] = [
+  { id: 'all', label: 'All', icon: 'apps-outline', color: COLORS.primary, gradient: COLORS.gradientPrimary },
+  { id: 'report', label: 'Reports', icon: 'document-text-outline', color: '#6C63FF', gradient: ['#6C63FF', '#8B5CF6'] as const },
+  { id: 'podcast', label: 'Podcasts', icon: 'radio-outline', color: '#FF6584', gradient: ['#FF6584', '#FF8E53'] as const },
+  { id: 'debate', label: 'Debates', icon: 'chatbox-ellipses-outline', color: '#F97316', gradient: ['#F97316', '#FB923C'] as const },
+  { id: 'academic_paper', label: 'Papers', icon: 'school-outline', color: '#43E97B', gradient: ['#43E97B', '#38F9D7'] as const },
+  { id: 'presentation', label: 'Slides', icon: 'easel-outline', color: '#29B6F6', gradient: ['#29B6F6', '#4DD0E1'] as const },
+  { id: 'voice_debate', label: 'Voice Debates', icon: 'mic-circle-outline', color: '#8B5CF6', gradient: ['#8B5CF6', '#A78BFA'] as const },
 ];
 
 const TYPE_LABEL: Record<CachedContentType, string> = {
-  report:         'Research Report',
-  podcast:        'Podcast Episode',
-  debate:         'AI Debate',
+  report: 'Research Report',
+  podcast: 'Podcast Episode',
+  debate: 'AI Debate',
   academic_paper: 'Academic Paper',
-  presentation:   'Presentation',
-  voice_debate:   'Voice Debate',   // Part 45
+  presentation: 'Presentation',
+  voice_debate: 'Voice Debate',
+};
+
+const TYPE_ICON: Record<CachedContentType, string> = {
+  report: 'document-text',
+  podcast: 'radio',
+  debate: 'chatbox-ellipses',
+  academic_paper: 'school',
+  presentation: 'easel',
+  voice_debate: 'mic-circle',
+};
+
+const TYPE_COLOR: Record<CachedContentType, string> = {
+  report: '#6C63FF',
+  podcast: '#FF6584',
+  debate: '#F97316',
+  academic_paper: '#43E97B',
+  presentation: '#29B6F6',
+  voice_debate: '#8B5CF6',
 };
 
 // ─── Time helpers ─────────────────────────────────────────────────────────────
 
 function formatRelativeTime(ms: number): string {
-  const diff  = Date.now() - ms;
-  const mins  = Math.floor(diff / 60000);
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
-  const days  = Math.floor(diff / 86400000);
-  if (mins < 1)   return 'Just now';
-  if (mins < 60)  return `${mins}m ago`;
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
   if (hours < 24) return `${hours}h ago`;
-  if (days < 7)   return `${days}d ago`;
+  if (days < 7) return `${days}d ago`;
   return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
@@ -124,7 +149,6 @@ async function exportOffline(entry: CacheEntry, data: unknown): Promise<void> {
       await exportPresentationOffline(data as GeneratedPresentation);
       return;
     case 'voice_debate':
-      // Part 45: use voiceDebateExport (PDF transcript, no network needed)
       await exportVoiceDebateAsPDF(data as VoiceDebate);
       return;
     default:
@@ -132,17 +156,12 @@ async function exportOffline(entry: CacheEntry, data: unknown): Promise<void> {
   }
 }
 
-// ─── Open item — with voice_debate fallback ────────────────────────────────────
-// voice_debate items may be in the main index (Part 45) OR only in voiceDebateCache
-// (if cached via SelectiveCacheSheet before the index migration). This helper
-// checks both sources.
+// ─── Open item — with voice_debate fallback ──────────────────────────────────
 
 async function loadCachedItem(entry: CacheEntry): Promise<unknown | null> {
-  // Try main index first
   const data = await getCachedItem(entry.type, entry.id);
   if (data) return data;
 
-  // Part 45 fallback: for voice_debate, also try voiceDebateCache.ts
   if (entry.type === 'voice_debate') {
     try {
       const { getCachedVoiceDebateJson } = await import('../../lib/voiceDebateCache');
@@ -154,175 +173,336 @@ async function loadCachedItem(entry: CacheEntry): Promise<unknown | null> {
   return null;
 }
 
-// ─── Inline Report Viewer ─────────────────────────────────────────────────────
+// ─── Filter Chip ─────────────────────────────────────────────────────────────
 
-function ReportViewer({ report, onClose, onExport, exporting }: {
-  report: ResearchReport; onClose: () => void; onExport: () => void; exporting: boolean;
+function FilterChip({
+  filter,
+  isActive,
+  count,
+  onPress,
+}: {
+  filter: typeof FILTERS[0];
+  isActive: boolean;
+  count: number;
+  onPress: () => void;
 }) {
-  const insets = useSafeAreaInsets();
-  const [activeTab, setActiveTab] = useState<'report' | 'findings' | 'sources'>('report');
+  const { isLight } = useTheme();
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
-      {/* Header */}
-      <View style={{
-        paddingTop: insets.top + SPACING.sm, paddingHorizontal: SPACING.lg,
-        paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border,
-        flexDirection: 'row', alignItems: 'center', gap: 10,
-      }}>
-        <TouchableOpacity onPress={onClose} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border }}>
-          <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' }} numberOfLines={1}>{report.title}</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
-            <View style={{ backgroundColor: `${COLORS.info}20`, borderRadius: RADIUS.sm, paddingHorizontal: 6, paddingVertical: 1 }}>
-              <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '700' }}>OFFLINE</Text>
-            </View>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{report.sourcesCount} sources · {report.reliabilityScore}/10</Text>
-          </View>
-        </View>
-        <TouchableOpacity onPress={onExport} disabled={exporting} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${COLORS.primary}30` }}>
-          {exporting ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="download-outline" size={17} color={COLORS.primary} />}
-        </TouchableOpacity>
-      </View>
-
-      {/* Tabs */}
-      <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, gap: SPACING.sm }}>
-        {(['report', 'findings', 'sources'] as const).map(tab => (
-          <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)}
-            style={{ flex: 1, paddingVertical: 8, borderRadius: RADIUS.md, backgroundColor: activeTab === tab ? COLORS.primary : COLORS.backgroundElevated, alignItems: 'center' }}>
-            <Text style={{ color: activeTab === tab ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {/* Content */}
-      <FlatList
-        contentContainerStyle={{ padding: SPACING.lg, paddingBottom: insets.bottom + 80 }}
-        showsVerticalScrollIndicator={false}
-        data={[{ key: 'content' }]}
-        keyExtractor={i => i.key}
-        renderItem={() => (
-          activeTab === 'report' ? (
-            <View>
-              <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
-                <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm }}>Executive Summary</Text>
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>{report.executiveSummary}</Text>
-              </LinearGradient>
-              {report.sections.map((section, i) => (
-                <View key={section.id ?? i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', marginBottom: SPACING.sm }}>{section.title}</Text>
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>{section.content}</Text>
-                  {section.bullets?.map((b, bi) => (
-                    <View key={bi} style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                      <Text style={{ color: COLORS.primary }}>•</Text>
-                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, flex: 1, lineHeight: 20 }}>{b}</Text>
-                    </View>
-                  ))}
-                </View>
-              ))}
-            </View>
-          ) : activeTab === 'findings' ? (
-            <View>
-              {report.keyFindings.map((f, i) => (
-                <View key={i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: COLORS.primary }}>
-                  <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm, flexShrink: 0 }}>
-                    <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{i + 1}</Text>
-                  </View>
-                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{f}</Text>
-                </View>
-              ))}
-              {report.futurePredictions.map((p, i) => (
-                <View key={i} style={{ backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderColor: `${COLORS.warning}25` }}>
-                  <Ionicons name="telescope-outline" size={16} color={COLORS.warning} style={{ marginRight: SPACING.sm, marginTop: 2, flexShrink: 0 }} />
-                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 20, flex: 1 }}>{p}</Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <View>
-              {report.citations.map((c, i) => (
-                <View key={c.id ?? i} style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 4 }}>
-                    <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: `${COLORS.primary}20`, alignItems: 'center', justifyContent: 'center', marginRight: 8, flexShrink: 0 }}>
-                      <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>{i + 1}</Text>
-                    </View>
-                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1, lineHeight: 20 }}>{c.title}</Text>
-                  </View>
-                  <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, marginBottom: 4 }}>{c.source}{c.date ? ` · ${c.date}` : ''}</Text>
-                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>{c.snippet}</Text>
-                </View>
-              ))}
-            </View>
-          )
-        )}
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.7}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+        borderRadius: RADIUS.full,
+        backgroundColor: isActive ? filter.color : (isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)'),
+        borderWidth: 1.5,
+        borderColor: isActive ? filter.color : (isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)'),
+        shadowColor: isActive ? filter.color : 'transparent',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: isActive ? 0.3 : 0,
+        shadowRadius: 8,
+        elevation: isActive ? 4 : 0,
+      }}
+    >
+      <Ionicons 
+        name={filter.icon as any} 
+        size={14} 
+        color={isActive ? '#FFF' : filter.color} 
       />
-    </View>
+      <Text
+        style={{
+          color: isActive ? '#FFF' : COLORS.textSecondary,
+          fontSize: FONTS.sizes.xs,
+          fontWeight: isActive ? '700' : '600',
+        }}
+      >
+        {filter.label}
+      </Text>
+      {count > 0 && (
+        <View
+          style={{
+            backgroundColor: isActive ? 'rgba(255,255,255,0.25)' : `${filter.color}22`,
+            borderRadius: RADIUS.full,
+            paddingHorizontal: 6,
+            paddingVertical: 1,
+            minWidth: 18,
+            alignItems: 'center',
+          }}
+        >
+          <Text
+            style={{
+              color: isActive ? '#FFF' : filter.color,
+              fontSize: 9,
+              fontWeight: '800',
+            }}
+          >
+            {count}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
   );
 }
 
-// ─── Item card ────────────────────────────────────────────────────────────────
+// ─── Cache Item Card ─────────────────────────────────────────────────────────
 
-const TYPE_COLOR: Record<CachedContentType, string> = {
-  report:         '#6C63FF',
-  podcast:        '#FF6584',
-  debate:         '#F97316',
-  academic_paper: '#43E97B',
-  presentation:   '#29B6F6',
-  voice_debate:   '#8B5CF6',
-};
-
-function CacheItemCard({ entry, onPress, index }: {
-  entry: CacheEntry; onPress: (e: CacheEntry) => void; index: number;
+function CacheItemCard({
+  entry,
+  onPress,
+  index,
+}: {
+  entry: CacheEntry;
+  onPress: (e: CacheEntry) => void;
+  index: number;
 }) {
+  const { isLight } = useTheme();
   const color = entry.color ?? TYPE_COLOR[entry.type] ?? COLORS.primary;
-  const anim  = useRef(new Animated.Value(0)).current;
+  const icon = entry.icon ?? TYPE_ICON[entry.type] ?? 'document-outline';
+  const anim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    Animated.timing(anim, { toValue: 1, duration: 280, delay: index * 35, useNativeDriver: true }).start();
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 400,
+      delay: index * 30,
+      useNativeDriver: true,
+    }).start();
   }, []);
 
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 40,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 40,
+    }).start();
+  };
+
+  const cardBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
+  const isExpiring = Date.now() > entry.expiresAt - 86400000 * 2;
+
   return (
-    <Animated.View style={{ opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }] }}>
-      <TouchableOpacity onPress={() => onPress(entry)} activeOpacity={0.78}
-        style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, marginHorizontal: SPACING.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' }}>
-        <View style={{ height: 3, backgroundColor: color }} />
+    <Animated.View
+      style={{
+        opacity: anim,
+        transform: [
+          {
+            translateY: anim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [20, 0],
+            }),
+          },
+          { scale: scaleAnim },
+        ],
+        marginHorizontal: SPACING.lg,
+        marginBottom: SPACING.md,
+      }}
+    >
+      <TouchableOpacity
+        onPress={() => onPress(entry)}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        activeOpacity={1}
+        style={{
+          borderRadius: RADIUS.xl,
+          overflow: 'hidden',
+          backgroundColor: cardBg,
+          borderWidth: 1,
+          borderColor: isExpiring ? `${COLORS.warning}40` : COLORS.border,
+          ...SHADOWS.small,
+        }}
+      >
+        {/* Gradient accent bar */}
+        <LinearGradient
+          colors={[color, `${color}88`] as readonly [string, string]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={{
+            height: 4,
+            width: '100%',
+          }}
+        />
+
         <View style={{ padding: SPACING.md }}>
-          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
-            <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: `${color}18`, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: `${color}30`, flexShrink: 0 }}>
-              <Ionicons name={(entry.icon ?? 'document-outline') as any} size={18} color={color} />
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+            {/* Icon with gradient background */}
+            <View
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: 14,
+                backgroundColor: `${color}15`,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 1,
+                borderColor: `${color}25`,
+                flexShrink: 0,
+              }}
+            >
+              <LinearGradient
+                colors={[color, `${color}BB`] as readonly [string, string]}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons name={icon as any} size={18} color="#FFF" />
+              </LinearGradient>
             </View>
+
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', lineHeight: 20, marginBottom: 2 }} numberOfLines={2}>
+              <Text
+                style={{
+                  color: COLORS.textPrimary,
+                  fontSize: FONTS.sizes.base,
+                  fontWeight: '700',
+                  lineHeight: 20,
+                  marginBottom: 4,
+                }}
+                numberOfLines={2}
+              >
                 {entry.title}
               </Text>
+
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <View style={{ backgroundColor: `${color}18`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${color}30` }}>
-                  <Text style={{ color, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                <View
+                  style={{
+                    backgroundColor: `${color}15`,
+                    borderRadius: RADIUS.full,
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
+                    borderWidth: 1,
+                    borderColor: `${color}25`,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color,
+                      fontSize: 9,
+                      fontWeight: '700',
+                      textTransform: 'uppercase',
+                      letterSpacing: 0.3,
+                    }}
+                  >
                     {TYPE_LABEL[entry.type]}
                   </Text>
                 </View>
+
                 {(entry.type === 'podcast' || entry.type === 'voice_debate') && entry.hasAudio && (
-                  <View style={{ backgroundColor: `${COLORS.success}15`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}30`, flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                  <View
+                    style={{
+                      backgroundColor: `${COLORS.success}15`,
+                      borderRadius: RADIUS.full,
+                      paddingHorizontal: 7,
+                      paddingVertical: 2,
+                      borderWidth: 1,
+                      borderColor: `${COLORS.success}25`,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 3,
+                    }}
+                  >
                     <Ionicons name="headset-outline" size={9} color={COLORS.success} />
-                    <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>AUDIO</Text>
+                    <Text style={{ color: COLORS.success, fontSize: 8, fontWeight: '700' }}>AUDIO</Text>
+                  </View>
+                )}
+
+                {isExpiring && (
+                  <View
+                    style={{
+                      backgroundColor: `${COLORS.warning}15`,
+                      borderRadius: RADIUS.full,
+                      paddingHorizontal: 7,
+                      paddingVertical: 2,
+                      borderWidth: 1,
+                      borderColor: `${COLORS.warning}25`,
+                    }}
+                  >
+                    <Text style={{ color: COLORS.warning, fontSize: 8, fontWeight: '700' }}>EXPIRING</Text>
                   </View>
                 )}
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} style={{ marginTop: 2, flexShrink: 0 }} />
+
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={COLORS.textMuted}
+              style={{ marginTop: 4, flexShrink: 0 }}
+            />
           </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <Ionicons name="time-outline" size={11} color={COLORS.textMuted} />
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{formatRelativeTime(entry.cachedAt)}</Text>
-            </View>
+
+          {/* Bottom row with metadata */}
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginTop: SPACING.sm,
+              paddingTop: SPACING.sm,
+              borderTopWidth: 1,
+              borderTopColor: COLORS.border,
+            }}
+          >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{formatBytes(entry.sizeBytes)}</Text>
-              <Text style={{ color: Date.now() > entry.expiresAt - 86400000 * 3 ? COLORS.warning : COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="time-outline" size={12} color={COLORS.textMuted} />
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                  {formatRelativeTime(entry.cachedAt)}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="hardware-chip-outline" size={12} color={COLORS.textMuted} />
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                  {formatBytes(entry.sizeBytes)}
+                </Text>
+              </View>
+            </View>
+
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: RADIUS.full,
+                backgroundColor: isExpiring ? `${COLORS.warning}12` : `${COLORS.textMuted}08`,
+              }}
+            >
+              <View
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 3,
+                  backgroundColor: isExpiring ? COLORS.warning : COLORS.textMuted,
+                }}
+              />
+              <Text
+                style={{
+                  color: isExpiring ? COLORS.warning : COLORS.textMuted,
+                  fontSize: FONTS.sizes.xs,
+                  fontWeight: isExpiring ? '600' : '400',
+                }}
+              >
                 {formatExpiresIn(entry.expiresAt)}
               </Text>
             </View>
@@ -333,23 +513,77 @@ function CacheItemCard({ entry, onPress, index }: {
   );
 }
 
-// ─── Empty state ──────────────────────────────────────────────────────────────
+// ─── Empty State ──────────────────────────────────────────────────────────────
 
 function EmptyState({ filter, hasSearch }: { filter: CacheFilterType; hasSearch: boolean }) {
+  const { isLight } = useTheme();
+
+  const getIcon = () => {
+    if (hasSearch) return 'search-outline';
+    if (filter !== 'all') return 'folder-open-outline';
+    return 'cloud-offline-outline';
+  };
+
+  const getTitle = () => {
+    if (hasSearch) return 'No Results Found';
+    if (filter !== 'all') return `No ${TYPE_LABEL[filter as CachedContentType] || filter} Cached`;
+    return 'Nothing Cached Yet';
+  };
+
+  const getDescription = () => {
+    if (hasSearch) return 'Try adjusting your search terms or filters';
+    if (filter !== 'all') return `Download ${TYPE_LABEL[filter as CachedContentType] || filter} items while online to view them here`;
+    return 'Your research reports, podcasts, debates, papers, slides and voice debates appear here when cached for offline use.';
+  };
+
   return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.xl, paddingBottom: 80 }}>
-      <View style={{ width: 80, height: 80, borderRadius: 24, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center', marginBottom: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}25` }}>
-        <Ionicons name="cloud-offline-outline" size={36} color={COLORS.primary} />
+    <View
+      style={{
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: SPACING.xl,
+        paddingBottom: 80,
+      }}
+    >
+      <View
+        style={{
+          width: 100,
+          height: 100,
+          borderRadius: 28,
+          backgroundColor: `${COLORS.primary}10`,
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: SPACING.lg,
+          borderWidth: 1,
+          borderColor: `${COLORS.primary}15`,
+        }}
+      >
+        <Ionicons name={getIcon()} size={44} color={COLORS.primary} />
       </View>
-      <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center', marginBottom: SPACING.sm }}>
-        {hasSearch ? 'No results found' : 'Nothing cached yet'}
+
+      <Text
+        style={{
+          color: COLORS.textPrimary,
+          fontSize: FONTS.sizes.xl,
+          fontWeight: '800',
+          textAlign: 'center',
+          marginBottom: SPACING.sm,
+        }}
+      >
+        {getTitle()}
       </Text>
-      <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 20 }}>
-        {hasSearch
-          ? 'Try a different search term or filter'
-          : filter === 'all'
-            ? 'Your research reports, podcasts, debates, papers, slides and voice debates appear here when cached for offline use.'
-            : `No ${TYPE_LABEL[filter as CachedContentType] ?? filter} items cached on this device.`}
+
+      <Text
+        style={{
+          color: COLORS.textMuted,
+          fontSize: FONTS.sizes.sm,
+          textAlign: 'center',
+          lineHeight: 22,
+          maxWidth: SCREEN_W * 0.8,
+        }}
+      >
+        {getDescription()}
       </Text>
     </View>
   );
@@ -363,21 +597,22 @@ interface OfflineScreenProps {
 
 export function OfflineScreen({ onRetry }: OfflineScreenProps) {
   const insets = useSafeAreaInsets();
+  const { isLight } = useTheme();
   const { recheckNetwork, isConnecting } = useNetwork();
 
-  const [entries,    setEntries]    = useState<CacheEntry[]>([]);
-  const [loading,    setLoading]    = useState(true);
+  const [entries, setEntries] = useState<CacheEntry[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter,     setFilter]     = useState<CacheFilterType>('all');
-  const [search,     setSearch]     = useState('');
+  const [filter, setFilter] = useState<CacheFilterType>('all');
+  const [search, setSearch] = useState('');
   const [totalBytes, setTotalBytes] = useState(0);
   const [totalItems, setTotalItems] = useState(0);
 
   // Viewer state
-  const [viewerEntry,   setViewerEntry]   = useState<CacheEntry | null>(null);
-  const [viewerData,    setViewerData]    = useState<unknown>(null);
+  const [viewerEntry, setViewerEntry] = useState<CacheEntry | null>(null);
+  const [viewerData, setViewerData] = useState<unknown>(null);
   const [viewerLoading, setViewerLoading] = useState(false);
-  const [exporting,     setExporting]     = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Offline dot pulse
   const pulse = useRef(new Animated.Value(1)).current;
@@ -390,59 +625,76 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
     ).start();
   }, []);
 
-  const loadEntries = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    else setRefreshing(true);
-    try {
-      const [idx, stats] = await Promise.all([getCacheIndex(), getCacheStats()]);
-      setEntries(idx);
-      setTotalBytes(stats.totalBytes);
-      setTotalItems(stats.totalItems);
-    } catch {}
-    finally { setLoading(false); setRefreshing(false); }
-  }, []);
+  const loadEntries = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
+      try {
+        const [idx, stats] = await Promise.all([getCacheIndex(), getCacheStats()]);
+        setEntries(idx);
+        setTotalBytes(stats.totalBytes);
+        setTotalItems(stats.totalItems);
+      } catch {}
+      finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    []
+  );
 
-  useEffect(() => { loadEntries(); }, [loadEntries]);
+  useEffect(() => {
+    loadEntries();
+  }, [loadEntries]);
 
   const displayEntries = entries.filter(e => {
-    const matchType   = filter === 'all' || e.type === filter;
-    const s           = search.toLowerCase().trim();
-    const matchSearch = !s || e.title.toLowerCase().includes(s) || (e.subtitle ?? '').toLowerCase().includes(s);
+    const matchType = filter === 'all' || e.type === filter;
+    const s = search.toLowerCase().trim();
+    const matchSearch =
+      !s || e.title.toLowerCase().includes(s) || (e.subtitle ?? '').toLowerCase().includes(s);
     return matchType && matchSearch;
   });
 
-  const countByType = entries.reduce((acc, e) => {
-    acc[e.type] = (acc[e.type] ?? 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  const countByType = entries.reduce(
+    (acc, e) => {
+      acc[e.type] = (acc[e.type] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>
+  );
 
   // ── Open item ────────────────────────────────────────────────────────────────
 
-  const handleOpenItem = useCallback(async (entry: CacheEntry) => {
-    setViewerLoading(true);
-    try {
-      const data = await loadCachedItem(entry);
-      if (!data) {
-        Alert.alert(
-          'Cache Miss',
-          'This item is no longer in the cache. It may have expired or been deleted.',
-          [{ text: 'OK', onPress: () => loadEntries(true) }],
-        );
-        return;
+  const handleOpenItem = useCallback(
+    async (entry: CacheEntry) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setViewerLoading(true);
+      try {
+        const data = await loadCachedItem(entry);
+        if (!data) {
+          Alert.alert(
+            'Cache Miss',
+            'This item is no longer in the cache. It may have expired or been deleted.',
+            [{ text: 'OK', onPress: () => loadEntries(true) }]
+          );
+          return;
+        }
+        setViewerEntry(entry);
+        setViewerData(data);
+      } catch {
+        Alert.alert('Error', 'Could not open this cached item.');
+      } finally {
+        setViewerLoading(false);
       }
-      setViewerEntry(entry);
-      setViewerData(data);
-    } catch {
-      Alert.alert('Error', 'Could not open this cached item.');
-    } finally {
-      setViewerLoading(false);
-    }
-  }, [loadEntries]);
+    },
+    [loadEntries]
+  );
 
   // ── Export ────────────────────────────────────────────────────────────────────
 
   const handleExport = useCallback(async () => {
     if (!viewerEntry || !viewerData || exporting) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setExporting(true);
     try {
       await exportOffline(viewerEntry, viewerData);
@@ -451,7 +703,7 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
       Alert.alert(
         'Export Failed',
         `Could not export this ${TYPE_LABEL[viewerEntry.type]?.toLowerCase() ?? 'item'}.\n\n${msg}`,
-        [{ text: 'OK' }],
+        [{ text: 'OK' }]
       );
     } finally {
       setExporting(false);
@@ -469,34 +721,60 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
     switch (viewerEntry.type) {
       case 'report':
         return (
-          <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <ReportViewer report={viewerData as ResearchReport} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
-          </LinearGradient>
+          <OfflineReportViewer
+            report={viewerData as ResearchReport}
+            onClose={closeViewer}
+            onExport={handleExport}
+            exporting={exporting}
+          />
         );
       case 'podcast':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <OfflinePodcastViewer podcast={viewerData as Podcast} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
+            <OfflinePodcastViewer
+              podcast={viewerData as Podcast}
+              entry={viewerEntry}
+              onClose={closeViewer}
+              onExport={handleExport}
+              exporting={exporting}
+            />
           </LinearGradient>
         );
       case 'debate':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <OfflineDebateViewer session={viewerData as DebateSession} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
+            <OfflineDebateViewer
+              session={viewerData as DebateSession}
+              entry={viewerEntry}
+              onClose={closeViewer}
+              onExport={handleExport}
+              exporting={exporting}
+            />
           </LinearGradient>
         );
       case 'academic_paper':
         return (
           <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-            <OfflineAcademicPaperViewer paper={viewerData as AcademicPaper} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
+            <OfflineAcademicPaperViewer
+              paper={viewerData as AcademicPaper}
+              entry={viewerEntry}
+              onClose={closeViewer}
+              onExport={handleExport}
+              exporting={exporting}
+            />
           </LinearGradient>
         );
       case 'presentation':
         return (
-          <OfflinePresentationViewer presentation={viewerData as GeneratedPresentation} entry={viewerEntry} onClose={closeViewer} onExport={handleExport} exporting={exporting} />
+          <OfflinePresentationViewer
+            presentation={viewerData as GeneratedPresentation}
+            entry={viewerEntry}
+            onClose={closeViewer}
+            onExport={handleExport}
+            exporting={exporting}
+          />
         );
       case 'voice_debate':
-        // Part 45: Full cinematic offline voice debate viewer
         return (
           <OfflineVoiceDebateViewer
             voiceDebate={viewerData as VoiceDebate}
@@ -506,48 +784,145 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
             exporting={exporting}
           />
         );
+      default:
+        return null;
     }
   }
 
   // ── List view ─────────────────────────────────────────────────────────────────
 
-  return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
-      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+  const bgGradient: readonly [string, string] = isLight
+    ? ['#F0F2F8', '#FFFFFF']
+    : [COLORS.background, COLORS.backgroundCard];
 
+  return (
+    <LinearGradient colors={bgGradient} style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {viewerLoading && (
-          <View style={{ position: 'absolute', inset: 0, zIndex: 99, backgroundColor: 'rgba(10,10,26,0.8)', alignItems: 'center', justifyContent: 'center' }}>
-            <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={{ color: COLORS.textMuted, marginTop: SPACING.sm, fontSize: FONTS.sizes.sm }}>Loading from cache…</Text>
+          <View
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 99,
+              backgroundColor: getModalBackdrop(0.85),
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <View
+              style={{
+                backgroundColor: COLORS.backgroundCard,
+                borderRadius: RADIUS.xl,
+                padding: SPACING.xl,
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                ...SHADOWS.large,
+              }}
+            >
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text
+                style={{
+                  color: COLORS.textSecondary,
+                  marginTop: SPACING.md,
+                  fontSize: FONTS.sizes.sm,
+                  fontWeight: '600',
+                }}
+              >
+                Loading from cache…
+              </Text>
+            </View>
           </View>
         )}
 
         {/* Header */}
-        <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm, paddingBottom: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.md }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <View
+          style={{
+            paddingHorizontal: SPACING.lg,
+            paddingTop: SPACING.sm,
+            paddingBottom: SPACING.md,
+            borderBottomWidth: 1,
+            borderBottomColor: COLORS.border,
+            backgroundColor: isLight ? 'rgba(255,255,255,0.8)' : 'rgba(10,10,26,0.8)',
+            backdropFilter: 'blur(20px)',
+          }}
+        >
+          {/* Status Bar */}
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: SPACING.md,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
               <Animated.View style={{ transform: [{ scale: pulse }] }}>
-                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.error }} />
+                <View
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 5,
+                    backgroundColor: COLORS.error,
+                    borderWidth: 2,
+                    borderColor: `${COLORS.error}40`,
+                  }}
+                />
               </Animated.View>
               <View>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>You're Offline</Text>
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                  {totalItems > 0 ? `${totalItems} cached items · ${formatBytes(totalBytes)}` : 'No cached content available'}
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>
+                  Offline Mode
                 </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                    {totalItems > 0
+                      ? `${totalItems} items · ${formatBytes(totalBytes)}`
+                      : 'No cached content'}
+                  </Text>
+                  {totalItems > 0 && (
+                    <View
+                      style={{
+                        width: 4,
+                        height: 4,
+                        borderRadius: 2,
+                        backgroundColor: COLORS.textMuted,
+                      }}
+                    />
+                  )}
+                  {totalItems > 0 && (
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+                      {Math.round(totalBytes / 1024 / 1024)} MB
+                    </Text>
+                  )}
+                </View>
               </View>
             </View>
+
             <TouchableOpacity
-              onPress={async () => { await recheckNetwork(); onRetry?.(); }}
+              onPress={async () => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                await recheckNetwork();
+                onRetry?.();
+              }}
               disabled={isConnecting}
               style={{
-                flexDirection: 'row', alignItems: 'center', gap: 6,
-                backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full,
-                paddingHorizontal: 14, paddingVertical: 8,
-                borderWidth: 1, borderColor: `${COLORS.primary}35`,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 6,
+                backgroundColor: `${COLORS.primary}12`,
+                borderRadius: RADIUS.full,
+                paddingHorizontal: 14,
+                paddingVertical: 8,
+                borderWidth: 1,
+                borderColor: `${COLORS.primary}25`,
                 opacity: isConnecting ? 0.6 : 1,
               }}
             >
-              {isConnecting ? <ActivityIndicator size="small" color={COLORS.primary} /> : <Ionicons name="refresh-outline" size={14} color={COLORS.primary} />}
+              {isConnecting ? (
+                <ActivityIndicator size="small" color={COLORS.primary} />
+              ) : (
+                <Ionicons name="refresh-outline" size={16} color={COLORS.primary} />
+              )}
               <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
                 {isConnecting ? 'Checking…' : 'Retry'}
               </Text>
@@ -555,68 +930,97 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
           </View>
 
           {/* Workspace notice */}
-          <View style={{
-            flexDirection: 'row', alignItems: 'center', gap: 8,
-            backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg,
-            paddingHorizontal: SPACING.md, paddingVertical: 8,
-            marginBottom: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.warning}25`,
-          }}>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              backgroundColor: `${COLORS.warning}08`,
+              borderRadius: RADIUS.lg,
+              paddingHorizontal: SPACING.md,
+              paddingVertical: 8,
+              marginBottom: SPACING.sm,
+              borderWidth: 1,
+              borderColor: `${COLORS.warning}15`,
+            }}
+          >
             <Ionicons name="people-outline" size={14} color={COLORS.warning} />
-            <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, flex: 1 }}>
-              Workspace &amp; Teams features require an internet connection
+            <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.xs, flex: 1, fontWeight: '500' }}>
+              Workspace &amp; Teams require an internet connection
             </Text>
           </View>
 
           {/* Search */}
-          <View style={{
-            flexDirection: 'row', alignItems: 'center',
-            backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg,
-            paddingHorizontal: SPACING.md, borderWidth: 1, borderColor: COLORS.border, height: 40,
-          }}>
-            <Ionicons name="search-outline" size={16} color={COLORS.textMuted} style={{ marginRight: 8 }} />
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: isLight ? '#FFFFFF' : COLORS.backgroundElevated,
+              borderRadius: RADIUS.lg,
+              paddingHorizontal: SPACING.md,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              height: 44,
+              ...SHADOWS.small,
+            }}
+          >
+            <Ionicons
+              name="search-outline"
+              size={18}
+              color={COLORS.textMuted}
+              style={{ marginRight: 10 }}
+            />
             <TextInput
-              value={search} onChangeText={setSearch}
-              placeholder="Search cached content…" placeholderTextColor={COLORS.textMuted}
-              style={{ flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.sm }}
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search cached content…"
+              placeholderTextColor={COLORS.textMuted}
+              style={{
+                flex: 1,
+                color: COLORS.textPrimary,
+                fontSize: FONTS.sizes.sm,
+                fontWeight: '400',
+              }}
             />
             {search.length > 0 && (
-              <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+              <TouchableOpacity
+                onPress={() => setSearch('')}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close-circle" size={18} color={COLORS.textMuted} />
               </TouchableOpacity>
             )}
           </View>
         </View>
 
         {/* Filter chips */}
-        <View style={{ paddingVertical: SPACING.sm }}>
+        <View
+          style={{
+            paddingVertical: SPACING.md,
+            borderBottomWidth: 1,
+            borderBottomColor: COLORS.border,
+            backgroundColor: isLight ? 'rgba(255,255,255,0.5)' : 'rgba(10,10,26,0.5)',
+          }}
+        >
           <FlatList
-            horizontal showsHorizontalScrollIndicator={false}
+            horizontal
+            showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: 8 }}
             data={FILTERS}
             keyExtractor={f => f.id}
             renderItem={({ item: f }) => {
               const isActive = filter === f.id;
-              const count    = f.id === 'all' ? totalItems : (countByType[f.id] ?? 0);
+              const count = f.id === 'all' ? totalItems : (countByType[f.id] ?? 0);
               return (
-                <TouchableOpacity
-                  onPress={() => setFilter(f.id)}
-                  style={{
-                    flexDirection: 'row', alignItems: 'center', gap: 5,
-                    backgroundColor: isActive ? f.color : COLORS.backgroundCard,
-                    borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7,
-                    borderWidth: 1, borderColor: isActive ? f.color : COLORS.border,
+                <FilterChip
+                  filter={f}
+                  isActive={isActive}
+                  count={count}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setFilter(f.id);
                   }}
-                >
-                  <Ionicons name={f.icon as any} size={13} color={isActive ? '#FFF' : f.color} />
-                  <Text style={{ color: isActive ? '#FFF' : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
-                    {f.label}
-                  </Text>
-                  {count > 0 && (
-                    <View style={{ backgroundColor: isActive ? 'rgba(255,255,255,0.25)' : `${f.color}22`, borderRadius: RADIUS.full, paddingHorizontal: 5, paddingVertical: 1, minWidth: 18, alignItems: 'center' }}>
-                      <Text style={{ color: isActive ? '#FFF' : f.color, fontSize: 9, fontWeight: '800' }}>{count}</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
+                />
               );
             }}
           />
@@ -626,15 +1030,34 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
         {loading ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={{ color: COLORS.textMuted, marginTop: SPACING.sm, fontSize: FONTS.sizes.sm }}>Loading cached content…</Text>
+            <Text
+              style={{
+                color: COLORS.textMuted,
+                marginTop: SPACING.md,
+                fontSize: FONTS.sizes.sm,
+              }}
+            >
+              Loading cached content…
+            </Text>
           </View>
         ) : (
           <FlatList
             data={displayEntries}
             keyExtractor={e => `${e.type}-${e.id}`}
-            contentContainerStyle={{ paddingTop: SPACING.sm, paddingBottom: insets.bottom + 80, flexGrow: 1 }}
+            contentContainerStyle={{
+              paddingTop: SPACING.md,
+              paddingBottom: insets.bottom + 100,
+              flexGrow: 1,
+            }}
             showsVerticalScrollIndicator={false}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadEntries(true)} tintColor={COLORS.primary} />}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={() => loadEntries(true)}
+                tintColor={COLORS.primary}
+                colors={[COLORS.primary]}
+              />
+            }
             ListEmptyComponent={<EmptyState filter={filter} hasSearch={search.trim().length > 0} />}
             renderItem={({ item, index }) => (
               <CacheItemCard entry={item} onPress={handleOpenItem} index={index} />
@@ -643,17 +1066,52 @@ export function OfflineScreen({ onRetry }: OfflineScreenProps) {
         )}
 
         {/* Bottom bar */}
-        <View style={{
-          position: 'absolute', bottom: insets.bottom, left: 0, right: 0,
-          paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
-          borderTopWidth: 1, borderTopColor: COLORS.border,
-          backgroundColor: 'rgba(10,10,26,0.96)',
-          flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-        }}>
-          <Ionicons name="cloud-offline-outline" size={13} color={COLORS.textMuted} />
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center' }}>
-            DeepDive AI · Offline Mode · {formatBytes(totalBytes)} cached
-          </Text>
+        <View
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            paddingHorizontal: SPACING.lg,
+            paddingVertical: SPACING.md,
+            paddingBottom: insets.bottom + SPACING.md,
+            borderTopWidth: 1,
+            borderTopColor: COLORS.border,
+            backgroundColor: isLight
+              ? 'rgba(245,246,251,0.95)'
+              : 'rgba(10,10,26,0.95)',
+            backdropFilter: 'blur(20px)',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="cloud-offline-outline" size={16} color={COLORS.primary} />
+            <Text
+              style={{
+                color: COLORS.textMuted,
+                fontSize: FONTS.sizes.xs,
+                fontWeight: '500',
+              }}
+            >
+              {totalItems > 0 ? `${totalItems} items cached` : 'No cached items'}
+            </Text>
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 3,
+                backgroundColor: COLORS.success,
+              }}
+            />
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+              DeepDive AI
+            </Text>
+          </View>
         </View>
       </SafeAreaView>
     </LinearGradient>

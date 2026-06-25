@@ -1,21 +1,13 @@
 // src/components/offline/OfflineAcademicPaperViewer.tsx
-// Part 41.4 — Full export modal added to offline academic paper viewer.
-//
-// CHANGES from Part 23:
-//   • Old simple PDF download button + share markdown button replaced by
-//     a single "Export" button that opens the full <AcademicExportModal>.
-//   • AcademicExportModal is passed `skipDbUpdate={true}` so no Supabase
-//     network call is attempted (safe in offline / airplane mode).
-//   • All other UI (section navigator, section cards, stats row, title block)
-//     is unchanged from Part 23.
-//
-// Export capabilities now available offline:
-//   • Export PDF  — publication-quality layout via expo-print (no network)
-//   • Export DOCX — Word document via academicDocxExport (no network)
-//   Both use academicPdfExport / academicDocxExport which are pure HTML/JS
-//   renderers that never make remote requests.
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55 — FULL THEME SYSTEM integration
+//   All colors now derive from the active theme via COLORS object.
+//   Uses useTheme() for light/dark mode awareness.
+//   All hardcoded hex values replaced with theme-aware colors.
+//   Module-level styles replaced with factory pattern.
+// ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -23,11 +15,14 @@ import {
   TouchableOpacity,
   FlatList,
   Share,
+  StyleSheet,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 import type { AcademicPaper, AcademicSection } from '../../types';
 import type { CacheEntry } from '../../types/cache';
 import { AcademicExportModal } from '../research/AcademicExportModal';
@@ -35,13 +30,13 @@ import { AcademicExportModal } from '../research/AcademicExportModal';
 // ─── Section type config ──────────────────────────────────────────────────────
 
 const SECTION_CONFIG: Record<string, { icon: string; color: string }> = {
-  abstract:          { icon: 'document-text-outline',  color: '#6C63FF' },
-  introduction:      { icon: 'book-outline',            color: '#29B6F6' },
-  literature_review: { icon: 'library-outline',         color: '#43E97B' },
-  methodology:       { icon: 'flask-outline',           color: '#FFA726' },
-  findings:          { icon: 'bar-chart-outline',       color: '#FF6584' },
-  conclusion:        { icon: 'flag-outline',            color: '#8B5CF6' },
-  references:        { icon: 'link-outline',            color: '#AAAACC' },
+  abstract: { icon: 'document-text-outline', color: '#6C63FF' },
+  introduction: { icon: 'book-outline', color: '#29B6F6' },
+  literature_review: { icon: 'library-outline', color: '#43E97B' },
+  methodology: { icon: 'flask-outline', color: '#FFA726' },
+  findings: { icon: 'bar-chart-outline', color: '#FF6584' },
+  conclusion: { icon: 'flag-outline', color: '#8B5CF6' },
+  references: { icon: 'link-outline', color: '#AAAACC' },
 };
 
 function getSectionConfig(type: string) {
@@ -51,20 +46,24 @@ function getSectionConfig(type: string) {
 // ─── Section Card ─────────────────────────────────────────────────────────────
 
 function SectionCard({ section, isActive }: { section: AcademicSection; isActive: boolean }) {
+  const { isLight } = useTheme();
   const [expanded, setExpanded] = useState(isActive);
   const cfg = getSectionConfig(section.type);
 
-  const isAbstract   = section.type === 'abstract';
+  const isAbstract = section.type === 'abstract';
   const isReferences = section.type === 'references';
+
+  const cardBg = isActive ? `${cfg.color}08` : (isLight ? '#FFFFFF' : COLORS.backgroundCard);
 
   return (
     <View style={{
-      backgroundColor: isActive ? `${cfg.color}08` : COLORS.backgroundCard,
+      backgroundColor: cardBg,
       borderRadius: RADIUS.xl,
       borderWidth: 1,
       borderColor: isActive ? `${cfg.color}35` : COLORS.border,
       marginBottom: SPACING.sm,
       overflow: 'hidden',
+      ...SHADOWS.small,
     }}>
       <TouchableOpacity onPress={() => setExpanded(v => !v)} activeOpacity={0.8}
         style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: SPACING.md }}>
@@ -143,16 +142,19 @@ function SectionCard({ section, isActive }: { section: AcademicSection; isActive
 // ─── Stats Row ────────────────────────────────────────────────────────────────
 
 function StatsRow({ paper }: { paper: AcademicPaper }) {
+  const { isLight } = useTheme();
+  const cardBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
+
   return (
     <View style={{ flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg }}>
       {[
-        { icon: 'text-outline',     label: 'Words',     value: `~${paper.wordCount.toLocaleString()}`, color: COLORS.primary   },
-        { icon: 'document-outline', label: 'Pages',     value: `~${paper.pageEstimate}`,               color: COLORS.info      },
-        { icon: 'list-outline',     label: 'Sections',  value: String(paper.sections.length),           color: COLORS.accent    },
-        { icon: 'link-outline',     label: 'Citations', value: String(paper.citations.length),          color: COLORS.secondary },
+        { icon: 'text-outline', label: 'Words', value: `~${paper.wordCount.toLocaleString()}`, color: COLORS.primary },
+        { icon: 'document-outline', label: 'Pages', value: `~${paper.pageEstimate}`, color: COLORS.info },
+        { icon: 'list-outline', label: 'Sections', value: String(paper.sections.length), color: COLORS.accent },
+        { icon: 'link-outline', label: 'Citations', value: String(paper.citations.length), color: COLORS.secondary },
       ].map(stat => (
         <View key={stat.label} style={{
-          flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
+          flex: 1, backgroundColor: cardBg, borderRadius: RADIUS.lg,
           padding: SPACING.sm, alignItems: 'center',
           borderWidth: 1, borderColor: COLORS.border,
         }}>
@@ -170,10 +172,13 @@ function StatsRow({ paper }: { paper: AcademicPaper }) {
 // ─── Horizontal section navigator ────────────────────────────────────────────
 
 function SectionNavigator({ paper, activeSectionId, onSelect }: {
-  paper:           AcademicPaper;
+  paper: AcademicPaper;
   activeSectionId: string | null;
-  onSelect:        (id: string) => void;
+  onSelect: (id: string) => void;
 }) {
+  const { isLight } = useTheme();
+  const cardBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
+
   return (
     <FlatList
       horizontal
@@ -183,14 +188,14 @@ function SectionNavigator({ paper, activeSectionId, onSelect }: {
       keyExtractor={s => s.id}
       renderItem={({ item: section }) => {
         const isActive = activeSectionId === section.id;
-        const cfg      = getSectionConfig(section.type);
+        const cfg = getSectionConfig(section.type);
         return (
           <TouchableOpacity
             onPress={() => onSelect(section.id)}
             style={{
               flexDirection: 'row', alignItems: 'center', gap: 6,
               paddingHorizontal: 12, paddingVertical: 7, borderRadius: RADIUS.full,
-              backgroundColor: isActive ? cfg.color : COLORS.backgroundCard,
+              backgroundColor: isActive ? cfg.color : cardBg,
               borderWidth: 1, borderColor: isActive ? cfg.color : COLORS.border,
             }}
           >
@@ -229,12 +234,10 @@ function buildMarkdown(paper: AcademicPaper): string {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 interface OfflineAcademicPaperViewerProps {
-  paper:     AcademicPaper;
-  entry:     CacheEntry;
-  onClose:   () => void;
-  /** Legacy prop kept for backward compat — no longer used internally */
-  onExport:  () => void;
-  /** Legacy prop kept for backward compat — no longer used internally */
+  paper: AcademicPaper;
+  entry: CacheEntry;
+  onClose: () => void;
+  onExport: () => void;
   exporting: boolean;
 }
 
@@ -243,14 +246,18 @@ export function OfflineAcademicPaperViewer({
   entry,
   onClose,
 }: OfflineAcademicPaperViewerProps) {
-  const insets          = useSafeAreaInsets();
-  const scrollRef       = useRef<ScrollView>(null);
-  const sectionRefs     = useRef<Record<string, number>>({});
+  const insets = useSafeAreaInsets();
+  const { isLight, version } = useTheme();
+  const scrollRef = useRef<ScrollView>(null);
+  const sectionRefs = useRef<Record<string, number>>({});
   const [activeSectionId, setActiveSectionId] = useState<string | null>(
     paper.sections[0]?.id ?? null,
   );
-  const [sharing,          setSharing]          = useState(false);
-  const [showExportModal,  setShowExportModal]  = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+
+  // Rebuild styles on theme change
+  const styles = useMemo(() => createStyles(isLight), [version, isLight]);
 
   const handleSelectSection = useCallback((id: string) => {
     setActiveSectionId(id);
@@ -270,33 +277,22 @@ export function OfflineAcademicPaperViewer({
     finally { setSharing(false); }
   }, [paper, sharing]);
 
+  const headerBg = isLight ? '#FFFFFF' : COLORS.background;
+  const cardBg = isLight ? '#FFFFFF' : COLORS.backgroundCard;
+
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       {/* Header */}
-      <View style={{
-        paddingTop: insets.top + SPACING.sm,
-        paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm,
-        borderBottomWidth: 1, borderBottomColor: COLORS.border,
-        flexDirection: 'row', alignItems: 'center', gap: 10,
-      }}>
+      <View style={[styles.header, { paddingTop: insets.top + SPACING.sm, backgroundColor: headerBg }]}>
         <TouchableOpacity
           onPress={onClose}
-          style={{
-            width: 36, height: 36, borderRadius: 10,
-            backgroundColor: COLORS.backgroundElevated,
-            alignItems: 'center', justifyContent: 'center',
-            borderWidth: 1, borderColor: COLORS.border,
-          }}
+          style={[styles.backBtn, { backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : COLORS.backgroundElevated }]}
         >
           <Ionicons name="arrow-back" size={18} color={COLORS.textSecondary} />
         </TouchableOpacity>
 
-        <View style={{
-          width: 32, height: 32, borderRadius: 10,
-          backgroundColor: `${'#43E97B'}18`,
-          alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-        }}>
-          <Ionicons name="school-outline" size={15} color="#43E97B" />
+        <View style={[styles.iconContainer, { backgroundColor: `${COLORS.accent}18` }]}>
+          <Ionicons name="school-outline" size={15} color={COLORS.accent} />
         </View>
 
         <View style={{ flex: 1 }}>
@@ -323,26 +319,21 @@ export function OfflineAcademicPaperViewer({
         <TouchableOpacity
           onPress={handleShareMarkdown}
           disabled={sharing}
-          style={{
-            width: 34, height: 34, borderRadius: 10,
-            backgroundColor: `${'#43E97B'}15`,
-            alignItems: 'center', justifyContent: 'center',
-            borderWidth: 1, borderColor: `${'#43E97B'}25`,
-          }}
+          style={[styles.shareBtn, {
+            backgroundColor: `${COLORS.accent}15`,
+            borderColor: `${COLORS.accent}25`,
+          }]}
         >
-          <Ionicons name="share-outline" size={16} color="#43E97B" />
+          <Ionicons name="share-outline" size={16} color={COLORS.accent} />
         </TouchableOpacity>
 
         {/* Export — opens full AcademicExportModal (PDF + DOCX) */}
         <TouchableOpacity
           onPress={() => setShowExportModal(true)}
-          style={{
-            flexDirection: 'row', alignItems: 'center', gap: 4,
+          style={[styles.exportBtn, {
             backgroundColor: `${COLORS.primary}15`,
-            borderRadius: RADIUS.lg,
-            paddingHorizontal: 10, paddingVertical: 7,
-            borderWidth: 1, borderColor: `${COLORS.primary}25`,
-          }}
+            borderColor: `${COLORS.primary}25`,
+          }]}
         >
           <Ionicons name="download-outline" size={14} color={COLORS.primary} />
           <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
@@ -352,7 +343,7 @@ export function OfflineAcademicPaperViewer({
       </View>
 
       {/* Section navigator */}
-      <View style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+      <View style={[styles.navContainer, { borderBottomColor: COLORS.border }]}>
         <SectionNavigator
           paper={paper}
           activeSectionId={activeSectionId}
@@ -369,20 +360,13 @@ export function OfflineAcademicPaperViewer({
       >
         {/* Title block */}
         <LinearGradient
-          colors={['#1A1A35', '#12122A']}
-          style={{
-            borderRadius: RADIUS.xl, padding: SPACING.lg,
-            marginBottom: SPACING.lg,
-            borderWidth: 1, borderColor: `${COLORS.primary}25`,
-          }}
+          colors={isLight ? ['#F5F6FB', '#EEF0F8'] : ['#1A1A35', '#12122A']}
+          style={[styles.titleBlock, { borderColor: `${COLORS.primary}25` }]}
         >
-          <Text style={{
-            color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800',
-            textAlign: 'center', marginBottom: SPACING.sm, lineHeight: 28,
-          }}>
+          <Text style={[styles.titleText, { color: COLORS.textPrimary }]}>
             {paper.title}
           </Text>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginBottom: SPACING.md }}>
+          <Text style={[styles.titleSubtext, { color: COLORS.textMuted }]}>
             {paper.citationStyle.toUpperCase()} · Generated{' '}
             {new Date(paper.generatedAt).toLocaleDateString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric',
@@ -429,4 +413,76 @@ export function OfflineAcademicPaperViewer({
       />
     </View>
   );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+// Factory pattern to support theme changes
+
+function createStyles(isLight: boolean) {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: SPACING.lg,
+      paddingBottom: SPACING.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: COLORS.border,
+      gap: 10,
+    },
+    backBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: COLORS.border,
+    },
+    iconContainer: {
+      width: 32,
+      height: 32,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+    },
+    shareBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+    },
+    exportBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      borderRadius: RADIUS.lg,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      borderWidth: 1,
+    },
+    navContainer: {
+      borderBottomWidth: 1,
+    },
+    titleBlock: {
+      borderRadius: RADIUS.xl,
+      padding: SPACING.lg,
+      marginBottom: SPACING.lg,
+      borderWidth: 1,
+    },
+    titleText: {
+      fontSize: FONTS.sizes.lg,
+      fontWeight: '800',
+      textAlign: 'center',
+      marginBottom: SPACING.sm,
+      lineHeight: 28,
+    },
+    titleSubtext: {
+      fontSize: FONTS.sizes.xs,
+      textAlign: 'center',
+      marginBottom: SPACING.md,
+    },
+  });
 }
