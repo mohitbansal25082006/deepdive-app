@@ -11,19 +11,8 @@
 //              (resourceRemoved=true, derived in workspace-detail.tsx from a
 //              matching *_unshared entry). The label per type is rendered from
 //              SHARE_LABEL so "shared a podcast/debate/voice debate" is correct.
-//
-//   GOALS (Part 52.2 spec, unchanged):
-//     • Distinct visual treatment per action family.
-//     • FULL, untruncated resource names in a tappable "title pill".
-//     • Clickable NAMES (actor + target) open the member's workspace profile,
-//       EXCEPT where the person is no longer in the workspace.
-//     • Settings "from → to" diffs; both-name member/role/access entries.
-//     • Comment activity never reaches this component (filtered server-side).
-//
-//   This component is presentational. Navigation is delegated to callbacks
-//   passed from workspace-detail.tsx:
-//     onOpenMember(userId, fallbackProfile?)   → open a member profile
-//     onOpenResource(kind, resourceId, reportId?, title?) → open report/content
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
@@ -125,9 +114,6 @@ const ACTION_META: Partial<Record<WorkspaceActivityAction, ActionMeta>> = {
 const FALLBACK_META: ActionMeta = { family: 'system', icon: 'ellipse-outline' };
 
 // ─── Actions where the ACTOR is no longer a current member ───────────────────
-// For these, the actor's own name must render as STATIC text (non-clickable),
-// because tapping it to open a workspace profile would be wrong / dead.
-//   • member_left      — the actor left the workspace (Issue 2)
 const ACTOR_NOT_CLICKABLE: ReadonlySet<WorkspaceActivityAction> = new Set<WorkspaceActivityAction>([
   'member_left',
 ]);
@@ -169,7 +155,7 @@ function NameChip({
 }) {
   const canTap = !!userId && !!onOpenMember;
   if (!canTap) {
-    return <Text style={styles.nameStatic}>{name}</Text>;
+    return <Text style={[styles.nameStatic, { color: COLORS.textPrimary }]}>{name}</Text>;
   }
   return (
     <Text
@@ -201,7 +187,7 @@ function TitlePill({
       style={[styles.titlePill, { borderColor: `${color}30`, backgroundColor: `${color}0E` }]}
     >
       <Ionicons name={icon} size={13} color={color} style={{ marginTop: 1 }} />
-      <Text style={[styles.titlePillText, tappable && { color: COLORS.textPrimary }]}>
+      <Text style={[styles.titlePillText, { color: tappable ? COLORS.textPrimary : COLORS.textSecondary }]}>
         {title}
       </Text>
       {tappable && <Ionicons name="chevron-forward" size={12} color={color} style={{ marginTop: 1 }} />}
@@ -214,8 +200,8 @@ function TitlePill({
 function DiffRow({ from, to, color }: { from: string; to: string; color: string }) {
   return (
     <View style={styles.diffWrap}>
-      <View style={styles.diffOld}>
-        <Text style={styles.diffOldText} numberOfLines={3}>{from || '—'}</Text>
+      <View style={[styles.diffOld, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
+        <Text style={[styles.diffOldText, { color: COLORS.textMuted }]} numberOfLines={3}>{from || '—'}</Text>
       </View>
       <Ionicons name="arrow-forward" size={12} color={color} style={{ marginHorizontal: 2 }} />
       <View style={[styles.diffNew, { borderColor: `${color}35`, backgroundColor: `${color}10` }]}>
@@ -237,18 +223,14 @@ export function ActivityItem({
   const actor = activity.actorProfile;
   const actorName = actor?.fullName ?? actor?.username ?? 'Someone';
 
-  // Issue 2: for member_left (and any future actor-not-current cases), the actor
-  // name must NOT be a tappable chip — pass a null id so NameChip renders static.
   const actorId = ACTOR_NOT_CLICKABLE.has(activity.action)
     ? null
     : (activity.userId ?? actor?.id ?? null);
 
-  // Resolve a target user id (the person an action was done TO).
   const targetUserId =
     md.target_user_id ?? md.removed_user_id ?? md.blocked_user_id ??
     md.unblocked_user_id ?? md.new_owner_id ?? null;
 
-  // Render the sentence body + optional extras (title pill / diff) per action.
   const body = renderBody();
 
   return (
@@ -258,7 +240,7 @@ export function ActivityItem({
         <View style={[styles.medallion, { backgroundColor: `${accent}1A`, borderColor: `${accent}33` }]}>
           <Ionicons name={meta.icon} size={15} color={accent} />
         </View>
-        {!isLast && <View style={styles.connector} />}
+        {!isLast && <View style={[styles.connector, { backgroundColor: COLORS.border }]} />}
       </View>
 
       {/* Content */}
@@ -269,7 +251,7 @@ export function ActivityItem({
               <Avatar url={actor.avatarUrl} name={actor.fullName ?? actor.username} size={22} />
             </View>
           )}
-          <Text style={styles.sentence}>
+          <Text style={[styles.sentence, { color: COLORS.textSecondary }]}>
             <NameChip
               name={actorName}
               userId={actorId}
@@ -284,7 +266,7 @@ export function ActivityItem({
 
         {body.extra}
 
-        <Text style={styles.time}>{timeAgo(activity.createdAt)}</Text>
+        <Text style={[styles.time, { color: COLORS.textMuted }]}>{timeAgo(activity.createdAt)}</Text>
       </View>
     </View>
   );
@@ -352,8 +334,6 @@ export function ActivityItem({
         const kind  = resourceKindForShare(activity.action);
         const title = md.title ?? md.topic ?? 'an item';
         const label = SHARE_LABEL[activity.action] ?? 'shared content';
-        // Issue 7: tappable while the content exists; once removed (a matching
-        // *_unshared entry exists → resourceRemoved=true) it becomes static.
         const canOpen = !resourceRemoved && !!onOpenResource && !!activity.resourceId;
         return {
           sentence: `shared ${label}`,
@@ -372,7 +352,7 @@ export function ActivityItem({
         };
       }
 
-      // ── Shared content removed (Fix 6) ──
+      // ── Shared content removed ──
       case 'presentation_unshared':
       case 'academic_paper_unshared':
       case 'podcast_unshared':
@@ -382,7 +362,6 @@ export function ActivityItem({
         const label = UNSHARE_LABEL[activity.action] ?? 'shared content';
         return {
           sentence: `removed ${label}`,
-          // No tap target — the content is gone.
           extra: <TitlePill title={title} icon={meta.icon} color={accent} />,
         };
       }
@@ -392,7 +371,6 @@ export function ActivityItem({
         return { sentence: 'joined the workspace', extra: noExtra };
       }
       case 'member_left': {
-        // Issue 2: actor (already rendered static above) — body has no name.
         return { sentence: 'left the workspace', extra: noExtra };
       }
       case 'member_removed': {
@@ -401,7 +379,6 @@ export function ActivityItem({
           sentence: (
             <>
               removed{' '}
-              {/* Issue 5: removed member is no longer in the workspace → not tappable */}
               <NameChip name={target} userId={null} color={accent} />
             </>
           ),
@@ -414,7 +391,6 @@ export function ActivityItem({
           sentence: (
             <>
               blocked{' '}
-              {/* Issue 5: blocked member is no longer in the workspace → not tappable */}
               <NameChip name={target} userId={null} color={accent} />
             </>
           ),
@@ -427,7 +403,6 @@ export function ActivityItem({
           sentence: (
             <>
               unblocked{' '}
-              {/* Not a current member → not tappable */}
               <NameChip name={target} userId={null} color={accent} />
             </>
           ),
@@ -563,7 +538,6 @@ const styles = StyleSheet.create({
   connector: {
     flex:            1,
     width:           2,
-    backgroundColor: COLORS.border,
     marginTop:       4,
     marginBottom:    -4,
     borderRadius:    1,
@@ -587,12 +561,10 @@ const styles = StyleSheet.create({
   },
   sentence: {
     flex:       1,
-    color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.sm,
     lineHeight: 20,
   },
   nameStatic: {
-    color:      COLORS.textPrimary,
     fontWeight: '700',
   },
   nameLink: {
@@ -617,7 +589,6 @@ const styles = StyleSheet.create({
   },
   titlePillText: {
     flex:       1,
-    color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '600',
     lineHeight: 17,
@@ -636,12 +607,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical:   6,
     borderRadius:      RADIUS.md,
-    backgroundColor:   COLORS.backgroundElevated,
     borderWidth:       1,
-    borderColor:       COLORS.border,
   },
   diffOldText: {
-    color:               COLORS.textMuted,
     fontSize:            FONTS.sizes.xs,
     textDecorationLine:  'line-through',
   },
@@ -657,7 +625,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   time: {
-    color:      COLORS.textMuted,
     fontSize:   FONTS.sizes.xs,
     marginTop:  6,
     marginLeft: 30,

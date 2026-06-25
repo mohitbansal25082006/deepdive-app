@@ -1,11 +1,10 @@
 // src/components/workspace/SharedDebateCard.tsx
 // Part 16 — Card for displaying a shared debate in the workspace "Shared" tab.
-//
-// Shows: topic, question, agent count, sources, stance distribution,
-//        sharer info, action buttons (View, PDF, Copy, Remove).
-// Members can: View (opens debate viewer), Export PDF, Copy text.
-// Editors/owners can also: Remove from workspace.
-// Nobody can: Re-generate the debate from this card.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
+// Part 55.5 — Removed Copy, Share, and Export PDF buttons. Only View remains.
+// Part 55.6 — Title shown fully without truncation (removed numberOfLines restriction).
+// Part 55.7 — Removed view count, download count, and view-only info banner.
 
 import React, { useState } from 'react';
 import {
@@ -22,11 +21,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SharedDebate, WorkspaceRole } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
-// ─── Accent colour for debate ─────────────────────────────────────────────────
-
 const ACCENT = '#6C63FF';
-
-// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   item:          SharedDebate;
@@ -34,12 +29,7 @@ interface Props {
   userRole:      WorkspaceRole | null;
   onView:        (item: SharedDebate) => void;
   onRemove:      (item: SharedDebate) => Promise<void>;
-  onExportPDF?:  (item: SharedDebate) => Promise<void>;
-  onCopyText?:   (item: SharedDebate) => Promise<void>;
-  onShareText?:  (item: SharedDebate) => Promise<void>;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string): string {
   const d    = new Date(iso);
@@ -51,8 +41,6 @@ function formatDate(iso: string): string {
   if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
-
-// ─── Stance mini-bar ──────────────────────────────────────────────────────────
 
 function StanceMiniBar({ perspectives }: { perspectives: SharedDebate['perspectives'] }) {
   if (!perspectives?.length) return null;
@@ -80,7 +68,7 @@ function StanceMiniBar({ perspectives }: { perspectives: SharedDebate['perspecti
         gap:           1,
       }}>
         {pFor     > 0 && <View style={{ flex: pFor,     backgroundColor: COLORS.success }} />}
-        {pNeutral > 0 && <View style={{ flex: pNeutral, backgroundColor: COLORS.textMuted + '50' }} />}
+        {pNeutral > 0 && <View style={{ flex: pNeutral, backgroundColor: `${COLORS.textMuted}50` }} />}
         {pAgainst > 0 && <View style={{ flex: pAgainst, backgroundColor: COLORS.secondary }} />}
       </View>
       <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
@@ -109,40 +97,17 @@ function StancePill({ color, label }: { color: string; label: string }) {
   );
 }
 
-// ─── Action button ────────────────────────────────────────────────────────────
-
-const actionBtnStyle = {
-  width:           30,
-  height:          30,
-  borderRadius:    8,
-  backgroundColor: COLORS.backgroundElevated,
-  alignItems:      'center' as const,
-  justifyContent:  'center' as const,
-  borderWidth:     1,
-  borderColor:     COLORS.border,
-};
-
-// ─── Main component ───────────────────────────────────────────────────────────
-
 export function SharedDebateCard({
   item,
   index,
   userRole,
   onView,
   onRemove,
-  onExportPDF,
-  onCopyText,
-  onShareText,
 }: Props) {
-  const [isRemoving,     setIsRemoving]     = useState(false);
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
-  const [isCopying,      setIsCopying]      = useState(false);
-  const [isSharing,      setIsSharing]      = useState(false);
-  const [copied,         setCopied]         = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
 
   const isEditor = userRole === 'owner' || userRole === 'editor';
 
-  // Agent colour dots (up to 6)
   const agentColors = (item.perspectives ?? [])
     .slice(0, 6)
     .map(p => p.color)
@@ -167,29 +132,6 @@ export function SharedDebateCard({
     );
   };
 
-  const handleExportPDF = async () => {
-    if (!onExportPDF || isExportingPDF) return;
-    setIsExportingPDF(true);
-    await onExportPDF(item);
-    setIsExportingPDF(false);
-  };
-
-  const handleCopy = async () => {
-    if (!onCopyText || isCopying) return;
-    setIsCopying(true);
-    await onCopyText(item);
-    setIsCopying(false);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleShare = async () => {
-    if (!onShareText || isSharing) return;
-    setIsSharing(true);
-    await onShareText(item);
-    setIsSharing(false);
-  };
-
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(index * 60)}>
       <TouchableOpacity
@@ -205,7 +147,6 @@ export function SharedDebateCard({
           ...SHADOWS.medium,
         }}
       >
-        {/* Agent colour strip at top */}
         {agentColors.length > 0 ? (
           <View style={{ flexDirection: 'row', height: 3 }}>
             {agentColors.map((color, i) => (
@@ -222,14 +163,12 @@ export function SharedDebateCard({
         )}
 
         <View style={{ padding: SPACING.md }}>
-          {/* Header row */}
           <View style={{
             flexDirection:  'row',
             alignItems:     'flex-start',
             gap:            SPACING.md,
             marginBottom:   SPACING.sm,
           }}>
-            {/* Icon */}
             <LinearGradient
               colors={[ACCENT, '#8B5CF6']}
               style={{
@@ -245,9 +184,7 @@ export function SharedDebateCard({
               <Ionicons name="people" size={22} color="#FFF" />
             </LinearGradient>
 
-            {/* Title block */}
             <View style={{ flex: 1 }}>
-              {/* Type badge */}
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 }}>
                 <View style={{
                   backgroundColor:   `${ACCENT}18`,
@@ -275,9 +212,8 @@ export function SharedDebateCard({
                   color:      COLORS.textPrimary,
                   fontSize:   FONTS.sizes.base,
                   fontWeight: '800',
-                  lineHeight: 22,
+                  lineHeight: 24,
                 }}
-                numberOfLines={2}
               >
                 {item.topic}
               </Text>
@@ -287,7 +223,7 @@ export function SharedDebateCard({
                   style={{
                     color:     COLORS.textMuted,
                     fontSize:  FONTS.sizes.xs,
-                    marginTop: 3,
+                    marginTop: 4,
                     fontStyle: 'italic',
                   }}
                   numberOfLines={1}
@@ -297,7 +233,6 @@ export function SharedDebateCard({
               )}
             </View>
 
-            {/* Remove button (editors/owners only) */}
             {isEditor && (
               <TouchableOpacity
                 onPress={handleRemove}
@@ -323,10 +258,8 @@ export function SharedDebateCard({
             )}
           </View>
 
-          {/* Stance distribution bar */}
           <StanceMiniBar perspectives={item.perspectives} />
 
-          {/* Agent avatar dots */}
           {agentColors.length > 0 && (
             <View style={{
               flexDirection: 'row',
@@ -366,51 +299,6 @@ export function SharedDebateCard({
             </View>
           )}
 
-          {/* Stats row */}
-          {(item.viewCount > 0 || item.downloadCount > 0) && (
-            <View style={{
-              flexDirection:  'row',
-              gap:            6,
-              marginBottom:   SPACING.sm,
-              flexWrap:       'wrap',
-            }}>
-              {item.viewCount > 0 && (
-                <MetaChip
-                  icon="eye-outline"
-                  label={`${item.viewCount} view${item.viewCount !== 1 ? 's' : ''}`}
-                  color={ACCENT}
-                />
-              )}
-              {item.downloadCount > 0 && (
-                <MetaChip
-                  icon="download-outline"
-                  label={`${item.downloadCount} download${item.downloadCount !== 1 ? 's' : ''}`}
-                  color={COLORS.primary}
-                />
-              )}
-            </View>
-          )}
-
-          {/* View-only notice */}
-          <View style={{
-            flexDirection:   'row',
-            alignItems:      'center',
-            gap:             5,
-            backgroundColor: `${COLORS.info}08`,
-            borderRadius:    RADIUS.md,
-            paddingHorizontal: 8,
-            paddingVertical:  4,
-            marginBottom:    SPACING.sm,
-            borderWidth:     1,
-            borderColor:     `${COLORS.info}15`,
-          }}>
-            <Ionicons name="eye-outline" size={11} color={COLORS.info} />
-            <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '600' }}>
-              View &amp; export only — re-generation not available
-            </Text>
-          </View>
-
-          {/* Footer row */}
           <View style={{
             flexDirection:   'row',
             alignItems:      'center',
@@ -419,7 +307,6 @@ export function SharedDebateCard({
             borderTopWidth:  1,
             borderTopColor:  COLORS.border,
           }}>
-            {/* Sharer info */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
               <View style={{
                 width:           24,
@@ -440,110 +327,28 @@ export function SharedDebateCard({
               </Text>
             </View>
 
-            {/* Action buttons */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {/* Export PDF */}
-              {onExportPDF && (
-                <TouchableOpacity
-                  onPress={handleExportPDF}
-                  disabled={isExportingPDF}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isExportingPDF
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons name="document-text-outline" size={13} color={COLORS.textMuted} />
-                  }
-                </TouchableOpacity>
-              )}
-
-              {/* Copy text */}
-              {onCopyText && (
-                <TouchableOpacity
-                  onPress={handleCopy}
-                  disabled={isCopying}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isCopying
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons
-                        name={copied ? 'checkmark-circle-outline' : 'copy-outline'}
-                        size={13}
-                        color={copied ? COLORS.success : COLORS.textMuted}
-                      />
-                  }
-                </TouchableOpacity>
-              )}
-
-              {/* Share text */}
-              {onShareText && (
-                <TouchableOpacity
-                  onPress={handleShare}
-                  disabled={isSharing}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isSharing
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons name="share-outline" size={13} color={COLORS.textMuted} />
-                  }
-                </TouchableOpacity>
-              )}
-
-              {/* View button */}
-              <TouchableOpacity
-                onPress={() => onView(item)}
-                style={{
-                  flexDirection:     'row',
-                  alignItems:        'center',
-                  gap:               4,
-                  backgroundColor:   `${ACCENT}15`,
-                  borderRadius:      RADIUS.md,
-                  paddingHorizontal: 10,
-                  paddingVertical:   5,
-                  borderWidth:       1,
-                  borderColor:       `${ACCENT}30`,
-                }}
-              >
-                <Ionicons name="open-outline" size={13} color={ACCENT} />
-                <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
-                  View
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              onPress={() => onView(item)}
+              style={{
+                flexDirection:     'row',
+                alignItems:        'center',
+                gap:               4,
+                backgroundColor:   `${ACCENT}15`,
+                borderRadius:      RADIUS.md,
+                paddingHorizontal: 10,
+                paddingVertical:   5,
+                borderWidth:       1,
+                borderColor:       `${ACCENT}30`,
+              }}
+            >
+              <Ionicons name="open-outline" size={13} color={ACCENT} />
+              <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
+                View
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </TouchableOpacity>
     </Animated.View>
-  );
-}
-
-// ─── MetaChip ─────────────────────────────────────────────────────────────────
-
-function MetaChip({
-  icon,
-  label,
-  color = COLORS.textMuted,
-}: {
-  icon:   string;
-  label:  string;
-  color?: string;
-}) {
-  return (
-    <View style={{
-      flexDirection:     'row',
-      alignItems:        'center',
-      gap:               4,
-      backgroundColor:   COLORS.backgroundElevated,
-      borderRadius:      RADIUS.full,
-      paddingHorizontal: 8,
-      paddingVertical:   3,
-      borderWidth:       1,
-      borderColor:       COLORS.border,
-    }}>
-      <Ionicons name={icon as any} size={10} color={color} />
-      <Text style={{ color, fontSize: 10, fontWeight: '600' }}>{label}</Text>
-    </View>
   );
 }

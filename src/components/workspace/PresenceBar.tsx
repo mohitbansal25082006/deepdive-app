@@ -1,5 +1,7 @@
 // src/components/workspace/PresenceBar.tsx
 // Shows stacked avatars of users currently viewing the same report.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -23,9 +25,18 @@ export function PresenceBar({ users, maxVisible = 4, label = true }: Props) {
   const OVERLAP     = 10;
 
   return (
-    <Animated.View entering={FadeIn.duration(400)} style={styles.container}>
+    <Animated.View
+      entering={FadeIn.duration(400)}
+      style={[
+        styles.container,
+        {
+          backgroundColor: `${COLORS.success}12`,
+          borderColor: `${COLORS.success}25`,
+        },
+      ]}
+    >
       {/* Online dot */}
-      <View style={styles.dot} />
+      <View style={[styles.dot, { backgroundColor: COLORS.success }]} />
 
       {/* Stacked avatars */}
       <View style={[styles.stack, { width: visible.length * (AVATAR_SIZE - OVERLAP) + OVERLAP + (overflow > 0 ? 28 : 0) }]}>
@@ -34,10 +45,10 @@ export function PresenceBar({ users, maxVisible = 4, label = true }: Props) {
             key={u.userId}
             style={[
               styles.avatarWrap,
-              { 
-                left: i * (AVATAR_SIZE - OVERLAP), 
+              {
+                left: i * (AVATAR_SIZE - OVERLAP),
                 zIndex: visible.length - i,
-                borderWidth: 2, 
+                borderWidth: 2,
                 borderColor: COLORS.background,
                 borderRadius: AVATAR_SIZE / 2,
                 overflow: 'hidden',
@@ -55,20 +66,24 @@ export function PresenceBar({ users, maxVisible = 4, label = true }: Props) {
           <View
             style={[
               styles.overflow,
-              { 
-                left: visible.length * (AVATAR_SIZE - OVERLAP), 
-                width: AVATAR_SIZE, 
+              {
+                left: visible.length * (AVATAR_SIZE - OVERLAP),
+                width: AVATAR_SIZE,
                 height: AVATAR_SIZE,
+                backgroundColor: COLORS.backgroundElevated,
+                borderColor: COLORS.background,
               },
             ]}
           >
-            <Text style={styles.overflowText}>+{overflow}</Text>
+            <Text style={[styles.overflowText, { color: COLORS.textSecondary }]}>
+              +{overflow}
+            </Text>
           </View>
         )}
       </View>
 
       {label && (
-        <Text style={styles.label}>
+        <Text style={[styles.label, { color: COLORS.success }]}>
           {users.length === 1
             ? `${users[0].fullName ?? users[0].username ?? 'Someone'} is viewing`
             : `${users.length} people viewing`}
@@ -80,49 +95,41 @@ export function PresenceBar({ users, maxVisible = 4, label = true }: Props) {
 
 const styles = StyleSheet.create({
   container: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
-    backgroundColor: `${COLORS.success}12`,
-    borderRadius: RADIUS.full, 
-    paddingHorizontal: 10, 
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 10,
     paddingVertical: 5,
-    borderWidth: 1, 
-    borderColor: `${COLORS.success}25`,
+    borderWidth: 1,
     alignSelf: 'flex-start',
   },
   dot: {
-    width: 7, 
-    height: 7, 
+    width: 7,
+    height: 7,
     borderRadius: 4,
-    backgroundColor: COLORS.success,
   },
-  stack: { 
-    position: 'relative', 
-    height: 28 
+  stack: {
+    position: 'relative',
+    height: 28,
   },
-  avatarWrap: { 
-    position: 'absolute', 
+  avatarWrap: {
+    position: 'absolute',
     top: 0,
-    // Border and overflow moved to inline style in the component
   },
-  overflow:  {
-    position: 'absolute', 
+  overflow: {
+    position: 'absolute',
     borderRadius: 14,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center', 
+    alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2, 
-    borderColor: COLORS.background,
+    borderWidth: 2,
   },
-  overflowText: { 
-    color: COLORS.textSecondary, 
-    fontSize: 9, 
-    fontWeight: '700' 
+  overflowText: {
+    fontSize: 9,
+    fontWeight: '700',
   },
-  label: { 
-    color: COLORS.success, 
-    fontSize: FONTS.sizes.xs, 
-    fontWeight: '600' 
+  label: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '600',
   },
 });

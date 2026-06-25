@@ -1,13 +1,11 @@
 // app/(app)/workspace-shared-podcast-player.tsx
 // ─────────────────────────────────────────────────────────────────────────────
 // Part 41.3 UPDATE — Chapter markers added to progress bar.
-//
-// Change: ProgressBar now accepts a `chapters` prop and renders ChapterMarkers
-// above the bar (identical pattern to podcast-player.tsx). Chapters are read
-// from `(state.podcast.script as any)?.chapters ?? []`.
-//
-// All other logic is identical to Part 41.2 (mini-player continuation fix).
-// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.2 — FULL THEME-INTEGRATION PASS
+// All hardcoded hex colors replaced with COLORS tokens.
+// Part 55.4 — MODULE-STYLESHEET THEME FIX
+//   The bottom `StyleSheet.create({...})` block now uses a `createStyles()`
+//   factory rebuilt via useMemo whenever the ThemeContext `version` changes.
 
 import React, {
   useEffect,
@@ -42,11 +40,9 @@ import { useSharedPodcastPlayer }   from '../../src/hooks/useSharedPodcastPlayer
 import { WaveformVisualizer }        from '../../src/components/podcast/WaveformVisualizer';
 import { ChapterMarkers }            from '../../src/components/podcast/ChapterMarkers';
 import { LoadingOverlay }            from '../../src/components/common/LoadingOverlay';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
-import {
-  AudioEngine,
-  getEngineState,
-}                                   from '../../src/services/GlobalAudioEngine';
+import { COLORS, FONTS, SPACING, RADIUS, isLightTheme } from '../../src/constants/theme';
+import { useTheme }                  from '../../src/context/ThemeContext';
+import { AudioEngine }               from '../../src/services/GlobalAudioEngine';
 import type { PodcastTurn, SharedPodcast } from '../../src/types';
 import type { ChapterMarker }        from '../../src/types/podcast_v2';
 
@@ -84,7 +80,7 @@ function getSpeakersFromScript(sp: SharedPodcast): SpeakerInfo[] {
   ];
 
   if (guest2Name) {
-    speakers.push({ role: 'guest2', name: guest2Name, color: '#43E97B', label: 'GUEST 2' });
+    speakers.push({ role: 'guest2', name: guest2Name, color: COLORS.accent ?? '#43E97B', label: 'GUEST 2' });
   }
 
   return speakers;
@@ -162,7 +158,6 @@ function ProgressBar({
 
   return (
     <View>
-      {/* Chapter markers rendered above the progress bar */}
       <ChapterMarkers
         chapters={chapters}
         totalDurationMs={totalDurationMs}
@@ -185,7 +180,6 @@ function ProgressBar({
         }}
       >
         <Animated.View style={[fillStyle, { height: '100%', backgroundColor: ACCENT, borderRadius: 3 }]} />
-        {/* Chapter tick marks on the bar */}
         {barWidth > 0 && chapters.map(ch => {
           if (!ch.timeMs || totalDurationMs <= 0) return null;
           const pct = Math.min(1, ch.timeMs / totalDurationMs);
@@ -201,7 +195,7 @@ function ProgressBar({
                 width:           2,
                 height:          9,
                 borderRadius:    1,
-                backgroundColor: 'rgba(255,255,255,0.6)',
+                backgroundColor: COLORS.textMuted,
               }}
             />
           );
@@ -269,22 +263,6 @@ function AudioUnavailableBanner() {
   );
 }
 
-// ─── Streaming badge ──────────────────────────────────────────────────────────
-
-function StreamingBadge() {
-  return (
-    <Animated.View entering={FadeIn.duration(400)} style={{
-      flexDirection: 'row', alignItems: 'center', gap: 5,
-      backgroundColor: `${COLORS.info}12`, borderRadius: RADIUS.full,
-      paddingHorizontal: 10, paddingVertical: 4, marginBottom: SPACING.sm,
-      borderWidth: 1, borderColor: `${COLORS.info}25`,
-    }}>
-      <Ionicons name="cloud-outline" size={11} color={COLORS.info} />
-      <Text style={{ color: COLORS.info, fontSize: 10, fontWeight: '700' }}>Streaming from cloud</Text>
-    </Animated.View>
-  );
-}
-
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function WorkspaceSharedPodcastPlayerScreen() {
@@ -299,6 +277,10 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
   }>();
 
   const navigation = useNavigation();
+
+  // Theme subscription — `version` bumps on every theme/mode change.
+  const { version } = useTheme();
+  const styles = useMemo(() => createStyles(), [version]);
 
   const {
     state,
@@ -343,12 +325,6 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
     () => (state.podcast?.script as any)?.chapters ?? [],
     [state.podcast?.script]
   );
-
-  const isStreamingFromCloud = useMemo(() => {
-    if (!state.podcast) return false;
-    const path = state.podcast.audioSegmentPaths?.[state.player.currentTurnIndex] ?? '';
-    return path.startsWith('http');
-  }, [state.podcast, state.player.currentTurnIndex]);
 
   // ── Smart auto-start — reattach if audio already active ───────────────────
   useEffect(() => {
@@ -525,9 +501,9 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
 
         {/* ── Player Card ── */}
         <Animated.View entering={FadeInDown.duration(500).delay(50)} style={{ paddingHorizontal: SPACING.xl, marginBottom: SPACING.md }}>
-          <LinearGradient colors={['#1A1A35', '#0F0F28']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${activeSpeaker.color}25`, alignItems: 'center' }}>
-
-            {state.hasAudio && isStreamingFromCloud && <StreamingBadge />}
+          <LinearGradient 
+            colors={[COLORS.backgroundElevated, COLORS.backgroundCard]} 
+            style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${activeSpeaker.color}25`, alignItems: 'center' }}>
 
             <View style={{ marginBottom: SPACING.lg }}>
               <WaveformVisualizer isPlaying={state.player.isPlaying} color={activeSpeaker.color} barWidth={6} barGap={4} maxHeight={48} />
@@ -630,45 +606,51 @@ export default function WorkspaceSharedPodcastPlayerScreen() {
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+// IMPORTANT: This uses a factory pattern rebuilt via useMemo(() => createStyles(), [version])
+// inside the component so it always reflects the live, currently-applied theme palette.
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.sm,
-  },
-  backBtn: {
-    width: 40, height: 40, borderRadius: 12,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
-  },
-  headerTitle: {
-    color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1,
-  },
-  iconBtn: {
-    width: 38, height: 38, borderRadius: 12,
-    backgroundColor: COLORS.backgroundElevated,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  errorBody: {
-    flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl, gap: 12,
-  },
-  errorIconWrap: {
-    width: 80, height: 80, borderRadius: 22,
-    backgroundColor: COLORS.backgroundCard,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  errorTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  errorDesc: {
-    color: COLORS.textSecondary, fontSize: FONTS.sizes.sm,
-    textAlign: 'center', lineHeight: 22, maxWidth: 300,
-  },
-  retryBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: ACCENT, borderRadius: RADIUS.lg,
-    paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4,
-  },
-  retryText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
-});
+function createStyles() {
+  const lightMode = isLightTheme();
+
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row', alignItems: 'center',
+      paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.sm,
+    },
+    backBtn: {
+      width: 40, height: 40, borderRadius: 12,
+      backgroundColor: COLORS.backgroundElevated,
+      alignItems: 'center', justifyContent: 'center',
+      borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
+    },
+    headerTitle: {
+      color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', flex: 1,
+    },
+    iconBtn: {
+      width: 38, height: 38, borderRadius: 12,
+      backgroundColor: COLORS.backgroundElevated,
+      alignItems: 'center', justifyContent: 'center',
+      borderWidth: 1, borderColor: COLORS.border,
+    },
+    errorBody: {
+      flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl, gap: 12,
+    },
+    errorIconWrap: {
+      width: 80, height: 80, borderRadius: 22,
+      backgroundColor: COLORS.backgroundCard,
+      alignItems: 'center', justifyContent: 'center',
+      borderWidth: 1, borderColor: COLORS.border,
+    },
+    errorTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
+    errorDesc: {
+      color: COLORS.textSecondary, fontSize: FONTS.sizes.sm,
+      textAlign: 'center', lineHeight: 22, maxWidth: 300,
+    },
+    retryBtn: {
+      flexDirection: 'row', alignItems: 'center', gap: 6,
+      backgroundColor: ACCENT, borderRadius: RADIUS.lg,
+      paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4,
+    },
+    retryText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  });
+}

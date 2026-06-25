@@ -1,14 +1,8 @@
 // src/components/workspace/ChatMembersSidebar.tsx
 // Part 50 — Members sidebar panel for workspace chat
-// Part 50.1 FIX — Role display: Stream Chat doesn't store workspace roles.
-// Part 50.5 — Removed "X Owner" section header and stat chip. A workspace
-//             always has exactly one owner; no count badge needed. The owner
-//             member row sits at the top of the list identified only by their
-//             gold star RoleBadge — cleaner and less redundant.
-//   The sidebar now accepts an optional `workspaceMembers` prop containing the
-//   real Supabase workspace roles (owner / editor / viewer). When provided, the
-//   role shown in the badge is taken from Supabase, NOT from Stream.
-//   Without the prop it gracefully falls back to the previous behaviour.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for backdrop.
+//             No dark-only assumptions.
 
 import React, { useEffect, useState, useMemo } from 'react';
 import {
@@ -29,7 +23,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const SIDEBAR_W = Math.min(SCREEN_W * 0.78, 320);
@@ -41,12 +35,10 @@ export interface ChatMemberInfo {
   name:      string;
   username:  string | null;
   avatarUrl: string | null;
-  /** Role coming from Stream channel state (fallback if workspaceMembers not provided) */
   role:      'owner' | 'editor' | 'viewer';
   isOnline:  boolean;
 }
 
-/** Real workspace role from Supabase, keyed by userId */
 export type WorkspaceMemberRoles = Record<string, 'owner' | 'editor' | 'viewer'>;
 
 // ─── Avatar ───────────────────────────────────────────────────────────────────
@@ -69,14 +61,14 @@ function MemberAvatar({ member, size = 40 }: { member: ChatMemberInfo; size?: nu
     return (
       <Image
         source={{ uri: member.avatarUrl }}
-        style={[styles.avatarImg, { width: size, height: size, borderRadius: size / 2 }]}
+        style={[styles.avatarImg, { width: size, height: size, borderRadius: size / 2, backgroundColor: COLORS.backgroundElevated }]}
       />
     );
   }
 
   return (
     <View style={[styles.avatarFallback, { width: size, height: size, borderRadius: size / 2, backgroundColor: color }]}>
-      <Text style={[styles.avatarInitials, { fontSize: size * 0.35 }]}>{initials}</Text>
+      <Text style={[styles.avatarInitials, { color: '#FFF', fontWeight: '800', fontSize: size * 0.35 }]}>{initials}</Text>
     </View>
   );
 }
@@ -109,31 +101,28 @@ function RoleBadge({ role }: { role: 'owner' | 'editor' | 'viewer' }) {
 
 interface MemberRowProps {
   member:          ChatMemberInfo;
-  /** Override role from Supabase workspace data */
   workspaceRole?:  'owner' | 'editor' | 'viewer';
 }
 
 function MemberRow({ member, workspaceRole }: MemberRowProps) {
-  // Part 50.1 FIX: prefer Supabase role over the Stream fallback
   const displayRole = workspaceRole ?? member.role;
 
   return (
     <View style={styles.memberRow}>
       <View style={styles.avatarWrap}>
         <MemberAvatar member={member} size={40} />
-        {/* Online dot */}
         <View style={[
           styles.onlineDot,
-          { backgroundColor: member.isOnline ? COLORS.success : COLORS.textMuted },
+          { backgroundColor: member.isOnline ? COLORS.success : COLORS.textMuted, borderColor: COLORS.backgroundCard },
         ]} />
       </View>
 
       <View style={styles.memberInfo}>
-        <Text style={styles.memberName} numberOfLines={1}>
+        <Text style={[styles.memberName, { color: COLORS.textPrimary }]} numberOfLines={1}>
           {member.name || member.username || 'Unknown'}
         </Text>
         {member.username && (
-          <Text style={styles.memberUsername} numberOfLines={1}>
+          <Text style={[styles.memberUsername, { color: COLORS.textMuted }]} numberOfLines={1}>
             @{member.username}
           </Text>
         )}
@@ -157,7 +146,7 @@ function MemberRow({ member, workspaceRole }: MemberRowProps) {
 function SectionHeader({ title, count, color }: { title: string; count: number; color: string }) {
   return (
     <View style={[secStyles.row, { borderLeftColor: color }]}>
-      <Text style={secStyles.title}>{title}</Text>
+      <Text style={[secStyles.title, { color: COLORS.textSecondary }]}>{title}</Text>
       <View style={[secStyles.badge, { backgroundColor: `${color}20` }]}>
         <Text style={[secStyles.badgeText, { color }]}>{count}</Text>
       </View>
@@ -177,7 +166,6 @@ const secStyles = StyleSheet.create({
     borderRadius:    4,
   },
   title: {
-    color:        COLORS.textSecondary,
     fontSize:     FONTS.sizes.xs,
     fontWeight:   '700',
     textTransform: 'uppercase',
@@ -208,7 +196,6 @@ interface Props {
   members:           ChatMemberInfo[];
   onlineCount:       number;
   onClose:           () => void;
-  /** Part 50.1: Real workspace roles from Supabase, keyed by userId */
   workspaceMemberRoles?: WorkspaceMemberRoles;
 }
 
@@ -221,7 +208,6 @@ export function ChatMembersSidebar({
 }: Props) {
   const insets = useSafeAreaInsets();
 
-  // ── Resolve each member's true role ───────────────────────────────────────
   const resolveRole = (m: ChatMemberInfo): 'owner' | 'editor' | 'viewer' => {
     if (workspaceMemberRoles && workspaceMemberRoles[m.userId]) {
       return workspaceMemberRoles[m.userId];
@@ -229,7 +215,6 @@ export function ChatMembersSidebar({
     return m.role;
   };
 
-  // ── Group and sort members ────────────────────────────────────────────────
   const { owners, editors, viewers } = useMemo(() => {
     const o: ChatMemberInfo[] = [];
     const e: ChatMemberInfo[] = [];
@@ -237,7 +222,6 @@ export function ChatMembersSidebar({
 
     [...members]
       .sort((a, b) => {
-        // Online first, then alphabetical
         if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
         return (a.name || '').localeCompare(b.name || '');
       })
@@ -251,12 +235,9 @@ export function ChatMembersSidebar({
     return { owners: o, editors: e, viewers: v };
   }, [members, workspaceMemberRoles]);
 
-  // ── Build flat list data ──────────────────────────────────────────────────
   const listData = useMemo<ListItem[]>(() => {
     const items: ListItem[] = [];
 
-    // Owner is always exactly one person — no section header needed.
-    // Their gold star RoleBadge already identifies them visually at the top.
     owners.forEach(m => items.push({ type: 'member', key: `m-${m.userId}`, member: m, workspaceRole: 'owner' }));
     if (editors.length > 0) {
       items.push({ type: 'section', key: 'sec-editor', title: 'Editors', count: editors.length, color: COLORS.primary });
@@ -290,6 +271,8 @@ export function ChatMembersSidebar({
     );
   };
 
+  const backdropColor = getModalBackdrop(0.45);
+
   return (
     <Modal
       visible={visible}
@@ -298,60 +281,55 @@ export function ChatMembersSidebar({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      {/* Backdrop */}
       <Animated.View
         entering={FadeIn.duration(200)}
         exiting={FadeOut.duration(200)}
-        style={styles.backdrop}
+        style={[styles.backdrop, { backgroundColor: backdropColor }]}
       >
         <TouchableOpacity style={StyleSheet.absoluteFillObject} onPress={onClose} activeOpacity={1} />
       </Animated.View>
 
-      {/* Sidebar panel */}
       <Animated.View
         entering={SlideInRight.duration(280)}
         exiting={SlideOutRight.duration(220)}
         style={[
           styles.sidebar,
           {
+            backgroundColor: COLORS.backgroundCard,
+            borderLeftColor: COLORS.border,
             paddingTop:    insets.top + 8,
             paddingBottom: insets.bottom + 8,
           },
         ]}
       >
-        {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <View style={styles.headerIcon}>
+            <View style={[styles.headerIcon, { backgroundColor: `${COLORS.primary}18`, borderColor: `${COLORS.primary}30` }]}>
               <Ionicons name="people" size={18} color={COLORS.primary} />
             </View>
             <View>
-              <Text style={styles.headerTitle}>Members</Text>
-              <Text style={styles.headerSub}>{members.length} total</Text>
+              <Text style={[styles.headerTitle, { color: COLORS.textPrimary }]}>Members</Text>
+              <Text style={[styles.headerSub, { color: COLORS.textMuted }]}>{members.length} total</Text>
             </View>
           </View>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+          <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <Ionicons name="close" size={18} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
 
-        {/* Stats strip */}
         <View style={styles.statsRow}>
-          <View style={styles.statPill}>
+          <View style={[styles.statPill, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <View style={[styles.statDot, { backgroundColor: COLORS.success }]} />
-            <Text style={styles.statText}>{onlineCount} Online</Text>
+            <Text style={[styles.statText, { color: COLORS.textSecondary }]}>{onlineCount} Online</Text>
           </View>
-          <View style={styles.statPill}>
+          <View style={[styles.statPill, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <View style={[styles.statDot, { backgroundColor: COLORS.textMuted }]} />
-            <Text style={styles.statText}>{offlineCount} Offline</Text>
+            <Text style={[styles.statText, { color: COLORS.textSecondary }]}>{offlineCount} Offline</Text>
           </View>
-
         </View>
 
-        {/* Divider */}
-        <View style={styles.divider} />
+        <View style={[styles.divider, { backgroundColor: COLORS.border }]} />
 
-        {/* Member list — sectioned */}
         <FlatList
           data={listData}
           keyExtractor={item => item.key}
@@ -369,7 +347,6 @@ export function ChatMembersSidebar({
 const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
   },
   sidebar: {
     position:         'absolute',
@@ -377,9 +354,7 @@ const styles = StyleSheet.create({
     right:            0,
     bottom:           0,
     width:            SIDEBAR_W,
-    backgroundColor:  COLORS.backgroundCard,
     borderLeftWidth:  1,
-    borderLeftColor:  COLORS.border,
     shadowColor:      '#000',
     shadowOffset:     { width: -8, height: 0 },
     shadowOpacity:    0.3,
@@ -403,30 +378,24 @@ const styles = StyleSheet.create({
     width:           36,
     height:          36,
     borderRadius:    11,
-    backgroundColor: `${COLORS.primary}18`,
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
-    borderColor:     `${COLORS.primary}30`,
   },
   headerTitle: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '800',
   },
   headerSub: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
   },
   closeBtn: {
     width:           32,
     height:          32,
     borderRadius:    10,
-    backgroundColor: COLORS.backgroundElevated,
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
-    borderColor:     COLORS.border,
   },
   statsRow: {
     flexDirection:    'row',
@@ -441,10 +410,8 @@ const styles = StyleSheet.create({
     gap:              5,
     paddingHorizontal: 10,
     paddingVertical:  4,
-    backgroundColor:  COLORS.backgroundElevated,
     borderRadius:     RADIUS.full,
     borderWidth:      1,
-    borderColor:      COLORS.border,
   },
   statDot: {
     width:        7,
@@ -452,13 +419,11 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   statText: {
-    color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '600',
   },
   divider: {
     height:           1,
-    backgroundColor:  COLORS.border,
     marginHorizontal: SPACING.lg,
     marginBottom:     SPACING.sm,
   },
@@ -467,7 +432,6 @@ const styles = StyleSheet.create({
     paddingBottom:     SPACING.lg,
   },
 
-  // Member row
   memberRow: {
     flexDirection:    'row',
     alignItems:       'center',
@@ -499,19 +463,16 @@ const styles = StyleSheet.create({
     height:       11,
     borderRadius: 6,
     borderWidth:  2,
-    borderColor:  COLORS.backgroundCard,
   },
   memberInfo: {
     flex:    1,
     minWidth: 0,
   },
   memberName: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.sm,
     fontWeight: '700',
   },
   memberUsername: {
-    color:    COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
     marginTop: 1,
   },

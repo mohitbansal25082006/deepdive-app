@@ -10,14 +10,20 @@
 //     by DB triggers since 52.2; the symbol was imported but never used).
 //   • `resourceRemoved` is now TYPE-AWARE: it keys the removed-set by
 //     `${kind}:${resourceId}` built from *_unshared entries, and a *_shared
-//     entry is considered removed only when ITS OWN kind+id matches. Previously
-//     a flat resourceId set could disable an unrelated share entry's tap target
-//     if two content types happened to share an id.
+//     entry is considered removed only when ITS OWN kind+id matches.
+//
+// Part 55 THEME UPDATE — All COLORS.* references removed from StyleSheet.create
+//   and module-level objects and moved to inline styles so they read from the
+//   live mutated COLORS singleton on every render. useTheme() is consumed at the
+//   top of the screen and in every sub-component (StatChip) so the entire tree
+//   re-renders whenever the palette changes. Hardcoded '#6C63FF' gradient colors
+//   in ContentSectionHeader kept intentionally as brand accent decoupled from
+//   the theme (consistent with WorkspaceCard ACCENT_GRADIENTS).
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  RefreshControl, StyleSheet, Alert, Share, ActivityIndicator,
+  RefreshControl, StyleSheet, Alert, ActivityIndicator,
   type NativeSyntheticEvent, type NativeScrollEvent,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
@@ -65,6 +71,7 @@ import {
 import type { SharedVoiceDebate }    from '../../src/types/voiceDebateSharing';
 import { leaveWorkspace }            from '../../src/services/workspaceInviteService';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 type TabId = 'feed' | 'activity' | 'members' | 'shared';
 type SharedFilter = 'all' | 'presentation' | 'academic_paper' | 'podcast' | 'debate' | 'voice_debate';
@@ -78,8 +85,7 @@ const TABS: { id: TabId; label: string; icon: keyof typeof Ionicons.glyphMap }[]
 
 const SCROLL_REVEAL_THRESHOLD = 360;
 
-// Part 52.3B — map a share/unshare action to its content "kind" so the
-// removed-set can be keyed by `${kind}:${resourceId}` (type-aware).
+// Part 52.3B — map a share/unshare action to its content "kind"
 function shareKindOf(action: WorkspaceActivityAction): ActivityResourceKind | null {
   switch (action) {
     case 'presentation_shared':
@@ -115,6 +121,10 @@ async function copyVoiceDebateTranscript(item: SharedVoiceDebate): Promise<void>
 }
 
 export default function WorkspaceDetailScreen() {
+  // Version token — re-renders this screen (and all inline COLORS.* reads)
+  // whenever the active theme changes.
+  useTheme();
+
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const {
@@ -123,7 +133,7 @@ export default function WorkspaceDetailScreen() {
     refresh, update, addReport, removeReport,
     sharedContentVersion,
     isSelfRemoved,
-    isDeleted, // Part 52
+    isDeleted,
     pinnedReportIds,
     updatePin,
     reportsHasMore, reportsLoadingMore, loadMoreReports,
@@ -140,7 +150,7 @@ export default function WorkspaceDetailScreen() {
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
 
-  // ── Part 51: one-way latch — Shared content fetches only after first open ──
+  // One-way latch — Shared content fetches only after first open
   const [sharedTabActivated, setSharedTabActivated] = useState(false);
   useEffect(() => {
     if (activeTab === 'shared') setSharedTabActivated(true);
@@ -172,7 +182,7 @@ export default function WorkspaceDetailScreen() {
 
   const existingReportIds = reports.map(r => r.reportId);
 
-  // ── Part 52: exit on remove/block OR workspace deletion ──────────────────
+  // Part 52: exit on remove/block OR workspace deletion
   const exitedRef = useRef(false);
   useEffect(() => {
     if ((isSelfRemoved || isDeleted) && !exitedRef.current) {
@@ -201,12 +211,7 @@ export default function WorkspaceDetailScreen() {
       if (error) throw error;
       const result = data as { pinned: boolean };
       updatePin(reportId, result.pinned);
-      logPinToggled({
-        workspaceId:  id,
-        reportId,
-        pinned:       result.pinned,
-        reportTitle,
-      }).catch(() => {});
+      logPinToggled({ workspaceId: id, reportId, pinned: result.pinned, reportTitle }).catch(() => {});
     } catch (err) {
       Alert.alert('Error', err instanceof Error ? err.message : 'Failed to toggle pin');
     } finally {
@@ -236,7 +241,7 @@ export default function WorkspaceDetailScreen() {
     setShowProfile(true);
   }, []);
 
-  // ── Part 52.2: Activity feed navigation handlers ─────────────────────────
+  // Part 52.2: Activity feed navigation handlers
   const handleOpenActivityMember = useCallback((userId: string, fallback?: MiniProfile) => {
     const fromMembers = members.find(m => m.userId === userId)?.profile;
     const profile: MiniProfile =
@@ -258,7 +263,6 @@ export default function WorkspaceDetailScreen() {
       case 'report':
         openReport(reportId ?? resourceId);
         break;
-
       case 'presentation':
       case 'academic_paper':
         router.push({
@@ -266,52 +270,31 @@ export default function WorkspaceDetailScreen() {
           params: { contentType: kind, contentId: resourceId, workspaceId: id, sharerName: '', sharedAt: '' },
         });
         break;
-
-      // podcast / debate / voice players expect the SHARED-ROW id (sharedId),
-      // but activity stores the SOURCE content id. Resolve the shared-row id
-      // from the loaded sharing lists (loading on demand), then navigate.
       case 'podcast': {
         let row = podcastSharing.podcasts.find(p => p.podcastId === resourceId);
         if (!row) { await podcastSharing.load(); row = podcastSharing.podcasts.find(p => p.podcastId === resourceId); }
         if (row) {
-          router.push({
-            pathname: '/(app)/workspace-shared-podcast-player' as any,
-            params: { workspaceId: id, sharedId: row.id, contentTitle: row.title ?? title ?? '' },
-          });
-        } else {
-          setActiveTab('shared'); setActiveFilter('podcast');
-        }
+          router.push({ pathname: '/(app)/workspace-shared-podcast-player' as any, params: { workspaceId: id, sharedId: row.id, contentTitle: row.title ?? title ?? '' } });
+        } else { setActiveTab('shared'); setActiveFilter('podcast'); }
         break;
       }
       case 'debate': {
         let row = debateSharing.debates.find(d => d.debateId === resourceId);
         if (!row) { await debateSharing.load(); row = debateSharing.debates.find(d => d.debateId === resourceId); }
         if (row) {
-          router.push({
-            pathname: '/(app)/workspace-shared-debate' as any,
-            params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' },
-          });
-        } else {
-          setActiveTab('shared'); setActiveFilter('debate');
-        }
+          router.push({ pathname: '/(app)/workspace-shared-debate' as any, params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' } });
+        } else { setActiveTab('shared'); setActiveFilter('debate'); }
         break;
       }
       case 'voice_debate': {
         let row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === resourceId);
         if (!row) { await voiceDebateSharing.load(); row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === resourceId); }
         if (row) {
-          router.push({
-            pathname: '/(app)/workspace-shared-voice-debate-player' as any,
-            params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' },
-          });
-        } else {
-          setActiveTab('shared'); setActiveFilter('voice_debate');
-        }
+          router.push({ pathname: '/(app)/workspace-shared-voice-debate-player' as any, params: { workspaceId: id, sharedId: row.id, contentTitle: row.topic ?? title ?? '' } });
+        } else { setActiveTab('shared'); setActiveFilter('voice_debate'); }
         break;
       }
-
-      default:
-        break;
+      default: break;
     }
   }, [id, openReport, podcastSharing, debateSharing, voiceDebateSharing]);
 
@@ -385,9 +368,6 @@ export default function WorkspaceDetailScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Leave', style: 'destructive', onPress: async () => {
         if (!id) return;
-
-        // Fix 3: log "left the workspace" BEFORE leaving — once we leave, RLS
-        // blocks the insert. Best-effort; never blocks the leave.
         try {
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
@@ -395,7 +375,6 @@ export default function WorkspaceDetailScreen() {
             await logMemberLeft({ workspaceId: id, userId: user.id, leftName });
           }
         } catch { /* non-fatal */ }
-
         const { error } = await leaveWorkspace(id);
         if (!error) router.replace('/(app)/(tabs)/workspace' as any);
         else Alert.alert('Error', error);
@@ -455,16 +434,12 @@ export default function WorkspaceDetailScreen() {
   // ── Scroll-near-bottom handler ─────────────────────────────────────────
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-    const distanceToBottom =
-      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    const distanceToBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
     if (distanceToBottom > SCROLL_REVEAL_THRESHOLD) return;
 
     if (activeTab === 'feed') {
-      if (feedReveal.hasMore) {
-        feedReveal.revealMore();
-      } else if (reportsHasMore && !reportsLoadingMore) {
-        loadMoreReports();
-      }
+      if (feedReveal.hasMore) feedReveal.revealMore();
+      else if (reportsHasMore && !reportsLoadingMore) loadMoreReports();
     } else if (activeTab === 'shared') {
       if (presReveal.hasMore)  presReveal.revealMore();
       if (paperReveal.hasMore) paperReveal.revealMore();
@@ -472,10 +447,7 @@ export default function WorkspaceDetailScreen() {
       if (debReveal.hasMore)   debReveal.revealMore();
       if (vdReveal.hasMore)    vdReveal.revealMore();
     }
-  }, [
-    activeTab, feedReveal, reportsHasMore, reportsLoadingMore, loadMoreReports,
-    presReveal, paperReveal, podReveal, debReveal, vdReveal,
-  ]);
+  }, [activeTab, feedReveal, reportsHasMore, reportsLoadingMore, loadMoreReports, presReveal, paperReveal, podReveal, debReveal, vdReveal]);
 
   const visibleReports = sortedReports.slice(0, feedReveal.visible);
 
@@ -484,8 +456,11 @@ export default function WorkspaceDetailScreen() {
       <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
         <SafeAreaView style={styles.centered}>
           <Ionicons name="alert-circle-outline" size={48} color={COLORS.error} />
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Text style={[styles.errorText, { color: COLORS.textSecondary }]}>{error}</Text>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={[styles.backBtn, { backgroundColor: COLORS.primary }]}
+          >
             <Text style={styles.backBtnText}>Go Back</Text>
           </TouchableOpacity>
         </SafeAreaView>
@@ -497,42 +472,76 @@ export default function WorkspaceDetailScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
 
-        {/* Top bar — name + role pill read from the live workspace object */}
+        {/* Top bar */}
         <Animated.View entering={FadeIn.duration(400)} style={styles.topBar}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backIconBtn}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={[
+              styles.backIconBtn,
+              { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border },
+            ]}
+          >
             <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
           </TouchableOpacity>
           <View style={styles.topBarCenter}>
-            <Text style={styles.wsName} numberOfLines={1}>{workspace?.name ?? '…'}</Text>
+            <Text style={[styles.wsName, { color: COLORS.textPrimary }]} numberOfLines={1}>
+              {workspace?.name ?? '…'}
+            </Text>
             {userRole && (
-              <View style={styles.rolePill}>
-                <Text style={styles.rolePillText}>{userRole}</Text>
+              <View style={[styles.rolePill, { backgroundColor: `${COLORS.primary}20` }]}>
+                <Text style={[styles.rolePillText, { color: COLORS.primary }]}>{userRole}</Text>
               </View>
             )}
           </View>
           <View style={styles.topBarRight}>
             {isEditor && (
-              <TouchableOpacity onPress={openChat} style={[styles.iconBtn, styles.chatBtn]} activeOpacity={0.8}>
+              <TouchableOpacity
+                onPress={openChat}
+                style={[
+                  styles.iconBtn,
+                  {
+                    backgroundColor: `${COLORS.primary}15`,
+                    borderColor:     `${COLORS.primary}35`,
+                    borderWidth: 1,
+                  },
+                ]}
+                activeOpacity={0.8}
+              >
                 <Ionicons name="chatbubbles-outline" size={20} color={COLORS.primary} />
                 {chatUnread > 0 && (
-                  <View style={styles.chatBadge}>
+                  <View style={[styles.chatBadge, { backgroundColor: COLORS.error, borderColor: COLORS.background }]}>
                     <Text style={styles.chatBadgeText}>{chatUnread > 9 ? '9+' : chatUnread}</Text>
                   </View>
                 )}
               </TouchableOpacity>
             )}
-            <TouchableOpacity onPress={() => setShowSearch(true)} style={styles.iconBtn}>
+            <TouchableOpacity
+              onPress={() => setShowSearch(true)}
+              style={[
+                styles.iconBtn,
+                { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border, borderWidth: 1 },
+              ]}
+            >
               <Ionicons name="search-outline" size={20} color={COLORS.textSecondary} />
             </TouchableOpacity>
             {isEditor && (
-              <TouchableOpacity onPress={() => setShowInvite(true)} style={styles.iconBtn}>
+              <TouchableOpacity
+                onPress={() => setShowInvite(true)}
+                style={[
+                  styles.iconBtn,
+                  { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border, borderWidth: 1 },
+                ]}
+              >
                 <Ionicons name="person-add-outline" size={20} color={COLORS.textSecondary} />
               </TouchableOpacity>
             )}
             {isEditor && (
               <TouchableOpacity
                 onPress={() => router.push({ pathname: '/(app)/workspace-settings' as any, params: { id, role: userRole ?? 'editor' } })}
-                style={styles.iconBtn}
+                style={[
+                  styles.iconBtn,
+                  { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border, borderWidth: 1 },
+                ]}
               >
                 <Ionicons name={isOwner ? 'settings-outline' : 'share-outline'} size={20} color={COLORS.textSecondary} />
               </TouchableOpacity>
@@ -542,14 +551,27 @@ export default function WorkspaceDetailScreen() {
 
         {/* Pending requests banner */}
         {isEditor && pendingCount > 0 && (
-          <Animated.View entering={FadeIn.duration(300)} style={styles.requestBanner}>
+          <Animated.View
+            entering={FadeIn.duration(300)}
+            style={[
+              styles.requestBanner,
+              {
+                backgroundColor: `${COLORS.warning}12`,
+                borderColor:     `${COLORS.warning}30`,
+              },
+            ]}
+          >
             <View style={styles.requestBannerLeft}>
               <Ionicons name="person-add-outline" size={16} color={COLORS.warning} />
-              <Text style={styles.requestBannerText} numberOfLines={1}>
+              <Text style={[styles.requestBannerText, { color: COLORS.warning }]} numberOfLines={1}>
                 {pendingCount} member{pendingCount !== 1 ? 's' : ''} requesting editor access
               </Text>
             </View>
-            <TouchableOpacity onPress={() => setShowRequests(true)} style={styles.requestBannerCta} activeOpacity={0.85}>
+            <TouchableOpacity
+              onPress={() => setShowRequests(true)}
+              style={[styles.requestBannerCta, { backgroundColor: COLORS.warning }]}
+              activeOpacity={0.85}
+            >
               <Text style={styles.requestBannerCtaText}>Review</Text>
             </TouchableOpacity>
           </Animated.View>
@@ -574,17 +596,37 @@ export default function WorkspaceDetailScreen() {
               <TouchableOpacity
                 key={tab.id}
                 onPress={() => setActiveTab(tab.id)}
-                style={[styles.tabItem, isActive && styles.tabItemActive]}
+                style={[
+                  styles.tabItem,
+                  {
+                    backgroundColor: COLORS.backgroundCard,
+                    borderColor:     COLORS.border,
+                  },
+                  isActive && {
+                    backgroundColor: `${COLORS.primary}20`,
+                    borderColor:     `${COLORS.primary}50`,
+                  },
+                ]}
               >
                 <View style={{ position: 'relative' }}>
-                  <Ionicons name={tab.icon} size={15} color={isActive ? COLORS.primary : COLORS.textMuted} />
+                  <Ionicons
+                    name={tab.icon}
+                    size={15}
+                    color={isActive ? COLORS.primary : COLORS.textMuted}
+                  />
                   {badge !== null && (
-                    <View style={styles.tabBadge}>
+                    <View style={[styles.tabBadge, { backgroundColor: COLORS.primary }]}>
                       <Text style={styles.tabBadgeText}>{badge > 9 ? '9+' : badge}</Text>
                     </View>
                   )}
                 </View>
-                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{tab.label}</Text>
+                <Text style={[
+                  styles.tabLabel,
+                  { color: COLORS.textMuted },
+                  isActive && { color: COLORS.primary },
+                ]}>
+                  {tab.label}
+                </Text>
               </TouchableOpacity>
             );
           })}
@@ -601,10 +643,8 @@ export default function WorkspaceDetailScreen() {
               onRefresh={() => {
                 refresh(true);
                 if (sharedTabActivated) {
-                  sharing.load();
-                  podcastSharing.load();
-                  debateSharing.load();
-                  voiceDebateSharing.load();
+                  sharing.load(); podcastSharing.load();
+                  debateSharing.load(); voiceDebateSharing.load();
                 }
               }}
               tintColor={COLORS.primary}
@@ -616,22 +656,51 @@ export default function WorkspaceDetailScreen() {
           {activeTab === 'feed' && (
             <>
               {isEditor && (
-                <TouchableOpacity style={styles.addReportCta} onPress={() => setShowAddReport(true)} activeOpacity={0.8}>
+                <TouchableOpacity
+                  style={[
+                    styles.addReportCta,
+                    { borderColor: `${COLORS.primary}50` },
+                  ]}
+                  onPress={() => setShowAddReport(true)}
+                  activeOpacity={0.8}
+                >
                   <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
-                  <Text style={styles.addReportCtaText}>Add a research report</Text>
+                  <Text style={[styles.addReportCtaText, { color: COLORS.primary }]}>
+                    Add a research report
+                  </Text>
                 </TouchableOpacity>
               )}
               {isEditor && (
-                <TouchableOpacity onPress={openChat} style={styles.chatFeedCta} activeOpacity={0.8}>
+                <TouchableOpacity
+                  onPress={openChat}
+                  style={[
+                    styles.chatFeedCta,
+                    {
+                      backgroundColor: COLORS.backgroundCard,
+                      borderColor:     `${COLORS.primary}25`,
+                    },
+                  ]}
+                  activeOpacity={0.8}
+                >
                   <View style={styles.chatFeedCtaLeft}>
-                    <View style={styles.chatFeedCtaIcon}><Ionicons name="chatbubbles" size={18} color={COLORS.primary} /></View>
+                    <View style={[styles.chatFeedCtaIcon, { backgroundColor: `${COLORS.primary}15` }]}>
+                      <Ionicons name="chatbubbles" size={18} color={COLORS.primary} />
+                    </View>
                     <View>
-                      <Text style={styles.chatFeedCtaTitle}>Team Chat</Text>
-                      <Text style={styles.chatFeedCtaSub}>Private to owners & editors</Text>
+                      <Text style={[styles.chatFeedCtaTitle, { color: COLORS.textPrimary }]}>
+                        Team Chat
+                      </Text>
+                      <Text style={[styles.chatFeedCtaSub, { color: COLORS.textMuted }]}>
+                        Private to owners &amp; editors
+                      </Text>
                     </View>
                   </View>
                   <View style={styles.chatFeedCtaRight}>
-                    {chatUnread > 0 && <View style={styles.chatFeedBadge}><Text style={styles.chatFeedBadgeText}>{chatUnread > 99 ? '99+' : chatUnread}</Text></View>}
+                    {chatUnread > 0 && (
+                      <View style={[styles.chatFeedBadge, { backgroundColor: COLORS.error }]}>
+                        <Text style={styles.chatFeedBadgeText}>{chatUnread > 99 ? '99+' : chatUnread}</Text>
+                      </View>
+                    )}
                     <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
                   </View>
                 </TouchableOpacity>
@@ -639,16 +708,22 @@ export default function WorkspaceDetailScreen() {
               {pinnedIds.size > 0 && visibleReports.some(r => r.isPinned) && (
                 <View style={styles.pinnedHeader}>
                   <Ionicons name="pin" size={13} color={COLORS.warning} />
-                  <Text style={styles.pinnedHeaderText}>Pinned</Text>
+                  <Text style={[styles.pinnedHeaderText, { color: COLORS.warning }]}>Pinned</Text>
                 </View>
               )}
               {sortedReports.length === 0 && !isLoading ? (
                 <View style={styles.emptyState}>
                   <Ionicons name="documents-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.emptyTitle}>No reports yet</Text>
-                  <Text style={styles.emptyDesc}>{isEditor ? 'Tap "Add a research report" above to share one.' : 'No reports have been shared to this workspace yet.'}</Text>
+                  <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>No reports yet</Text>
+                  <Text style={[styles.emptyDesc, { color: COLORS.textSecondary }]}>
+                    {isEditor ? 'Tap "Add a research report" above to share one.' : 'No reports have been shared to this workspace yet.'}
+                  </Text>
                   {isEditor && (
-                    <TouchableOpacity style={styles.emptyAddBtn} onPress={() => setShowAddReport(true)} activeOpacity={0.85}>
+                    <TouchableOpacity
+                      style={[styles.emptyAddBtn, { backgroundColor: COLORS.primary }]}
+                      onPress={() => setShowAddReport(true)}
+                      activeOpacity={0.85}
+                    >
                       <Ionicons name="add-circle-outline" size={16} color="#FFF" />
                       <Text style={styles.emptyAddBtnText}>Add Report</Text>
                     </TouchableOpacity>
@@ -660,9 +735,9 @@ export default function WorkspaceDetailScreen() {
                     <React.Fragment key={wr.id}>
                       {i > 0 && visibleReports[i-1].isPinned && !wr.isPinned && (
                         <View style={styles.sectionDivider}>
-                          <View style={styles.sectionDividerLine} />
-                          <Text style={styles.sectionDividerText}>All Reports</Text>
-                          <View style={styles.sectionDividerLine} />
+                          <View style={[styles.sectionDividerLine, { backgroundColor: COLORS.border }]} />
+                          <Text style={[styles.sectionDividerText, { color: COLORS.textMuted }]}>All Reports</Text>
+                          <View style={[styles.sectionDividerLine, { backgroundColor: COLORS.border }]} />
                         </View>
                       )}
                       <View style={styles.reportCardWrap}>
@@ -677,10 +752,24 @@ export default function WorkspaceDetailScreen() {
                           <TouchableOpacity
                             onPress={() => handleTogglePin(wr.reportId, wr.report?.title ?? '')}
                             disabled={isPinToggling}
-                            style={[styles.pinBtn, wr.isPinned && styles.pinBtnActive]}
+                            style={[
+                              styles.pinBtn,
+                              {
+                                backgroundColor: COLORS.backgroundCard,
+                                borderColor:     COLORS.border,
+                              },
+                              wr.isPinned && {
+                                backgroundColor: `${COLORS.warning}15`,
+                                borderColor:     `${COLORS.warning}40`,
+                              },
+                            ]}
                             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                           >
-                            <Ionicons name={wr.isPinned ? 'pin' : 'pin-outline'} size={14} color={wr.isPinned ? COLORS.warning : COLORS.textMuted} />
+                            <Ionicons
+                              name={wr.isPinned ? 'pin' : 'pin-outline'}
+                              size={14}
+                              color={wr.isPinned ? COLORS.warning : COLORS.textMuted}
+                            />
                           </TouchableOpacity>
                         )}
                       </View>
@@ -691,7 +780,7 @@ export default function WorkspaceDetailScreen() {
                     <View style={styles.loadMoreRow}>
                       {reportsLoadingMore
                         ? <ActivityIndicator size="small" color={COLORS.primary} />
-                        : <Text style={styles.loadMoreText}>Scroll to load more…</Text>
+                        : <Text style={[styles.loadMoreText, { color: COLORS.textMuted }]}>Scroll to load more…</Text>
                       }
                     </View>
                   )}
@@ -703,41 +792,76 @@ export default function WorkspaceDetailScreen() {
           {/* ── SHARED TAB ── */}
           {activeTab === 'shared' && (
             <>
-              <Animated.View entering={FadeInDown.duration(400)} style={styles.sharedHeader}>
+              <Animated.View
+                entering={FadeInDown.duration(400)}
+                style={[
+                  styles.sharedHeader,
+                  {
+                    backgroundColor: COLORS.backgroundCard,
+                    borderColor:     `${COLORS.primary}25`,
+                  },
+                ]}
+              >
                 <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={styles.sharedHeaderIcon}>
                   <Ionicons name="share-social" size={18} color="#FFF" />
                 </LinearGradient>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.sharedHeaderTitle}>Shared Content</Text>
-                  <Text style={styles.sharedHeaderSub}>Presentations, papers, podcasts, debates & voice debates</Text>
+                  <Text style={[styles.sharedHeaderTitle, { color: COLORS.textPrimary }]}>
+                    Shared Content
+                  </Text>
+                  <Text style={[styles.sharedHeaderSub, { color: COLORS.textMuted }]}>
+                    Presentations, papers, podcasts, debates &amp; voice debates
+                  </Text>
                 </View>
               </Animated.View>
 
               {!sharedReady ? (
                 <View style={styles.sharedLoading}>
                   <ActivityIndicator size="small" color={COLORS.primary} />
-                  <Text style={styles.sharedLoadingText}>Loading shared content…</Text>
+                  <Text style={[styles.sharedLoadingText, { color: COLORS.textMuted }]}>
+                    Loading shared content…
+                  </Text>
                 </View>
               ) : (
                 <>
                   {totalSharedCount > 0 && (
                     <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.filterRow}>
                       {([
-                        { id: 'all',           label: `All (${totalSharedCount})`,          icon: 'apps-outline'      },
-                        ...(presentationCount > 0 ? [{ id: 'presentation',  label: `Slides (${presentationCount})`,   icon: 'easel-outline'     }] : []),
-                        ...(paperCount        > 0 ? [{ id: 'academic_paper',label: `Papers (${paperCount})`,          icon: 'school-outline'    }] : []),
-                        ...(podcastCount      > 0 ? [{ id: 'podcast',       label: `Podcasts (${podcastCount})`,      icon: 'mic-outline'       }] : []),
-                        ...(debateCount       > 0 ? [{ id: 'debate',        label: `Debates (${debateCount})`,        icon: 'people-outline'    }] : []),
-                        ...(voiceDebateCount  > 0 ? [{ id: 'voice_debate',  label: `Voice (${voiceDebateCount})`,     icon: 'mic-circle-outline'}] : []),
+                        { id: 'all',           label: `All (${totalSharedCount})`,        icon: 'apps-outline'       },
+                        ...(presentationCount > 0 ? [{ id: 'presentation',  label: `Slides (${presentationCount})`,  icon: 'easel-outline'      }] : []),
+                        ...(paperCount        > 0 ? [{ id: 'academic_paper',label: `Papers (${paperCount})`,         icon: 'school-outline'     }] : []),
+                        ...(podcastCount      > 0 ? [{ id: 'podcast',       label: `Podcasts (${podcastCount})`,     icon: 'mic-outline'        }] : []),
+                        ...(debateCount       > 0 ? [{ id: 'debate',        label: `Debates (${debateCount})`,       icon: 'people-outline'     }] : []),
+                        ...(voiceDebateCount  > 0 ? [{ id: 'voice_debate',  label: `Voice (${voiceDebateCount})`,    icon: 'mic-circle-outline' }] : []),
                       ] as { id: SharedFilter; label: string; icon: string }[]).map(chip => (
                         <TouchableOpacity
                           key={chip.id}
                           onPress={() => setActiveFilter(chip.id)}
-                          style={[styles.filterChip, activeFilter === chip.id && styles.filterChipActive]}
+                          style={[
+                            styles.filterChip,
+                            {
+                              backgroundColor: COLORS.backgroundElevated,
+                              borderColor:     COLORS.border,
+                            },
+                            activeFilter === chip.id && {
+                              backgroundColor: `${COLORS.primary}15`,
+                              borderColor:     `${COLORS.primary}35`,
+                            },
+                          ]}
                           activeOpacity={0.75}
                         >
-                          <Ionicons name={chip.icon as any} size={11} color={activeFilter === chip.id ? COLORS.primary : COLORS.textMuted} />
-                          <Text style={[styles.filterChipText, activeFilter === chip.id && styles.filterChipTextActive]}>{chip.label}</Text>
+                          <Ionicons
+                            name={chip.icon as any}
+                            size={11}
+                            color={activeFilter === chip.id ? COLORS.primary : COLORS.textMuted}
+                          />
+                          <Text style={[
+                            styles.filterChipText,
+                            { color: COLORS.textMuted },
+                            activeFilter === chip.id && { color: COLORS.primary },
+                          ]}>
+                            {chip.label}
+                          </Text>
                         </TouchableOpacity>
                       ))}
                     </Animated.View>
@@ -745,7 +869,7 @@ export default function WorkspaceDetailScreen() {
 
                   {showPresentations && sharing.presentations.length > 0 && (
                     <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-                      <ContentSectionHeader label="Presentations"    count={sharing.presentations.length}       colors={['#6C63FF','#8B5CF6']} />
+                      <ContentSectionHeader label="Presentations"    count={sharing.presentations.length}          colors={['#6C63FF','#8B5CF6']} />
                       {sharing.presentations.slice(0, presReveal.visible).map((item, i) => (
                         <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
                       ))}
@@ -754,7 +878,7 @@ export default function WorkspaceDetailScreen() {
                   )}
                   {showPapers && sharing.papers.length > 0 && (
                     <Animated.View entering={FadeInDown.duration(400).delay(140)}>
-                      <ContentSectionHeader label="Academic Papers"  count={sharing.papers.length}              colors={['#10B981','#059669']} badgeColor={COLORS.success} />
+                      <ContentSectionHeader label="Academic Papers"  count={sharing.papers.length}                 colors={['#10B981','#059669']} badgeColor={COLORS.success} />
                       {sharing.papers.slice(0, paperReveal.visible).map((item, i) => (
                         <SharedContentCard key={item.id} item={item} index={i} userRole={userRole} onOpen={handleOpenSharedContent} onRemove={handleRemoveSharedContent} />
                       ))}
@@ -763,7 +887,7 @@ export default function WorkspaceDetailScreen() {
                   )}
                   {showPodcasts && podcastSharing.podcasts.length > 0 && (
                     <Animated.View entering={FadeInDown.duration(400).delay(180)}>
-                      <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length}     colors={['#FF6584','#FF8FA3']} badgeColor="#FF6584" />
+                      <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length}        colors={['#FF6584','#FF8FA3']} badgeColor="#FF6584" />
                       {podcastSharing.podcasts.slice(0, podReveal.visible).map((podcast, i) => (
                         <SharedPodcastCard key={podcast.id} item={podcast} index={i} userRole={userRole} onPlay={handleOpenSharedPodcast} onRemove={handleRemoveSharedPodcast} onDownloadMP3={handleDownloadPodcastMP3} onExportPDF={handleExportPodcastPDF} onCopyScript={handleCopyPodcastScript} />
                       ))}
@@ -772,7 +896,7 @@ export default function WorkspaceDetailScreen() {
                   )}
                   {showDebates && debateSharing.debates.length > 0 && (
                     <Animated.View entering={FadeInDown.duration(400).delay(220)}>
-                      <ContentSectionHeader label="AI Debates"       count={debateSharing.debates.length}       colors={['#6C63FF','#9B59FF']} badgeColor={COLORS.primary} />
+                      <ContentSectionHeader label="AI Debates"       count={debateSharing.debates.length}          colors={['#6C63FF','#9B59FF']} badgeColor={COLORS.primary} />
                       {debateSharing.debates.slice(0, debReveal.visible).map((debate, i) => (
                         <SharedDebateCard key={debate.id} item={debate} index={i} userRole={userRole} onView={handleOpenSharedDebate} onRemove={handleRemoveSharedDebate} onExportPDF={handleExportDebatePDF} onCopyText={handleCopyDebateText} onShareText={handleShareDebateText} />
                       ))}
@@ -791,13 +915,27 @@ export default function WorkspaceDetailScreen() {
 
                   {totalSharedCount === 0 && (
                     <Animated.View entering={FadeInDown.duration(500)} style={styles.emptyState}>
-                      <View style={styles.sharedEmptyIcon}><Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} /></View>
-                      <Text style={styles.emptyTitle}>Nothing Shared Yet</Text>
-                      <Text style={styles.emptyDesc}>{isEditor ? 'Share presentations, papers, podcasts, debates, and voice debates from your content.' : 'No content has been shared to this workspace yet.'}</Text>
+                      <View style={[styles.sharedEmptyIcon, { backgroundColor: `${COLORS.primary}12` }]}>
+                        <Ionicons name="share-social-outline" size={36} color={COLORS.textMuted} />
+                      </View>
+                      <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>Nothing Shared Yet</Text>
+                      <Text style={[styles.emptyDesc, { color: COLORS.textSecondary }]}>
+                        {isEditor
+                          ? 'Share presentations, papers, podcasts, debates, and voice debates from your content.'
+                          : 'No content has been shared to this workspace yet.'}
+                      </Text>
                       {isEditor && (
-                        <View style={styles.sharedEmptyHint}>
+                        <View style={[
+                          styles.sharedEmptyHint,
+                          {
+                            backgroundColor: `${COLORS.primary}10`,
+                            borderColor:     `${COLORS.primary}20`,
+                          },
+                        ]}>
                           <Ionicons name="information-circle-outline" size={14} color={COLORS.primary} />
-                          <Text style={styles.sharedEmptyHintText}>Open a report, debate, or podcast → tap the share icon to share here</Text>
+                          <Text style={[styles.sharedEmptyHintText, { color: COLORS.primary }]}>
+                            Open a report, debate, or podcast → tap the share icon to share here
+                          </Text>
                         </View>
                       )}
                     </Animated.View>
@@ -811,23 +949,18 @@ export default function WorkspaceDetailScreen() {
           {activeTab === 'activity' && (
             activities.length === 0 ? (
               <View style={styles.emptyState}>
-                <View style={styles.activityEmptyIcon}>
+                <View style={[styles.activityEmptyIcon, { backgroundColor: `${COLORS.primary}12` }]}>
                   <Ionicons name="pulse-outline" size={34} color={COLORS.primary} />
                 </View>
-                <Text style={styles.emptyTitle}>No activity yet</Text>
-                <Text style={styles.emptyDesc}>
+                <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>No activity yet</Text>
+                <Text style={[styles.emptyDesc, { color: COLORS.textSecondary }]}>
                   Reports, shares, pins, members, and settings changes appear here in real time.
                 </Text>
               </View>
             ) : (
               <View style={styles.activityList}>
                 {(() => {
-                  // Part 52.3B — TYPE-AWARE removed-set. A shared-content add
-                  // entry whose content was later removed (a matching *_unshared
-                  // exists for the SAME kind + resource_id) must be non-tappable.
-                  // Keying by `${kind}:${resourceId}` prevents a removed podcast
-                  // from accidentally disabling a presentation that happens to
-                  // share an id.
+                  // Part 52.3B — TYPE-AWARE removed-set
                   const removedKeys = new Set<string>();
                   for (const a of activities) {
                     if (typeof a.action === 'string' && a.action.endsWith('_unshared') && a.resourceId) {
@@ -862,30 +995,81 @@ export default function WorkspaceDetailScreen() {
           {activeTab === 'members' && (
             <>
               {isOwner && (
-                <TouchableOpacity style={styles.manageMembersBtn} onPress={() => router.push({ pathname: '/(app)/workspace-members' as any, params: { id } })}>
+                <TouchableOpacity
+                  style={[
+                    styles.manageMembersBtn,
+                    {
+                      backgroundColor: `${COLORS.primary}12`,
+                      borderColor:     `${COLORS.primary}30`,
+                    },
+                  ]}
+                  onPress={() => router.push({ pathname: '/(app)/workspace-members' as any, params: { id } })}
+                >
                   <Ionicons name="settings-outline" size={16} color={COLORS.primary} />
-                  <Text style={styles.manageMembersBtnText}>Manage Members & Roles</Text>
+                  <Text style={[styles.manageMembersBtnText, { color: COLORS.primary }]}>
+                    Manage Members &amp; Roles
+                  </Text>
                   <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
                 </TouchableOpacity>
               )}
               {isEditor && (
-                <TouchableOpacity onPress={openChat} style={styles.chatMembersEntryBtn} activeOpacity={0.8}>
-                  <View style={styles.chatMembersEntryIcon}><Ionicons name="chatbubbles" size={18} color={COLORS.primary} /></View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.chatMembersEntryTitle}>Team Chat</Text>
-                    <Text style={styles.chatMembersEntrySub}>Chat with owners & editors only</Text>
+                <TouchableOpacity
+                  onPress={openChat}
+                  style={[
+                    styles.chatMembersEntryBtn,
+                    {
+                      backgroundColor: COLORS.backgroundCard,
+                      borderColor:     `${COLORS.primary}25`,
+                    },
+                  ]}
+                  activeOpacity={0.8}
+                >
+                  <View style={[styles.chatMembersEntryIcon, { backgroundColor: `${COLORS.primary}15` }]}>
+                    <Ionicons name="chatbubbles" size={18} color={COLORS.primary} />
                   </View>
-                  {chatUnread > 0 && <View style={styles.chatFeedBadge}><Text style={styles.chatFeedBadgeText}>{chatUnread > 99 ? '99+' : chatUnread}</Text></View>}
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.chatMembersEntryTitle, { color: COLORS.textPrimary }]}>
+                      Team Chat
+                    </Text>
+                    <Text style={[styles.chatMembersEntrySub, { color: COLORS.textMuted }]}>
+                      Chat with owners &amp; editors only
+                    </Text>
+                  </View>
+                  {chatUnread > 0 && (
+                    <View style={[styles.chatFeedBadge, { backgroundColor: COLORS.error }]}>
+                      <Text style={styles.chatFeedBadgeText}>{chatUnread > 99 ? '99+' : chatUnread}</Text>
+                    </View>
+                  )}
                   <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
                 </TouchableOpacity>
               )}
               {members.map((m, i) => (
-                <Animated.View key={m.id} entering={FadeInDown.duration(300).delay(i * 40)} style={styles.memberRow}>
-                  <TouchableOpacity onPress={() => { if (m.profile) { setProfileMember(m.profile); setShowProfile(true); } }} activeOpacity={0.75} style={styles.memberRowInner}>
-                    <View style={styles.memberAvatarWrap}><MemberAvatar profile={m.profile} role={m.role} size={40} showLabel showRole /></View>
+                <Animated.View
+                  key={m.id}
+                  entering={FadeInDown.duration(300).delay(i * 40)}
+                  style={[
+                    styles.memberRow,
+                    {
+                      backgroundColor: COLORS.backgroundCard,
+                      borderColor:     COLORS.border,
+                    },
+                  ]}
+                >
+                  <TouchableOpacity
+                    onPress={() => { if (m.profile) { setProfileMember(m.profile); setShowProfile(true); } }}
+                    activeOpacity={0.75}
+                    style={styles.memberRowInner}
+                  >
+                    <View style={styles.memberAvatarWrap}>
+                      <MemberAvatar profile={m.profile} role={m.role} size={40} showLabel showRole />
+                    </View>
                     <View style={styles.memberTextBlock}>
-                      <Text style={styles.memberName} numberOfLines={1} ellipsizeMode="tail">{m.profile?.fullName ?? m.profile?.username ?? 'Unknown'}</Text>
-                      <Text style={styles.joinedText} numberOfLines={1} ellipsizeMode="tail">Joined {formatJoined(m.joinedAt)}</Text>
+                      <Text style={[styles.memberName, { color: COLORS.textPrimary }]} numberOfLines={1} ellipsizeMode="tail">
+                        {m.profile?.fullName ?? m.profile?.username ?? 'Unknown'}
+                      </Text>
+                      <Text style={[styles.joinedText, { color: COLORS.textMuted }]} numberOfLines={1} ellipsizeMode="tail">
+                        Joined {formatJoined(m.joinedAt)}
+                      </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
                   </TouchableOpacity>
@@ -893,11 +1077,31 @@ export default function WorkspaceDetailScreen() {
               ))}
               {userRole !== 'owner' && userRole !== null && (
                 <Animated.View entering={FadeInDown.duration(300).delay(200)}>
-                  <View style={styles.leaveSection}>
-                    <Text style={styles.leaveSectionLabel}>Your membership</Text>
-                    <TouchableOpacity onPress={handleLeave} style={styles.leaveBtn} activeOpacity={0.8}>
+                  <View style={[
+                    styles.leaveSection,
+                    {
+                      backgroundColor: `${COLORS.error}08`,
+                      borderColor:     `${COLORS.error}20`,
+                    },
+                  ]}>
+                    <Text style={[styles.leaveSectionLabel, { color: COLORS.textMuted }]}>
+                      Your membership
+                    </Text>
+                    <TouchableOpacity
+                      onPress={handleLeave}
+                      style={[
+                        styles.leaveBtn,
+                        {
+                          backgroundColor: `${COLORS.error}15`,
+                          borderColor:     `${COLORS.error}30`,
+                        },
+                      ]}
+                      activeOpacity={0.8}
+                    >
                       <Ionicons name="log-out-outline" size={16} color={COLORS.error} />
-                      <Text style={styles.leaveBtnText}>Leave Workspace</Text>
+                      <Text style={[styles.leaveBtnText, { color: COLORS.error }]}>
+                        Leave Workspace
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </Animated.View>
@@ -907,7 +1111,15 @@ export default function WorkspaceDetailScreen() {
         </ScrollView>
 
         {/* Modals */}
-        {workspace && <InviteModal workspace={workspace} visible={showInvite} isOwner={isOwner} onClose={() => setShowInvite(false)} onCodeUpdated={() => update({ name: workspace.name })} />}
+        {workspace && (
+          <InviteModal
+            workspace={workspace}
+            visible={showInvite}
+            isOwner={isOwner}
+            onClose={() => setShowInvite(false)}
+            onCodeUpdated={() => update({ name: workspace.name })}
+          />
+        )}
         {id && (
           <AddToWorkspaceSheet
             workspaceId={id}
@@ -931,8 +1143,25 @@ export default function WorkspaceDetailScreen() {
             onOpenSharedContent={handleOpenSearchSharedContent}
           />
         )}
-        {id && <MemberProfileCard visible={showProfile} member={profileMember} workspaceId={id} onClose={() => { setShowProfile(false); setProfileMember(null); }} onNavigateToReport={openReport} onNavigateToComment={(reportId) => openReport(reportId)} />}
-        <EditAccessRequestModal mode="owner" visible={showRequests} requests={pendingRequests} isActioning={isActioning} onApprove={handleApproveRequest} onDeny={handleDenyRequest} onClose={() => setShowRequests(false)} />
+        {id && (
+          <MemberProfileCard
+            visible={showProfile}
+            member={profileMember}
+            workspaceId={id}
+            onClose={() => { setShowProfile(false); setProfileMember(null); }}
+            onNavigateToReport={openReport}
+            onNavigateToComment={(reportId) => openReport(reportId)}
+          />
+        )}
+        <EditAccessRequestModal
+          mode="owner"
+          visible={showRequests}
+          requests={pendingRequests}
+          isActioning={isActioning}
+          onApprove={handleApproveRequest}
+          onDeny={handleDenyRequest}
+          onClose={() => setShowRequests(false)}
+        />
       </SafeAreaView>
     </LinearGradient>
   );
@@ -944,134 +1173,166 @@ function SectionMoreHint() {
   return (
     <View style={styles.sectionMoreHint}>
       <Ionicons name="chevron-down" size={12} color={COLORS.textMuted} />
-      <Text style={styles.sectionMoreHintText}>Scroll to load more</Text>
+      <Text style={[styles.sectionMoreHintText, { color: COLORS.textMuted }]}>Scroll to load more</Text>
     </View>
   );
 }
 
-function ContentSectionHeader({ label, count, colors, badgeColor = COLORS.primary }: {
+function ContentSectionHeader({
+  label, count, colors, badgeColor,
+}: {
   label: string; count: number; colors: [string, string]; badgeColor?: string;
 }) {
+  // Read COLORS.primary fresh at render time (not frozen at module load).
+  const bc = badgeColor ?? COLORS.primary;
   return (
     <View style={styles.contentSectionHeader}>
       <LinearGradient colors={colors} style={styles.contentSectionDot} />
-      <Text style={styles.contentSectionTitle}>{label}</Text>
-      <View style={[styles.contentSectionBadge, { backgroundColor: `${badgeColor}20`, borderColor: `${badgeColor}35` }]}>
-        <Text style={[styles.contentSectionBadgeText, { color: badgeColor }]}>{count}</Text>
+      <Text style={[styles.contentSectionTitle, { color: COLORS.textMuted }]}>{label}</Text>
+      <View style={[
+        styles.contentSectionBadge,
+        {
+          backgroundColor: `${bc}20`,
+          borderColor:     `${bc}35`,
+        },
+      ]}>
+        <Text style={[styles.contentSectionBadgeText, { color: bc }]}>{count}</Text>
       </View>
     </View>
   );
 }
 
-function StatChip({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap; value: number; label: string }) {
+function StatChip({
+  icon, value, label,
+}: {
+  icon: keyof typeof Ionicons.glyphMap; value: number; label: string;
+}) {
+  // useTheme() here ensures StatChip re-renders when the theme changes, so the
+  // inline COLORS.* reads below pick up the new palette.
+  useTheme();
   return (
-    <View style={statChipStyles.chip}>
+    <View style={[styles.statChip, { backgroundColor: `${COLORS.primary}12` }]}>
       <Ionicons name={icon} size={14} color={COLORS.primary} />
-      <Text style={statChipStyles.value}>{value}</Text>
-      <Text style={statChipStyles.label}>{label}</Text>
+      <Text style={[styles.statChipValue, { color: COLORS.textPrimary }]}>{value}</Text>
+      <Text style={[styles.statChipLabel, { color: COLORS.textMuted }]}>{label}</Text>
     </View>
   );
 }
 
-const statChipStyles = StyleSheet.create({
-  chip:  { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5 },
-  value: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  label: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
-});
+// ─── Styles ───────────────────────────────────────────────────────────────────
+// Only layout / geometry / theme-independent values live here.
+// Every COLORS.* read has been lifted to inline styles in each render function.
 
 const styles = StyleSheet.create({
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl },
-  errorText:   { color: COLORS.textSecondary, textAlign: 'center', marginVertical: SPACING.md },
-  backBtn:     { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
+  errorText:   { textAlign: 'center', marginVertical: SPACING.md },
+  backBtn:     { borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm },
   backBtnText: { color: '#FFF', fontWeight: '700' },
+
   topBar:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, gap: 8 },
-  backIconBtn:  { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
+  backIconBtn:  { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
   topBarCenter: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  wsName:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800', flex: 1 },
-  rolePill:     { backgroundColor: `${COLORS.primary}20`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2 },
-  rolePillText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'capitalize' },
+  wsName:       { fontSize: FONTS.sizes.md, fontWeight: '800', flex: 1 },
+  rolePill:     { borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2 },
+  rolePillText: { fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'capitalize' },
   topBarRight:  { flexDirection: 'row', gap: 6 },
-  iconBtn:      { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
-  chatBtn:      { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
-  chatBadge:    { position: 'absolute', top: -4, right: -4, backgroundColor: COLORS.error, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3, borderWidth: 2, borderColor: COLORS.background },
+  iconBtn:      { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  chatBadge:    { position: 'absolute', top: -4, right: -4, borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3, borderWidth: 2 },
   chatBadgeText:{ color: '#FFF', fontSize: 8, fontWeight: '800' },
-  requestBanner:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: SPACING.xl, marginBottom: SPACING.xs, backgroundColor: `${COLORS.warning}12`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.warning}30` },
+
+  requestBanner:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: SPACING.xl, marginBottom: SPACING.xs, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1 },
   requestBannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
-  requestBannerText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
-  requestBannerCta:  { backgroundColor: COLORS.warning, borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 5 },
+  requestBannerText: { fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
+  requestBannerCta:  { borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 5 },
   requestBannerCtaText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
+
   statsStrip: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
+  statChip:   { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5 },
+  statChipValue: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  statChipLabel: { fontSize: FONTS.sizes.xs },
+
   tabBar:         { flexDirection: 'row', paddingHorizontal: SPACING.xl, gap: 6, marginBottom: SPACING.sm },
-  tabItem:        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 9, borderRadius: RADIUS.lg, backgroundColor: COLORS.backgroundCard, borderWidth: 1, borderColor: COLORS.border },
-  tabItemActive:  { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}50` },
-  tabLabel:       { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
-  tabLabelActive: { color: COLORS.primary },
-  tabBadge:       { position: 'absolute', top: -5, right: -7, backgroundColor: COLORS.primary, borderRadius: 7, minWidth: 14, height: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2 },
+  tabItem:        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 9, borderRadius: RADIUS.lg, borderWidth: 1 },
+  tabLabel:       { fontSize: 10, fontWeight: '600' },
+  tabBadge:       { position: 'absolute', top: -5, right: -7, borderRadius: 7, minWidth: 14, height: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2 },
   tabBadgeText:   { color: '#FFF', fontSize: 8, fontWeight: '800' },
+
   scroll: { paddingHorizontal: SPACING.xl, paddingBottom: 120 },
-  addReportCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', borderColor: `${COLORS.primary}50`, marginBottom: SPACING.sm },
-  addReportCtaText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-  chatFeedCta:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
+
+  addReportCta:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: SPACING.md, borderRadius: RADIUS.lg, borderWidth: 1, borderStyle: 'dashed', marginBottom: SPACING.sm },
+  addReportCtaText: { fontSize: FONTS.sizes.sm, fontWeight: '600' },
+
+  chatFeedCta:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1 },
   chatFeedCtaLeft:  { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
-  chatFeedCtaIcon:  { width: 40, height: 40, borderRadius: 13, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  chatFeedCtaTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  chatFeedCtaSub:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  chatFeedCtaIcon:  { width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  chatFeedCtaTitle: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  chatFeedCtaSub:   { fontSize: FONTS.sizes.xs, marginTop: 2 },
   chatFeedCtaRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  chatFeedBadge:    { backgroundColor: COLORS.error, borderRadius: RADIUS.full, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  chatFeedBadge:    { borderRadius: RADIUS.full, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
   chatFeedBadgeText:{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '800' },
-  chatMembersEntryBtn:   { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
-  chatMembersEntryIcon:  { width: 38, height: 38, borderRadius: 12, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  chatMembersEntryTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  chatMembersEntrySub:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+
+  chatMembersEntryBtn:   { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1 },
+  chatMembersEntryIcon:  { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  chatMembersEntryTitle: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  chatMembersEntrySub:   { fontSize: FONTS.sizes.xs, marginTop: 2 },
+
   pinnedHeader:     { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm },
-  pinnedHeaderText: { color: COLORS.warning, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
+  pinnedHeaderText: { fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
+
   sectionDivider:     { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: SPACING.sm },
-  sectionDividerLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
-  sectionDividerText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  sectionDividerLine: { flex: 1, height: 1 },
+  sectionDividerText: { fontSize: FONTS.sizes.xs, fontWeight: '600' },
+
   reportCardWrap: { position: 'relative' },
-  pinBtn:         { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border, zIndex: 10 },
-  pinBtnActive:   { backgroundColor: `${COLORS.warning}15`, borderColor: `${COLORS.warning}40` },
+  pinBtn:         { position: 'absolute', top: 10, right: 10, width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, zIndex: 10 },
+
   loadMoreRow:      { alignItems: 'center', justifyContent: 'center', paddingVertical: SPACING.md, gap: 6 },
-  loadMoreText:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  loadMoreText:     { fontSize: FONTS.sizes.xs, fontWeight: '600' },
   sectionMoreHint:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: SPACING.sm },
-  sectionMoreHintText: { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
+  sectionMoreHintText: { fontSize: 10, fontWeight: '600' },
+
   sharedLoading:     { alignItems: 'center', justifyContent: 'center', paddingTop: 50, gap: 10 },
-  sharedLoadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-  sharedHeader:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}25` },
-  sharedHeaderIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-  sharedHeaderTitle:{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' },
-  sharedHeaderSub:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3, lineHeight: 16 },
+  sharedLoadingText: { fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  sharedHeader:      { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, borderRadius: RADIUS.xl, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1 },
+  sharedHeaderIcon:  { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  sharedHeaderTitle: { fontSize: FONTS.sizes.base, fontWeight: '800' },
+  sharedHeaderSub:   { fontSize: FONTS.sizes.xs, marginTop: 3, lineHeight: 16 },
+
   filterRow:             { flexDirection: 'row', gap: 8, marginBottom: SPACING.md, flexWrap: 'wrap' },
-  filterChip:            { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: COLORS.border },
-  filterChipActive:      { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}35` },
-  filterChipText:        { color: COLORS.textMuted, fontSize: 10, fontWeight: '600' },
-  filterChipTextActive:  { color: COLORS.primary },
+  filterChip:            { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1 },
+  filterChipText:        { fontSize: 10, fontWeight: '600' },
+
   contentSectionHeader:    { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm, marginTop: SPACING.sm },
   contentSectionDot:       { width: 14, height: 14, borderRadius: 4, flexShrink: 0 },
-  contentSectionTitle:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', flex: 1 },
-  contentSectionBadge:     { backgroundColor: `${COLORS.primary}18`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1 },
+  contentSectionTitle:     { fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', flex: 1 },
+  contentSectionBadge:     { borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1 },
   contentSectionBadgeText: { fontSize: 10, fontWeight: '700' },
-  sharedEmptyIcon: { width: 72, height: 72, borderRadius: 20, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
-  sharedEmptyHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: `${COLORS.primary}10`, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, borderColor: `${COLORS.primary}20`, marginTop: 4, maxWidth: 280 },
-  sharedEmptyHintText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 },
+
+  sharedEmptyIcon: { width: 72, height: 72, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  sharedEmptyHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, borderRadius: RADIUS.lg, padding: SPACING.sm, borderWidth: 1, marginTop: 4, maxWidth: 280 },
+  sharedEmptyHintText: { fontSize: FONTS.sizes.xs, lineHeight: 16, flex: 1 },
+
   emptyState: { alignItems: 'center', paddingTop: 60, gap: 12 },
-  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '700' },
-  emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21, maxWidth: 290 },
-  emptyAddBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4 },
+  emptyTitle: { fontSize: FONTS.sizes.lg, fontWeight: '700' },
+  emptyDesc:  { fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21, maxWidth: 290 },
+  emptyAddBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 10, marginTop: 4 },
   emptyAddBtnText: { color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  // Part 52.2 — Activity tab
+
   activityList:      { paddingTop: SPACING.sm },
-  activityEmptyIcon: { width: 72, height: 72, borderRadius: 20, backgroundColor: `${COLORS.primary}12`, alignItems: 'center', justifyContent: 'center' },
-  manageMembersBtn:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: `${COLORS.primary}12`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.primary}30` },
-  manageMembersBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 },
-  memberRow:        { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
+  activityEmptyIcon: { width: 72, height: 72, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+
+  manageMembersBtn:     { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1 },
+  manageMembersBtnText: { fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 },
+
+  memberRow:        { borderRadius: RADIUS.lg, marginBottom: SPACING.sm, borderWidth: 1, overflow: 'hidden' },
   memberRowInner:   { flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACING.md },
   memberAvatarWrap: { width: 40, height: 40, flexShrink: 0 },
   memberTextBlock:  { flex: 1, minWidth: 0 },
-  memberName:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  joinedText:       { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
-  leaveSection:     { marginTop: SPACING.xl, backgroundColor: `${COLORS.error}08`, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}20`, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  leaveSectionLabel:{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
-  leaveBtn:         { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: `${COLORS.error}15`, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, borderColor: `${COLORS.error}30`, flexShrink: 0 },
-  leaveBtnText:     { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  memberName:       { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  joinedText:       { fontSize: FONTS.sizes.xs, marginTop: 2 },
+
+  leaveSection:     { marginTop: SPACING.xl, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  leaveSectionLabel:{ fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
+  leaveBtn:         { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 9, borderWidth: 1, flexShrink: 0 },
+  leaveBtnText:     { fontSize: FONTS.sizes.sm, fontWeight: '700' },
 });

@@ -8,21 +8,21 @@
 //   Activity logging for share/unshare is handled SERVER-SIDE by DB triggers on
 //   shared_workspace_content (schema_part52_2.sql §9), so this modal no longer
 //   logs activity itself — one correct entry per action regardless of path.
-// ─────────────────────────────────────────────────────────────────────────────
 // Part 55.3 — Theme compatibility: Replaced all hardcoded colors and gradients
 //             with theme-aware values from COLORS. All surfaces, badges, and
 //             status indicators now follow the active theme palette.
-// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.4 — Takes up 80% of screen height from the bottom.
+//             Smooth non-bouncing animation with SlideInUp + cubic easing.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, Modal, TouchableOpacity,
   ScrollView, ActivityIndicator, Alert, Image,
-  StyleSheet,
+  StyleSheet, Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown, SlideInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown, SlideInUp, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
 import {
@@ -31,7 +31,10 @@ import {
   removeSharedContent,
 } from '../../services/workspaceSharingService';
 import { SharedContentType, WorkspaceRole } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../constants/theme';
+
+const { height: SCREEN_H } = Dimensions.get('window');
+const SHEET_HEIGHT_RATIO = 0.8; // 80% of screen height
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -274,29 +277,32 @@ export function ShareToWorkspaceModal({
 
   const iconName  = contentType === 'presentation' ? 'easel' : 'school';
   const typeLabel = contentType === 'presentation' ? 'Presentation' : 'Academic Paper';
+  const backdropColor = getModalBackdrop(0.65);
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
     >
       {/* Backdrop */}
       <TouchableOpacity
-        style={[styles.backdrop, { backgroundColor: 'rgba(0,0,0,0.65)' }]}
+        style={[styles.backdrop, { backgroundColor: backdropColor }]}
         activeOpacity={1}
         onPress={onClose}
       />
 
-      {/* Sheet */}
+      {/* Sheet — 80% height from bottom, smooth non-bouncing animation */}
       <Animated.View
-        entering={SlideInDown.duration(340).springify()}
+        entering={SlideInUp.duration(340).easing(Easing.out(Easing.cubic))}
+        exiting={SlideOutDown.duration(220).easing(Easing.in(Easing.quad))}
         style={[
           styles.sheet,
           {
             backgroundColor: COLORS.backgroundCard,
             borderTopColor: COLORS.border,
+            height: SCREEN_H * SHEET_HEIGHT_RATIO,
             paddingBottom: insets.bottom + SPACING.md,
           }
         ]}
@@ -355,7 +361,7 @@ export function ShareToWorkspaceModal({
 
         {/* Content */}
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: SPACING.xl }]}
           showsVerticalScrollIndicator={false}
         >
           {isLoading ? (
@@ -444,7 +450,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     borderTopWidth: 1,
-    maxHeight: '88%',
   },
   handle: {
     width: 40,

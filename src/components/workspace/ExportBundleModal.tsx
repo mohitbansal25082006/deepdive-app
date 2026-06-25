@@ -1,33 +1,9 @@
 // src/components/workspace/ExportBundleModal.tsx
 // Part 52.1 — Advanced Workspace Export picker (Settings only).
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// WHAT THIS IS
-//   A full-height bottom-sheet modal that replaces the old one-tap
-//   "Export as PDF Bundle". The owner/editor can tick ANY combination of:
-//     • Research reports        → full PDF each
-//     • Presentations           → .pptx each
-//     • Academic papers         → full PDF each
-//     • Debates                 → full PDF each
-//     • Podcasts                → .mp3 each
-//     • Voice debates           → .mp3 each
-//   …then taps Export → everything is bundled into ONE .zip and shared.
-//
-// BEHAVIOUR
-//   • Opens deferred: the heavy item fetch (useWorkspaceBundleItems) only runs
-//     once this modal is mounted with `visible=true` (enabled flips true).
-//   • Per-kind collapsible sections with a select-all-in-section header toggle.
-//   • A global "Select all" / "Clear" control + a live selected counter.
-//   • Filter chips to focus on one kind at a time.
-//   • During export: a progress overlay with phase + count; the sheet can't be
-//     dismissed mid-export.
-//   • On completion: success toast-row; if some items failed, a non-blocking
-//     warning listing what couldn't be exported (the rest still bundled).
-//
-// IT DOES NOT
-//   • Touch any standalone/original export. It only calls
-//     exportWorkspaceBundle() from workspaceBundleExportService.
-// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for backdrop.
+//             Smooth non-bouncing animation with SlideInUp + cubic easing.
+//             No dark-only assumptions.
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
@@ -36,7 +12,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons }       from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInUp, FadeOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInUp, FadeOut, SlideInUp, SlideOutDown, Easing } from 'react-native-reanimated';
 import { SafeAreaView }   from 'react-native-safe-area-context';
 
 import { useWorkspaceBundleItems, type BundleItemGroups } from '../../hooks/useWorkspaceBundleItems';
@@ -48,7 +24,7 @@ import {
   type BundleExportResult,
 } from '../../services/workspaceBundleExportService';
 import type { Workspace } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../constants/theme';
 
 // ─── Per-kind display config ──────────────────────────────────────────────────
 
@@ -235,22 +211,25 @@ export function ExportBundleModal({ visible, workspace, onClose }: Props) {
     }
   };
 
+  const backdropColor = getModalBackdrop(0.55);
+
   // ───────────────────────────────────────────────────────────────────────────
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType="none"
       onRequestClose={handleClose}
       statusBarTranslucent
     >
-      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}>
+      <View style={{ flex: 1, backgroundColor: backdropColor, justifyContent: 'flex-end' }}>
         {/* Tap-outside to dismiss (disabled mid-export) */}
         <Pressable style={{ flex: 1 }} onPress={handleClose} />
 
         <Animated.View
-          entering={FadeInUp.duration(260)}
+          entering={SlideInUp.duration(340).easing(Easing.out(Easing.cubic))}
+          exiting={SlideOutDown.duration(220).easing(Easing.in(Easing.quad))}
           style={{
             maxHeight: '90%',
             backgroundColor: COLORS.background,
@@ -297,6 +276,7 @@ export function ExportBundleModal({ visible, workspace, onClose }: Props) {
                     width: 32, height: 32, borderRadius: 10,
                     backgroundColor: COLORS.backgroundElevated,
                     alignItems: 'center', justifyContent: 'center',
+                    borderWidth: 1, borderColor: COLORS.border,
                     opacity: isExporting ? 0.4 : 1,
                   }}
                 >

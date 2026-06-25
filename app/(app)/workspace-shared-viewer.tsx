@@ -1,21 +1,8 @@
 // app/(app)/workspace-shared-viewer.tsx
 // Part 46 FIX — Corrected contentId routing for search results.
-//
-// BUG: When navigating from WorkspaceSearchModal, the search RPC returns
-// result_id = shared_workspace_content.id (the sharing row UUID), NOT the
-// actual presentation_id / paper_id. The RPCs
-// get_shared_presentation_for_workspace and get_shared_academic_paper_for_workspace
-// expect the real content UUID (presentations.id / academic_papers.id).
-//
-// FIX: Accept an additional param `actualContentId` that carries the real
-// content UUID when navigating from search. If present, use it instead of
-// contentId for the RPC call. workspace-detail.tsx passes this when
-// navigating from search results via onOpenSharedContent.
-//
-// Also accept contentId as fallback (existing workspace-detail navigation
-// already passes the correct presentation/paper UUID — unchanged).
-//
-// All Part 41.7 export logic unchanged.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
+// Part 55.6 — Removed "Exported" stat from bottom, centered Slides and Theme.
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
@@ -67,16 +54,12 @@ type Params = {
 };
 
 // ─── Helper: resolve the real presentation/paper UUID ─────────────────────────
-// When navigating from search, contentId = shared_workspace_content.id.
-// We need to look up the actual content_id from that row.
 
 async function resolveContentId(
   contentType:  string,
   contentId:    string,
   workspaceId?: string,
 ): Promise<string> {
-  // If it looks like it might be a shared content row, try to resolve it
-  // by querying shared_workspace_content for the actual content_id.
   if (!workspaceId) return contentId;
 
   try {
@@ -168,8 +151,6 @@ function PresentationViewer({
     setIsLoading(true);
     setLoadError(null);
     try {
-      // Part 46 FIX: resolve the real presentation UUID before calling RPC.
-      // If contentId is a shared_workspace_content.id row, look up the actual UUID.
       const resolvedId = await resolveContentId('presentation', contentId, workspaceId);
 
       let data: Record<string, unknown> | null = null;
@@ -337,13 +318,16 @@ function PresentationViewer({
           <Ionicons name="camera-outline" size={11} color={COLORS.textMuted} />
           <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>Exports capture slides exactly as shown</Text>
         </View>
-        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: SPACING.lg }}>
-          {[{ label: 'Slides', value: String(presentation.totalSlides) }, { label: 'Theme', value: presentation.theme }, { label: 'Exported', value: String(presentation.exportCount ?? 0) }].map(stat => (
-            <View key={stat.label} style={{ alignItems: 'center' }}>
-              <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>{stat.value}</Text>
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{stat.label}</Text>
-            </View>
-          ))}
+        {/* Part 55.6: Removed "Exported" stat, centered Slides and Theme */}
+        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: SPACING.xl }}>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>{String(presentation.totalSlides)}</Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Slides</Text>
+          </View>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>{presentation.theme}</Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Theme</Text>
+          </View>
         </View>
       </View>
     </View>
@@ -372,7 +356,6 @@ function AcademicPaperViewer({
     setIsLoading(true);
     setLoadError(null);
     try {
-      // Part 46 FIX: resolve the real paper UUID (same pattern as PresentationViewer)
       const resolvedId = await resolveContentId('academic_paper', contentId, workspaceId);
 
       let data: Record<string, unknown> | null = null;

@@ -7,6 +7,9 @@
 //   workspace renamed (old → new), description changed (old → new), and logo
 //   set/removed — each with the actor's full name. These appear in the
 //   Activity tab in realtime.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getAuroraGradient for the
+//             gradient backgrounds. No dark-only assumptions.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -35,7 +38,7 @@ import {
   logWorkspaceLogoChanged,
 } from '../../src/services/activityService';
 import { WorkspaceRole } from '../../src/types';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getAuroraGradient } from '../../src/constants/theme';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -272,6 +275,7 @@ export default function WorkspaceSettingsScreen() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const initials = (workspace?.name ?? '').slice(0, 2).toUpperCase();
+  const aurora = getAuroraGradient();
 
   return (
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
@@ -279,17 +283,17 @@ export default function WorkspaceSettingsScreen() {
 
         {/* Header */}
         <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <TouchableOpacity onPress={() => router.back()} style={[styles.backBtn, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
             <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.title}>
+          <Text style={[styles.title, { color: COLORS.textPrimary }]}>
             {isOwner ? 'Workspace Settings' : 'Export & Sharing'}
           </Text>
           {hasChanges && isOwner && (
             <TouchableOpacity
               onPress={handleSave}
               disabled={isSaving}
-              style={styles.saveBtn}
+              style={[styles.saveBtn, { backgroundColor: COLORS.primary }]}
             >
               {isSaving
                 ? <ActivityIndicator size="small" color="#FFF" />
@@ -308,9 +312,9 @@ export default function WorkspaceSettingsScreen() {
               {/* ── WORKSPACE LOGO (owner + editor) ── */}
               {isEditor && (
                 <Animated.View entering={FadeInDown.duration(400).delay(40)}>
-                  <Text style={styles.sectionLabel}>Workspace Logo</Text>
+                  <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>Workspace Logo</Text>
 
-                  <View style={styles.logoSection}>
+                  <View style={[styles.logoSection, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
                     {/* Current logo preview */}
                     <TouchableOpacity
                       onPress={handlePickLogo}
@@ -319,27 +323,27 @@ export default function WorkspaceSettingsScreen() {
                       style={styles.logoPreviewBtn}
                     >
                       {isUploadingLogo ? (
-                        <View style={styles.logoPlaceholder}>
+                        <View style={[styles.logoPlaceholder, { borderColor: `${COLORS.primary}30` }]}>
                           <ActivityIndicator color={COLORS.primary} />
                         </View>
                       ) : logoUrl ? (
                         <Animated.View entering={ZoomIn.duration(300)}>
                           <Image
                             source={{ uri: logoUrl }}
-                            style={styles.logoImage}
+                            style={[styles.logoImage, { borderColor: `${COLORS.primary}40` }]}
                             resizeMode="cover"
                           />
-                          <View style={styles.logoEditOverlay}>
+                          <View style={[styles.logoEditOverlay, { borderColor: COLORS.backgroundCard }]}>
                             <Ionicons name="camera" size={16} color="#FFF" />
                           </View>
                         </Animated.View>
                       ) : (
                         <LinearGradient
                           colors={COLORS.gradientPrimary as readonly [string, string]}
-                          style={styles.logoPlaceholder}
+                          style={[styles.logoPlaceholder, { borderColor: `${COLORS.primary}30` }]}
                         >
                           <Text style={styles.logoInitials}>{initials}</Text>
-                          <View style={styles.logoAddBadge}>
+                          <View style={[styles.logoAddBadge, { backgroundColor: COLORS.primary, borderColor: COLORS.backgroundCard }]}>
                             <Ionicons name="add" size={14} color="#FFF" />
                           </View>
                         </LinearGradient>
@@ -351,28 +355,28 @@ export default function WorkspaceSettingsScreen() {
                       <TouchableOpacity
                         onPress={() => handleLogoUpload('library')}
                         disabled={isUploadingLogo}
-                        style={styles.logoActionBtn}
+                        style={[styles.logoActionBtn, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}
                         activeOpacity={0.8}
                       >
                         <Ionicons name="images-outline" size={16} color={COLORS.primary} />
-                        <Text style={styles.logoActionBtnText}>Choose Image</Text>
+                        <Text style={[styles.logoActionBtnText, { color: COLORS.primary }]}>Choose Image</Text>
                       </TouchableOpacity>
 
                       <TouchableOpacity
                         onPress={() => handleLogoUpload('camera')}
                         disabled={isUploadingLogo}
-                        style={styles.logoActionBtn}
+                        style={[styles.logoActionBtn, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}
                         activeOpacity={0.8}
                       >
                         <Ionicons name="camera-outline" size={16} color={COLORS.primary} />
-                        <Text style={styles.logoActionBtnText}>Take Photo</Text>
+                        <Text style={[styles.logoActionBtnText, { color: COLORS.primary }]}>Take Photo</Text>
                       </TouchableOpacity>
 
                       {logoUrl && (
                         <TouchableOpacity
                           onPress={handleRemoveLogo}
                           disabled={isUploadingLogo}
-                          style={[styles.logoActionBtn, styles.logoRemoveBtn]}
+                          style={[styles.logoActionBtn, styles.logoRemoveBtn, { backgroundColor: `${COLORS.error}10`, borderColor: `${COLORS.error}25` }]}
                           activeOpacity={0.8}
                         >
                           <Ionicons name="trash-outline" size={16} color={COLORS.error} />
@@ -384,7 +388,7 @@ export default function WorkspaceSettingsScreen() {
                     </View>
                   </View>
 
-                  <Text style={styles.logoHint}>
+                  <Text style={[styles.logoHint, { color: COLORS.textMuted }]}>
                     Square images work best (max 5 MB). Changes appear instantly for all members.
                   </Text>
                 </Animated.View>
@@ -393,28 +397,28 @@ export default function WorkspaceSettingsScreen() {
               {/* ── GENERAL INFO (owner only) ── */}
               {isOwner && (
                 <Animated.View entering={FadeInDown.duration(400).delay(80)}>
-                  <Text style={styles.sectionLabel}>General</Text>
+                  <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>General</Text>
                   <View style={styles.fieldWrap}>
-                    <Text style={styles.fieldLabel}>Workspace Name</Text>
+                    <Text style={[styles.fieldLabel, { color: COLORS.textSecondary }]}>Workspace Name</Text>
                     <TextInput
                       value={name}
                       onChangeText={(t) => { isEditingTextRef.current = true; setName(t); }}
                       onBlur={() => { if (!hasChanges) isEditingTextRef.current = false; }}
                       placeholder="Workspace name"
                       placeholderTextColor={COLORS.textMuted}
-                      style={styles.input}
+                      style={[styles.input, { backgroundColor: COLORS.backgroundCard, color: COLORS.textPrimary, borderColor: COLORS.border }]}
                       maxLength={60}
                     />
                   </View>
                   <View style={styles.fieldWrap}>
-                    <Text style={styles.fieldLabel}>Description</Text>
+                    <Text style={[styles.fieldLabel, { color: COLORS.textSecondary }]}>Description</Text>
                     <TextInput
                       value={description}
                       onChangeText={(t) => { isEditingTextRef.current = true; setDescription(t); }}
                       onBlur={() => { if (!hasChanges) isEditingTextRef.current = false; }}
                       placeholder="What is this workspace for?"
                       placeholderTextColor={COLORS.textMuted}
-                      style={[styles.input, { height: 90 }]}
+                      style={[styles.input, { backgroundColor: COLORS.backgroundCard, color: COLORS.textPrimary, borderColor: COLORS.border, height: 90 }]}
                       multiline
                       maxLength={200}
                     />
@@ -424,20 +428,20 @@ export default function WorkspaceSettingsScreen() {
 
               {/* ── EXPORT & SHARING ── */}
               <Animated.View entering={FadeInDown.duration(400).delay(120)}>
-                <Text style={styles.sectionLabel}>Export & Sharing</Text>
+                <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>Export & Sharing</Text>
 
                 {/* Part 52.1 — Advanced export: opens the bundle picker modal */}
                 <TouchableOpacity
                   onPress={() => setShowExportModal(true)}
-                  style={styles.actionRow}
+                  style={[styles.actionRow, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}
                   activeOpacity={0.8}
                 >
                   <View style={[styles.actionIcon, { backgroundColor: `${COLORS.primary}18` }]}>
                     <Ionicons name="archive-outline" size={20} color={COLORS.primary} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.actionLabel}>Export Bundle</Text>
-                    <Text style={styles.actionDesc}>
+                    <Text style={[styles.actionLabel, { color: COLORS.textPrimary }]}>Export Bundle</Text>
+                    <Text style={[styles.actionDesc, { color: COLORS.textMuted }]}>
                       Pick any reports & shared content — downloads as one .zip
                     </Text>
                   </View>
@@ -446,7 +450,7 @@ export default function WorkspaceSettingsScreen() {
 
                 <TouchableOpacity
                   onPress={handleCopyInviteCode}
-                  style={styles.actionRow}
+                  style={[styles.actionRow, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}
                   activeOpacity={0.8}
                 >
                   <View style={[styles.actionIcon, { backgroundColor: `${COLORS.primary}18` }]}>
@@ -457,10 +461,10 @@ export default function WorkspaceSettingsScreen() {
                     />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.actionLabel}>
+                    <Text style={[styles.actionLabel, { color: codeCopied ? COLORS.success : COLORS.textPrimary }]}>
                       {codeCopied ? 'Code Copied!' : 'Copy Invite Code'}
                     </Text>
-                    <Text style={styles.actionDesc}>
+                    <Text style={[styles.actionDesc, { color: COLORS.textMuted }]}>
                       {codeCopied
                         ? `"${workspace.inviteCode}" is now in your clipboard`
                         : `Share code: ${workspace.inviteCode}`}
@@ -472,7 +476,7 @@ export default function WorkspaceSettingsScreen() {
 
               {/* ── STATS ── */}
               <Animated.View entering={FadeInDown.duration(400).delay(160)}>
-                <Text style={styles.sectionLabel}>Stats</Text>
+                <Text style={[styles.sectionLabel, { color: COLORS.textMuted }]}>Stats</Text>
                 <View style={styles.statsGrid}>
                   <StatBox label="Members" value={String(members.length)} />
                   <StatBox label="Reports" value={String(reports.length)} />
@@ -491,13 +495,13 @@ export default function WorkspaceSettingsScreen() {
                   <Text style={[styles.sectionLabel, { color: COLORS.error }]}>Danger Zone</Text>
                   <TouchableOpacity
                     onPress={handleDelete}
-                    style={styles.deleteBtn}
+                    style={[styles.deleteBtn, { backgroundColor: `${COLORS.error}10`, borderColor: `${COLORS.error}30` }]}
                     activeOpacity={0.8}
                   >
                     <Ionicons name="trash-outline" size={18} color={COLORS.error} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.deleteBtnText}>Delete Workspace</Text>
-                      <Text style={styles.deleteBtnDesc}>
+                      <Text style={[styles.deleteBtnText, { color: COLORS.error }]}>Delete Workspace</Text>
+                      <Text style={[styles.deleteBtnDesc, { color: `${COLORS.error}80` }]}>
                         Removes workspace and kicks all members instantly
                       </Text>
                     </View>
@@ -526,52 +530,50 @@ export default function WorkspaceSettingsScreen() {
 
 function StatBox({ label, value }: { label: string; value: string }) {
   return (
-    <View style={stat.box}>
-      <Text style={stat.value} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
-      <Text style={stat.label}>{label}</Text>
+    <View style={[stat.box, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
+      <Text style={[stat.value, { color: COLORS.textPrimary }]} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
+      <Text style={[stat.label, { color: COLORS.textMuted }]}>{label}</Text>
     </View>
   );
 }
 
 const stat = StyleSheet.create({
-  box:   { flex: 1, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
-  value: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  label: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 3 },
+  box:   { flex: 1, borderRadius: RADIUS.lg, padding: SPACING.md, alignItems: 'center', borderWidth: 1 },
+  value: { fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  label: { fontSize: FONTS.sizes.xs, marginTop: 3 },
 });
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   header:      { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.md },
-  backBtn:     { width: 38, height: 38, borderRadius: 12, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
-  title:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', flex: 1 },
-  saveBtn:     { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: 16, paddingVertical: 8, minWidth: 64, alignItems: 'center' },
+  backBtn:     { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
+  title:       { fontSize: FONTS.sizes.xl, fontWeight: '800', flex: 1 },
+  saveBtn:     { borderRadius: RADIUS.lg, paddingHorizontal: 16, paddingVertical: 8, minWidth: 64, alignItems: 'center' },
   saveBtnText: { color: '#FFF', fontWeight: '700', fontSize: FONTS.sizes.sm },
   scroll:      { paddingHorizontal: SPACING.xl, paddingBottom: 80 },
   loadingWrap: { alignItems: 'center', paddingTop: 60 },
-  sectionLabel:{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm, marginTop: SPACING.lg },
+  sectionLabel:{ fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm, marginTop: SPACING.lg },
 
   // ── Logo section ──
   logoSection: {
     flexDirection: 'row',
     alignItems:    'center',
     gap:           SPACING.lg,
-    backgroundColor: COLORS.backgroundCard,
     borderRadius:  RADIUS.xl,
     padding:       SPACING.md,
     borderWidth:   1,
-    borderColor:   COLORS.border,
   },
   logoPreviewBtn: { position: 'relative' },
   logoImage: {
     width: 80, height: 80, borderRadius: 20,
-    borderWidth: 2, borderColor: `${COLORS.primary}40`,
+    borderWidth: 2,
   },
   logoPlaceholder: {
     width: 80, height: 80, borderRadius: 20,
     alignItems: 'center', justifyContent: 'center',
     position: 'relative',
-    borderWidth: 2, borderColor: `${COLORS.primary}30`,
+    borderWidth: 2,
   },
   logoInitials: { color: '#FFF', fontSize: FONTS.sizes['2xl'], fontWeight: '800' },
   logoAddBadge: {
@@ -581,11 +583,9 @@ const styles = StyleSheet.create({
     width:           24,
     height:          24,
     borderRadius:    12,
-    backgroundColor: COLORS.primary,
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     2,
-    borderColor:     COLORS.backgroundCard,
   },
   logoEditOverlay: {
     position:        'absolute',
@@ -598,31 +598,23 @@ const styles = StyleSheet.create({
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     2,
-    borderColor:     COLORS.backgroundCard,
   },
   logoActions: { flex: 1, gap: 8 },
   logoActionBtn: {
     flexDirection:   'row',
     alignItems:      'center',
     gap:             6,
-    backgroundColor: `${COLORS.primary}12`,
     borderRadius:    RADIUS.lg,
     paddingHorizontal: SPACING.md,
     paddingVertical:   8,
     borderWidth:     1,
-    borderColor:     `${COLORS.primary}25`,
   },
   logoActionBtnText: {
-    color:      COLORS.primary,
     fontSize:   FONTS.sizes.sm,
     fontWeight: '600',
   },
-  logoRemoveBtn: {
-    backgroundColor: `${COLORS.error}10`,
-    borderColor:     `${COLORS.error}25`,
-  },
+  logoRemoveBtn: {},
   logoHint: {
-    color:     COLORS.textMuted,
     fontSize:  FONTS.sizes.xs,
     marginTop: 8,
     marginBottom: 4,
@@ -631,20 +623,20 @@ const styles = StyleSheet.create({
 
   // Fields
   fieldWrap:  { marginBottom: SPACING.md },
-  fieldLabel: { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 },
-  input:      { backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 12, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, borderWidth: 1, borderColor: COLORS.border },
+  fieldLabel: { fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 },
+  input:      { borderRadius: RADIUS.lg, paddingHorizontal: SPACING.md, paddingVertical: 12, fontSize: FONTS.sizes.base, borderWidth: 1 },
 
   // Action rows
-  actionRow:   { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: COLORS.border },
+  actionRow:   { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1 },
   actionIcon:  { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  actionLabel: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' },
-  actionDesc:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  actionLabel: { fontSize: FONTS.sizes.base, fontWeight: '600' },
+  actionDesc:  { fontSize: FONTS.sizes.xs, marginTop: 2 },
 
   // Stats
   statsGrid: { flexDirection: 'row', gap: SPACING.sm },
 
   // Delete
-  deleteBtn:     { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30` },
-  deleteBtnText: { color: COLORS.error, fontSize: FONTS.sizes.base, fontWeight: '700' },
-  deleteBtnDesc: { color: `${COLORS.error}80`, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  deleteBtn:     { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1 },
+  deleteBtnText: { fontSize: FONTS.sizes.base, fontWeight: '700' },
+  deleteBtnDesc: { fontSize: FONTS.sizes.xs, marginTop: 2 },
 });

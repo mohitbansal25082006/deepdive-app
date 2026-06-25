@@ -2,6 +2,9 @@
 // FIX: Copy now writes the raw invite code string (not the deepdive:// URL).
 // FIX: Regenerate Code button removed.
 // FIX: Share Invite Link button removed.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for the
+//             backdrop scrim. No dark-only assumptions.
 
 import React, { useState } from 'react';
 import {
@@ -12,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeIn, SlideInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
 import { Workspace } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
 
 interface Props {
   workspace:       Workspace;
@@ -33,6 +36,9 @@ export function InviteModal({ workspace, visible, isOwner, onClose, onCodeUpdate
     setTimeout(() => setCopied(false), 2500);
   };
 
+  // Use the theme-aware backdrop
+  const backdropColor = getModalBackdrop(0.72);
+
   return (
     <Modal
       visible={visible}
@@ -40,37 +46,41 @@ export function InviteModal({ workspace, visible, isOwner, onClose, onCodeUpdate
       animationType="fade"
       onRequestClose={onClose}
     >
-      <Animated.View entering={FadeIn.duration(200)} style={styles.backdrop}>
+      <Animated.View entering={FadeIn.duration(200)} style={[styles.backdrop, { backgroundColor: backdropColor }]}>
         <TouchableOpacity style={{ flex: 1 }} onPress={onClose} activeOpacity={1} />
 
-        <Animated.View entering={SlideInDown.duration(350).springify()} style={styles.sheet}>
+        <Animated.View entering={SlideInDown.duration(350).springify()} style={[styles.sheet, { backgroundColor: COLORS.backgroundCard }]}>
           {/* Handle */}
-          <View style={styles.handle} />
+          <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
 
           {/* Header */}
           <View style={styles.headerRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.title}>Invite to Workspace</Text>
-              <Text style={styles.subtitle} numberOfLines={1}>
+              <Text style={[styles.title, { color: COLORS.textPrimary }]}>Invite to Workspace</Text>
+              <Text style={[styles.subtitle, { color: COLORS.textMuted }]} numberOfLines={1}>
                 {workspace.name}
               </Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
               <Ionicons name="close" size={18} color={COLORS.textMuted} />
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.desc}>
+          <Text style={[styles.desc, { color: COLORS.textSecondary }]}>
             Share this code so others can join as a Viewer. Only Editors and Owners can add reports or leave comments.
           </Text>
 
           {/* Code display — tap to copy */}
-          <TouchableOpacity onPress={handleCopyCode} style={styles.codeBox} activeOpacity={0.8}>
+          <TouchableOpacity onPress={handleCopyCode} style={[styles.codeBox, { backgroundColor: COLORS.backgroundElevated, borderColor: `${COLORS.primary}35` }]} activeOpacity={0.8}>
             <View style={styles.codeLeft}>
-              <Text style={styles.codeLabel}>INVITE CODE</Text>
-              <Text style={styles.codeText} selectable>{code}</Text>
+              <Text style={[styles.codeLabel, { color: COLORS.textMuted }]}>INVITE CODE</Text>
+              <Text style={[styles.codeText, { color: COLORS.textPrimary }]} selectable>{code}</Text>
             </View>
-            <View style={[styles.copyChip, copied && styles.copyChipDone]}>
+            <View style={[
+              styles.copyChip, 
+              { backgroundColor: `${COLORS.primary}15`, borderColor: `${COLORS.primary}30` },
+              copied && { backgroundColor: `${COLORS.success}12`, borderColor: `${COLORS.success}30` }
+            ]}>
               <Ionicons
                 name={copied ? 'checkmark' : 'copy-outline'}
                 size={16}
@@ -90,11 +100,9 @@ export function InviteModal({ workspace, visible, isOwner, onClose, onCodeUpdate
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
     justifyContent: 'flex-end',
   },
   sheet: {
-    backgroundColor: COLORS.backgroundCard,
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     padding: SPACING.xl,
@@ -103,24 +111,21 @@ const styles = StyleSheet.create({
   },
   handle: {
     width: 40, height: 4, borderRadius: 2,
-    backgroundColor: COLORS.border,
     alignSelf: 'center', marginBottom: SPACING.lg,
   },
   headerRow: {
     flexDirection: 'row', alignItems: 'flex-start',
     marginBottom: SPACING.sm,
   },
-  title:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  subtitle: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  title:    { fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  subtitle: { fontSize: FONTS.sizes.xs, marginTop: 2 },
   closeBtn: {
     width: 32, height: 32, borderRadius: 10,
-    backgroundColor: COLORS.backgroundElevated,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
+    borderWidth: 1,
     marginLeft: SPACING.md,
   },
   desc: {
-    color: COLORS.textSecondary,
     fontSize: FONTS.sizes.sm,
     lineHeight: 20,
     marginBottom: SPACING.lg,
@@ -131,38 +136,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: COLORS.backgroundElevated,
     borderRadius: RADIUS.xl,
     padding: SPACING.lg,
     marginBottom: SPACING.md,
     borderWidth: 1,
-    borderColor: `${COLORS.primary}35`,
   },
   codeLeft:  { flex: 1 },
   codeLabel: {
-    color: COLORS.textMuted,
     fontSize: FONTS.sizes.xs,
     fontWeight: '700',
     letterSpacing: 1.2,
     marginBottom: 6,
   },
   codeText: {
-    color: COLORS.textPrimary,
     fontSize: 26,
     fontWeight: '800',
     letterSpacing: 4,
   },
   copyChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: `${COLORS.primary}15`,
     borderRadius: RADIUS.lg,
     paddingHorizontal: 12, paddingVertical: 8,
-    borderWidth: 1, borderColor: `${COLORS.primary}30`,
+    borderWidth: 1,
     marginLeft: SPACING.md,
-  },
-  copyChipDone: {
-    backgroundColor: `${COLORS.success}12`,
-    borderColor: `${COLORS.success}30`,
   },
   copyText: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
 });

@@ -2,6 +2,8 @@
 // Part 12 — AI-powered discussion summary panel.
 // Shows decisions, open questions, action items, and key themes
 // extracted by GPT-4o from all comments on a report.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React, { useState } from 'react';
 import {
@@ -76,24 +78,27 @@ export function CommentSummaryPanel({
   );
 
   return (
-    <Animated.View entering={FadeIn.duration(300)} style={styles.container}>
+    <Animated.View entering={FadeIn.duration(300)} style={[
+      styles.container, 
+      { backgroundColor: COLORS.backgroundCard, borderColor: `${COLORS.primary}30` }
+    ]}>
       {/* ── Header ── */}
-      <View style={styles.header}>
+      <View style={[styles.header, { borderBottomColor: COLORS.border }]}>
         <View style={styles.headerLeft}>
-          <View style={styles.headerIconWrap}>
+          <View style={[styles.headerIconWrap, { backgroundColor: `${COLORS.primary}15` }]}>
             <Ionicons name="sparkles" size={16} color={COLORS.primary} />
           </View>
           <View>
-            <Text style={styles.headerTitle}>AI Discussion Summary</Text>
+            <Text style={[styles.headerTitle, { color: COLORS.textPrimary }]}>AI Discussion Summary</Text>
             {summary && (
-              <Text style={styles.headerMeta}>
+              <Text style={[styles.headerMeta, { color: COLORS.textMuted }]}>
                 {summary.totalComments} comment{summary.totalComments !== 1 ? 's' : ''}
                 {summary.totalReplies > 0 ? ` · ${summary.totalReplies} replies` : ''} analysed
               </Text>
             )}
           </View>
         </View>
-        <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+        <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
           <Ionicons name="close" size={16} color={COLORS.textMuted} />
         </TouchableOpacity>
       </View>
@@ -102,7 +107,7 @@ export function CommentSummaryPanel({
       {isGenerating && (
         <Animated.View entering={FadeIn.duration(200)} style={styles.generatingWrap}>
           <ActivityIndicator color={COLORS.primary} size="small" />
-          <Text style={styles.generatingText}>
+          <Text style={[styles.generatingText, { color: COLORS.textSecondary }]}>
             Analysing {totalComments} comment{totalComments !== 1 ? 's' : ''}…
           </Text>
         </Animated.View>
@@ -112,11 +117,11 @@ export function CommentSummaryPanel({
       {!isGenerating && error && (
         <Animated.View entering={FadeIn.duration(200)} style={styles.errorWrap}>
           <Ionicons name="alert-circle-outline" size={20} color={COLORS.error} />
-          <Text style={styles.errorText}>{error}</Text>
+          <Text style={[styles.errorText, { color: COLORS.error }]}>{error}</Text>
           {totalComments > 0 && (
-            <TouchableOpacity onPress={onGenerate} style={styles.retryBtn} activeOpacity={0.8}>
+            <TouchableOpacity onPress={onGenerate} style={[styles.retryBtn, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}30` }]} activeOpacity={0.8}>
               <Ionicons name="refresh-outline" size={14} color={COLORS.primary} />
-              <Text style={styles.retryBtnText}>Retry</Text>
+              <Text style={[styles.retryBtnText, { color: COLORS.primary }]}>Retry</Text>
             </TouchableOpacity>
           )}
         </Animated.View>
@@ -128,21 +133,21 @@ export function CommentSummaryPanel({
           {totalComments === 0 ? (
             <>
               <Ionicons name="chatbubbles-outline" size={36} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>No comments yet</Text>
-              <Text style={styles.emptyDesc}>
+              <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>No comments yet</Text>
+              <Text style={[styles.emptyDesc, { color: COLORS.textSecondary }]}>
                 Add some discussion to the report before generating a summary.
               </Text>
             </>
           ) : (
             <>
               <Ionicons name="sparkles-outline" size={36} color={COLORS.primary} />
-              <Text style={styles.emptyTitle}>Summarize Discussion</Text>
-              <Text style={styles.emptyDesc}>
+              <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>Summarize Discussion</Text>
+              <Text style={[styles.emptyDesc, { color: COLORS.textSecondary }]}>
                 GPT-4o will read all {totalComments} comment{totalComments !== 1 ? 's' : ''} and extract decisions, open questions, and action items.
               </Text>
               <TouchableOpacity
                 onPress={onGenerate}
-                style={styles.generateBtn}
+                style={[styles.generateBtn, { backgroundColor: COLORS.primary }]}
                 activeOpacity={0.85}
               >
                 <Ionicons name="sparkles" size={16} color="#FFF" />
@@ -160,8 +165,8 @@ export function CommentSummaryPanel({
           {summary.keyThemes.length > 0 && (
             <View style={styles.themesWrap}>
               {summary.keyThemes.map((theme, i) => (
-                <View key={i} style={styles.themeChip}>
-                  <Text style={styles.themeChipText}>{theme}</Text>
+                <View key={i} style={[styles.themeChip, { backgroundColor: `${COLORS.info}15`, borderColor: `${COLORS.info}25` }]}>
+                  <Text style={[styles.themeChipText, { color: COLORS.info }]}>{theme}</Text>
                 </View>
               ))}
             </View>
@@ -176,7 +181,7 @@ export function CommentSummaryPanel({
               <Animated.View
                 key={section.key}
                 layout={Layout.springify()}
-                style={styles.section}
+                style={[styles.section, { borderBottomColor: COLORS.border }]}
               >
                 <TouchableOpacity
                   onPress={() => toggleSection(section.key)}
@@ -204,12 +209,12 @@ export function CommentSummaryPanel({
                 {isExpanded && (
                   <Animated.View entering={FadeInDown.duration(200)}>
                     {items.length === 0 ? (
-                      <Text style={styles.sectionEmpty}>{section.emptyText}</Text>
+                      <Text style={[styles.sectionEmpty, { color: COLORS.textMuted }]}>{section.emptyText}</Text>
                     ) : (
                       items.map((item, i) => (
                         <View key={i} style={styles.bulletRow}>
                           <View style={[styles.bulletDot, { backgroundColor: section.color }]} />
-                          <Text style={styles.bulletText}>{item}</Text>
+                          <Text style={[styles.bulletText, { color: COLORS.textSecondary }]}>{item}</Text>
                         </View>
                       ))
                     )}
@@ -221,14 +226,14 @@ export function CommentSummaryPanel({
 
           {/* Regenerate / timestamp row */}
           <View style={styles.footer}>
-            <Text style={styles.footerTimestamp}>
+            <Text style={[styles.footerTimestamp, { color: COLORS.textMuted }]}>
               Generated {new Date(summary.generatedAt).toLocaleTimeString('en-US', {
                 hour: '2-digit', minute: '2-digit',
               })}
             </Text>
-            <TouchableOpacity onPress={onGenerate} style={styles.regenerateBtn} activeOpacity={0.8}>
+            <TouchableOpacity onPress={onGenerate} style={[styles.regenerateBtn, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]} activeOpacity={0.8}>
               <Ionicons name="refresh-outline" size={13} color={COLORS.primary} />
-              <Text style={styles.regenerateBtnText}>Regenerate</Text>
+              <Text style={[styles.regenerateBtnText, { color: COLORS.primary }]}>Regenerate</Text>
             </TouchableOpacity>
           </View>
         </Animated.View>
@@ -242,7 +247,7 @@ export function CommentSummaryPanel({
           activeOpacity={0.75}
         >
           <Ionicons name="chevron-down-outline" size={13} color={COLORS.textMuted} />
-          <Text style={styles.expandHintText}>Tap any section to expand</Text>
+          <Text style={[styles.expandHintText, { color: COLORS.textMuted }]}>Tap any section to expand</Text>
         </TouchableOpacity>
       )}
     </Animated.View>
@@ -253,10 +258,8 @@ export function CommentSummaryPanel({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: COLORS.backgroundCard,
     borderRadius:    RADIUS.xl,
     borderWidth:     1,
-    borderColor:     `${COLORS.primary}30`,
     overflow:        'hidden',
     marginBottom:    SPACING.md,
   },
@@ -265,21 +268,19 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row', alignItems: 'center',
     padding: SPACING.md,
-    borderBottomWidth: 1, borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
   },
   headerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   headerIconWrap: {
     width: 32, height: 32, borderRadius: 10,
-    backgroundColor: `${COLORS.primary}15`,
     alignItems: 'center', justifyContent: 'center',
   },
-  headerTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '800' },
-  headerMeta:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 1 },
+  headerTitle: { fontSize: FONTS.sizes.sm, fontWeight: '800' },
+  headerMeta:  { fontSize: FONTS.sizes.xs, marginTop: 1 },
   closeBtn: {
     width: 28, height: 28, borderRadius: 8,
-    backgroundColor: COLORS.backgroundElevated,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
+    borderWidth: 1,
   },
 
   // Generating
@@ -287,35 +288,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 10,
     padding: SPACING.lg,
   },
-  generatingText: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm },
+  generatingText: { fontSize: FONTS.sizes.sm },
 
   // Error
   errorWrap: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     padding: SPACING.md, flexWrap: 'wrap',
   },
-  errorText:    { color: COLORS.error, fontSize: FONTS.sizes.sm, flex: 1 },
+  errorText:    { fontSize: FONTS.sizes.sm, flex: 1 },
   retryBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: `${COLORS.primary}12`,
     borderRadius: RADIUS.lg,
     paddingHorizontal: 10, paddingVertical: 5,
-    borderWidth: 1, borderColor: `${COLORS.primary}30`,
+    borderWidth: 1,
   },
-  retryBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  retryBtnText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
   // Empty
   emptyWrap: {
     alignItems: 'center', padding: SPACING.xl, gap: 10,
   },
-  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
+  emptyTitle: { fontSize: FONTS.sizes.base, fontWeight: '700' },
   emptyDesc:  {
-    color: COLORS.textSecondary, fontSize: FONTS.sizes.sm,
+    fontSize: FONTS.sizes.sm,
     textAlign: 'center', lineHeight: 20, maxWidth: 280,
   },
   generateBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 7,
-    backgroundColor: COLORS.primary,
     borderRadius: RADIUS.lg,
     paddingHorizontal: SPACING.lg, paddingVertical: 12,
     marginTop: 4,
@@ -328,16 +327,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md, paddingTop: SPACING.md,
   },
   themeChip: {
-    backgroundColor: `${COLORS.info}15`,
     borderRadius: RADIUS.full,
     paddingHorizontal: 10, paddingVertical: 4,
-    borderWidth: 1, borderColor: `${COLORS.info}25`,
+    borderWidth: 1,
   },
-  themeChipText: { color: COLORS.info, fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  themeChipText: { fontSize: FONTS.sizes.xs, fontWeight: '600' },
 
   // Sections
   section: {
-    borderBottomWidth: 1, borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
     paddingHorizontal: SPACING.md,
   },
   sectionHeader: {
@@ -356,7 +354,7 @@ const styles = StyleSheet.create({
   },
   sectionCount:  { fontSize: FONTS.sizes.xs, fontWeight: '800' },
   sectionEmpty:  {
-    color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
+    fontSize: FONTS.sizes.xs,
     fontStyle: 'italic', paddingBottom: 12,
   },
 
@@ -370,7 +368,7 @@ const styles = StyleSheet.create({
     marginTop: 6, flexShrink: 0,
   },
   bulletText: {
-    color: COLORS.textSecondary, fontSize: FONTS.sizes.sm,
+    fontSize: FONTS.sizes.sm,
     lineHeight: 20, flex: 1,
   },
 
@@ -379,20 +377,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     padding: SPACING.md,
   },
-  footerTimestamp: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  footerTimestamp: { fontSize: FONTS.sizes.xs },
   regenerateBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: `${COLORS.primary}12`,
     borderRadius: RADIUS.lg,
     paddingHorizontal: 10, paddingVertical: 5,
-    borderWidth: 1, borderColor: `${COLORS.primary}25`,
+    borderWidth: 1,
   },
-  regenerateBtnText: { color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  regenerateBtnText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
   // Expand hint
   expandHint: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
     paddingBottom: SPACING.sm,
   },
-  expandHintText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  expandHintText: { fontSize: FONTS.sizes.xs },
 });

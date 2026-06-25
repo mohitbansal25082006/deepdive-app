@@ -1,5 +1,7 @@
 // src/components/workspace/CommentInput.tsx
 // Redesigned bottom comment composer — cleaner, tighter, better UX.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React, { useState, useRef } from 'react';
 import {
@@ -36,17 +38,24 @@ export function CommentInput({ sectionTitle, isSending, onSubmit, onClearSection
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={90}
     >
-      <View style={[styles.container, focused && styles.containerFocused]}>
+      <View style={[
+        styles.container, 
+        { backgroundColor: COLORS.backgroundCard, borderTopColor: COLORS.border },
+        focused && { borderTopColor: `${COLORS.primary}40` }
+      ]}>
 
         {/* Section banner */}
         {sectionTitle ? (
           <Animated.View
             entering={FadeIn.duration(180)}
             exiting={FadeOut.duration(180)}
-            style={styles.sectionBanner}
+            style={[
+              styles.sectionBanner, 
+              { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }
+            ]}
           >
             <Ionicons name="bookmark" size={11} color={COLORS.primary} />
-            <Text style={styles.sectionBannerText} numberOfLines={1}>
+            <Text style={[styles.sectionBannerText, { color: COLORS.primary }]} numberOfLines={1}>
               {sectionTitle}
             </Text>
             <TouchableOpacity
@@ -61,7 +70,17 @@ export function CommentInput({ sectionTitle, isSending, onSubmit, onClearSection
 
         {/* Input row */}
         <View style={styles.inputRow}>
-          <View style={[styles.inputWrap, focused && styles.inputWrapFocused]}>
+          <View style={[
+            styles.inputWrap, 
+            { 
+              backgroundColor: COLORS.backgroundElevated, 
+              borderColor: COLORS.border 
+            },
+            focused && { 
+              borderColor: `${COLORS.primary}50`, 
+              backgroundColor: `${COLORS.primary}06` 
+            }
+          ]}>
             <TextInput
               ref={inputRef}
               value={text}
@@ -74,7 +93,7 @@ export function CommentInput({ sectionTitle, isSending, onSubmit, onClearSection
                   : 'Add a comment…'
               }
               placeholderTextColor={COLORS.textMuted}
-              style={styles.input}
+              style={[styles.input, { color: COLORS.textPrimary }]}
               multiline
               maxLength={2000}
             />
@@ -84,7 +103,11 @@ export function CommentInput({ sectionTitle, isSending, onSubmit, onClearSection
             onPress={handleSubmit}
             disabled={!canSend}
             activeOpacity={0.8}
-            style={[styles.sendBtn, canSend ? styles.sendBtnActive : styles.sendBtnInactive]}
+            style={[
+              styles.sendBtn,
+              canSend ? styles.sendBtnActive : styles.sendBtnInactive,
+              canSend ? { backgroundColor: COLORS.primary } : { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }
+            ]}
           >
             <Ionicons
               name={isSending ? 'hourglass-outline' : 'send'}
@@ -101,8 +124,6 @@ export function CommentInput({ sectionTitle, isSending, onSubmit, onClearSection
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    backgroundColor: COLORS.backgroundCard,
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,
   },
@@ -115,16 +136,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: `${COLORS.primary}12`,
     borderRadius: RADIUS.md,
     paddingHorizontal: 10,
     paddingVertical: 6,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: `${COLORS.primary}25`,
   },
   sectionBannerText: {
-    color: COLORS.primary,
     fontSize: FONTS.sizes.xs,
     fontWeight: '600',
     flex: 1,
@@ -138,10 +156,8 @@ const styles = StyleSheet.create({
   },
   inputWrap: {
     flex: 1,
-    backgroundColor: COLORS.backgroundElevated,
     borderRadius: RADIUS.xl,
     borderWidth: 1,
-    borderColor: COLORS.border,
     paddingHorizontal: 14,
     paddingVertical: 9,
     minHeight: 42,
@@ -152,7 +168,6 @@ const styles = StyleSheet.create({
     backgroundColor: `${COLORS.primary}06`,
   },
   input: {
-    color: COLORS.textPrimary,
     fontSize: FONTS.sizes.sm,
     lineHeight: 20,
     padding: 0,
@@ -171,8 +186,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   sendBtnInactive: {
-    backgroundColor: COLORS.backgroundElevated,
     borderWidth: 1,
-    borderColor: COLORS.border,
   },
 });

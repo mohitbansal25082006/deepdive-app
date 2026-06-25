@@ -1,6 +1,8 @@
 // src/components/workspace/CommentReactionBar.tsx
 // Part 11 — Emoji reaction chips shown below each comment.
 // FIX: summaries defaults to [] so .some() never crashes on undefined.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
@@ -13,7 +15,7 @@ const EMOJI_COLORS: Record<string, string> = {
   '👍': COLORS.primary,
   '✅': COLORS.success,
   '❓': COLORS.warning,
-  '🔥': '#FF6B35',
+  '🔥': COLORS.secondary,
 };
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -60,13 +62,17 @@ export function CommentReactionBar({ summaries = [], onToggle, disabled = false 
             activeOpacity={disabled ? 1 : 0.75}
             style={[
               styles.chip,
+              { 
+                backgroundColor: COLORS.backgroundCard, 
+                borderColor: COLORS.border 
+              },
               reacted && { backgroundColor: `${color}20`, borderColor: `${color}50` },
               disabled && styles.chipDisabled,
             ]}
           >
             <Text style={styles.emoji}>{emoji}</Text>
             {count > 0 && (
-              <Text style={[styles.count, reacted && { color }]}>{count}</Text>
+              <Text style={[styles.count, { color: COLORS.textSecondary }, reacted && { color }]}>{count}</Text>
             )}
           </TouchableOpacity>
         );
@@ -88,10 +94,8 @@ const styles = StyleSheet.create({
     flexDirection:   'row',
     alignItems:      'center',
     gap:             4,
-    backgroundColor: COLORS.backgroundCard,
     borderRadius:    RADIUS.full,
     borderWidth:     1,
-    borderColor:     COLORS.border,
     paddingHorizontal: 8,
     paddingVertical:   4,
   },
@@ -102,7 +106,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   count: {
-    color:      COLORS.textSecondary,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '700',
     minWidth:   10,

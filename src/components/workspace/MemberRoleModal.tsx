@@ -1,15 +1,18 @@
 // src/components/workspace/MemberRoleModal.tsx
 // Bottom sheet for changing a member's role (owner-only action).
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for backdrop.
+//             No dark-only assumptions.
 
 import React from 'react';
 import {
   View, Text, TouchableOpacity, Modal, StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn, SlideInDown } from 'react-native-reanimated';
+import Animated, { FadeIn, SlideInUp, SlideOutDown, Easing } from 'react-native-reanimated';
 import { WorkspaceMember, WorkspaceRole } from '../../types';
 import { MemberAvatar } from './MemberAvatar';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
 
 const ROLE_OPTIONS: { role: Exclude<WorkspaceRole,'owner'>; label: string; desc: string; color: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { role: 'editor', label: 'Editor', desc: 'Can add reports and leave comments', color: COLORS.primary, icon: 'create-outline' },
@@ -35,15 +38,29 @@ export function MemberRoleModal({
     setTimeout(() => onRemove(member.userId), 300);
   };
 
+  const backdropColor = getModalBackdrop(0.7);
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Animated.View entering={FadeIn.duration(200)} style={styles.backdrop}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+      <Animated.View
+        entering={FadeIn.duration(200)}
+        style={[styles.backdrop, { backgroundColor: backdropColor }]}
+      >
         <TouchableOpacity style={{ flex: 1 }} onPress={onClose} activeOpacity={1} />
-        <Animated.View entering={SlideInDown.duration(350).springify()} style={styles.sheet}>
-          <View style={styles.handle} />
+        <Animated.View
+          entering={SlideInUp.duration(340).easing(Easing.out(Easing.cubic))}
+          exiting={SlideOutDown.duration(220).easing(Easing.in(Easing.quad))}
+          style={[
+            styles.sheet,
+            {
+              backgroundColor: COLORS.backgroundCard,
+            },
+          ]}
+        >
+          <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
 
           {/* Member info */}
-          <View style={styles.memberRow}>
+          <View style={[styles.memberRow, { backgroundColor: COLORS.backgroundElevated }]}>
             <MemberAvatar
               profile={member.profile}
               role={member.role}
@@ -53,7 +70,7 @@ export function MemberRoleModal({
             />
           </View>
 
-          <Text style={styles.sectionTitle}>Change Role</Text>
+          <Text style={[styles.sectionTitle, { color: COLORS.textMuted }]}>Change Role</Text>
 
           {ROLE_OPTIONS.map((opt) => (
             <TouchableOpacity
@@ -62,7 +79,11 @@ export function MemberRoleModal({
               disabled={isUpdating || member.role === opt.role}
               style={[
                 styles.optionRow,
-                member.role === opt.role && styles.optionRowActive,
+                { borderColor: COLORS.border },
+                member.role === opt.role && {
+                  borderColor: `${COLORS.primary}50`,
+                  backgroundColor: `${COLORS.primary}08`,
+                },
               ]}
               activeOpacity={0.8}
             >
@@ -70,8 +91,12 @@ export function MemberRoleModal({
                 <Ionicons name={opt.icon} size={18} color={opt.color} />
               </View>
               <View style={styles.optionInfo}>
-                <Text style={styles.optionLabel}>{opt.label}</Text>
-                <Text style={styles.optionDesc}>{opt.desc}</Text>
+                <Text style={[styles.optionLabel, { color: COLORS.textPrimary }]}>
+                  {opt.label}
+                </Text>
+                <Text style={[styles.optionDesc, { color: COLORS.textMuted }]}>
+                  {opt.desc}
+                </Text>
               </View>
               {member.role === opt.role && (
                 <Ionicons name="checkmark-circle" size={20} color={opt.color} />
@@ -80,15 +105,21 @@ export function MemberRoleModal({
           ))}
 
           {/* Danger zone */}
-          <View style={styles.divider} />
+          <View style={[styles.divider, { backgroundColor: COLORS.border }]} />
           <TouchableOpacity
             onPress={handleRemove}
             disabled={isUpdating}
-            style={styles.removeBtn}
+            style={[
+              styles.removeBtn,
+              {
+                backgroundColor: `${COLORS.error}10`,
+                borderColor: `${COLORS.error}30`,
+              },
+            ]}
             activeOpacity={0.8}
           >
             <Ionicons name="person-remove-outline" size={16} color={COLORS.error} />
-            <Text style={styles.removeText}>Remove from workspace</Text>
+            <Text style={[styles.removeText, { color: COLORS.error }]}>Remove from workspace</Text>
           </TouchableOpacity>
         </Animated.View>
       </Animated.View>
@@ -97,30 +128,76 @@ export function MemberRoleModal({
 }
 
 const styles = StyleSheet.create({
-  backdrop:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  backdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
   sheet: {
-    backgroundColor: COLORS.backgroundCard,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    padding: SPACING.xl, paddingTop: SPACING.md,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: SPACING.xl,
+    paddingTop: SPACING.md,
   },
-  handle:       { width: 40, height: 4, backgroundColor: COLORS.border, borderRadius: 2, alignSelf: 'center', marginBottom: SPACING.md },
-  memberRow:    { backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.lg },
-  sectionTitle: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.sm },
+  handle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: SPACING.md,
+  },
+  memberRow: {
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  sectionTitle: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: '600',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: SPACING.sm,
+  },
   optionRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 14,
-    padding: SPACING.md, borderRadius: RADIUS.lg, marginBottom: SPACING.sm,
-    borderWidth: 1, borderColor: COLORS.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: SPACING.md,
+    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.sm,
+    borderWidth: 1,
   },
-  optionRowActive:{ borderColor: `${COLORS.primary}50`, backgroundColor: `${COLORS.primary}08` },
-  optionIcon:   { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  optionInfo:   { flex: 1 },
-  optionLabel:  { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '600' },
-  optionDesc:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
-  divider:      { height: 1, backgroundColor: COLORS.border, marginVertical: SPACING.md },
+  optionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  optionInfo: {
+    flex: 1,
+  },
+  optionLabel: {
+    fontSize: FONTS.sizes.base,
+    fontWeight: '600',
+  },
+  optionDesc: {
+    fontSize: FONTS.sizes.xs,
+    marginTop: 2,
+  },
+  divider: {
+    height: 1,
+    marginVertical: SPACING.md,
+  },
   removeBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    padding: SPACING.md, borderRadius: RADIUS.lg,
-    backgroundColor: `${COLORS.error}10`, borderWidth: 1, borderColor: `${COLORS.error}30`,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: SPACING.md,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
   },
-  removeText:   { color: COLORS.error, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  removeText: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: '600',
+  },
 });

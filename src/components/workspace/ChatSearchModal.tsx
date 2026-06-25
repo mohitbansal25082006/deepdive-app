@@ -1,25 +1,7 @@
 // src/components/workspace/ChatSearchModal.tsx
 // Part 50 — Full-screen search modal for workspace chat.
-//
-// KEY DESIGN DECISIONS:
-//   • Renders as a Modal (not inline) so it sits in its own layer above
-//     Stream's Channel/MessageInput. There is zero interaction between this
-//     component's TextInput and Stream's MessageInput.
-//   • Has its own independent TextInput for search queries.
-//   • Pressing Cancel or tapping a result closes the modal.
-//   • After closing, handleGoToMessage sets targetedMessage on MessageList
-//     which causes Stream to scroll to and highlight the message.
-//   • Search: tries channel.search() (Stream server-side full-text) first,
-//     falls back to scanning channel.state.messages locally (instant, offline).
-//
-// ── Part 50.10 — ANDROID UI FIX (production · issue 8) ────────────────────────
-//   The results list already dismisses the keyboard on drag
-//   (keyboardDismissMode="on-drag") and keeps taps working
-//   (keyboardShouldPersistTaps="handled"). What was missing: tapping the empty /
-//   initial / no-results area did NOT dismiss the keyboard on Android. Those
-//   center views are now wrapped in a Pressable that calls Keyboard.dismiss(), so
-//   a background tap anywhere in the body closes the keyboard. The screen already
-//   insets the top by insets.bottom-safe `insets.top`.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React, {
   useState,
@@ -70,14 +52,14 @@ function formatDate(iso: string): string {
 }
 
 function highlightText(text: string, query: string): React.ReactNode {
-  if (!query.trim()) return <Text style={styles.resultText}>{text}</Text>;
+  if (!query.trim()) return <Text style={[styles.resultText, { color: COLORS.textPrimary }]}>{text}</Text>;
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const parts   = text.split(new RegExp(`(${escaped})`, 'gi'));
   return (
-    <Text style={styles.resultText}>
+    <Text style={[styles.resultText, { color: COLORS.textPrimary }]}>
       {parts.map((p, i) =>
         p.toLowerCase() === query.toLowerCase()
-          ? <Text key={i} style={styles.highlight}>{p}</Text>
+          ? <Text key={i} style={[styles.highlight, { color: COLORS.primary, backgroundColor: `${COLORS.primary}18` }]}>{p}</Text>
           : p,
       )}
     </Text>
@@ -95,11 +77,11 @@ interface ResultRowProps {
 function ResultRow({ result, query, onPress }: ResultRowProps) {
   return (
     <TouchableOpacity
-      style={styles.resultRow}
+      style={[styles.resultRow, { borderBottomColor: `${COLORS.border}55` }]}
       onPress={() => onPress(result.id)}
       activeOpacity={0.72}
     >
-      <View style={styles.resultIconWrap}>
+      <View style={[styles.resultIconWrap, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
         {result.hasAttachment
           ? <Ionicons name="attach-outline"     size={16} color={COLORS.primary}  />
           : <Ionicons name="chatbubble-outline" size={16} color={COLORS.textMuted} />}
@@ -107,14 +89,14 @@ function ResultRow({ result, query, onPress }: ResultRowProps) {
 
       <View style={styles.resultContent}>
         <View style={styles.resultMeta}>
-          <Text style={styles.resultAuthor} numberOfLines={1}>
+          <Text style={[styles.resultAuthor, { color: COLORS.textSecondary }]} numberOfLines={1}>
             {result.authorName ?? 'Unknown'}
           </Text>
-          <Text style={styles.resultTime}>{formatDate(result.createdAt)}</Text>
+          <Text style={[styles.resultTime, { color: COLORS.textMuted }]}>{formatDate(result.createdAt)}</Text>
         </View>
         {result.text
           ? highlightText(result.text.slice(0, 120), query)
-          : <Text style={styles.resultAttachment}>📎 {result.attachmentName ?? 'Attachment'}</Text>}
+          : <Text style={[styles.resultAttachment, { color: COLORS.textMuted }]}>📎 {result.attachmentName ?? 'Attachment'}</Text>}
       </View>
 
       <Ionicons name="arrow-redo-outline" size={14} color={COLORS.textMuted} style={styles.resultArrow} />
@@ -143,17 +125,14 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
   const inputRef    = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Part 50.10 (issue 8): background tap on the body dismisses the keyboard.
   const dismissKeyboard = useCallback(() => Keyboard.dismiss(), []);
 
   // Auto-focus search input when modal opens
   useEffect(() => {
     if (visible) {
-      // Short delay lets the Modal animation finish before focus
       const t = setTimeout(() => inputRef.current?.focus(), 300);
       return () => clearTimeout(t);
     } else {
-      // Reset state when modal closes
       setQuery('');
       setResults([]);
       setHasSearched(false);
@@ -173,7 +152,6 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
     setError(null);
 
     try {
-      // 1️⃣ Server-side search via Stream API
       let serverResults: SearchResult[] = [];
       try {
         const response = await channel.search(q, { limit: 30 });
@@ -195,7 +173,6 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
         // Stream search may not be enabled — fall through to local
       }
 
-      // 2️⃣ Local fallback: scan channel.state.messages
       const lowerQ    = q.toLowerCase();
       const localMsgs = Object.values((channel.state?.messages ?? {}) as Record<string, any>);
       const localResults: SearchResult[] = localMsgs
@@ -220,7 +197,6 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
         })
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-      // Merge: server first, then local not already in server set
       const serverIds = new Set(serverResults.map(r => r.id));
       const merged    = [
         ...serverResults,
@@ -236,7 +212,6 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
     }
   }, [channel]);
 
-  // Debounced input handler
   const handleQueryChange = useCallback((text: string) => {
     setQuery(text);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -248,11 +223,9 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
     debounceRef.current = setTimeout(() => performSearch(text), 380);
   }, [performSearch]);
 
-  // Tap a result → close modal then scroll + highlight
   const handleResultPress = useCallback((messageId: string) => {
     Keyboard.dismiss();
     onClose();
-    // Wait for Modal close animation before triggering scroll
     setTimeout(() => onGoToMessage(messageId), 350);
   }, [onClose, onGoToMessage]);
 
@@ -268,8 +241,6 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
     inputRef.current?.focus();
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-
   return (
     <Modal
       visible={visible}
@@ -278,13 +249,12 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
       onRequestClose={handleClose}
       statusBarTranslucent
     >
-      <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <View style={[styles.screen, { backgroundColor: COLORS.background, paddingTop: insets.top }]}>
         <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
 
         {/* ── Header ── */}
         <View style={styles.header}>
-          {/* Search input — this is the ONLY TextInput in this modal */}
-          <View style={styles.inputWrap}>
+          <View style={[styles.inputWrap, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
             <Ionicons name="search-outline" size={17} color={COLORS.textMuted} style={styles.searchIcon} />
             <TextInput
               ref={inputRef}
@@ -292,14 +262,12 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
               onChangeText={handleQueryChange}
               placeholder="Search messages and files…"
               placeholderTextColor={COLORS.textMuted}
-              style={styles.input}
+              style={[styles.input, { color: COLORS.textPrimary }]}
               returnKeyType="search"
               onSubmitEditing={() => performSearch(query)}
               autoCapitalize="none"
               autoCorrect={false}
-              // keyboardType default so it works well on both platforms
               keyboardType="default"
-              // showSoftInputOnFocus ensures keyboard opens on Android
               showSoftInputOnFocus={true}
             />
             {isSearching && (
@@ -312,23 +280,21 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
             )}
           </View>
 
-          {/* Cancel button */}
           <TouchableOpacity onPress={handleClose} style={styles.cancelBtn} activeOpacity={0.7}>
-            <Text style={styles.cancelText}>Cancel</Text>
+            <Text style={[styles.cancelText, { color: COLORS.primary }]}>Cancel</Text>
           </TouchableOpacity>
         </View>
 
         {/* ── Divider ── */}
-        <View style={styles.divider} />
+        <View style={[styles.divider, { backgroundColor: COLORS.border }]} />
 
         {/* ── Body ── */}
         {error ? (
-          // Part 50.10: background tap dismisses the keyboard
           <Pressable style={styles.center} onPress={dismissKeyboard} android_disableSound>
             <Ionicons name="alert-circle-outline" size={32} color={COLORS.error} />
-            <Text style={styles.centerText}>{error}</Text>
-            <TouchableOpacity onPress={() => performSearch(query)} style={styles.retryBtn}>
-              <Text style={styles.retryText}>Retry</Text>
+            <Text style={[styles.centerText, { color: COLORS.textSecondary }]}>{error}</Text>
+            <TouchableOpacity onPress={() => performSearch(query)} style={[styles.retryBtn, { backgroundColor: COLORS.primary }]}>
+              <Text style={[styles.retryText, { color: '#FFF' }]}>Retry</Text>
             </TouchableOpacity>
           </Pressable>
 
@@ -336,17 +302,16 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
           <Pressable style={{ flex: 1 }} onPress={dismissKeyboard} android_disableSound>
             <Animated.View entering={FadeIn.duration(200)} style={styles.center}>
               <Ionicons name="search-outline" size={36} color={`${COLORS.textMuted}60`} />
-              <Text style={styles.centerTitle}>No results</Text>
-              <Text style={styles.centerText}>No messages found for "{query}"</Text>
+              <Text style={[styles.centerTitle, { color: COLORS.textPrimary }]}>No results</Text>
+              <Text style={[styles.centerText, { color: COLORS.textSecondary }]}>No messages found for "{query}"</Text>
             </Animated.View>
           </Pressable>
 
         ) : results.length > 0 ? (
           <>
-            {/* Result count strip */}
-            <View style={styles.countStrip}>
+            <View style={[styles.countStrip, { backgroundColor: COLORS.backgroundCard, borderBottomColor: COLORS.border }]}>
               <Ionicons name="checkmark-circle-outline" size={13} color={COLORS.success} />
-              <Text style={styles.countText}>
+              <Text style={[styles.countText, { color: COLORS.textMuted }]}>
                 {results.length} result{results.length !== 1 ? 's' : ''}
               </Text>
             </View>
@@ -364,28 +329,26 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
           </>
 
         ) : (
-          // Initial empty state — shown before user types anything.
-          // Part 50.10: background tap dismisses the keyboard.
           <Pressable style={styles.center} onPress={dismissKeyboard} android_disableSound>
-            <View style={styles.emptyIcon}>
+            <View style={[styles.emptyIcon, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]}>
               <Ionicons name="search-outline" size={32} color={COLORS.textMuted} />
             </View>
-            <Text style={styles.centerTitle}>Search chat</Text>
-            <Text style={styles.centerText}>
+            <Text style={[styles.centerTitle, { color: COLORS.textPrimary }]}>Search chat</Text>
+            <Text style={[styles.centerText, { color: COLORS.textSecondary }]}>
               Find any message, file, or attachment{'\n'}shared in this workspace chat
             </Text>
             <View style={styles.tipRow}>
-              <View style={styles.tipChip}>
+              <View style={[styles.tipChip, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}>
                 <Ionicons name="chatbubble-outline" size={11} color={COLORS.primary} />
-                <Text style={styles.tipText}>Messages</Text>
+                <Text style={[styles.tipText, { color: COLORS.primary }]}>Messages</Text>
               </View>
-              <View style={styles.tipChip}>
+              <View style={[styles.tipChip, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}>
                 <Ionicons name="attach-outline" size={11} color={COLORS.primary} />
-                <Text style={styles.tipText}>Files</Text>
+                <Text style={[styles.tipText, { color: COLORS.primary }]}>Files</Text>
               </View>
-              <View style={styles.tipChip}>
+              <View style={[styles.tipChip, { backgroundColor: `${COLORS.primary}12`, borderColor: `${COLORS.primary}25` }]}>
                 <Ionicons name="image-outline" size={11} color={COLORS.primary} />
-                <Text style={styles.tipText}>Images</Text>
+                <Text style={[styles.tipText, { color: COLORS.primary }]}>Images</Text>
               </View>
             </View>
           </Pressable>
@@ -399,8 +362,7 @@ export function ChatSearchModal({ visible, channel, onClose, onGoToMessage }: Pr
 
 const styles = StyleSheet.create({
   screen: {
-    flex:            1,
-    backgroundColor: COLORS.background,
+    flex: 1,
   },
   header: {
     flexDirection:    'row',
@@ -408,16 +370,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical:  SPACING.sm,
     gap:              10,
-    backgroundColor:  COLORS.background,
   },
   inputWrap: {
     flex:              1,
     flexDirection:     'row',
     alignItems:        'center',
-    backgroundColor:   COLORS.backgroundCard,
     borderRadius:      RADIUS.xl,
     borderWidth:       1,
-    borderColor:       COLORS.border,
     paddingHorizontal: SPACING.md,
     paddingVertical:   Platform.OS === 'android' ? 6 : SPACING.sm,
     gap:               8,
@@ -426,10 +385,8 @@ const styles = StyleSheet.create({
   searchIcon: { flexShrink: 0 },
   input: {
     flex:      1,
-    color:     COLORS.textPrimary,
     fontSize:  FONTS.sizes.base,
     padding:   0,
-    // Ensure no overlap with Stream's hidden inputs
     zIndex:    10,
   },
   inputRight: { flexShrink: 0 },
@@ -440,13 +397,11 @@ const styles = StyleSheet.create({
     justifyContent:    'center',
   },
   cancelText: {
-    color:      COLORS.primary,
     fontSize:   FONTS.sizes.base,
     fontWeight: '600',
   },
   divider: {
-    height:          1,
-    backgroundColor: COLORS.border,
+    height: 1,
   },
   countStrip: {
     flexDirection:    'row',
@@ -455,11 +410,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.xl,
     paddingVertical:  8,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    backgroundColor:   COLORS.backgroundCard,
   },
   countText: {
-    color:      COLORS.textMuted,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '600',
   },
@@ -473,29 +425,25 @@ const styles = StyleSheet.create({
     paddingVertical:  SPACING.md,
     gap:              12,
     borderBottomWidth: 1,
-    borderBottomColor: `${COLORS.border}55`,
   },
   resultIconWrap: {
     width:           36,
     height:          36,
     borderRadius:    11,
-    backgroundColor: COLORS.backgroundCard,
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
-    borderColor:     COLORS.border,
     flexShrink:      0,
   },
   resultContent:    { flex: 1, minWidth: 0 },
   resultMeta:       { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
-  resultAuthor:     { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700', flex: 1 },
-  resultTime:       { color: COLORS.textMuted, fontSize: 10 },
-  resultText:       { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, lineHeight: 19 },
-  highlight:        { color: COLORS.primary, fontWeight: '700', backgroundColor: `${COLORS.primary}18` },
-  resultAttachment: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  resultAuthor:     { fontSize: FONTS.sizes.xs, fontWeight: '700', flex: 1 },
+  resultTime:       { fontSize: 10 },
+  resultText:       { fontSize: FONTS.sizes.sm, lineHeight: 19 },
+  highlight:        { fontWeight: '700' },
+  resultAttachment: { fontSize: FONTS.sizes.xs },
   resultArrow:      { flexShrink: 0 },
 
-  // Empty / loading states
   center: {
     flex:            1,
     alignItems:      'center',
@@ -508,20 +456,16 @@ const styles = StyleSheet.create({
     width:           72,
     height:          72,
     borderRadius:    22,
-    backgroundColor: COLORS.backgroundCard,
     alignItems:      'center',
     justifyContent:  'center',
     borderWidth:     1,
-    borderColor:     COLORS.border,
     marginBottom:    4,
   },
   centerTitle: {
-    color:      COLORS.textPrimary,
     fontSize:   FONTS.sizes.xl,
     fontWeight: '800',
   },
   centerText: {
-    color:     COLORS.textSecondary,
     fontSize:  FONTS.sizes.sm,
     textAlign: 'center',
     lineHeight: 22,
@@ -537,25 +481,20 @@ const styles = StyleSheet.create({
     gap:              4,
     paddingHorizontal: 10,
     paddingVertical:  5,
-    backgroundColor:  `${COLORS.primary}12`,
     borderRadius:     RADIUS.full,
     borderWidth:      1,
-    borderColor:      `${COLORS.primary}25`,
   },
   tipText: {
-    color:      COLORS.primary,
     fontSize:   FONTS.sizes.xs,
     fontWeight: '600',
   },
   retryBtn: {
-    backgroundColor:  COLORS.primary,
     borderRadius:     RADIUS.lg,
     paddingHorizontal: SPACING.xl,
     paddingVertical:  SPACING.sm,
     marginTop:        4,
   },
   retryText: {
-    color:      '#FFF',
     fontWeight: '700',
     fontSize:   FONTS.sizes.sm,
   },

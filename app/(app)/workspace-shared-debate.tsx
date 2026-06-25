@@ -1,17 +1,9 @@
 // app/(app)/workspace-shared-debate.tsx
 // Part 16 — Read-only shared debate viewer for workspace members.
-//
-// Accessed from the workspace Shared tab when a member taps "View" on a SharedDebateCard.
-// Uses SECURITY DEFINER RPC so any workspace member can load the debate
-// regardless of whether they own the source debate_sessions row.
-//
-// Features:
-//   • Identical 3-tab layout to debate-detail.tsx (Overview / Perspectives / Moderator)
-//   • Export bar: PDF, Copy, Share (same as debate-detail.tsx ExportBar)
-//   • NO re-generate button — view + export only
-//   • View tracking (fire-and-forget on mount)
-//   • "Shared by X" attribution banner
-//   • Full DebatePerspectiveView + ModeratorSummary reused unchanged
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
+// Part 55.7 — Removed ViewOnlyBanner and view count from SharerBanner to maximize
+//             viewing area for the debate content.
 
 import React, {
   useState,
@@ -185,37 +177,7 @@ function ExportBar({ session, sharedId }: { session: DebateSession; sharedId: st
   );
 }
 
-// ─── View-only notice banner ──────────────────────────────────────────────────
-
-function ViewOnlyBanner() {
-  return (
-    <View style={{
-      flexDirection:   'row',
-      alignItems:      'center',
-      gap:             8,
-      backgroundColor: `${COLORS.info}08`,
-      borderRadius:    RADIUS.md,
-      paddingHorizontal: SPACING.md,
-      paddingVertical:   8,
-      marginHorizontal:  SPACING.xl,
-      marginTop:         SPACING.sm,
-      borderWidth:       1,
-      borderColor:       `${COLORS.info}20`,
-    }}>
-      <Ionicons name="eye-outline" size={14} color={COLORS.info} />
-      <Text style={{
-        flex:       1,
-        color:      COLORS.info,
-        fontSize:   FONTS.sizes.xs,
-        lineHeight: 16,
-      }}>
-        Shared debate — view and export only. Re-generation is not available.
-      </Text>
-    </View>
-  );
-}
-
-// ─── Sharer attribution banner ────────────────────────────────────────────────
+// ─── Sharer attribution banner (simplified, no view count) ──────────────────
 
 function SharerBanner({ sharedDebate }: { sharedDebate: SharedDebate }) {
   const sharedDate = new Date(sharedDebate.sharedAt).toLocaleDateString('en-US', {
@@ -232,7 +194,7 @@ function SharerBanner({ sharedDebate }: { sharedDebate: SharedDebate }) {
         backgroundColor: COLORS.backgroundCard,
         borderRadius:    RADIUS.lg,
         paddingHorizontal: SPACING.md,
-        paddingVertical:   10,
+        paddingVertical:   8,
         marginHorizontal:  SPACING.xl,
         marginTop:         SPACING.sm,
         borderWidth:       1,
@@ -240,15 +202,15 @@ function SharerBanner({ sharedDebate }: { sharedDebate: SharedDebate }) {
       }}
     >
       <View style={{
-        width:           32,
-        height:          32,
-        borderRadius:    10,
+        width:           28,
+        height:          28,
+        borderRadius:    8,
         backgroundColor: `${COLORS.primary}18`,
         alignItems:      'center',
         justifyContent:  'center',
         flexShrink:      0,
       }}>
-        <Ionicons name="person-outline" size={14} color={COLORS.primary} />
+        <Ionicons name="person-outline" size={13} color={COLORS.primary} />
       </View>
       <View style={{ flex: 1 }}>
         <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
@@ -259,22 +221,6 @@ function SharerBanner({ sharedDebate }: { sharedDebate: SharedDebate }) {
           {' '}on {sharedDate}
         </Text>
       </View>
-      {sharedDebate.viewCount > 0 && (
-        <View style={{
-          flexDirection:   'row',
-          alignItems:      'center',
-          gap:             4,
-          backgroundColor: `${COLORS.primary}10`,
-          borderRadius:    RADIUS.full,
-          paddingHorizontal: 8,
-          paddingVertical:   3,
-        }}>
-          <Ionicons name="eye-outline" size={11} color={COLORS.primary} />
-          <Text style={{ color: COLORS.primary, fontSize: 10, fontWeight: '700' }}>
-            {sharedDebate.viewCount}
-          </Text>
-        </View>
-      )}
     </Animated.View>
   );
 }
@@ -588,9 +534,8 @@ export default function WorkspaceSharedDebateScreen() {
         {/* ── Export bar ───────────────────────────────────────────────── */}
         <ExportBar session={session} sharedId={sharedId} />
 
-        {/* ── Attribution + view-only banners ─────────────────────────── */}
+        {/* ── Attribution banner (simplified, no view count) ─────────── */}
         <SharerBanner sharedDebate={sharedDebate} />
-        <ViewOnlyBanner />
 
         {/* ── Tab bar ─────────────────────────────────────────────────── */}
         <View style={{

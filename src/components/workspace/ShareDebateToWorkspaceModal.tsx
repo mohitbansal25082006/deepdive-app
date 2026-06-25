@@ -1,15 +1,17 @@
 // src/components/workspace/ShareDebateToWorkspaceModal.tsx
 // Part 55.3 — FULL THEME-COMPATIBILITY PASS
 // All hardcoded hex colors replaced with COLORS tokens.
+// Part 55.4 — Takes up 80% of screen height from the bottom.
+//             Smooth non-bouncing animation with SlideInUp + cubic easing.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, ScrollView,
-  ActivityIndicator, Alert, Image,
+  ActivityIndicator, Alert, Image, Dimensions,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }           from '@expo/vector-icons';
-import Animated, { FadeInDown, SlideInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown, SlideInUp, SlideOutDown, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { supabase }               from '../../lib/supabase';
@@ -17,6 +19,9 @@ import { shareDebateToWorkspace } from '../../services/debateSharingService';
 import { removeSharedDebate }     from '../../services/debateSharingService';
 import { WorkspaceRole }          from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS, getModalBackdrop } from '../../constants/theme';
+
+const { height: SCREEN_H } = Dimensions.get('window');
+const SHEET_HEIGHT_RATIO = 0.8; // 80% of screen height
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -304,25 +309,30 @@ export function ShareDebateToWorkspaceModal({
     }
   };
 
+  const backdropColor = getModalBackdrop(0.65);
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+      {/* Backdrop */}
       <TouchableOpacity
-        style={{ flex: 1, backgroundColor: getModalBackdrop(0.65) }}
+        style={{ flex: 1, backgroundColor: backdropColor }}
         activeOpacity={1}
         onPress={onClose}
       />
 
+      {/* Sheet — 80% height from bottom, smooth non-bouncing animation */}
       <Animated.View
-        entering={SlideInDown.duration(340).springify()}
+        entering={SlideInUp.duration(340).easing(Easing.out(Easing.cubic))}
+        exiting={SlideOutDown.duration(220).easing(Easing.in(Easing.quad))}
         style={{
           position: 'absolute', bottom: 0, left: 0, right: 0,
-          backgroundColor:      COLORS.backgroundCard,
-          borderTopLeftRadius:  26,
+          backgroundColor: COLORS.backgroundCard,
+          borderTopLeftRadius: 26,
           borderTopRightRadius: 26,
-          borderTopWidth:       1,
-          borderTopColor:       COLORS.border,
-          paddingBottom:        insets.bottom + SPACING.md,
-          maxHeight:            '88%',
+          borderTopWidth: 1,
+          borderTopColor: COLORS.border,
+          height: SCREEN_H * SHEET_HEIGHT_RATIO,
+          paddingBottom: insets.bottom + SPACING.md,
         }}
       >
         {/* Drag handle */}
@@ -436,7 +446,7 @@ export function ShareDebateToWorkspaceModal({
         </View>
 
         <ScrollView
-          contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.sm }}
+          contentContainerStyle={{ padding: SPACING.lg, gap: SPACING.sm, paddingBottom: SPACING.xl }}
           showsVerticalScrollIndicator={false}
         >
           {/* Loading */}

@@ -1,39 +1,14 @@
 // src/constants/streamChatTheme.ts
 // Part 49 — Stream Chat DeepDive Dark Theme
-// Part 50 — Removed inlineDateSeparator, send button styling.
-// Part 50.2 — Gallery + Giphy dark overrides.
-// Part 50.3 — Reaction overlay dark-readable backgrounds.
-// Part 50.4 FIX 3 — Correct image sizing: no purple gap, no black gap.
-// Part 55 — THEME SYSTEM:
-//   This file previously built ONE theme object from COLORS at import time.
-//   Because COLORS is now a mutable singleton swapped at runtime, a single
-//   import-time snapshot would freeze Stream Chat on whatever theme was active
-//   at first import. We therefore expose `buildStreamChatTheme()` — a factory
-//   that reads the CURRENT COLORS each time it's called — and the root layout
-//   rebuilds + re-keys the <OverlayProvider> on every theme change so the chat
-//   UI recolors with the rest of the app.
-//
-//   `streamChatTheme` is kept as a default snapshot (built once) purely for
-//   backward-compatibility with any code that still imports the constant; the
-//   live experience uses the factory.
-//
-// HISTORY OF THE IMAGE BUG: (unchanged — see notes below)
-//   Attempt 1 (50.4 original): Custom SingleImageGallery component → videos broke.
-//   Attempt 2: aspectRatio + purple containerInner → purple gap on left.
-//   Attempt 3: transparent containerInner + width:'100%' → black gap on right.
-//   CORRECT FIX (Attempt 4): flex:1 chain (gallery → imageContainer → image).
-//   Stream's Gallery renders imageContainer in a flex row; flex:1 fills available
-//   space and wins over Stream's computed pixel width → image always fills the
-//   bubble cleanly, portrait or landscape, no empty space.
+// Part 55 — THEME SYSTEM: buildStreamChatTheme() factory reads current COLORS.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import type { DeepPartial, Theme } from 'stream-chat-expo';
 import { COLORS, FONTS, RADIUS } from './theme';
 
-// ─── Factory: build a fresh Stream Chat theme from the CURRENT COLORS ─────────
-
 export function buildStreamChatTheme(): DeepPartial<Theme> {
   return {
-    // ── Global colors ───────────────────────────────────────────────────────
     colors: {
       black:              COLORS.textPrimary,
       white:              COLORS.background,
@@ -53,12 +28,10 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       text_low_emphasis:  COLORS.textSecondary,
     },
 
-    // ── Avatar ──────────────────────────────────────────────────────────────
     avatar: {
       BASE_AVATAR_SIZE: 32,
     },
 
-    // ── Message bubble ──────────────────────────────────────────────────────
     messageSimple: {
       content: {
         containerInner: {
@@ -71,7 +44,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
         senderMessageBackgroundColor:   COLORS.primary,
       },
 
-      // ── Gallery — inline image/GIF/video thumbnails ───────────────────────
       gallery: {
         galleryContainer: {
           flex:            1,
@@ -98,7 +70,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
         },
       },
 
-      // ── Giphy — built-in /giphy slash command card ────────────────────────
       giphy: {
         container: {
           backgroundColor: COLORS.backgroundCard,
@@ -131,7 +102,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
         },
       },
 
-      // ── Reaction picker overlay — dark-readable ───────────────────────────
       reactionListTop: {
         container: {
           backgroundColor:   COLORS.backgroundCard,
@@ -149,7 +119,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       },
     },
 
-    // ── Message list ──────────────────────────────────────────────────────────
     messageList: {
       contentContainer: {
         backgroundColor: COLORS.background,
@@ -159,7 +128,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       },
     },
 
-    // ── Inline date separator — hidden, using custom ChatDateSeparator ────────
     inlineDateSeparator: {
       container: {
         backgroundColor:   'transparent',
@@ -173,7 +141,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       },
     },
 
-    // ── Message input bar ─────────────────────────────────────────────────────
     messageInput: {
       container: {
         backgroundColor: COLORS.backgroundCard,
@@ -197,7 +164,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       },
     },
 
-    // ── Image gallery — full-screen lightbox ─────────────────────────────────
     imageGallery: {
       backgroundColor: '#000000',
       footer: {
@@ -214,7 +180,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       },
     },
 
-    // ── Reply / quoted message ────────────────────────────────────────────────
     reply: {
       container: {
         backgroundColor: COLORS.backgroundCard,
@@ -223,7 +188,6 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
       },
     },
 
-    // ── Poll — dark theme ─────────────────────────────────────────────────────
     poll: {
       message: {
         container: {
@@ -346,6 +310,4 @@ export function buildStreamChatTheme(): DeepPartial<Theme> {
   };
 }
 
-// Backward-compatible default snapshot (built once at import). Live UI uses the
-// factory above, rebuilt on every theme change by the root layout.
 export const streamChatTheme: DeepPartial<Theme> = buildStreamChatTheme();

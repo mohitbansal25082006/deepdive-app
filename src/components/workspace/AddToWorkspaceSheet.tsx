@@ -1,6 +1,9 @@
 // src/components/workspace/AddToWorkspaceSheet.tsx
 // Bottom sheet that lists the user's completed reports and lets them
 // add one (or more) to the current workspace.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for the
+//             backdrop scrim. No dark-only assumptions.
 
 import React, { useState, useMemo } from 'react';
 import {
@@ -18,7 +21,7 @@ import Animated, { FadeIn, SlideInDown } from 'react-native-reanimated';
 import { useHistory } from '../../hooks/useHistory';
 import { addReportToWorkspace } from '../../services/workspaceService';
 import { ResearchReport } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
 
 interface Props {
   workspaceId:     string;
@@ -82,6 +85,9 @@ export function AddToWorkspaceSheet({
   const alreadyIn = (id: string) =>
     existingReportIds.includes(id) || addedIds.includes(id);
 
+  // Use the theme-aware backdrop
+  const backdropColor = getModalBackdrop(0.72);
+
   const renderItem = ({ item, index }: { item: ResearchReport; index: number }) => {
     const isIn      = alreadyIn(item.id);
     const isAdding  = adding === item.id;
@@ -91,7 +97,11 @@ export function AddToWorkspaceSheet({
 
     return (
       <Animated.View entering={FadeIn.duration(300).delay(index * 30)}>
-        <View style={[styles.reportCard, isIn && styles.reportCardDimmed]}>
+        <View style={[
+          styles.reportCard, 
+          { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border },
+          isIn && styles.reportCardDimmed
+        ]}>
           {/* Top row */}
           <View style={styles.cardHeader}>
             <View style={[styles.depthBadge, { backgroundColor: `${dColor}20` }]}>
@@ -99,7 +109,7 @@ export function AddToWorkspaceSheet({
                 {item.depth?.toUpperCase() ?? 'DEEP'}
               </Text>
             </View>
-            <Text style={styles.dateText}>
+            <Text style={[styles.dateText, { color: COLORS.textMuted }]}>
               {new Date(item.createdAt).toLocaleDateString('en-US', {
                 month: 'short', day: 'numeric', year: '2-digit',
               })}
@@ -107,13 +117,13 @@ export function AddToWorkspaceSheet({
           </View>
 
           {/* Title */}
-          <Text style={styles.cardTitle} numberOfLines={2}>
+          <Text style={[styles.cardTitle, { color: COLORS.textPrimary }]} numberOfLines={2}>
             {item.title ?? item.query}
           </Text>
 
           {/* Summary */}
           {item.executiveSummary ? (
-            <Text style={styles.cardSummary} numberOfLines={2}>
+            <Text style={[styles.cardSummary, { color: COLORS.textSecondary }]} numberOfLines={2}>
               {item.executiveSummary}
             </Text>
           ) : null}
@@ -122,9 +132,9 @@ export function AddToWorkspaceSheet({
           <View style={styles.cardFooter}>
             <View style={styles.cardStats}>
               {(item.sourcesCount ?? 0) > 0 && (
-                <View style={styles.stat}>
+                <View style={[styles.stat, { backgroundColor: `${COLORS.textMuted}12` }]}>
                   <Ionicons name="link-outline" size={11} color={COLORS.textMuted} />
-                  <Text style={styles.statText}>{item.sourcesCount} sources</Text>
+                  <Text style={[styles.statText, { color: COLORS.textMuted }]}>{item.sourcesCount} sources</Text>
                 </View>
               )}
               {reliability > 0 && (
@@ -176,35 +186,35 @@ export function AddToWorkspaceSheet({
       animationType="fade"
       onRequestClose={handleClose}
     >
-      <View style={styles.backdrop}>
+      <View style={[styles.backdrop, { backgroundColor: backdropColor }]}>
         <TouchableOpacity style={styles.backdropTap} onPress={handleClose} activeOpacity={1} />
 
-        <Animated.View entering={SlideInDown.duration(380).springify()} style={styles.sheet}>
+        <Animated.View entering={SlideInDown.duration(380).springify()} style={[styles.sheet, { backgroundColor: COLORS.backgroundCard }]}>
           {/* Handle */}
-          <View style={styles.handle} />
+          <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
 
           {/* Header */}
           <View style={styles.header}>
             <View>
-              <Text style={styles.title}>Add Report to Workspace</Text>
-              <Text style={styles.subtitle}>
+              <Text style={[styles.title, { color: COLORS.textPrimary }]}>Add Report to Workspace</Text>
+              <Text style={[styles.subtitle, { color: COLORS.textMuted }]}>
                 {reports.length} report{reports.length !== 1 ? 's' : ''} in your library
               </Text>
             </View>
-            <TouchableOpacity onPress={handleClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={handleClose} style={[styles.closeBtn, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
               <Ionicons name="close" size={20} color={COLORS.textMuted} />
             </TouchableOpacity>
           </View>
 
           {/* Search */}
-          <View style={styles.searchWrap}>
+          <View style={[styles.searchWrap, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <Ionicons name="search-outline" size={16} color={COLORS.textMuted} style={{ marginLeft: 12 }} />
             <TextInput
               value={search}
               onChangeText={setSearch}
               placeholder="Search reports…"
               placeholderTextColor={COLORS.textMuted}
-              style={styles.searchInput}
+              style={[styles.searchInput, { color: COLORS.textPrimary }]}
               autoCorrect={false}
             />
             {search.length > 0 && (
@@ -218,15 +228,15 @@ export function AddToWorkspaceSheet({
           {loading ? (
             <View style={styles.loadingWrap}>
               <ActivityIndicator color={COLORS.primary} size="large" />
-              <Text style={styles.loadingText}>Loading your reports…</Text>
+              <Text style={[styles.loadingText, { color: COLORS.textMuted }]}>Loading your reports…</Text>
             </View>
           ) : filtered.length === 0 ? (
             <View style={styles.emptyWrap}>
               <Ionicons name="document-text-outline" size={40} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>
+              <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>
                 {search ? 'No matching reports' : 'No reports yet'}
               </Text>
-              <Text style={styles.emptyDesc}>
+              <Text style={[styles.emptyDesc, { color: COLORS.textSecondary }]}>
                 {search
                   ? 'Try a different search term.'
                   : 'Complete a research session first, then come back to add it here.'}
@@ -253,12 +263,10 @@ export function AddToWorkspaceSheet({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
     justifyContent: 'flex-end',
   },
   backdropTap: { flex: 1 },
   sheet: {
-    backgroundColor: COLORS.backgroundCard,
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     maxHeight: '88%',
@@ -266,7 +274,6 @@ const styles = StyleSheet.create({
   },
   handle: {
     width: 40, height: 4, borderRadius: 2,
-    backgroundColor: COLORS.border,
     alignSelf: 'center',
     marginBottom: SPACING.md,
   },
@@ -277,28 +284,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.xl,
     marginBottom: SPACING.md,
   },
-  title:    { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  subtitle: { color: COLORS.textMuted,   fontSize: FONTS.sizes.xs, marginTop: 2 },
+  title:    { fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  subtitle: { fontSize: FONTS.sizes.xs, marginTop: 2 },
   closeBtn: {
     width: 34, height: 34, borderRadius: 10,
-    backgroundColor: COLORS.backgroundElevated,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
+    borderWidth: 1,
   },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.backgroundElevated,
     borderRadius: RADIUS.lg,
     marginHorizontal: SPACING.xl,
     marginBottom: SPACING.md,
     borderWidth: 1,
-    borderColor: COLORS.border,
     gap: 8,
   },
   searchInput: {
     flex: 1,
-    color: COLORS.textPrimary,
     fontSize: FONTS.sizes.sm,
     paddingVertical: 11,
   },
@@ -306,23 +309,21 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     paddingVertical: 60, gap: 12,
   },
-  loadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+  loadingText: { fontSize: FONTS.sizes.sm },
   emptyWrap: {
     alignItems: 'center', paddingVertical: 60,
     paddingHorizontal: SPACING.xl, gap: 10,
   },
-  emptyTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
-  emptyDesc:  { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 20 },
+  emptyTitle: { fontSize: FONTS.sizes.base, fontWeight: '700' },
+  emptyDesc:  { fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 20 },
   list: { paddingHorizontal: SPACING.xl, paddingBottom: 48 },
 
   // Report card
   reportCard: {
-    backgroundColor: COLORS.backgroundElevated,
     borderRadius: RADIUS.lg,
     padding: SPACING.md,
     marginBottom: SPACING.sm,
     borderWidth: 1,
-    borderColor: COLORS.border,
     gap: SPACING.xs,
   },
   reportCardDimmed: { opacity: 0.6 },
@@ -336,15 +337,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2,
   },
   depthText: { fontSize: FONTS.sizes.xs, fontWeight: '800', letterSpacing: 0.5 },
-  dateText:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  dateText:  { fontSize: FONTS.sizes.xs },
   cardTitle: {
-    color: COLORS.textPrimary,
     fontSize: FONTS.sizes.base,
     fontWeight: '700',
     lineHeight: 22,
   },
   cardSummary: {
-    color: COLORS.textSecondary,
     fontSize: FONTS.sizes.xs,
     lineHeight: 18,
   },
@@ -357,11 +356,10 @@ const styles = StyleSheet.create({
   cardStats: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   stat: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: `${COLORS.textMuted}12`,
     borderRadius: RADIUS.full,
     paddingHorizontal: 6, paddingVertical: 2,
   },
-  statText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  statText: { fontSize: FONTS.sizes.xs },
   addBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     borderRadius: RADIUS.lg,
@@ -369,8 +367,7 @@ const styles = StyleSheet.create({
     minWidth: 74, justifyContent: 'center',
   },
   addBtnDone: {
-    backgroundColor: `${COLORS.success}15`,
-    borderWidth: 1, borderColor: `${COLORS.success}35`,
+    borderWidth: 1,
   },
   addBtnText: { color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' },
 });

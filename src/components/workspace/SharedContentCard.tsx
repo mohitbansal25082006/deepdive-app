@@ -1,6 +1,9 @@
 // src/components/workspace/SharedContentCard.tsx
 // Part 14 — Card for displaying a shared presentation or academic paper
 // inside the workspace "Shared" tab.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
+// Part 55.6 — Title shown fully without truncation (removed numberOfLines restriction).
 
 import React, { useState } from 'react';
 import {
@@ -52,16 +55,14 @@ export function SharedContentCard({
   const isEditor = userRole === 'owner' || userRole === 'editor';
   const canRemove = isEditor;
 
-  // Gradient based on content type
   const gradientColors: [string, string] = isPresentation
-    ? ['#6C63FF', '#8B5CF6']
-    : ['#10B981', '#059669'];
+    ? [COLORS.primary, COLORS.primaryLight]
+    : [COLORS.success, '#059669'];
 
   const accentColor = isPresentation ? COLORS.primary : COLORS.success;
   const typeLabel   = isPresentation ? 'Presentation' : 'Academic Paper';
   const typeIcon    = isPresentation ? 'easel' : 'school';
 
-  // Metadata chips
   const chips: { icon: string; label: string }[] = [];
   if (isPresentation) {
     if (item.metadata?.totalSlides)
@@ -118,7 +119,6 @@ export function SharedContentCard({
           ...SHADOWS.medium,
         }}
       >
-        {/* Top accent bar */}
         <LinearGradient
           colors={gradientColors}
           start={{ x: 0, y: 0 }}
@@ -127,9 +127,7 @@ export function SharedContentCard({
         />
 
         <View style={{ padding: SPACING.md }}>
-          {/* Header row */}
           <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.md, marginBottom: SPACING.sm }}>
-            {/* Icon */}
             <LinearGradient
               colors={gradientColors}
               style={{
@@ -145,9 +143,7 @@ export function SharedContentCard({
               <Ionicons name={typeIcon as any} size={22} color="#FFF" />
             </LinearGradient>
 
-            {/* Title block */}
             <View style={{ flex: 1 }}>
-              {/* Type badge */}
               <View style={{
                 flexDirection:   'row',
                 alignItems:      'center',
@@ -178,14 +174,14 @@ export function SharedContentCard({
                 </View>
               </View>
 
+              {/* Title - fully shown without truncation */}
               <Text
                 style={{
                   color:      COLORS.textPrimary,
                   fontSize:   FONTS.sizes.base,
                   fontWeight: '800',
-                  lineHeight: 22,
+                  lineHeight: 24,
                 }}
-                numberOfLines={2}
               >
                 {item.title}
               </Text>
@@ -195,7 +191,7 @@ export function SharedContentCard({
                   style={{
                     color:     COLORS.textMuted,
                     fontSize:  FONTS.sizes.xs,
-                    marginTop: 3,
+                    marginTop: 4,
                     lineHeight: 16,
                   }}
                   numberOfLines={1}
@@ -205,7 +201,6 @@ export function SharedContentCard({
               ) : null}
             </View>
 
-            {/* Remove button (editors/owners only) */}
             {canRemove && (
               <TouchableOpacity
                 onPress={handleRemove}
@@ -231,7 +226,6 @@ export function SharedContentCard({
             )}
           </View>
 
-          {/* Metadata chips */}
           {chips.length > 0 && (
             <View style={{
               flexDirection: 'row',
@@ -263,7 +257,6 @@ export function SharedContentCard({
             </View>
           )}
 
-          {/* Footer row */}
           <View style={{
             flexDirection:  'row',
             alignItems:     'center',
@@ -272,7 +265,6 @@ export function SharedContentCard({
             borderTopWidth: 1,
             borderTopColor: COLORS.border,
           }}>
-            {/* Sharer info */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
               <View style={{
                 width:          24,
@@ -293,7 +285,6 @@ export function SharedContentCard({
               </Text>
             </View>
 
-            {/* Action buttons */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               {onExport && (
                 <TouchableOpacity

@@ -14,6 +14,12 @@
 //      the manifest/app.json softwareKeyboardLayoutMode), with the result list
 //      using keyboardShouldPersistTaps and keyboardDismissMode='on-drag' so the
 //      keyboard lowers when the user starts scrolling results.
+//
+// Part 55 THEME UPDATE — All COLORS.* references moved out of StyleSheet.create
+//   and module-level constants (TYPE_CONFIG) into render-time reads / helper
+//   functions. Hardcoded rgba(0,0,0,0.68) backdrop replaced with
+//   getModalBackdrop(). useTheme() provides the version token so every
+//   sub-component re-renders when the palette changes.
 
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import {
@@ -36,23 +42,32 @@ import {
 } from '../../hooks/useWorkspaceSearch';
 import { useWorkspaceSearchVoice } from '../../hooks/useWorkspaceSearchVoice';
 import { WorkspaceRole, MiniProfile } from '../../types';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
-// ─── Type config ──────────────────────────────────────────────────────────────
+// ─── Type config — built as a function so COLORS.* is read fresh each call ───
+// Previously this was a module-level constant object, which froze COLORS values
+// at import time. Now it's a function called during render.
 
-const TYPE_CONFIG: Record<
-  ExtendedSearchResultType,
-  { icon: keyof typeof Ionicons.glyphMap; color: string; label: string; plural: string }
-> = {
-  report:         { icon: 'document-text',      color: COLORS.primary, label: 'Report',  plural: 'Reports'  },
-  comment:        { icon: 'chatbubble',          color: COLORS.info,    label: 'Comment', plural: 'Comments' },
-  member:         { icon: 'person-circle',       color: COLORS.accent,  label: 'Member',  plural: 'Members'  },
-  presentation:   { icon: 'easel',               color: '#6C63FF',      label: 'Slides',  plural: 'Slides'   },
-  academic_paper: { icon: 'school',              color: '#10B981',      label: 'Paper',   plural: 'Papers'   },
-  podcast:        { icon: 'mic',                 color: '#F59E0B',      label: 'Podcast', plural: 'Podcasts' },
-  debate:         { icon: 'git-compare-outline', color: '#8B5CF6',      label: 'Debate',  plural: 'Debates'  },
-  voice_debate:   { icon: 'mic-circle',          color: '#A78BFA',      label: 'Voice',   plural: 'Voice Debates' },
+type TypeConfig = {
+  icon:   keyof typeof Ionicons.glyphMap;
+  color:  string;
+  label:  string;
+  plural: string;
 };
+
+function getTypeConfig(): Record<ExtendedSearchResultType, TypeConfig> {
+  return {
+    report:         { icon: 'document-text',      color: COLORS.primary, label: 'Report',  plural: 'Reports'       },
+    comment:        { icon: 'chatbubble',          color: COLORS.info,    label: 'Comment', plural: 'Comments'      },
+    member:         { icon: 'person-circle',       color: COLORS.accent,  label: 'Member',  plural: 'Members'       },
+    presentation:   { icon: 'easel',               color: '#6C63FF',      label: 'Slides',  plural: 'Slides'        },
+    academic_paper: { icon: 'school',              color: '#10B981',      label: 'Paper',   plural: 'Papers'        },
+    podcast:        { icon: 'mic',                 color: '#F59E0B',      label: 'Podcast', plural: 'Podcasts'      },
+    debate:         { icon: 'git-compare-outline', color: '#8B5CF6',      label: 'Debate',  plural: 'Debates'       },
+    voice_debate:   { icon: 'mic-circle',          color: '#A78BFA',      label: 'Voice',   plural: 'Voice Debates' },
+  };
+}
 
 const TYPE_ORDER: ExtendedSearchResultType[] = [
   'report', 'comment', 'member',
@@ -83,6 +98,9 @@ export function WorkspaceSearchModal({
   visible, workspaceId, userRole, onClose, onOpenReport,
   onOpenMemberProfile, onOpenSharedContent,
 }: Props) {
+  // Version token — forces re-render (and thus fresh COLORS.* reads) on theme change.
+  useTheme();
+
   const inputRef = useRef<TextInput>(null);
   const insets   = useSafeAreaInsets();
 
@@ -107,11 +125,9 @@ export function WorkspaceSearchModal({
     return () => clearTimeout(t);
   }, [voiceState.error, clearVoiceError]);
 
-  // ── Open / close lifecycle ───────────────────────────────────────────────────
+  // ── Open / close lifecycle ─────────────────────────────────────────────────
   useEffect(() => {
     if (visible) {
-      // Focus AFTER the slide-in settles so the keyboard rises smoothly once
-      // the sheet is in place (prevents a layout jump on Android).
       const t = setTimeout(() => inputRef.current?.focus(), 400);
       return () => clearTimeout(t);
     } else {
@@ -130,7 +146,7 @@ export function WorkspaceSearchModal({
     onClose();
   };
 
-  // ── Per-type counts ─────────────────────────────────────────────────────────
+  // ── Per-type counts ────────────────────────────────────────────────────────
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const r of results) c[r.type] = (c[r.type] ?? 0) + 1;
@@ -184,7 +200,7 @@ export function WorkspaceSearchModal({
     handleClose();
   };
 
-  // ── Build the grouped flat list, respecting the active filter ───────────────
+  // ── Build the grouped flat list ────────────────────────────────────────────
   type FlatItem =
     | { kind: 'header'; type: ExtendedSearchResultType; count: number }
     | { kind: 'item';   data: ExtendedWorkspaceSearchResult; index: number };
@@ -203,25 +219,28 @@ export function WorkspaceSearchModal({
 
   const showEmpty = !isSearching && query.trim().length > 0 && results.length === 0 && !error;
   const showIdle  = query.trim().length === 0 && !voiceState.isRecording && !voiceState.isTranscribing;
-
   const isVoiceActive = voiceState.isRecording || voiceState.isTranscribing;
+
+  // TYPE_CONFIG is rebuilt each render so COLORS.primary etc. are always fresh.
+  const typeConfig = getTypeConfig();
 
   return (
     <Modal
       visible={visible}
       transparent
-      // IMPORTANT: native animation is "none" — the Reanimated SlideInUp below
-      // owns the entrance. Using "fade"/"slide" here compounds with the
-      // Reanimated animation and produces the bounce/jump on Android.
       animationType="none"
       onRequestClose={handleClose}
       statusBarTranslucent
     >
-      <Animated.View entering={FadeIn.duration(200)} style={styles.backdrop}>
+      {/* Backdrop: uses getModalBackdrop() so it reads the live theme background */}
+      <Animated.View
+        entering={FadeIn.duration(200)}
+        style={[styles.backdrop, { backgroundColor: getModalBackdrop(0.68) }]}
+      >
         {/* Backdrop tap → close the sheet entirely */}
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
 
-        {/* Smooth, NON-bouncing slide-up (duration + cubic ease, no spring) */}
+        {/* Smooth, NON-bouncing slide-up */}
         <Animated.View
           entering={SlideInUp.duration(340).easing(Easing.out(Easing.cubic))}
           style={styles.sheet}
@@ -239,7 +258,7 @@ export function WorkspaceSearchModal({
               >
                 {/* Handle */}
                 <View style={styles.handleWrap}>
-                  <View style={styles.handle} />
+                  <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
                 </View>
 
                 {/* Title row */}
@@ -248,17 +267,44 @@ export function WorkspaceSearchModal({
                     <Ionicons name="search" size={16} color="#FFF" />
                   </LinearGradient>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.titleText}>Search workspace</Text>
-                    <Text style={styles.titleSub}>Reports, members, slides, podcasts & more</Text>
+                    <Text style={[styles.titleText, { color: COLORS.textPrimary }]}>
+                      Search workspace
+                    </Text>
+                    <Text style={[styles.titleSub, { color: COLORS.textMuted }]}>
+                      Reports, members, slides, podcasts &amp; more
+                    </Text>
                   </View>
-                  <TouchableOpacity onPress={handleClose} style={styles.closeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <TouchableOpacity
+                    onPress={handleClose}
+                    style={[
+                      styles.closeBtn,
+                      {
+                        backgroundColor: COLORS.backgroundCard,
+                        borderColor:     COLORS.border,
+                      },
+                    ]}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
                     <Ionicons name="close" size={18} color={COLORS.textMuted} />
                   </TouchableOpacity>
                 </Animated.View>
 
-                {/* Search field with inline voice button */}
-                <Animated.View entering={FadeIn.duration(320).delay(40)} style={styles.searchFieldWrap}>
-                  <View style={[styles.searchField, isVoiceActive && styles.searchFieldVoice]}>
+                {/* Search field */}
+                <Animated.View
+                  entering={FadeIn.duration(320).delay(40)}
+                  style={styles.searchFieldWrap}
+                >
+                  <View style={[
+                    styles.searchField,
+                    {
+                      backgroundColor: COLORS.backgroundCard,
+                      borderColor:     COLORS.border,
+                    },
+                    isVoiceActive && {
+                      borderColor:     `${COLORS.error}55`,
+                      backgroundColor: `${COLORS.error}08`,
+                    },
+                  ]}>
                     <Ionicons
                       name={voiceState.isRecording ? 'radio-outline' : 'search-outline'}
                       size={18}
@@ -269,21 +315,24 @@ export function WorkspaceSearchModal({
                       value={query}
                       onChangeText={search}
                       placeholder={
-                        voiceState.isRecording
-                          ? 'Listening…'
-                          : voiceState.isTranscribing
-                          ? 'Transcribing…'
-                          : 'Type or speak to search'
+                        voiceState.isRecording   ? 'Listening…'
+                        : voiceState.isTranscribing ? 'Transcribing…'
+                        : 'Type or speak to search'
                       }
-                      placeholderTextColor={voiceState.isRecording ? COLORS.error : COLORS.textMuted}
-                      style={styles.searchInput}
+                      placeholderTextColor={
+                        voiceState.isRecording ? COLORS.error : COLORS.textMuted
+                      }
+                      style={[styles.searchInput, { color: COLORS.textPrimary }]}
                       autoCorrect={false}
                       returnKeyType="search"
                       editable={!isVoiceActive}
                       onSubmitEditing={() => Keyboard.dismiss()}
                     />
                     {query.length > 0 && !isVoiceActive && (
-                      <TouchableOpacity onPress={() => search('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <TouchableOpacity
+                        onPress={() => search('')}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
                         <Ionicons name="close-circle" size={17} color={COLORS.textMuted} />
                       </TouchableOpacity>
                     )}
@@ -299,9 +348,21 @@ export function WorkspaceSearchModal({
                   </View>
 
                   {voiceState.error && (
-                    <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(200)} style={styles.voiceErrorBanner}>
+                    <Animated.View
+                      entering={FadeIn.duration(200)}
+                      exiting={FadeOut.duration(200)}
+                      style={[
+                        styles.voiceErrorBanner,
+                        {
+                          backgroundColor: `${COLORS.error}12`,
+                          borderColor:     `${COLORS.error}30`,
+                        },
+                      ]}
+                    >
                       <Ionicons name="mic-off-outline" size={13} color={COLORS.error} />
-                      <Text style={styles.voiceErrorText} numberOfLines={2}>{voiceState.error}</Text>
+                      <Text style={[styles.voiceErrorText, { color: COLORS.error }]} numberOfLines={2}>
+                        {voiceState.error}
+                      </Text>
                     </Animated.View>
                   )}
                 </Animated.View>
@@ -325,9 +386,9 @@ export function WorkspaceSearchModal({
                       {availableTypes.map(t => (
                         <FilterChip
                           key={t}
-                          label={`${TYPE_CONFIG[t].plural} (${counts[t]})`}
-                          icon={TYPE_CONFIG[t].icon}
-                          color={TYPE_CONFIG[t].color}
+                          label={`${typeConfig[t].plural} (${counts[t]})`}
+                          icon={typeConfig[t].icon}
+                          color={typeConfig[t].color}
                           active={activeFilter === t}
                           onPress={() => setActiveFilter(t)}
                         />
@@ -336,16 +397,15 @@ export function WorkspaceSearchModal({
                   </Animated.View>
                 )}
 
-                {/* Content — wrapped so an outside tap dismisses the keyboard */}
+                {/* Content */}
                 <View style={{ flex: 1 }}>
-                  {/* Invisible layer: tap empty space → dismiss keyboard (keeps sheet open) */}
                   <Pressable
                     style={StyleSheet.absoluteFill}
                     onPress={Keyboard.dismiss}
                     android_disableSound
                   />
 
-                  {voiceState.isRecording || voiceState.isTranscribing ? (
+                  {isVoiceActive ? (
                     <VoiceListeningState
                       isTranscribing={voiceState.isTranscribing}
                       durationMs={voiceState.durationMs}
@@ -364,22 +424,29 @@ export function WorkspaceSearchModal({
                     <FlatList
                       data={flatItems}
                       keyExtractor={(item, i) =>
-                        item.kind === 'header' ? `header-${item.type}` : `item-${item.data.id}-${i}`
+                        item.kind === 'header'
+                          ? `header-${item.type}`
+                          : `item-${item.data.id}-${i}`
                       }
-                      contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 32 }]}
+                      contentContainerStyle={[
+                        styles.list,
+                        { paddingBottom: insets.bottom + 32 },
+                      ]}
                       keyboardShouldPersistTaps="handled"
                       keyboardDismissMode="on-drag"
                       showsVerticalScrollIndicator={false}
                       renderItem={({ item }) => {
                         if (item.kind === 'header') {
-                          const conf = TYPE_CONFIG[item.type];
+                          const conf = typeConfig[item.type];
                           return (
                             <View style={styles.sectionHeader}>
                               <View style={[styles.sectionDot, { backgroundColor: conf.color }]} />
                               <Text style={[styles.sectionHeaderText, { color: conf.color }]}>
                                 {conf.plural}
                               </Text>
-                              <Text style={styles.sectionCount}>{item.count}</Text>
+                              <Text style={[styles.sectionCount, { color: COLORS.textMuted }]}>
+                                {item.count}
+                              </Text>
                             </View>
                           );
                         }
@@ -394,6 +461,7 @@ export function WorkspaceSearchModal({
                             item={item.data}
                             index={item.index}
                             isNavigable={isNavigable}
+                            typeConfig={typeConfig}
                             onPress={() => handleResultPress(item.data)}
                           />
                         );
@@ -422,10 +490,26 @@ function FilterChip({
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.75}
-      style={[styles.chip, active && { backgroundColor: `${color}1F`, borderColor: `${color}55` }]}
+      style={[
+        styles.chip,
+        {
+          backgroundColor: COLORS.backgroundCard,
+          borderColor:     COLORS.border,
+        },
+        active && {
+          backgroundColor: `${color}1F`,
+          borderColor:     `${color}55`,
+        },
+      ]}
     >
       <Ionicons name={icon} size={12} color={active ? color : COLORS.textMuted} />
-      <Text style={[styles.chipText, active && { color }]}>{label}</Text>
+      <Text style={[
+        styles.chipText,
+        { color: COLORS.textMuted },
+        active && { color },
+      ]}>
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -433,18 +517,29 @@ function FilterChip({
 // ─── SearchResultRow ──────────────────────────────────────────────────────────
 
 function SearchResultRow({
-  item, index, isNavigable, onPress,
+  item, index, isNavigable, typeConfig, onPress,
 }: {
-  item: ExtendedWorkspaceSearchResult; index: number; isNavigable: boolean; onPress: () => void;
+  item: ExtendedWorkspaceSearchResult;
+  index: number;
+  isNavigable: boolean;
+  typeConfig: Record<ExtendedSearchResultType, TypeConfig>;
+  onPress: () => void;
 }) {
-  const conf = TYPE_CONFIG[item.type];
+  const conf = typeConfig[item.type];
 
   return (
     <Animated.View entering={FadeInDown.duration(240).delay(Math.min(index, 8) * 28)}>
       <TouchableOpacity
         onPress={onPress}
         activeOpacity={isNavigable ? 0.7 : 1}
-        style={[styles.resultRow, !isNavigable && styles.resultRowDisabled]}
+        style={[
+          styles.resultRow,
+          {
+            backgroundColor: COLORS.backgroundCard,
+            borderColor:     COLORS.border,
+          },
+          !isNavigable && styles.resultRowDisabled,
+        ]}
       >
         <View style={[styles.resultRail, { backgroundColor: conf.color }]} />
 
@@ -457,9 +552,13 @@ function SearchResultRow({
         )}
 
         <View style={styles.resultText}>
-          <Text style={styles.resultTitle} numberOfLines={1}>{item.title}</Text>
+          <Text style={[styles.resultTitle, { color: COLORS.textPrimary }]} numberOfLines={1}>
+            {item.title}
+          </Text>
           {!!item.subtitle && (
-            <Text style={styles.resultSubtitle} numberOfLines={1}>{item.subtitle}</Text>
+            <Text style={[styles.resultSubtitle, { color: COLORS.textMuted }]} numberOfLines={1}>
+              {item.subtitle}
+            </Text>
           )}
         </View>
 
@@ -485,52 +584,87 @@ function VoiceListeningState({
 
   return (
     <Animated.View entering={FadeIn.duration(250)} style={stateStyles.wrap}>
-      <View style={[stateStyles.iconCircle, { backgroundColor: isTranscribing ? `${COLORS.warning}18` : `${COLORS.error}18` }]}>
+      <View style={[
+        stateStyles.iconCircle,
+        {
+          backgroundColor: isTranscribing
+            ? `${COLORS.warning}18`
+            : `${COLORS.error}18`,
+        },
+      ]}>
         {isTranscribing
           ? <ActivityIndicator size="large" color={COLORS.warning} />
-          : <Ionicons name="mic" size={30} color={COLORS.error} />}
+          : <Ionicons name="mic" size={30} color={COLORS.error} />
+        }
       </View>
-      <Text style={stateStyles.title}>
+      <Text style={[stateStyles.title, { color: COLORS.textPrimary }]}>
         {isTranscribing ? 'Transcribing your search…' : 'Listening…'}
       </Text>
-      <Text style={stateStyles.sub}>
+      <Text style={[stateStyles.sub, { color: COLORS.textSecondary }]}>
         {isTranscribing
           ? 'Converting your speech to text.'
           : `Speak your search query.  ${mm}:${ss}`}
       </Text>
       {!isTranscribing && (
-        <TouchableOpacity onPress={onCancel} style={stateStyles.cancelBtn} activeOpacity={0.8}>
+        <TouchableOpacity
+          onPress={onCancel}
+          style={[
+            stateStyles.cancelBtn,
+            {
+              backgroundColor: COLORS.backgroundCard,
+              borderColor:     COLORS.border,
+            },
+          ]}
+          activeOpacity={0.8}
+        >
           <Ionicons name="close" size={15} color={COLORS.textSecondary} />
-          <Text style={stateStyles.cancelBtnText}>Cancel</Text>
+          <Text style={[stateStyles.cancelBtnText, { color: COLORS.textSecondary }]}>
+            Cancel
+          </Text>
         </TouchableOpacity>
       )}
     </Animated.View>
   );
 }
 
-function IdleState({ hasMemberNav, hasContentNav }: { hasMemberNav: boolean; hasContentNav: boolean }) {
+function IdleState({
+  hasMemberNav, hasContentNav,
+}: {
+  hasMemberNav: boolean; hasContentNav: boolean;
+}) {
   const tips: { tip: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-    { tip: 'Type a report title or topic', icon: 'document-text-outline' },
-    { tip: 'Search by a member’s name',     icon: 'person-outline'        },
-    ...(hasContentNav ? [{ tip: 'Find shared slides or papers', icon: 'easel-outline' as const }] : []),
-    ...(hasContentNav ? [{ tip: 'Search podcasts & debates',     icon: 'mic-outline'   as const }] : []),
+    { tip: 'Type a report title or topic',    icon: 'document-text-outline' },
+    { tip: 'Search by a member\u2019s name', icon: 'person-outline'        },
+    ...(hasContentNav ? [{ tip: 'Find shared slides or papers', icon: 'easel-outline'    as const }] : []),
+    ...(hasContentNav ? [{ tip: 'Search podcasts & debates',     icon: 'mic-outline'     as const }] : []),
     { tip: 'Tap the mic to search by voice', icon: 'mic-circle-outline'   },
   ];
 
   return (
     <View style={stateStyles.wrap}>
-      <View style={stateStyles.iconCircle}>
+      <View style={[stateStyles.iconCircle, { backgroundColor: `${COLORS.primary}15` }]}>
         <Ionicons name="search" size={28} color={COLORS.primary} />
       </View>
-      <Text style={stateStyles.title}>Find anything in this workspace</Text>
-      <Text style={stateStyles.sub}>
+      <Text style={[stateStyles.title, { color: COLORS.textPrimary }]}>
+        Find anything in this workspace
+      </Text>
+      <Text style={[stateStyles.sub, { color: COLORS.textSecondary }]}>
         Search across reports, comments, members and shared content — or tap the mic to speak.
       </Text>
       <View style={stateStyles.tips}>
         {tips.map(({ tip, icon }) => (
-          <View key={tip} style={stateStyles.tip}>
+          <View
+            key={tip}
+            style={[
+              stateStyles.tip,
+              {
+                backgroundColor: COLORS.backgroundCard,
+                borderColor:     COLORS.border,
+              },
+            ]}
+          >
             <Ionicons name={icon} size={13} color={COLORS.primary} />
-            <Text style={stateStyles.tipText}>{tip}</Text>
+            <Text style={[stateStyles.tipText, { color: COLORS.textSecondary }]}>{tip}</Text>
           </View>
         ))}
       </View>
@@ -544,8 +678,12 @@ function EmptyState({ query }: { query: string }) {
       <View style={[stateStyles.iconCircle, { backgroundColor: `${COLORS.textMuted}18` }]}>
         <Ionicons name="search-outline" size={28} color={COLORS.textMuted} />
       </View>
-      <Text style={stateStyles.title}>No results for “{query}”</Text>
-      <Text style={stateStyles.sub}>Try different keywords or check your spelling.</Text>
+      <Text style={[stateStyles.title, { color: COLORS.textPrimary }]}>
+        No results for &ldquo;{query}&rdquo;
+      </Text>
+      <Text style={[stateStyles.sub, { color: COLORS.textSecondary }]}>
+        Try different keywords or check your spelling.
+      </Text>
     </View>
   );
 }
@@ -556,86 +694,112 @@ function ErrorState({ error }: { error: string }) {
       <View style={[stateStyles.iconCircle, { backgroundColor: `${COLORS.error}18` }]}>
         <Ionicons name="alert-circle-outline" size={28} color={COLORS.error} />
       </View>
-      <Text style={stateStyles.title}>Search didn’t work</Text>
-      <Text style={stateStyles.sub}>{error}</Text>
+      <Text style={[stateStyles.title, { color: COLORS.textPrimary }]}>
+        Search didn&rsquo;t work
+      </Text>
+      <Text style={[stateStyles.sub, { color: COLORS.textSecondary }]}>{error}</Text>
     </View>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+// Only layout / geometry / theme-independent values here.
+// All COLORS.* reads have been moved to inline styles inside each component.
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.68)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, justifyContent: 'flex-end' },
   sheet:    { height: '92%', borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
   sheetFill:{ flex: 1, borderTopLeftRadius: 28, borderTopRightRadius: 28 },
 
   handleWrap: { alignItems: 'center', paddingTop: 10, paddingBottom: 6 },
-  handle:     { width: 42, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
+  handle:     { width: 42, height: 4, borderRadius: 2 },
 
-  titleRow:  { flexDirection: 'row', alignItems: 'center', gap: SPACING.md, paddingHorizontal: SPACING.xl, paddingBottom: SPACING.md },
+  titleRow:  {
+    flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
+    paddingHorizontal: SPACING.xl, paddingBottom: SPACING.md,
+  },
   titleIcon: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  titleText: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  titleSub:  { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
-  closeBtn:  { width: 34, height: 34, borderRadius: 11, backgroundColor: COLORS.backgroundCard, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
+  titleText: { fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  titleSub:  { fontSize: FONTS.sizes.xs, marginTop: 2 },
+  closeBtn:  {
+    width: 34, height: 34, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1,
+  },
 
   searchFieldWrap: { paddingHorizontal: SPACING.xl, paddingBottom: SPACING.sm },
   searchField: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.xl, paddingLeft: 14, paddingRight: 6, paddingVertical: 6,
-    borderWidth: 1.5, borderColor: COLORS.border,
+    borderRadius: RADIUS.xl,
+    paddingLeft: 14, paddingRight: 6, paddingVertical: 6,
+    borderWidth: 1.5,
   },
-  searchFieldVoice: { borderColor: `${COLORS.error}55`, backgroundColor: `${COLORS.error}08` },
-  searchInput: { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, padding: 0, paddingVertical: Platform.OS === 'ios' ? 8 : 4 },
+  searchInput: {
+    flex: 1, fontSize: FONTS.sizes.base, padding: 0,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
+  },
 
   voiceErrorBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8,
-    backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.md,
-    paddingHorizontal: 12, paddingVertical: 8,
-    borderWidth: 1, borderColor: `${COLORS.error}30`,
+    borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 8,
+    borderWidth: 1,
   },
-  voiceErrorText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
+  voiceErrorText: { fontSize: FONTS.sizes.xs, fontWeight: '600', flex: 1 },
 
   chipsRow: { gap: 8, paddingHorizontal: SPACING.xl, paddingVertical: SPACING.sm },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: COLORS.backgroundCard,
     borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 7,
-    borderWidth: 1, borderColor: COLORS.border,
-    flexShrink: 0,
+    borderWidth: 1, flexShrink: 0,
   },
-  chipText: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  chipText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
   list: { paddingHorizontal: SPACING.xl, paddingTop: SPACING.xs },
-  sectionHeader:     { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: SPACING.sm, marginTop: SPACING.xs },
+  sectionHeader:     {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    paddingVertical: SPACING.sm, marginTop: SPACING.xs,
+  },
   sectionDot:        { width: 7, height: 7, borderRadius: 4 },
-  sectionHeaderText: { fontSize: FONTS.sizes.xs, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', flex: 1 },
-  sectionCount:      { color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  sectionHeaderText: {
+    fontSize: FONTS.sizes.xs, fontWeight: '800',
+    letterSpacing: 0.8, textTransform: 'uppercase', flex: 1,
+  },
+  sectionCount:      { fontSize: FONTS.sizes.xs, fontWeight: '700' },
 
   resultRow: {
     flexDirection: 'row', alignItems: 'center', gap: 11,
-    backgroundColor: COLORS.backgroundCard,
-    borderRadius: RADIUS.lg, paddingVertical: SPACING.md, paddingRight: SPACING.md, paddingLeft: SPACING.md + 5,
+    borderRadius: RADIUS.lg,
+    paddingVertical: SPACING.md, paddingRight: SPACING.md, paddingLeft: SPACING.md + 5,
     marginBottom: SPACING.sm,
-    borderWidth: 1, borderColor: COLORS.border,
+    borderWidth: 1,
     overflow: 'hidden',
   },
   resultRowDisabled: { opacity: 0.7 },
-  resultRail:    { position: 'absolute', left: 0, top: 10, bottom: 10, width: 3.5, borderTopRightRadius: 3, borderBottomRightRadius: 3 },
+  resultRail:    {
+    position: 'absolute', left: 0, top: 10, bottom: 10,
+    width: 3.5, borderTopRightRadius: 3, borderBottomRightRadius: 3,
+  },
   resultIconWrap:{ width: 38, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   resultText:    { flex: 1, minWidth: 0 },
-  resultTitle:   { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  resultSubtitle:{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 },
+  resultTitle:   { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  resultSubtitle:{ fontSize: FONTS.sizes.xs, marginTop: 2 },
 });
 
 const stateStyles = StyleSheet.create({
   wrap:       { alignItems: 'center', paddingTop: 56, paddingHorizontal: SPACING.xl * 1.4, gap: 12 },
-  iconCircle: { width: 74, height: 74, borderRadius: 24, backgroundColor: `${COLORS.primary}15`, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
-  title:      { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center' },
-  sub:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21 },
+  iconCircle: { width: 74, height: 74, borderRadius: 24, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  title:      { fontSize: FONTS.sizes.lg, fontWeight: '800', textAlign: 'center' },
+  sub:        { fontSize: FONTS.sizes.sm, textAlign: 'center', lineHeight: 21 },
   tips:       { marginTop: SPACING.md, gap: SPACING.sm, alignSelf: 'stretch' },
-  tip:        { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border },
-  tipText:    { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '500' },
-  cancelBtn:     { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.full, paddingHorizontal: SPACING.lg, paddingVertical: 10, borderWidth: 1, borderColor: COLORS.border },
-  cancelBtnText: { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  tip:        {
+    flexDirection: 'row', alignItems: 'center', gap: 9,
+    borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1,
+  },
+  tipText:    { fontSize: FONTS.sizes.sm, fontWeight: '500' },
+  cancelBtn:  {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: SPACING.md,
+    borderRadius: RADIUS.full, paddingHorizontal: SPACING.lg, paddingVertical: 10,
+    borderWidth: 1,
+  },
+  cancelBtnText: { fontSize: FONTS.sizes.sm, fontWeight: '700' },
 });

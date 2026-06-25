@@ -1,29 +1,8 @@
 // src/components/workspace/ChatGifPicker.tsx
 // Part 50.2 — GIPHY GIF Picker for Stream Chat
-// Part 50.3 — Added GIF / Stickers tab toggle
-// Part 50.3 FIX — Stickers now sent with type:'sticker' (custom type) instead of
-//   type:'image'. This lets StreamCustomMessage intercept sticker messages and
-//   render them without a bubble/background. GIFs remain type:'image'.
-//
-// The `onSelect` callback now receives a third argument `isSticker: boolean`
-// so the caller (workspace-chat.tsx) can send the correct attachment type.
-//
-// ── Part 50.10 — ANDROID UI FIXES (production) ────────────────────────────────
-//   (Issue 10a) The picker UI went OFF-SCREEN on Android:
-//       ROOT CAUSE — <Modal presentationStyle="pageSheet"> is an iOS sheet style.
-//       On Android it is not supported and produces a mis-sized / off-screen
-//       surface. THE FIX — only use pageSheet on iOS; on Android present a plain
-//       full-screen slide Modal and inset the top by the status-bar / safe-area
-//       height. The grid already pads the bottom by insets.bottom.
-//
-//   (Issue 10b) Stickers / GIFs not rendering on Android DEV / PREVIEW builds
-//   (they worked in Expo Go):
-//       ROOT CAUSE — RN's built-in <Image> can't decode WebP / animated-WebP on
-//       custom Android builds without extra Fresco modules (Expo Go bundles them).
-//       THE FIX — render every cell with `expo-image` (Glide on Android), which
-//       supports WebP + animated-WebP across all build types. The sticker SEND
-//       URL also prefers the animated GIF original over WebP as an extra-safe
-//       fallback, while display uses expo-image either way.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for backdrop.
+//             No dark-only assumptions.
 
 import React, {
   useCallback,
@@ -45,12 +24,10 @@ import {
   Platform,
   StatusBar,
 } from 'react-native';
-// Part 50.10: expo-image (Glide on Android) decodes WebP / animated-WebP reliably
-// in dev/preview builds, unlike RN's <Image>.
 import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,12 +56,6 @@ type ContentTab = 'gifs' | 'stickers';
 export interface ChatGifPickerProps {
   visible:     boolean;
   onClose:     () => void;
-  /**
-   * Called when user taps a GIF or sticker.
-   * url: best-quality URL to send
-   * title: display title
-   * isSticker: true if this is a sticker (should be sent with type:'sticker')
-   */
   onSelect:    (url: string, title: string, isSticker: boolean) => void;
   giphyApiKey: string;
 }
@@ -128,8 +99,6 @@ const GifCell = memo(function GifCell({ item, colIndex, contentTab, onPress }: G
     ? Math.max(80, scaledH)
     : Math.max(80, scaledH * 0.92);
 
-  // Stickers: prefer WebP for transparency; GIFs: use regular animated URL.
-  // expo-image renders both reliably on Android (Glide).
   const displayUrl = contentTab === 'stickers'
     ? (fw.webp ?? fw.url)
     : fw.url;
@@ -140,8 +109,8 @@ const GifCell = memo(function GifCell({ item, colIndex, contentTab, onPress }: G
       onPress={() => onPress(item)}
       style={[
         gifCellStyles.container,
-        { height: displayH, width: COL_WIDTH },
-        contentTab === 'stickers' && gifCellStyles.stickerContainer,
+        { height: displayH, width: COL_WIDTH, backgroundColor: COLORS.backgroundElevated },
+        contentTab === 'stickers' && { backgroundColor: COLORS.backgroundCard, borderColor: `${COLORS.border}50`, borderWidth: 1 },
       ]}
     >
       <ExpoImage
@@ -152,9 +121,8 @@ const GifCell = memo(function GifCell({ item, colIndex, contentTab, onPress }: G
         transition={150}
         cachePolicy="memory-disk"
       />
-      {/* Sticker transparent bg indicator */}
       {contentTab === 'stickers' && (
-        <View style={gifCellStyles.stickerBadge}>
+        <View style={[gifCellStyles.stickerBadge, { backgroundColor: `${COLORS.primary}90` }]}>
           <Text style={gifCellStyles.stickerBadgeText}>PNG</Text>
         </View>
       )}
@@ -166,15 +134,6 @@ const gifCellStyles = StyleSheet.create({
   container: {
     borderRadius:    RADIUS.md,
     overflow:        'hidden',
-    backgroundColor: COLORS.backgroundElevated,
-  },
-  stickerContainer: {
-    // Checkered-style hint for transparency using a subtle pattern
-    backgroundColor: `${COLORS.backgroundCard}`,
-    borderWidth:     1,
-    borderColor:     `${COLORS.border}50`,
-    borderRadius:    RADIUS.md,
-    overflow:        'hidden',
   },
   image: {
     width:        '100%',
@@ -184,7 +143,6 @@ const gifCellStyles = StyleSheet.create({
     position:        'absolute',
     bottom:          4,
     right:           4,
-    backgroundColor: `${COLORS.primary}90`,
     borderRadius:    4,
     paddingHorizontal: 4,
     paddingVertical:   1,
@@ -308,19 +266,12 @@ export function ChatGifPicker({
 
     let url: string;
     if (isSticker) {
-      // Stickers: prefer the animated GIF original (most broadly decodable on
-      // Android) and fall back to WebP. Display uses expo-image either way, so
-      // both render; the GIF-first order is an extra safety net for any consumer
-      // that still uses RN <Image>.
       url = gif.images.original.url ?? gif.images.original.webp ?? '';
     } else {
-      // GIFs: use original animated GIF
       url = gif.images.original.url;
     }
 
     const title = gif.title || (isSticker ? 'Sticker' : 'GIF');
-
-    // Pass isSticker=true for stickers so caller sends correct attachment type
     onSelect(url, title, isSticker);
     onClose();
   }, [activeTab, onSelect, onClose]);
@@ -334,7 +285,7 @@ export function ChatGifPicker({
     } else {
       const term = chip.split(' ')[0];
       setQuery(term);
-      setActiveChip(chip);
+      setActiveChip(term);
     }
   }, [activeTab, fetchGifs]);
 
@@ -375,16 +326,16 @@ export function ChatGifPicker({
         {error ? (
           <>
             <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
-            <Text style={gridStyles.emptyText}>{error}</Text>
-            <TouchableOpacity style={gridStyles.retryBtn} onPress={() => fetchGifs(query, 0, true, activeTab)}>
-              <Text style={gridStyles.retryText}>Retry</Text>
+            <Text style={[gridStyles.emptyText, { color: COLORS.textSecondary }]}>{error}</Text>
+            <TouchableOpacity style={[gridStyles.retryBtn, { backgroundColor: COLORS.primary }]} onPress={() => fetchGifs(query, 0, true, activeTab)}>
+              <Text style={[gridStyles.retryText, { color: '#FFF' }]}>Retry</Text>
             </TouchableOpacity>
           </>
         ) : (
           <>
             <Text style={{ fontSize: 32 }}>{activeTab === 'stickers' ? '🎭' : '🔍'}</Text>
-            <Text style={gridStyles.emptyText}>{activeTab === 'stickers' ? 'No stickers found' : 'No GIFs found'}</Text>
-            <Text style={gridStyles.emptySubText}>Try a different search term</Text>
+            <Text style={[gridStyles.emptyText, { color: COLORS.textSecondary }]}>{activeTab === 'stickers' ? 'No stickers found' : 'No GIFs found'}</Text>
+            <Text style={[gridStyles.emptySubText, { color: COLORS.textMuted }]}>Try a different search term</Text>
           </>
         )}
       </View>
@@ -395,10 +346,9 @@ export function ChatGifPicker({
 
   if (!visible) return null;
 
+  const backdropColor = getModalBackdrop(0.5);
+
   return (
-    // FIX (issue 10a): pageSheet is an iOS-only presentation. On Android it
-    // renders off-screen / mis-sized, so we only set it on iOS. Android uses a
-    // plain full-screen slide modal.
     <Modal
       visible={visible}
       animationType="slide"
@@ -406,53 +356,48 @@ export function ChatGifPicker({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      {/* FIX (issue 10a): inset the top by the safe-area on BOTH platforms so the
-          header is never under the status bar / notch on Android full-screen. */}
-      <View style={[styles.root, { paddingTop: insets.top }]}>
+      <View style={[styles.root, { backgroundColor: COLORS.background, paddingTop: insets.top }]}>
         <StatusBar barStyle="light-content" />
 
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
+        <View style={[styles.header, { borderBottomColor: COLORS.border }]}>
+          <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: COLORS.backgroundCard, borderColor: COLORS.border }]} activeOpacity={0.7}>
             <Ionicons name="close" size={20} color={COLORS.textPrimary} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            {/* GIF / Stickers tab toggle */}
-            <View style={styles.tabRow}>
+            <View style={[styles.tabRow, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
               <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'gifs' && styles.tabBtnActive]}
+                style={[styles.tabBtn, activeTab === 'gifs' && styles.tabBtnActive, activeTab === 'gifs' && { backgroundColor: COLORS.primary }]}
                 onPress={() => handleTabChange('gifs')}
                 activeOpacity={0.75}
               >
-                <Text style={[styles.tabBtnText, activeTab === 'gifs' && styles.tabBtnTextActive]}>
+                <Text style={[styles.tabBtnText, { color: activeTab === 'gifs' ? '#FFFFFF' : COLORS.textSecondary }, activeTab === 'gifs' && styles.tabBtnTextActive]}>
                   GIF
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'stickers' && styles.tabBtnActive]}
+                style={[styles.tabBtn, activeTab === 'stickers' && styles.tabBtnActive, activeTab === 'stickers' && { backgroundColor: COLORS.primary }]}
                 onPress={() => handleTabChange('stickers')}
                 activeOpacity={0.75}
               >
-                <Text style={[styles.tabBtnText, activeTab === 'stickers' && styles.tabBtnTextActive]}>
+                <Text style={[styles.tabBtnText, { color: activeTab === 'stickers' ? '#FFFFFF' : COLORS.textSecondary }, activeTab === 'stickers' && styles.tabBtnTextActive]}>
                   Stickers
                 </Text>
               </TouchableOpacity>
             </View>
             <View style={styles.poweredByRow}>
-              <Text style={styles.poweredByText}>Powered by</Text>
+              <Text style={[styles.poweredByText, { color: COLORS.textMuted }]}>Powered by</Text>
               <GiphyLogo />
             </View>
           </View>
           <View style={styles.headerSpacer} />
         </View>
 
-        {/* Search */}
         <View style={styles.searchRow}>
-          <View style={styles.searchBar}>
+          <View style={[styles.searchBar, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <Ionicons name="search-outline" size={16} color={COLORS.textMuted} style={styles.searchIcon} />
             <TextInput
               ref={inputRef}
-              style={styles.searchInput}
+              style={[styles.searchInput, { color: COLORS.textPrimary }]}
               placeholder={activeTab === 'stickers' ? 'Search stickers…' : 'Search GIPHY…'}
               placeholderTextColor={COLORS.textMuted}
               value={query}
@@ -470,7 +415,6 @@ export function ChatGifPicker({
           </View>
         </View>
 
-        {/* Chips */}
         <View style={styles.chipsWrap}>
           <FlatList
             horizontal
@@ -480,11 +424,11 @@ export function ChatGifPicker({
             contentContainerStyle={styles.chipsContent}
             renderItem={({ item }) => (
               <TouchableOpacity
-                style={[styles.chip, activeChip === item && styles.chipActive]}
+                style={[styles.chip, activeChip === item && styles.chipActive, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }, activeChip === item && { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}60` }]}
                 onPress={() => handleChipPress(item)}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.chipText, activeChip === item && styles.chipTextActive]}>
+                <Text style={[styles.chipText, { color: COLORS.textSecondary }, activeChip === item && { color: COLORS.primary }]}>
                   {item}
                 </Text>
               </TouchableOpacity>
@@ -492,21 +436,19 @@ export function ChatGifPicker({
           />
         </View>
 
-        {/* Sticker transparent bg hint */}
         {activeTab === 'stickers' && (
           <View style={styles.stickerHint}>
             <Ionicons name="checkmark-circle-outline" size={13} color={COLORS.primary} />
-            <Text style={styles.stickerHintText}>
+            <Text style={[styles.stickerHintText, { color: COLORS.textMuted }]}>
               Stickers send with transparent background — no bubble
             </Text>
           </View>
         )}
 
-        {/* Grid */}
         {loading ? (
           <View style={gridStyles.loadingWrap}>
             <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={gridStyles.loadingText}>
+            <Text style={[gridStyles.loadingText, { color: COLORS.textMuted }]}>
               {query
                 ? `Searching "${query}"…`
                 : activeTab === 'stickers' ? 'Loading trending stickers…' : 'Loading trending GIFs…'}
@@ -520,8 +462,6 @@ export function ChatGifPicker({
             renderItem={renderItem}
             contentContainerStyle={[
               gridStyles.list,
-              // FIX: pad bottom by the safe-area inset so the last row clears the
-              // Android nav/gesture bar.
               { paddingBottom: insets.bottom + 16 },
             ]}
             columnWrapperStyle={gridStyles.row}
@@ -569,57 +509,54 @@ const logoStyles = StyleSheet.create({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root:            { flex: 1, backgroundColor: COLORS.background },
+  root:            { flex: 1 },
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: SPACING.md, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: COLORS.border,
+    borderBottomWidth: 1,
   },
   closeBtn: {
     width: 36, height: 36, borderRadius: 11,
-    backgroundColor: COLORS.backgroundCard,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
+    borderWidth: 1,
   },
   headerSpacer:  { width: 36, height: 36 },
   headerCenter:  { flex: 1, alignItems: 'center' },
   tabRow: {
-    flexDirection: 'row', backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.full, borderWidth: 1, borderColor: COLORS.border,
+    flexDirection: 'row',
+    borderRadius: RADIUS.full,
+    borderWidth: 1,
     padding: 3, gap: 2,
   },
   tabBtn:            { paddingHorizontal: 16, paddingVertical: 6, borderRadius: RADIUS.full },
   tabBtnActive:      { backgroundColor: COLORS.primary },
-  tabBtnText:        { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '700', letterSpacing: 0.3 },
+  tabBtnText:        { fontSize: FONTS.sizes.sm, fontWeight: '700', letterSpacing: 0.3 },
   tabBtnTextActive:  { color: '#FFFFFF' },
   poweredByRow:      { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
-  poweredByText:     { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  poweredByText:     { fontSize: FONTS.sizes.xs },
   searchRow: {
     paddingHorizontal: H_PAD, paddingTop: SPACING.sm, paddingBottom: SPACING.xs,
   },
   searchBar: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: COLORS.backgroundElevated,
-    borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: RADIUS.xl, borderWidth: 1,
     paddingHorizontal: 12, paddingVertical: 9, gap: 8,
   },
   searchIcon:    { flexShrink: 0 },
-  searchInput:   { flex: 1, color: COLORS.textPrimary, fontSize: FONTS.sizes.base, padding: 0, margin: 0 },
+  searchInput:   { flex: 1, fontSize: FONTS.sizes.base, padding: 0, margin: 0 },
   chipsWrap:     { paddingBottom: SPACING.xs },
   chipsContent:  { paddingHorizontal: H_PAD, gap: 8 },
   chip: {
     paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: RADIUS.full, backgroundColor: COLORS.backgroundElevated,
-    borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: RADIUS.full, borderWidth: 1,
   },
   chipActive:        { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}60` },
-  chipText:          { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
-  chipTextActive:    { color: COLORS.primary },
+  chipText:          { fontSize: FONTS.sizes.sm, fontWeight: '600' },
   stickerHint: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     paddingHorizontal: H_PAD, paddingBottom: SPACING.xs,
   },
-  stickerHintText:   { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  stickerHintText:   { fontSize: FONTS.sizes.xs },
 });
 
 const gridStyles = StyleSheet.create({
@@ -628,10 +565,10 @@ const gridStyles = StyleSheet.create({
   cell:        {},
   footer:      { paddingVertical: 20, alignItems: 'center' },
   empty:       { paddingTop: 60, alignItems: 'center', gap: 12 },
-  emptyText:   { color: COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '600' },
-  emptySubText:{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
-  retryBtn:    { marginTop: 8, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: COLORS.primary, borderRadius: RADIUS.lg },
-  retryText:   { color: '#FFF', fontWeight: '700' },
+  emptyText:   { fontSize: FONTS.sizes.base, fontWeight: '600' },
+  emptySubText:{ fontSize: FONTS.sizes.sm },
+  retryBtn:    { marginTop: 8, paddingHorizontal: 24, paddingVertical: 10, borderRadius: RADIUS.lg },
+  retryText:   { fontWeight: '700' },
   loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
-  loadingText: { color: COLORS.textMuted, fontSize: FONTS.sizes.sm },
+  loadingText: { fontSize: FONTS.sizes.sm },
 });

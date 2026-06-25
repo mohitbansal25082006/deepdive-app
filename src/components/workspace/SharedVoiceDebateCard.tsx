@@ -1,11 +1,12 @@
 // src/components/workspace/SharedVoiceDebateCard.tsx
 // Part 44 — Card for displaying a shared voice debate in the workspace "Shared" tab.
-//
-// Shows: topic, question, turn count, duration, speaker chips, sharer info,
-//        action buttons (Play, Export PDF, Copy, Remove).
-// Members can: Play (opens voice debate player), Export PDF, Copy transcript.
-// Editors/owners can also: Remove from workspace.
-// No re-generation from this card.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
+// Part 55.5 — Removed Copy Text button. Only Play/Transcript and Export PDF remain.
+// Part 55.6 — Title shown fully without truncation (removed numberOfLines restriction).
+// Part 55.7 — Removed subtitle/question display and view-only info banner.
+// Part 55.8 — All speaker chips shown without "+ more" truncation.
+// Part 55.9 — Removed view count chip.
 
 import React, { useState } from 'react';
 import {
@@ -23,11 +24,7 @@ import type { SharedVoiceDebate } from '../../types/voiceDebateSharing';
 import type { WorkspaceRole }     from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
-// ─── Accent colour for voice debates ─────────────────────────────────────────
-
-const ACCENT = '#8B5CF6';   // purple — voice/audio
-
-// ─── Props ────────────────────────────────────────────────────────────────────
+const ACCENT = '#8B5CF6';
 
 interface Props {
   item:         SharedVoiceDebate;
@@ -36,10 +33,7 @@ interface Props {
   onPlay:       (item: SharedVoiceDebate) => void;
   onRemove:     (item: SharedVoiceDebate) => Promise<void>;
   onExportPDF?: (item: SharedVoiceDebate) => Promise<void>;
-  onCopyText?:  (item: SharedVoiceDebate) => Promise<void>;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string): string {
   const d    = new Date(iso);
@@ -58,8 +52,6 @@ function formatDuration(seconds: number): string {
   return m > 0 ? `~${m} min` : `${seconds}s`;
 }
 
-// ─── Speaker chips from script turns ─────────────────────────────────────────
-
 function getSpeakerNames(item: SharedVoiceDebate): string[] {
   const turns = item.script?.turns ?? [];
   const names = new Map<string, string>();
@@ -70,10 +62,8 @@ function getSpeakerNames(item: SharedVoiceDebate): string[] {
       names.set(role, name);
     }
   }
-  return Array.from(names.values()).slice(0, 7); // cap at 7 agent names
+  return Array.from(names.values());
 }
-
-// ─── MetaChip ─────────────────────────────────────────────────────────────────
 
 function MetaChip({
   icon, label, color = COLORS.textMuted,
@@ -96,8 +86,6 @@ function MetaChip({
   );
 }
 
-// ─── Action button style ──────────────────────────────────────────────────────
-
 const actionBtnStyle = {
   width:           30,
   height:          30,
@@ -109,8 +97,6 @@ const actionBtnStyle = {
   borderColor:     COLORS.border,
 };
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 export function SharedVoiceDebateCard({
   item,
   index,
@@ -118,12 +104,9 @@ export function SharedVoiceDebateCard({
   onPlay,
   onRemove,
   onExportPDF,
-  onCopyText,
 }: Props) {
   const [isRemoving,     setIsRemoving]     = useState(false);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
-  const [isCopying,      setIsCopying]      = useState(false);
-  const [copied,         setCopied]         = useState(false);
 
   const isEditor    = userRole === 'owner' || userRole === 'editor';
   const hasAudio    = item.audioAllUploaded && item.audioStorageUrls.filter(Boolean).length > 0;
@@ -155,15 +138,6 @@ export function SharedVoiceDebateCard({
     setIsExportingPDF(false);
   };
 
-  const handleCopy = async () => {
-    if (!onCopyText || isCopying) return;
-    setIsCopying(true);
-    await onCopyText(item);
-    setIsCopying(false);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(index * 60)}>
       <TouchableOpacity
@@ -179,7 +153,6 @@ export function SharedVoiceDebateCard({
           ...SHADOWS.medium,
         }}
       >
-        {/* Top accent bar */}
         <LinearGradient
           colors={['#8B5CF6', '#A78BFA']}
           start={{ x: 0, y: 0 }}
@@ -188,14 +161,12 @@ export function SharedVoiceDebateCard({
         />
 
         <View style={{ padding: SPACING.md }}>
-          {/* Header row */}
           <View style={{
             flexDirection: 'row',
             alignItems:    'flex-start',
             gap:           SPACING.md,
             marginBottom:  SPACING.sm,
           }}>
-            {/* Icon */}
             <LinearGradient
               colors={['#8B5CF6', '#A78BFA']}
               style={{
@@ -211,9 +182,7 @@ export function SharedVoiceDebateCard({
               <Ionicons name="mic-circle" size={24} color="#FFF" />
             </LinearGradient>
 
-            {/* Title block */}
             <View style={{ flex: 1 }}>
-              {/* Type badge */}
               <View style={{
                 flexDirection:     'row',
                 alignItems:        'center',
@@ -260,34 +229,19 @@ export function SharedVoiceDebateCard({
                 )}
               </View>
 
+              {/* Title - fully shown without truncation */}
               <Text
                 style={{
                   color:      COLORS.textPrimary,
                   fontSize:   FONTS.sizes.base,
                   fontWeight: '800',
-                  lineHeight: 22,
+                  lineHeight: 24,
                 }}
-                numberOfLines={2}
               >
                 {item.topic}
               </Text>
-
-              {item.question && item.question !== item.topic && (
-                <Text
-                  style={{
-                    color:     COLORS.textMuted,
-                    fontSize:  FONTS.sizes.xs,
-                    marginTop: 3,
-                    fontStyle: 'italic',
-                  }}
-                  numberOfLines={1}
-                >
-                  {item.question}
-                </Text>
-              )}
             </View>
 
-            {/* Remove button (editors/owners only) */}
             {isEditor && (
               <TouchableOpacity
                 onPress={handleRemove}
@@ -313,7 +267,6 @@ export function SharedVoiceDebateCard({
             )}
           </View>
 
-          {/* Meta chips */}
           <View style={{
             flexDirection: 'row',
             flexWrap:      'wrap',
@@ -326,13 +279,6 @@ export function SharedVoiceDebateCard({
             {item.durationSeconds > 0 && (
               <MetaChip icon="time-outline" label={formatDuration(item.durationSeconds)} />
             )}
-            {item.viewCount > 0 && (
-              <MetaChip
-                icon="eye-outline"
-                label={`${item.viewCount} view${item.viewCount !== 1 ? 's' : ''}`}
-                color={ACCENT}
-              />
-            )}
             {item.downloadCount > 0 && (
               <MetaChip
                 icon="download-outline"
@@ -342,7 +288,7 @@ export function SharedVoiceDebateCard({
             )}
           </View>
 
-          {/* Speaker name chips (up to 4) */}
+          {/* All speaker chips - no truncation */}
           {speakerNames.length > 0 && (
             <View style={{
               flexDirection: 'row',
@@ -350,7 +296,7 @@ export function SharedVoiceDebateCard({
               gap:           5,
               marginBottom:  SPACING.sm,
             }}>
-              {speakerNames.slice(0, 4).map((name, i) => (
+              {speakerNames.map((name, i) => (
                 <View
                   key={i}
                   style={{
@@ -377,43 +323,9 @@ export function SharedVoiceDebateCard({
                   </Text>
                 </View>
               ))}
-              {speakerNames.length > 4 && (
-                <View style={{
-                  backgroundColor:   COLORS.backgroundElevated,
-                  borderRadius:      RADIUS.full,
-                  paddingHorizontal: 8,
-                  paddingVertical:   3,
-                  borderWidth:       1,
-                  borderColor:       COLORS.border,
-                }}>
-                  <Text style={{ color: COLORS.textMuted, fontSize: 10 }}>
-                    +{speakerNames.length - 4} more
-                  </Text>
-                </View>
-              )}
             </View>
           )}
 
-          {/* View-only notice */}
-          <View style={{
-            flexDirection:     'row',
-            alignItems:        'center',
-            gap:               5,
-            backgroundColor:   `${COLORS.info}08`,
-            borderRadius:      RADIUS.md,
-            paddingHorizontal: 8,
-            paddingVertical:   4,
-            marginBottom:      SPACING.sm,
-            borderWidth:       1,
-            borderColor:       `${COLORS.info}15`,
-          }}>
-            <Ionicons name="eye-outline" size={11} color={COLORS.info} />
-            <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '600' }}>
-              View &amp; export only — re-generation not available
-            </Text>
-          </View>
-
-          {/* Footer row */}
           <View style={{
             flexDirection:   'row',
             alignItems:      'center',
@@ -422,7 +334,6 @@ export function SharedVoiceDebateCard({
             borderTopWidth:  1,
             borderTopColor:  COLORS.border,
           }}>
-            {/* Sharer info */}
             <View style={{
               flexDirection: 'row',
               alignItems:    'center',
@@ -448,7 +359,6 @@ export function SharedVoiceDebateCard({
               </Text>
             </View>
 
-            {/* Action buttons */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               {onExportPDF && (
                 <TouchableOpacity
@@ -464,25 +374,6 @@ export function SharedVoiceDebateCard({
                 </TouchableOpacity>
               )}
 
-              {onCopyText && (
-                <TouchableOpacity
-                  onPress={handleCopy}
-                  disabled={isCopying}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isCopying
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons
-                        name={copied ? 'checkmark-circle-outline' : 'copy-outline'}
-                        size={13}
-                        color={copied ? COLORS.success : COLORS.textMuted}
-                      />
-                  }
-                </TouchableOpacity>
-              )}
-
-              {/* Play button */}
               <TouchableOpacity
                 onPress={() => onPlay(item)}
                 style={{

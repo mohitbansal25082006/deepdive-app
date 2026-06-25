@@ -1,9 +1,10 @@
 // src/components/workspace/MemberAvatar.tsx
 // Tiny avatar with role badge used throughout workspace UI.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Avatar } from '../common/Avatar';
 import { MiniProfile, WorkspaceRole } from '../../types';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
@@ -48,7 +49,7 @@ export function MemberAvatar({
 
       {showLabel && (
         <View style={styles.labelCol}>
-          <Text style={styles.name} numberOfLines={1}>
+          <Text style={[styles.name, { color: COLORS.textPrimary }]} numberOfLines={1}>
             {profile?.fullName ?? profile?.username ?? 'Unknown'}
           </Text>
           {showRole && roleConf && (
@@ -68,10 +69,13 @@ const styles = StyleSheet.create({
   wrap:     { flexDirection: 'row', alignItems: 'center', gap: 10 },
   crown:    { position: 'absolute' },
   labelCol: { flex: 1 },
-  name:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' },
+  name:     { fontSize: FONTS.sizes.sm, fontWeight: '600' },
   roleBadge:{
-    alignSelf: 'flex-start', borderRadius: RADIUS.full,
-    paddingHorizontal: 8, paddingVertical: 2, marginTop: 3,
+    alignSelf: 'flex-start',
+    borderRadius: RADIUS.full,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginTop: 3,
   },
   roleText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
 });

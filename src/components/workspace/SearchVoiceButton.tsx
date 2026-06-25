@@ -1,16 +1,7 @@
 // src/components/workspace/SearchVoiceButton.tsx
 // Part 52 — Feature 3: Compact animated mic button for the workspace search bar.
-//
-//   A small, self-contained voice button designed to sit INSIDE the search
-//   input pill (unlike the larger Debate VoiceInputButton which stands alone).
-//   It is fully cross-platform (iOS + Android) — no platform-specific layout,
-//   uses Reanimated for the recording pulse, and degrades gracefully when
-//   transcribing (spinner, not tappable).
-//
-//   States:
-//     idle         — purple mic icon, tap to start
-//     recording    — red stop icon with a pulsing ring + live duration
-//     transcribing — small spinner, not tappable
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React, { useEffect } from 'react';
 import {
@@ -53,7 +44,7 @@ export function SearchVoiceButton({ voiceState, onStart, onStop, size = 32 }: Pr
       pulse.value = withRepeat(
         withSequence(
           withTiming(1.4, { duration: 650, easing: Easing.out(Easing.ease) }),
-          withTiming(1.0, { duration: 650, easing: Easing.in(Easing.ease)  }),
+          withTiming(1.0, { duration: 650, easing: Easing.in(Easing.ease) }),
         ),
         -1,
         false,
@@ -66,7 +57,7 @@ export function SearchVoiceButton({ voiceState, onStart, onStop, size = 32 }: Pr
 
   const pulseStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pulse.value }],
-    opacity:   1.25 - pulse.value * 0.35,
+    opacity: 1.25 - pulse.value * 0.35,
   }));
 
   const bg = isRecording
@@ -85,7 +76,7 @@ export function SearchVoiceButton({ voiceState, onStart, onStop, size = 32 }: Pr
           style={[
             styles.ring,
             {
-              width:  size + 8,
+              width: size + 8,
               height: size + 8,
               borderRadius: (size + 8) / 2,
               borderColor: `${COLORS.error}55`,
@@ -114,8 +105,8 @@ export function SearchVoiceButton({ voiceState, onStart, onStop, size = 32 }: Pr
       </TouchableOpacity>
 
       {isRecording && (
-        <View style={styles.durationBadge} pointerEvents="none">
-          <Text style={styles.durationText}>{fmt(durationMs)}</Text>
+        <View style={[styles.durationBadge, { backgroundColor: COLORS.error }]} pointerEvents="none">
+          <Text style={[styles.durationText, { color: '#FFF' }]}>{fmt(durationMs)}</Text>
         </View>
       )}
     </View>
@@ -123,19 +114,17 @@ export function SearchVoiceButton({ voiceState, onStart, onStop, size = 32 }: Pr
 }
 
 const styles = StyleSheet.create({
-  wrap:  { alignItems: 'center', justifyContent: 'center' },
-  ring:  { position: 'absolute', borderWidth: 2, zIndex: 0 },
-  btn:   { alignItems: 'center', justifyContent: 'center', zIndex: 1 },
+  wrap: { alignItems: 'center', justifyContent: 'center' },
+  ring: { position: 'absolute', borderWidth: 2, zIndex: 0 },
+  btn: { alignItems: 'center', justifyContent: 'center', zIndex: 1 },
   durationBadge: {
     position: 'absolute',
     bottom: -16,
-    backgroundColor: COLORS.error,
     borderRadius: 8,
     paddingHorizontal: 5,
     paddingVertical: 1,
   },
   durationText: {
-    color: '#FFF',
     fontSize: 9,
     fontWeight: '800',
   },

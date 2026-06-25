@@ -1,8 +1,7 @@
 // src/components/workspace/ChatDateSeparator.tsx
 // Part 50 — Custom date separator for Stream Chat MessageList
-// Replaces Stream's default InlineDateSeparator chip with a visually polished
-// full-width divider that shows the date centered between two gradient lines.
-// Usage: Pass as InlineDateSeparator prop to Channel component.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
 
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -39,19 +38,16 @@ export function ChatDateSeparator({ date }: Props) {
 
   return (
     <View style={styles.row}>
-      {/* Left line */}
       <View style={styles.lineWrap}>
-        <View style={styles.line} />
+        <View style={[styles.line, { backgroundColor: COLORS.primary, opacity: 0.25 }]} />
       </View>
 
-      {/* Date pill */}
-      <View style={styles.pill}>
-        <Text style={styles.pillText}>{label}</Text>
+      <View style={[styles.pill, { backgroundColor: `${COLORS.primary}28`, borderColor: `${COLORS.primary}60`, shadowColor: COLORS.primary }]}>
+        <Text style={[styles.pillText, { color: COLORS.textPrimary }]}>{label}</Text>
       </View>
 
-      {/* Right line */}
       <View style={styles.lineWrap}>
-        <View style={styles.line} />
+        <View style={[styles.line, { backgroundColor: COLORS.primary, opacity: 0.25 }]} />
       </View>
     </View>
   );
@@ -71,29 +67,21 @@ const styles = StyleSheet.create({
   },
   line: {
     height:          1,
-    backgroundColor: COLORS.primary,
-    opacity:         0.25,
   },
   pill: {
-    // High-contrast pill: semi-transparent primary accent background
-    // so it's clearly readable on any dark background
-    backgroundColor:   `${COLORS.primary}28`,
     borderRadius:      20,
     borderWidth:       1.5,
-    borderColor:       `${COLORS.primary}60`,
     paddingVertical:   5,
     paddingHorizontal: 14,
     alignItems:        'center',
     justifyContent:    'center',
     flexShrink:        0,
-    shadowColor:       COLORS.primary,
     shadowOffset:      { width: 0, height: 2 },
     shadowOpacity:     0.2,
     shadowRadius:      6,
     elevation:         3,
   },
   pillText: {
-    color:              COLORS.textPrimary,   // solid white — maximum contrast
     fontSize:           11,
     fontWeight:         '700',
     letterSpacing:      0.4,

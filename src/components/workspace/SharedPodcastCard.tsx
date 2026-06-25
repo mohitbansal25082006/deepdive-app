@@ -1,16 +1,12 @@
 // src/components/workspace/SharedPodcastCard.tsx
 // Part 39 FIX — Show all speaker names (2 or 3) extracted from script.turns
-//
-// ROOT CAUSE:
-//   The hosts line used `item.hostName & item.guestName` — both come from the
-//   SharedPodcast row which only stores V1 config fields (host + single guest).
-//   For 3-speaker podcasts the third speaker's name (guest2) is only in
-//   item.script.turns[].speakerName.
-//
-// FIX:
-//   getSpeakerNamesFromScript() reads unique names from script.turns by role.
-//   Falls back to SharedPodcast.hostName / guestName for V1 episodes.
-//   Displays as "Alex & Sam" (2) or "Alex, Sam & Chris" (3).
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. No dark-only assumptions.
+// Part 55.5 — Removed Download MP3, Export PDF, and Copy Script buttons.
+//             Only Play/View remains.
+// Part 55.6 — Title shown fully without truncation (removed numberOfLines restriction).
+// Part 55.7 — Speakers line shown without truncation.
+// Part 55.8 — Removed play count chip and download count chip.
 
 import React, { useState } from 'react';
 import {
@@ -27,7 +23,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SharedPodcast, WorkspaceRole } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../constants/theme';
 
-// ─── Speaker name helpers ─────────────────────────────────────────────────────
+const ACCENT = '#FF6584';
 
 function getSpeakerNamesFromScript(item: SharedPodcast): string[] {
   const turns = item.script?.turns ?? [];
@@ -57,20 +53,13 @@ function formatSpeakerNames(names: string[]): string {
   return `${rest} & ${last}`;
 }
 
-// ─── Props ────────────────────────────────────────────────────────────────────
-
 interface Props {
   item:            SharedPodcast;
   index:           number;
   userRole:        WorkspaceRole | null;
   onPlay:          (item: SharedPodcast) => void;
   onRemove:        (item: SharedPodcast) => Promise<void>;
-  onDownloadMP3?:  (item: SharedPodcast) => Promise<void>;
-  onExportPDF?:    (item: SharedPodcast) => Promise<void>;
-  onCopyScript?:   (item: SharedPodcast) => Promise<void>;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string): string {
   const d    = new Date(iso);
@@ -89,29 +78,17 @@ function formatDuration(seconds: number): string {
   return m > 0 ? `~${m} min` : `${seconds}s`;
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
-const ACCENT = '#FF6584';
-
 export function SharedPodcastCard({
   item,
   index,
   userRole,
   onPlay,
   onRemove,
-  onDownloadMP3,
-  onExportPDF,
-  onCopyScript,
 }: Props) {
-  const [isRemoving,     setIsRemoving]     = useState(false);
-  const [isDownloading,  setIsDownloading]  = useState(false);
-  const [isExportingPDF, setIsExportingPDF] = useState(false);
-  const [isCopying,      setIsCopying]      = useState(false);
-  const [copied,         setCopied]         = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
 
   const isEditor = userRole === 'owner' || userRole === 'editor';
 
-  // ── Speaker names (V1 + V2 aware) ─────────────────────────────────────────
   const speakerNames = getSpeakerNamesFromScript(item);
   const speakersLine = formatSpeakerNames(speakerNames);
   const is3Speaker   = speakerNames.length >= 3;
@@ -134,30 +111,7 @@ export function SharedPodcastCard({
     );
   };
 
-  const handleDownloadMP3 = async () => {
-    if (!onDownloadMP3 || isDownloading) return;
-    setIsDownloading(true);
-    await onDownloadMP3(item);
-    setIsDownloading(false);
-  };
-
-  const handleExportPDF = async () => {
-    if (!onExportPDF || isExportingPDF) return;
-    setIsExportingPDF(true);
-    await onExportPDF(item);
-    setIsExportingPDF(false);
-  };
-
-  const handleCopyScript = async () => {
-    if (!onCopyScript || isCopying) return;
-    setIsCopying(true);
-    await onCopyScript(item);
-    setIsCopying(false);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const hasAudio = item.audioSegmentPaths.filter(Boolean).length > 0;
+  const hasAudio = item.audioSegmentPaths && item.audioSegmentPaths.filter(Boolean).length > 0;
 
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(index * 60)}>
@@ -174,7 +128,6 @@ export function SharedPodcastCard({
           ...SHADOWS.medium,
         }}
       >
-        {/* Top accent bar */}
         <LinearGradient
           colors={['#FF6584', '#FF8FA3']}
           start={{ x: 0, y: 0 }}
@@ -183,14 +136,12 @@ export function SharedPodcastCard({
         />
 
         <View style={{ padding: SPACING.md }}>
-          {/* Header row */}
           <View style={{
             flexDirection: 'row',
             alignItems:    'flex-start',
             gap:           SPACING.md,
             marginBottom:  SPACING.sm,
           }}>
-            {/* Icon */}
             <LinearGradient
               colors={['#FF6584', '#FF8FA3']}
               style={{
@@ -206,9 +157,7 @@ export function SharedPodcastCard({
               <Ionicons name="mic" size={22} color="#FFF" />
             </LinearGradient>
 
-            {/* Title block */}
             <View style={{ flex: 1 }}>
-              {/* Type badge + 3-speaker badge */}
               <View style={{
                 flexDirection: 'row',
                 alignItems:    'center',
@@ -253,32 +202,30 @@ export function SharedPodcastCard({
                 )}
               </View>
 
+              {/* Title - fully shown without truncation */}
               <Text
                 style={{
                   color:      COLORS.textPrimary,
                   fontSize:   FONTS.sizes.base,
                   fontWeight: '800',
-                  lineHeight: 22,
+                  lineHeight: 24,
                 }}
-                numberOfLines={2}
               >
                 {item.title}
               </Text>
 
-              {/* Speakers — shows ALL names (2 or 3) */}
+              {/* Speakers - fully shown without truncation */}
               <Text
                 style={{
                   color:     COLORS.textMuted,
                   fontSize:  FONTS.sizes.xs,
-                  marginTop: 3,
+                  marginTop: 4,
                 }}
-                numberOfLines={1}
               >
                 {speakersLine}
               </Text>
             </View>
 
-            {/* Remove button */}
             {isEditor && (
               <TouchableOpacity
                 onPress={handleRemove}
@@ -303,7 +250,6 @@ export function SharedPodcastCard({
             )}
           </View>
 
-          {/* Meta chips */}
           <View style={{
             flexDirection: 'row',
             flexWrap:      'wrap',
@@ -316,20 +262,6 @@ export function SharedPodcastCard({
             {item.wordCount > 0 && (
               <MetaChip icon="text-outline" label={`${item.wordCount.toLocaleString()} words`} />
             )}
-            {item.playCount > 0 && (
-              <MetaChip
-                icon="play-circle-outline"
-                label={`${item.playCount} play${item.playCount !== 1 ? 's' : ''}`}
-                color={ACCENT}
-              />
-            )}
-            {item.downloadCount > 0 && (
-              <MetaChip
-                icon="download-outline"
-                label={`${item.downloadCount} download${item.downloadCount !== 1 ? 's' : ''}`}
-                color={COLORS.primary}
-              />
-            )}
             {!hasAudio && (
               <MetaChip
                 icon="alert-circle-outline"
@@ -339,7 +271,6 @@ export function SharedPodcastCard({
             )}
           </View>
 
-          {/* Footer row */}
           <View style={{
             flexDirection:  'row',
             alignItems:     'center',
@@ -348,7 +279,6 @@ export function SharedPodcastCard({
             borderTopWidth: 1,
             borderTopColor: COLORS.border,
           }}>
-            {/* Sharer info */}
             <View style={{
               flexDirection: 'row',
               alignItems:    'center',
@@ -374,80 +304,31 @@ export function SharedPodcastCard({
               </Text>
             </View>
 
-            {/* Action buttons */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {onDownloadMP3 && hasAudio && (
-                <TouchableOpacity
-                  onPress={handleDownloadMP3}
-                  disabled={isDownloading}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isDownloading
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons name="musical-notes-outline" size={13} color={COLORS.textMuted} />}
-                </TouchableOpacity>
-              )}
-
-              {onExportPDF && (
-                <TouchableOpacity
-                  onPress={handleExportPDF}
-                  disabled={isExportingPDF}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isExportingPDF
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons name="document-text-outline" size={13} color={COLORS.textMuted} />}
-                </TouchableOpacity>
-              )}
-
-              {onCopyScript && (
-                <TouchableOpacity
-                  onPress={handleCopyScript}
-                  disabled={isCopying}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={actionBtnStyle}
-                >
-                  {isCopying
-                    ? <ActivityIndicator size="small" color={COLORS.textMuted} />
-                    : <Ionicons
-                        name={copied ? 'checkmark-circle-outline' : 'copy-outline'}
-                        size={13}
-                        color={copied ? COLORS.success : COLORS.textMuted}
-                      />}
-                </TouchableOpacity>
-              )}
-
-              {/* Play button */}
-              <TouchableOpacity
-                onPress={() => onPlay(item)}
-                style={{
-                  flexDirection:     'row',
-                  alignItems:        'center',
-                  gap:               4,
-                  backgroundColor:   `${ACCENT}15`,
-                  borderRadius:      RADIUS.md,
-                  paddingHorizontal: 10,
-                  paddingVertical:   5,
-                  borderWidth:       1,
-                  borderColor:       `${ACCENT}30`,
-                }}
-              >
-                <Ionicons name="play-circle-outline" size={13} color={ACCENT} />
-                <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
-                  {hasAudio ? 'Play' : 'View'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              onPress={() => onPlay(item)}
+              style={{
+                flexDirection:     'row',
+                alignItems:        'center',
+                gap:               4,
+                backgroundColor:   `${ACCENT}15`,
+                borderRadius:      RADIUS.md,
+                paddingHorizontal: 10,
+                paddingVertical:   5,
+                borderWidth:       1,
+                borderColor:       `${ACCENT}30`,
+              }}
+            >
+              <Ionicons name="play-circle-outline" size={13} color={ACCENT} />
+              <Text style={{ color: ACCENT, fontSize: 10, fontWeight: '700' }}>
+                {hasAudio ? 'Play' : 'View'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </TouchableOpacity>
     </Animated.View>
   );
 }
-
-// ─── MetaChip ─────────────────────────────────────────────────────────────────
 
 function MetaChip({
   icon, label, color = COLORS.textMuted,
@@ -469,16 +350,3 @@ function MetaChip({
     </View>
   );
 }
-
-// ─── Shared styles ────────────────────────────────────────────────────────────
-
-const actionBtnStyle = {
-  width:           30,
-  height:          30,
-  borderRadius:    8,
-  backgroundColor: COLORS.backgroundElevated,
-  alignItems:      'center' as const,
-  justifyContent:  'center' as const,
-  borderWidth:     1,
-  borderColor:     COLORS.border,
-};

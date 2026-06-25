@@ -1,6 +1,13 @@
 // src/components/workspace/BlockedMembersModal.tsx
 // Part 13B — Bottom-sheet modal that shows blocked members (owner only).
 // Owner can unblock any member from this panel.
+// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
+//             COLORS from the theme system. Uses getModalBackdrop for backdrop.
+//             No dark-only assumptions.
+// Part 55.3 — Smooth, non-bouncing animation: uses SlideInUp with cubic easing
+//             instead of springify(). No overshoot/bounce.
+// Part 55.4 — Takes up 80% of screen height from the bottom for better visibility
+//             of blocked members list.
 
 import React, { useEffect } from 'react';
 import {
@@ -9,15 +16,16 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, {
-  FadeIn, FadeOut, SlideInDown, SlideOutDown,
+  FadeIn, FadeOut, SlideInUp, SlideOutDown, Easing,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Avatar }            from '../common/Avatar';
 import { useBlockedMembers } from '../../hooks/useBlockedMembers';
 import { BlockedMember }     from '../../types';
-import { COLORS, FONTS, RADIUS, SPACING } from '../../constants/theme';
+import { COLORS, FONTS, RADIUS, SPACING, getModalBackdrop } from '../../constants/theme';
 
 const { height: SCREEN_H } = Dimensions.get('window');
+const SHEET_HEIGHT_RATIO = 0.8; // Part 55.4: 80% of screen height
 
 interface Props {
   visible:     boolean;
@@ -58,6 +66,8 @@ export function BlockedMembersModal({ visible, workspaceId, onClose }: Props) {
       month: 'short', day: 'numeric', year: 'numeric',
     });
 
+  const backdropColor = getModalBackdrop(0.5);
+
   return (
     <Modal
       visible={visible}
@@ -70,23 +80,28 @@ export function BlockedMembersModal({ visible, workspaceId, onClose }: Props) {
       <Animated.View
         entering={FadeIn.duration(200)}
         exiting={FadeOut.duration(150)}
-        style={StyleSheet.absoluteFillObject}
+        style={[StyleSheet.absoluteFillObject, { backgroundColor: backdropColor }]}
       >
         <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
       </Animated.View>
 
-      {/* Sheet */}
+      {/* Sheet — 80% height from bottom, SMOOTH non-bouncing animation */}
       <Animated.View
-        entering={SlideInDown.duration(300).springify().damping(15).stiffness(200).mass(1)}
-        exiting={SlideOutDown.duration(200)}
+        entering={SlideInUp.duration(340).easing(Easing.out(Easing.cubic))}
+        exiting={SlideOutDown.duration(220).easing(Easing.in(Easing.quad))}
         style={[
           styles.sheet,
-          { maxHeight: SCREEN_H * 0.7, paddingBottom: Math.max(insets.bottom, 20) },
+          {
+            backgroundColor: COLORS.backgroundCard,
+            borderColor: COLORS.border,
+            height: SCREEN_H * SHEET_HEIGHT_RATIO,
+            paddingBottom: Math.max(insets.bottom, 20),
+          },
         ]}
       >
         {/* Handle */}
         <View style={styles.handleWrap}>
-          <View style={styles.handle} />
+          <View style={[styles.handle, { backgroundColor: COLORS.border }]} />
         </View>
 
         {/* Header */}
@@ -95,20 +110,20 @@ export function BlockedMembersModal({ visible, workspaceId, onClose }: Props) {
             <Ionicons name="ban-outline" size={20} color={COLORS.error} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>Blocked Members</Text>
-            <Text style={styles.headerSub}>
+            <Text style={[styles.headerTitle, { color: COLORS.textPrimary }]}>Blocked Members</Text>
+            <Text style={[styles.headerSub, { color: COLORS.textMuted }]}>
               {blocked.length} blocked · Owner only
             </Text>
           </View>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+          <TouchableOpacity onPress={onClose} style={[styles.closeBtn, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
             <Ionicons name="close" size={18} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
 
         {/* Info banner */}
-        <View style={styles.infoBanner}>
+        <View style={[styles.infoBanner, { backgroundColor: `${COLORS.info}10`, borderColor: `${COLORS.info}25` }]}>
           <Ionicons name="information-circle-outline" size={15} color={COLORS.info} />
-          <Text style={styles.infoText}>
+          <Text style={[styles.infoText, { color: COLORS.info }]}>
             Blocked users are removed from the workspace and cannot rejoin via invite code.
           </Text>
         </View>
@@ -121,18 +136,18 @@ export function BlockedMembersModal({ visible, workspaceId, onClose }: Props) {
         ) : error ? (
           <View style={styles.centered}>
             <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity onPress={load} style={styles.retryBtn}>
-              <Text style={styles.retryBtnText}>Retry</Text>
+            <Text style={[styles.errorText, { color: COLORS.textSecondary }]}>{error}</Text>
+            <TouchableOpacity onPress={load} style={[styles.retryBtn, { backgroundColor: COLORS.primary }]}>
+              <Text style={[styles.retryBtnText, { color: '#FFF' }]}>Retry</Text>
             </TouchableOpacity>
           </View>
         ) : blocked.length === 0 ? (
           <View style={styles.centered}>
-            <View style={styles.emptyIconWrap}>
+            <View style={[styles.emptyIconWrap, { backgroundColor: `${COLORS.success}15` }]}>
               <Ionicons name="checkmark-circle-outline" size={36} color={COLORS.success} />
             </View>
-            <Text style={styles.emptyTitle}>No blocked members</Text>
-            <Text style={styles.emptyDesc}>
+            <Text style={[styles.emptyTitle, { color: COLORS.textPrimary }]}>No blocked members</Text>
+            <Text style={[styles.emptyDesc, { color: COLORS.textMuted }]}>
               You haven't blocked anyone from this workspace.
             </Text>
           </View>
@@ -170,22 +185,28 @@ function BlockedRow({
   const name = member.profile?.fullName ?? member.profile?.username ?? 'Unknown User';
 
   return (
-    <View style={rowStyles.card}>
+    <View style={[
+      rowStyles.card,
+      {
+        backgroundColor: COLORS.backgroundElevated,
+        borderColor: `${COLORS.error}20`,
+      }
+    ]}>
       <Avatar url={member.profile?.avatarUrl} name={name} size={44} />
 
       <View style={rowStyles.info}>
-        <Text style={rowStyles.name} numberOfLines={1}>{name}</Text>
+        <Text style={[rowStyles.name, { color: COLORS.textPrimary }]} numberOfLines={1}>{name}</Text>
         {member.profile?.username && (
-          <Text style={rowStyles.username}>@{member.profile.username}</Text>
+          <Text style={[rowStyles.username, { color: COLORS.textMuted }]}>@{member.profile.username}</Text>
         )}
         <View style={rowStyles.meta}>
           <Ionicons name="ban-outline" size={11} color={COLORS.error} />
-          <Text style={rowStyles.metaText}>
+          <Text style={[rowStyles.metaText, { color: COLORS.error }]}>
             Blocked {formatDate(member.blockedAt)}
           </Text>
         </View>
         {member.reason && (
-          <Text style={rowStyles.reason} numberOfLines={2}>
+          <Text style={[rowStyles.reason, { color: COLORS.textSecondary }]} numberOfLines={2}>
             Reason: {member.reason}
           </Text>
         )}
@@ -194,7 +215,14 @@ function BlockedRow({
       <TouchableOpacity
         onPress={onUnblock}
         disabled={isActioning}
-        style={[rowStyles.unblockBtn, isActioning && { opacity: 0.5 }]}
+        style={[
+          rowStyles.unblockBtn,
+          {
+            backgroundColor: `${COLORS.success}15`,
+            borderColor: `${COLORS.success}30`,
+          },
+          isActioning && { opacity: 0.5 }
+        ]}
         activeOpacity={0.8}
       >
         {isActioning ? (
@@ -202,7 +230,7 @@ function BlockedRow({
         ) : (
           <>
             <Ionicons name="checkmark-outline" size={14} color={COLORS.success} />
-            <Text style={rowStyles.unblockBtnText}>Unblock</Text>
+            <Text style={[rowStyles.unblockBtnText, { color: COLORS.success }]}>Unblock</Text>
           </>
         )}
       </TouchableOpacity>
@@ -216,11 +244,9 @@ const styles = StyleSheet.create({
   sheet: {
     position:             'absolute',
     left: 0, right: 0, bottom: 0,
-    backgroundColor:      COLORS.backgroundCard,
     borderTopLeftRadius:  26,
     borderTopRightRadius: 26,
     borderTopWidth:       1,
-    borderColor:          COLORS.border,
     shadowColor:          '#000',
     shadowOffset:         { width: 0, height: -6 },
     shadowOpacity:        0.3,
@@ -228,44 +254,52 @@ const styles = StyleSheet.create({
     elevation:            24,
   },
   handleWrap: { alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
-  handle:     { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border },
+  handle:     { width: 40, height: 4, borderRadius: 2 },
 
   header: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
     paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md,
   },
   headerIcon:  { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' },
-  headerSub:   { color: COLORS.textMuted,   fontSize: FONTS.sizes.xs, marginTop: 2 },
+  headerTitle: { fontSize: FONTS.sizes.lg, fontWeight: '800' },
+  headerSub:   { fontSize: FONTS.sizes.xs, marginTop: 2 },
   closeBtn: {
     width: 32, height: 32, borderRadius: 10,
-    backgroundColor: COLORS.backgroundElevated,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
+    borderWidth: 1,
   },
 
   infoBanner: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: `${COLORS.info}10`,
     marginHorizontal: SPACING.xl, marginBottom: SPACING.sm,
     borderRadius: RADIUS.lg, padding: SPACING.sm,
-    borderWidth: 1, borderColor: `${COLORS.info}25`,
+    borderWidth: 1,
   },
-  infoText: { color: COLORS.info, fontSize: FONTS.sizes.xs, lineHeight: 17, flex: 1 },
+  infoText: { fontSize: FONTS.sizes.xs, lineHeight: 17, flex: 1 },
 
-  centered: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, gap: 12 },
+  centered: { 
+    flex: 1,
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    gap: 12,
+    paddingVertical: 40,
+  },
   emptyIconWrap: {
     width: 64, height: 64, borderRadius: 20,
-    backgroundColor: `${COLORS.success}15`,
     alignItems: 'center', justifyContent: 'center',
   },
-  emptyTitle:  { color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700' },
-  emptyDesc:   { color: COLORS.textMuted, fontSize: FONTS.sizes.sm, textAlign: 'center', paddingHorizontal: SPACING.xl },
-  errorText:   { color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, textAlign: 'center' },
-  retryBtn:    { backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 8 },
-  retryBtnText:{ color: '#FFF', fontWeight: '700', fontSize: FONTS.sizes.sm },
+  emptyTitle:  { fontSize: FONTS.sizes.base, fontWeight: '700' },
+  emptyDesc:   { fontSize: FONTS.sizes.sm, textAlign: 'center', paddingHorizontal: SPACING.xl },
+  errorText:   { fontSize: FONTS.sizes.sm, textAlign: 'center' },
+  retryBtn:    { borderRadius: RADIUS.lg, paddingHorizontal: SPACING.lg, paddingVertical: 8 },
+  retryBtnText:{ fontWeight: '700', fontSize: FONTS.sizes.sm },
 
-  list: { paddingHorizontal: SPACING.xl, paddingBottom: 16, gap: 8 },
+  list: { 
+    paddingHorizontal: SPACING.xl, 
+    paddingBottom: 16, 
+    gap: 8,
+    flexGrow: 1,
+  },
 });
 
 const rowStyles = StyleSheet.create({
@@ -273,25 +307,22 @@ const rowStyles = StyleSheet.create({
     flexDirection:   'row',
     alignItems:      'center',
     gap:             12,
-    backgroundColor: COLORS.backgroundElevated,
     borderRadius:    RADIUS.lg,
     padding:         SPACING.md,
     borderWidth:     1,
-    borderColor:     `${COLORS.error}20`,
   },
   info:     { flex: 1, gap: 2, minWidth: 0 },
-  name:     { color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '700' },
-  username: { color: COLORS.textMuted, fontSize: FONTS.sizes.xs },
+  name:     { fontSize: FONTS.sizes.sm, fontWeight: '700' },
+  username: { fontSize: FONTS.sizes.xs },
   meta:     { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-  metaText: { color: COLORS.error, fontSize: FONTS.sizes.xs, fontWeight: '600' },
-  reason:   { color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, marginTop: 3, fontStyle: 'italic' },
+  metaText: { fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  reason:   { fontSize: FONTS.sizes.xs, marginTop: 3, fontStyle: 'italic' },
   unblockBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: `${COLORS.success}15`,
     borderRadius: RADIUS.lg,
     paddingHorizontal: 10, paddingVertical: 7,
-    borderWidth: 1, borderColor: `${COLORS.success}30`,
+    borderWidth: 1,
     flexShrink: 0,
   },
-  unblockBtnText: { color: COLORS.success, fontSize: FONTS.sizes.xs, fontWeight: '700' },
+  unblockBtnText: { fontSize: FONTS.sizes.xs, fontWeight: '700' },
 });
