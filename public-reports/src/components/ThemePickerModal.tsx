@@ -5,11 +5,7 @@
 
 'use client';
 
-<<<<<<< HEAD
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-=======
-import React, { useEffect, useRef, useState } from 'react';
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
 import { useTheme } from '../context/ThemeContext';
 import {
   THEME_DEFINITIONS,
@@ -28,7 +24,6 @@ interface ThemePickerModalProps {
 export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalProps) {
   const { themeId, mode, resolvedMode, setThemeId, setMode } = useTheme();
   const modalRef = useRef<HTMLDivElement>(null);
-<<<<<<< HEAD
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isClosing, setIsClosing] = useState(false);
 
@@ -67,15 +62,8 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     // Restore scroll position that was lost due to position:fixed
     window.scrollTo(0, savedScrollY.current);
   }, []);
-=======
-  const [isClosing, setIsClosing] = useState(false);
-  const [touchStartY, setTouchStartY] = useState(0);
-  const [touchCurrentY, setTouchCurrentY] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
 
   useEffect(() => {
-<<<<<<< HEAD
     if (isOpen) {
       lockBodyScroll();
 
@@ -92,32 +80,10 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
 
   // ── Close with animation ──────────────────────────────────────────────────
   const handleClose = useCallback(() => {
-=======
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleClose();
-    };
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape);
-      document.body.style.overflow = 'hidden';
-      document.body.style.position = 'fixed';
-      document.body.style.width = '100%';
-    }
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-      document.body.style.overflow = '';
-      document.body.style.position = '';
-      document.body.style.width = '';
-    };
-  }, [isOpen]);
-
-  // Handle close with animation
-  const handleClose = () => {
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
     setIsClosing(true);
     setTimeout(() => {
       onClose();
       setIsClosing(false);
-<<<<<<< HEAD
       // Reset any dragged transform
       if (modalRef.current) {
         modalRef.current.style.transform = '';
@@ -164,39 +130,11 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
         const dampedDiff = diff * 0.55;
         modal.style.transform = `translateY(${dampedDiff}px)`;
         modal.style.opacity = `${Math.max(0.3, 1 - dampedDiff / 350)}`;
-=======
-    }, 300);
-  };
-
-  // Handle backdrop click
-  const handleBackdropClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) handleClose();
-  };
-
-  // ── Touch handlers for swipe-to-close ──
-  const handleTouchStart = (e: React.TouchEvent) => {
-    setTouchStartY(e.touches[0].clientY);
-    setTouchCurrentY(e.touches[0].clientY);
-    setIsDragging(true);
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isDragging) return;
-    const currentY = e.touches[0].clientY;
-    const diff = currentY - touchStartY;
-    if (diff > 0) {
-      setTouchCurrentY(currentY);
-      const modal = modalRef.current;
-      if (modal) {
-        modal.style.transform = `translateY(${diff * 0.5}px)`;
-        modal.style.opacity = `${1 - (diff / 400)}`;
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
       }
     }
   };
 
   const handleTouchEnd = () => {
-<<<<<<< HEAD
     if (!isDragging.current) return;
     isDragging.current = false;
 
@@ -229,17 +167,6 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
         setTimeout(() => {
           if (modal) modal.style.transition = '';
         }, 320);
-=======
-    setIsDragging(false);
-    const diff = touchCurrentY - touchStartY;
-    if (diff > 150) {
-      handleClose();
-    } else {
-      const modal = modalRef.current;
-      if (modal) {
-        modal.style.transform = '';
-        modal.style.opacity = '';
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
       }
     }
   };
@@ -248,38 +175,26 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
 
   return (
     <div
-<<<<<<< HEAD
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
-=======
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 transition-all duration-300"
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
       style={{
         background: `rgba(0,0,0,0.6)`,
         backdropFilter: 'blur(8px)',
         WebkitBackdropFilter: 'blur(8px)',
         opacity: isClosing ? 0 : 1,
         transition: 'opacity 0.3s ease',
-<<<<<<< HEAD
         // Let the backdrop itself be touch-action none to stop background scroll
         // without blocking the modal's internal scroll
         touchAction: 'none',
-=======
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
       }}
       onClick={handleBackdropClick}
     >
       <div
         ref={modalRef}
-<<<<<<< HEAD
         className="relative w-full max-w-2xl rounded-t-3xl sm:rounded-3xl shadow-2xl"
-=======
-        className="relative w-full max-w-2xl max-h-[92vh] sm:max-h-[90vh] rounded-t-3xl sm:rounded-3xl shadow-2xl transition-transform duration-300 ease-out"
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
         style={{
           background: COLORS.backgroundCard,
           border: `1px solid ${COLORS.border}`,
           transform: isClosing ? 'translateY(30px)' : 'translateY(0)',
-<<<<<<< HEAD
           transition: isClosing
             ? 'transform 0.3s ease, opacity 0.3s ease'
             : 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)',
@@ -289,28 +204,17 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
           display: 'flex',
           flexDirection: 'column',
           // Remove bottom radius on mobile (sheet sits at bottom)
-=======
-          transition: 'transform 0.3s ease, opacity 0.3s ease',
-          marginTop: 'auto',
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
           borderBottomLeftRadius: 0,
           borderBottomRightRadius: 0,
         }}
         onClick={(e) => e.stopPropagation()}
-<<<<<<< HEAD
         // Restore touch-action on the modal card itself so inner scroll works
-=======
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
         {/* ── Mobile drag handle ── */}
-<<<<<<< HEAD
         <div className="flex justify-center pt-3 pb-1 sm:hidden flex-shrink-0">
-=======
-        <div className="flex justify-center pt-3 pb-1 sm:hidden">
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
           <div
             style={{
               width: 40,
@@ -321,15 +225,9 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
           />
         </div>
 
-<<<<<<< HEAD
         {/* ── Header (sticky, flex-shrink-0 so it never scrolls away) ── */}
         <div
           className="flex-shrink-0 px-4 sm:px-6 py-3 sm:py-4 border-b flex items-center justify-between"
-=======
-        {/* ── Header ── */}
-        <div
-          className="sticky top-0 z-10 px-4 sm:px-6 py-3 sm:py-4 border-b flex items-center justify-between"
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
           style={{
             background: COLORS.backgroundCard,
             borderColor: COLORS.border,
@@ -373,7 +271,6 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
           </button>
         </div>
 
-<<<<<<< HEAD
         {/* ── Scrollable Content ──────────────────────────────────────────────
              KEY FIXES applied here:
              1. overflow-y: auto  → enables scrolling
@@ -400,11 +297,6 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
           }}
         >
           {/* ── Mode selector ── */}
-=======
-        {/* ── Content ── */}
-        <div className="p-4 sm:p-6 space-y-5 sm:space-y-6 overflow-y-auto" style={{ maxHeight: 'calc(92vh - 140px)' }}>
-          {/* Mode selector */}
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
           <div>
             <p className="text-xs font-bold uppercase tracking-wider mb-2 sm:mb-3" style={{ color: COLORS.textMuted }}>
               Appearance Mode
@@ -459,11 +351,7 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
                     }}
                   >
                     <div className="flex items-center gap-3 p-3 sm:p-4">
-<<<<<<< HEAD
                       {/* Theme preview */}
-=======
-                      {/* Theme preview - compact mobile version */}
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
                       <div
                         className="flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden"
                         style={{
@@ -543,49 +431,13 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
       </div>
 
       <style>{`
-<<<<<<< HEAD
         /* Reduce motion preferences */
         @media (prefers-reduced-motion: reduce) {
           * {
-=======
-        @media (max-width: 640px) {
-          .theme-modal-content {
-            padding-bottom: env(safe-area-inset-bottom);
-          }
-        }
-
-        /* Prevent body scroll when modal is open */
-        .modal-open {
-          overflow: hidden;
-          position: fixed;
-          width: 100%;
-        }
-
-        /* Smooth scroll for content */
-        .theme-modal-scroll {
-          -webkit-overflow-scrolling: touch;
-          scroll-behavior: smooth;
-        }
-
-        /* Reduce motion preferences */
-        @media (prefers-reduced-motion: reduce) {
-          .theme-modal-content,
-          .theme-modal-backdrop {
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
             transition-duration: 0.01ms !important;
             animation-duration: 0.01ms !important;
           }
         }
-<<<<<<< HEAD
-=======
-
-        /* Touch feedback for mobile */
-        @media (hover: none) {
-          .theme-btn:active {
-            transform: scale(0.95);
-          }
-        }
->>>>>>> 150cc307a8694e088cc9144fa2c37f173c4b739f
       `}</style>
     </div>
   );
