@@ -1,23 +1,26 @@
 // Public-Reports/src/app/api/discover/route.ts
-// Public research discovery feed.
-// GET ?sort=trending|recent&tag=AI&limit=24&offset=0
+// Part 55.11 — Fix: tag is passed to RPC as-is (case-insensitive match is
+// now handled DB-side via Schema 55.11's updated get_public_reports_feed).
+// No more client-side lowercasing that broke the stored Title Case tags.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServer }      from '@/lib/supabase-server';
 import type { PublicFeedReport }     from '@/types/report';
 
-export const runtime = 'nodejs';
-// Allow caching for 60s at the CDN level (Vercel edge cache)
+export const runtime   = 'nodejs';
 export const revalidate = 60;
 
 function mapRow(row: Record<string, unknown>): PublicFeedReport {
   return {
-    shareId:       String(row.share_id      ?? ''),
-    viewCount:     Number(row.view_count    ?? 0),
-    shareCount:    Number(row.share_count   ?? 0),
-    cachedTitle:   String(row.cached_title  ?? ''),
+    shareId:       String(row.share_id       ?? ''),
+    viewCount:     Number(row.view_count     ?? 0),
+    shareCount:    Number(row.share_count    ?? 0),
+    cachedTitle:   String(row.cached_title   ?? ''),
     cachedSummary: String(row.cached_summary ?? ''),
-    tags:          Array.isArray(row.tags) ? (row.tags as string[]) : [],
+    // Ensure tags is always a non-null array of non-empty strings
+    tags:          Array.isArray(row.tags)
+                     ? (row.tags as string[]).filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+                     : [],
     depth:         (row.depth as 'quick' | 'deep' | 'expert') ?? 'deep',
     researchMode:  (row.research_mode as 'standard' | 'academic') ?? 'standard',
     ownerUsername: row.owner_username ? String(row.owner_username) : undefined,
@@ -29,18 +32,22 @@ function mapRow(row: Record<string, unknown>): PublicFeedReport {
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
 
-  const rawSort  = searchParams.get('sort') ?? 'trending';
-  const sort     = rawSort === 'recent' ? 'recent' : 'trending';
-  const tag      = searchParams.get('tag')    ?? null;
-  const limit    = Math.min(50, Math.max(1, parseInt(searchParams.get('limit')  ?? '24', 10)));
-  const offset   = Math.max(0,             parseInt(searchParams.get('offset') ?? '0',  10));
+  const rawSort = searchParams.get('sort') ?? 'trending';
+  const sort    = rawSort === 'recent' ? 'recent' : 'trending';
+
+  // FIX: pass tag to the RPC without lowercasing.
+  // Schema 55.11 updated get_public_reports_feed to use LOWER() on both sides
+  // so the comparison is case-insensitive at the DB level.
+  const tag    = searchParams.get('tag')?.trim() || null;
+  const limit  = Math.min(50, Math.max(1, parseInt(searchParams.get('limit')  ?? '24', 10)));
+  const offset = Math.max(0,              parseInt(searchParams.get('offset') ?? '0',  10));
 
   const supabase = createSupabaseServer();
 
   const { data, error } = await supabase.rpc('get_public_reports_feed', {
     p_sort:   sort,
     p_tag:    tag,
-    p_limit:  limit + 1,     // fetch one extra to determine hasMore
+    p_limit:  limit + 1,   // fetch one extra to determine hasMore
     p_offset: offset,
   });
 
@@ -61,7 +68,11 @@ export async function GET(request: NextRequest) {
     {
       status:  200,
       headers: {
-        'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120',
+        // Tag-filtered results are dynamic; don't cache them to avoid stale data.
+        // Un-filtered trending/recent can cache for 60s.
+        'Cache-Control': tag
+          ? 'no-store'
+          : 'public, s-maxage=60, stale-while-revalidate=120',
       },
     },
   );
