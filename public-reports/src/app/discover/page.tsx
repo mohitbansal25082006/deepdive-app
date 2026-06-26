@@ -13,10 +13,12 @@ import PublicSearchBar from '@/components/PublicSearchBar';
 import type { PublicFeedReport, TagCount } from '@/types/report';
 import type { ResearcherRow } from '@/app/api/researchers/route';
 
-const PLAY_STORE_URL =
-  typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_DEEPDIVE_PLAY_STORE_URL ?? process.env.NEXT_PUBLIC_PLAY_STORE_URL ?? '#')
-    : '#';
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+// Use a constant URL that's the same on server and client
+const PLAY_STORE_URL = process.env.NEXT_PUBLIC_DEEPDIVE_PLAY_STORE_URL ?? 
+                       process.env.NEXT_PUBLIC_PLAY_STORE_URL ?? 
+                       'https://play.google.com/store/apps/details?id=com.deepdive.ai';
 
 // ─── Global styles ──────────────────────────────────────────────────────────────
 
@@ -539,9 +541,79 @@ function ResearchersSection() {
   );
 }
 
+// ─── Loading Component ─────────────────────────────────────────────────────
+
+function DiscoverPageLoading() {
+  return (
+    <div style={{ 
+      minHeight: '100vh', 
+      background: 'var(--theme-background)', 
+      display: 'flex', 
+      flexDirection: 'column',
+      alignItems: 'center', 
+      justifyContent: 'center',
+      padding: '24px',
+      gap: 20,
+    }}>
+      {/* App logo with white background */}
+      <div style={{
+        width: 56,
+        height: 56,
+        borderRadius: 14,
+        background: '#FFFFFF',
+        border: '1px solid var(--theme-border)',
+        overflow: 'hidden',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+      }}>
+        <Image 
+          src="/icon.png" 
+          alt="DeepDive AI" 
+          width={40} 
+          height={40} 
+          style={{ objectFit: 'contain' }} 
+          priority 
+        />
+      </div>
+      
+      <div style={{
+        width: 36,
+        height: 36,
+        border: '3px solid var(--theme-background-elevated)',
+        borderTopColor: 'var(--theme-primary)',
+        borderRadius: '50%',
+        animation: 'spin 0.8s linear infinite',
+      }} />
+      
+      <p style={{
+        color: 'var(--theme-text-secondary)',
+        fontSize: '0.875rem',
+        fontWeight: 500,
+        margin: 0,
+      }}>
+        Loading Discover...
+      </p>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (max-width: 480px) {
+          .dd-loading-logo { width: 44px !important; height: 44px !important; }
+          .dd-loading-logo img { width: 32px !important; height: 32px !important; }
+          .dd-loading-spinner { width: 28px !important; height: 28px !important; border-width: 2.5px !important; }
+          .dd-loading-text { font-size: 0.75rem !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 // ─── DiscoverClient ────────────────────────────────────────────────────────────
 
 function DiscoverClient() {
+  const [isClientReady, setIsClientReady] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -564,6 +636,11 @@ function DiscoverClient() {
 
   const isSearchMode = activeSearch.trim().length >= 2;
   const isReportTab = activeTab === 'trending' || activeTab === 'recent';
+
+  // Mark client as ready after mount
+  useEffect(() => {
+    setIsClientReady(true);
+  }, []);
 
   useEffect(() => {
     const p = new URLSearchParams();
@@ -623,6 +700,11 @@ function DiscoverClient() {
     setShowTagPanel(false);
     if (activeTab === 'researchers') setActiveTab('trending');
   };
+
+  // Show loading until client is ready to prevent hydration mismatch
+  if (!isClientReady) {
+    return <DiscoverPageLoading />;
+  }
 
   return (
     <div style={{ 
@@ -991,24 +1073,7 @@ function DiscoverClient() {
 
 export default function DiscoverPage() {
   return (
-    <Suspense fallback={
-      <div style={{ 
-        minHeight: '100vh', 
-        background: 'var(--theme-background)', 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center' 
-      }}>
-        <div style={{
-          width: 32, height: 32,
-          border: '3px solid var(--theme-primary)',
-          borderTopColor: 'transparent',
-          borderRadius: '50%',
-          animation: 'spin 0.7s linear infinite',
-        }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    }>
+    <Suspense fallback={<DiscoverPageLoading />}>
       <DiscoverClient />
     </Suspense>
   );

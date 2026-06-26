@@ -53,6 +53,105 @@ interface TrendingReport {
   createdAt: string;
 }
 
+// ─── Loading Component ──────────────────────────────────────────────────────
+
+function HomePageLoading() {
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'var(--theme-background)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '24px',
+      gap: 20,
+    }}>
+      {/* App logo with white background */}
+      <div style={{
+        width: 64,
+        height: 64,
+        borderRadius: 16,
+        background: '#FFFFFF',
+        border: '1px solid var(--theme-border)',
+        overflow: 'hidden',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+      }}>
+        <Image 
+          src="/icon.png" 
+          alt="DeepDive AI" 
+          width={48} 
+          height={48} 
+          style={{ objectFit: 'contain' }} 
+          priority 
+        />
+      </div>
+      
+      {/* Loading spinner with theme colors */}
+      <div style={{
+        width: 40,
+        height: 40,
+        borderRadius: '50%',
+        border: '3px solid var(--theme-background-elevated)',
+        borderTopColor: 'var(--theme-primary)',
+        animation: 'dd-home-spin 0.8s linear infinite',
+      }} />
+      
+      {/* Shimmer bar */}
+      <div style={{
+        width: 180,
+        height: 6,
+        borderRadius: 3,
+        background: 'var(--theme-background-elevated)',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          width: '40%',
+          height: '100%',
+          borderRadius: 3,
+          background: 'linear-gradient(90deg, var(--theme-primary), var(--theme-secondary))',
+          animation: 'dd-home-shimmer 1.2s ease-in-out infinite',
+        }} />
+      </div>
+      
+      <p style={{
+        color: 'var(--theme-text-secondary)',
+        fontSize: '0.875rem',
+        fontWeight: 500,
+        margin: 0,
+      }}>
+        Loading DeepDive AI...
+      </p>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        @keyframes dd-home-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes dd-home-shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(300%); }
+        }
+        @media (max-width: 480px) {
+          .dd-home-loading-logo { width: 48px !important; height: 48px !important; }
+          .dd-home-loading-logo img { width: 36px !important; height: 36px !important; }
+          .dd-home-loading-spinner { width: 32px !important; height: 32px !important; border-width: 2.5px !important; }
+          .dd-home-loading-bar { width: 140px !important; height: 5px !important; }
+          .dd-home-loading-text { font-size: 0.75rem !important; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .dd-home-loading-spinner, .dd-home-loading-bar div {
+            animation-duration: 0.01ms !important;
+          }
+        }
+      ` }} />
+    </div>
+  );
+}
+
 // ─── Global Styles ────────────────────────────────────────────────────────────
 
 const GLOBAL_CSS = `
@@ -879,11 +978,21 @@ interface HomePageClientProps {
 }
 
 export default function HomePageClient({ reportCount, topTags }: HomePageClientProps) {
+  const [isLoading, setIsLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [trendingReports, setTrendingReports] = useState<TrendingReport[]>([]);
   const [recentReports, setRecentReports] = useState<TrendingReport[]>([]);
   const [isLoadingFeed, setIsLoadingFeed] = useState(true);
   const [feedView, setFeedView] = useState<'trending' | 'recent'>('trending');
+
+  // ── Handle initial loading ──
+  useEffect(() => {
+    // Simulate minimum loading time for smoother experience
+    const timer = setTimeout(() => {
+      setIsLoading(false);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -945,7 +1054,12 @@ export default function HomePageClient({ reportCount, topTags }: HomePageClientP
   }, []);
 
   const displayedReports = feedView === 'trending' ? trendingReports : recentReports;
-  const isLoading = isLoadingFeed;
+  const isFeedLoading = isLoadingFeed;
+
+  // Show loading state
+  if (isLoading || !mounted) {
+    return <HomePageLoading />;
+  }
 
   return (
     <main style={{
@@ -1454,7 +1568,7 @@ export default function HomePageClient({ reportCount, topTags }: HomePageClientP
                 </div>
 
                 <div style={{ padding: '14px 16px' }}>
-                  {isLoading ? (
+                  {isFeedLoading ? (
                     <div style={{ textAlign: 'center', padding: '20px 0' }}>
                       <div style={{
                         width: 24, height: 24,

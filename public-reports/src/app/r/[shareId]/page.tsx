@@ -1,10 +1,11 @@
 // Public-Reports/src/app/r/[shareId]/page.tsx
-// Part 55.9 — Fully Themed Report Page with Modern Design
+// Part 55.9 — Fully Themed Report Page with Modern Design & Loading
 
 import { notFound } from 'next/navigation';
 import { headers } from 'next/headers';
 import { createHash } from 'crypto';
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import { supabaseServer } from '@/lib/supabase-server';
 import { buildMetadata, buildJsonLd } from '@/components/ShareMeta';
 import { CopyLinkIsland } from './CopyLinkIsland';
@@ -35,6 +36,71 @@ const SIDEBAR_GAP = 32;
 const TOC_W = 220;
 const TOC_GAP = 32;
 const OUTER_MAX_W = LEFT_SIDEBAR_W + SIDEBAR_GAP + 672 + TOC_GAP + TOC_W;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loading Component - Fully Themed
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ReportPageLoading() {
+  return (
+    <div style={{ 
+      minHeight: '100vh', 
+      background: 'var(--theme-background)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '24px',
+    }}>
+      {/* Loading spinner with theme colors */}
+      <div style={{
+        width: 48,
+        height: 48,
+        borderRadius: '50%',
+        border: '4px solid var(--theme-background-elevated)',
+        borderTopColor: 'var(--theme-primary)',
+        animation: 'dd-spin 0.8s linear infinite',
+        marginBottom: 24,
+      }} />
+      
+      <div style={{
+        width: 200,
+        height: 8,
+        borderRadius: 4,
+        background: 'var(--theme-background-elevated)',
+        overflow: 'hidden',
+        marginBottom: 12,
+      }}>
+        <div style={{
+          width: '40%',
+          height: '100%',
+          borderRadius: 4,
+          background: 'linear-gradient(90deg, var(--theme-primary), var(--theme-secondary))',
+          animation: 'dd-shimmer-loading 1.2s ease-in-out infinite',
+        }} />
+      </div>
+      
+      <p style={{
+        color: 'var(--theme-text-secondary)',
+        fontSize: '0.875rem',
+        fontWeight: 500,
+        margin: 0,
+      }}>
+        Loading research report...
+      </p>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        @keyframes dd-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes dd-shimmer-loading {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(300%); }
+        }
+      ` }} />
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // generateMetadata
@@ -331,274 +397,276 @@ export default async function PublicReportPage({
   const hasSourceImages = (report.sourceImages?.length ?? 0) > 0;
 
   return (
-    <>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
+    <Suspense fallback={<ReportPageLoading />}>
+      <>
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
 
-      <ReadingProgressBar />
+        <ReadingProgressBar />
 
-      <div className="min-h-screen pb-24" style={{ background: 'var(--theme-background)' }}>
+        <div className="min-h-screen pb-24" style={{ background: 'var(--theme-background)' }}>
 
-        {/* ════════════════════════════════════════════════════════
-            NAVBAR - Fully Themed
-        ════════════════════════════════════════════════════════ */}
-        <header
-          className="sticky top-0 z-40 px-4 py-3 transition-all duration-300"
-          style={{
-            background: 'var(--theme-background)',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
-            borderBottom: '1px solid var(--theme-border)',
-          }}
-        >
-          <div className="max-w-3xl mx-auto flex items-center gap-3">
-            {/* Logo */}
-            <Link href="/" className="flex items-center gap-2 transition-all duration-300 hover:scale-105 flex-shrink-0"
-                  style={{ textDecoration: 'none' }}>
-              <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0"
-                   style={{
-                     background: '#FFFFFF',
-                     border: '1px solid var(--theme-border)',
-                   }}>
-                <Image src="/icon.png" alt="DeepDive AI" width={32} height={32} style={{ objectFit: 'contain' }} priority />
-              </div>
-              <span className="text-sm font-bold hidden sm:block" style={{ color: 'var(--theme-text-primary)' }}>
-                DeepDive <span className="dd-text-gradient">AI</span>
-              </span>
-            </Link>
-
-            {/* Search bar — desktop only (md+) */}
-            <div className="flex-1 hidden md:block">
-              <PublicSearchBar mode="page" placeholder="Search all research…"
-                style={{ width: '100%', maxWidth: 360 }} />
-            </div>
-
-            {/* Right side stats + actions */}
-            <div className="flex items-center gap-2 ml-auto">
-              {/* View count */}
-              {report.viewCount > 0 && (
-                <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                  </svg>
-                  {report.viewCount.toLocaleString()}
-                </span>
-              )}
-              {/* Share count */}
-              {report.shareCount > 0 && (
-                <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}
-                      title={`Shared ${report.shareCount} times`}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
-                  </svg>
-                  {report.shareCount.toLocaleString()}
-                </span>
-              )}
-              {/* Discover link — desktop */}
-              <Link href="/discover"
-                 className="hidden lg:flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all duration-300 hover:scale-105"
-                 style={{
-                   color: '#FFFFFF',
-                   background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-                   border: '1px solid var(--theme-primary)',
-                   textDecoration: 'none',
-                   boxShadow: '0 2px 12px var(--theme-primary)',
-                 }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-                </svg>
-                Discover
-              </Link>
-              {/* Copy link */}
-              <CopyLinkIsland url={`${APP_URL}/r/${shareId}`} shareId={shareId} />
-            </div>
-          </div>
-        </header>
-
-        {/* ════════════════════════════════════════════════════════
-            MOBILE ACTION BAR
-        ════════════════════════════════════════════════════════ */}
-        <MobileActionBar
-          shareUrl={`${APP_URL}/r/${shareId}`}
-          shareId={shareId}
-          viewCount={report.viewCount}
-          shareCount={report.shareCount}
-        />
-
-        {/* ════════════════════════════════════════════════════════
-            TABLE OF CONTENTS
-        ════════════════════════════════════════════════════════ */}
-        {report.sections.length > 1 && (
-          <TableOfContents
-            sections={report.sections}
-            outerMaxWidth={OUTER_MAX_W}
-            tocWidth={TOC_W}
-          />
-        )}
-
-        {/* ════════════════════════════════════════════════════════
-            3-COLUMN OUTER WRAPPER
-        ════════════════════════════════════════════════════════ */}
-        <div
-          className="mx-auto px-4 pt-8"
-          style={{ maxWidth: OUTER_MAX_W }}
-        >
-          <div
-            className="xl:flex xl:gap-8"
-            style={{ alignItems: 'flex-start' }}
+          {/* ════════════════════════════════════════════════════════
+              NAVBAR - Fully Themed
+          ════════════════════════════════════════════════════════ */}
+          <header
+            className="sticky top-0 z-40 px-4 py-3 transition-all duration-300"
+            style={{
+              background: 'var(--theme-background)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              borderBottom: '1px solid var(--theme-border)',
+            }}
           >
+            <div className="max-w-3xl mx-auto flex items-center gap-3">
+              {/* Logo */}
+              <Link href="/" className="flex items-center gap-2 transition-all duration-300 hover:scale-105 flex-shrink-0"
+                    style={{ textDecoration: 'none' }}>
+                <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0"
+                     style={{
+                       background: '#FFFFFF',
+                       border: '1px solid var(--theme-border)',
+                     }}>
+                  <Image src="/icon.png" alt="DeepDive AI" width={32} height={32} style={{ objectFit: 'contain' }} priority />
+                </div>
+                <span className="text-sm font-bold hidden sm:block" style={{ color: 'var(--theme-text-primary)' }}>
+                  DeepDive <span className="dd-text-gradient">AI</span>
+                </span>
+              </Link>
 
-            {/* ── LEFT SIDEBAR: Trending widget ── */}
-            <aside
-              aria-label="Trending reports"
-              className="hidden xl:block xl:flex-shrink-0"
-              style={{ width: LEFT_SIDEBAR_W }}
+              {/* Search bar — desktop only (md+) */}
+              <div className="flex-1 hidden md:block">
+                <PublicSearchBar mode="page" placeholder="Search all research…"
+                  style={{ width: '100%', maxWidth: 360 }} />
+              </div>
+
+              {/* Right side stats + actions */}
+              <div className="flex items-center gap-2 ml-auto">
+                {/* View count */}
+                {report.viewCount > 0 && (
+                  <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    {report.viewCount.toLocaleString()}
+                  </span>
+                )}
+                {/* Share count */}
+                {report.shareCount > 0 && (
+                  <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}
+                        title={`Shared ${report.shareCount} times`}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                    </svg>
+                    {report.shareCount.toLocaleString()}
+                  </span>
+                )}
+                {/* Discover link — desktop */}
+                <Link href="/discover"
+                   className="hidden lg:flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all duration-300 hover:scale-105"
+                   style={{
+                     color: '#FFFFFF',
+                     background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+                     border: '1px solid var(--theme-primary)',
+                     textDecoration: 'none',
+                     boxShadow: '0 2px 12px var(--theme-primary)',
+                   }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                  </svg>
+                  Discover
+                </Link>
+                {/* Copy link */}
+                <CopyLinkIsland url={`${APP_URL}/r/${shareId}`} shareId={shareId} />
+              </div>
+            </div>
+          </header>
+
+          {/* ════════════════════════════════════════════════════════
+              MOBILE ACTION BAR
+          ════════════════════════════════════════════════════════ */}
+          <MobileActionBar
+            shareUrl={`${APP_URL}/r/${shareId}`}
+            shareId={shareId}
+            viewCount={report.viewCount}
+            shareCount={report.shareCount}
+          />
+
+          {/* ════════════════════════════════════════════════════════
+              TABLE OF CONTENTS
+          ════════════════════════════════════════════════════════ */}
+          {report.sections.length > 1 && (
+            <TableOfContents
+              sections={report.sections}
+              outerMaxWidth={OUTER_MAX_W}
+              tocWidth={TOC_W}
+            />
+          )}
+
+          {/* ════════════════════════════════════════════════════════
+              3-COLUMN OUTER WRAPPER
+          ════════════════════════════════════════════════════════ */}
+          <div
+            className="mx-auto px-4 pt-8"
+            style={{ maxWidth: OUTER_MAX_W }}
+          >
+            <div
+              className="xl:flex xl:gap-8"
+              style={{ alignItems: 'flex-start' }}
             >
-              <div
-                style={{
-                  position: 'sticky',
-                  top: 88,
-                  width: LEFT_SIDEBAR_W,
-                  maxHeight: 'calc(100vh - 108px)',
-                  overflowY: 'auto',
-                  scrollbarWidth: 'none',
-                }}
+
+              {/* ── LEFT SIDEBAR: Trending widget ── */}
+              <aside
+                aria-label="Trending reports"
+                className="hidden xl:block xl:flex-shrink-0"
+                style={{ width: LEFT_SIDEBAR_W }}
               >
-                <TrendingWidget currentShareId={shareId} limit={5} />
-              </div>
-            </aside>
-
-            {/* ── MAIN CONTENT ── */}
-            <main
-              className="flex-1 min-w-0"
-            >
-              <div className="report-main-inner">
-
-                <ReportHeader report={report} />
-
-                <div className="mt-6 mb-6">
-                  <ReportStats report={report} />
+                <div
+                  style={{
+                    position: 'sticky',
+                    top: 88,
+                    width: LEFT_SIDEBAR_W,
+                    maxHeight: 'calc(100vh - 108px)',
+                    overflowY: 'auto',
+                    scrollbarWidth: 'none',
+                  }}
+                >
+                  <TrendingWidget currentShareId={shareId} limit={5} />
                 </div>
+              </aside>
 
-                {hasInfographics && (
-                  <>
-                    <Divider label="Visual insights" />
-                    <StatCards data={report.infographicData!} />
-                  </>
-                )}
+              {/* ── MAIN CONTENT ── */}
+              <main
+                className="flex-1 min-w-0"
+              >
+                <div className="report-main-inner">
 
-                {hasSourceImages && (
-                  <>
-                    <Divider label="Source images" />
-                    <SourceImagesStrip images={report.sourceImages ?? []} />
-                  </>
-                )}
+                  <ReportHeader report={report} />
 
-                <Divider label="Full report" />
-                <section className="space-y-3" aria-label="Report sections">
-                  {report.sections.map((section, i) => {
-                    const sectionReactionId = section.id || `sec-${i}`;
-                    const initialReactions = reactions[sectionReactionId] ?? {};
-                    return (
-                      <ReportSectionCard
-                        key={section.id ?? i}
-                        section={section}
-                        citations={report.citations}
-                        index={i}
-                        shareId={shareId}
-                        initialReactions={initialReactions}
-                      />
-                    );
-                  })}
-                </section>
-
-                <Divider label="Ask AI" />
-                <section aria-label="AI research assistant">
-                  <ChatWidget shareId={shareId} reportTitle={report.title} questionsMax={chatLimit} />
-                </section>
-
-                <Divider label="Key findings & predictions" />
-                <section aria-label="Key findings">
-                  <FindingsPanel report={report} />
-                </section>
-
-                {report.citations.length > 0 && (
-                  <>
-                    <Divider label="Sources & citations" />
-                    <section aria-label="Sources and citations">
-                      <SourcesList citations={report.citations} />
-                    </section>
-                  </>
-                )}
-
-                {/* ── TRENDING: Mobile / non-xl inline ── */}
-                {report.sections.length > 0 && (
-                  <div className="xl:hidden">
-                    <Divider label="Trending this week" />
-                    <section aria-label="Trending public research">
-                      <div className="flex items-center justify-between mb-4">
-                        <p className="text-xs" style={{ color: 'var(--theme-text-muted)' }}>
-                          Most viewed in the last 7 days across the DeepDive community.
-                        </p>
-                        <Link href="/discover" className="text-xs font-bold transition-all duration-300 hover:scale-105"
-                           style={{ color: 'var(--theme-primary)', textDecoration: 'none' }}>
-                          Browse all →
-                        </Link>
-                      </div>
-                      <TrendingWidget currentShareId={shareId} limit={5} />
-                    </section>
+                  <div className="mt-6 mb-6">
+                    <ReportStats report={report} />
                   </div>
-                )}
 
-                <div className="mt-12 mb-6">
-                  <BottomCTA report={report} playStoreUrl={PLAY_STORE} />
+                  {hasInfographics && (
+                    <>
+                      <Divider label="Visual insights" />
+                      <StatCards data={report.infographicData!} />
+                    </>
+                  )}
+
+                  {hasSourceImages && (
+                    <>
+                      <Divider label="Source images" />
+                      <SourceImagesStrip images={report.sourceImages ?? []} />
+                    </>
+                  )}
+
+                  <Divider label="Full report" />
+                  <section className="space-y-3" aria-label="Report sections">
+                    {report.sections.map((section, i) => {
+                      const sectionReactionId = section.id || `sec-${i}`;
+                      const initialReactions = reactions[sectionReactionId] ?? {};
+                      return (
+                        <ReportSectionCard
+                          key={section.id ?? i}
+                          section={section}
+                          citations={report.citations}
+                          index={i}
+                          shareId={shareId}
+                          initialReactions={initialReactions}
+                        />
+                      );
+                    })}
+                  </section>
+
+                  <Divider label="Ask AI" />
+                  <section aria-label="AI research assistant">
+                    <ChatWidget shareId={shareId} reportTitle={report.title} questionsMax={chatLimit} />
+                  </section>
+
+                  <Divider label="Key findings & predictions" />
+                  <section aria-label="Key findings">
+                    <FindingsPanel report={report} />
+                  </section>
+
+                  {report.citations.length > 0 && (
+                    <>
+                      <Divider label="Sources & citations" />
+                      <section aria-label="Sources and citations">
+                        <SourcesList citations={report.citations} />
+                      </section>
+                    </>
+                  )}
+
+                  {/* ── TRENDING: Mobile / non-xl inline ── */}
+                  {report.sections.length > 0 && (
+                    <div className="xl:hidden">
+                      <Divider label="Trending this week" />
+                      <section aria-label="Trending public research">
+                        <div className="flex items-center justify-between mb-4">
+                          <p className="text-xs" style={{ color: 'var(--theme-text-muted)' }}>
+                            Most viewed in the last 7 days across the DeepDive community.
+                          </p>
+                          <Link href="/discover" className="text-xs font-bold transition-all duration-300 hover:scale-105"
+                             style={{ color: 'var(--theme-primary)', textDecoration: 'none' }}>
+                            Browse all →
+                          </Link>
+                        </div>
+                        <TrendingWidget currentShareId={shareId} limit={5} />
+                      </section>
+                    </div>
+                  )}
+
+                  <div className="mt-12 mb-6">
+                    <BottomCTA report={report} playStoreUrl={PLAY_STORE} />
+                  </div>
+
                 </div>
+              </main>
 
-              </div>
-            </main>
-
+            </div>
           </div>
         </div>
-      </div>
 
-      <DeepDiveBanner />
+        <DeepDiveBanner />
 
-      <style>{`
-        .dd-text-gradient {
-          background: linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2));
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
+        <style>{`
+          .dd-text-gradient {
+            background: linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+          }
 
-        .report-main-inner {
-          width: 100%;
-          max-width: 672px;
-        }
-
-        @media (min-width: 1280px) {
           .report-main-inner {
-            padding-right: ${TOC_W + TOC_GAP}px;
-            max-width: none;
+            width: 100%;
+            max-width: 672px;
           }
-        }
 
-        @keyframes pulse-slow {
-          0%, 100% { opacity: 0.1; }
-          50% { opacity: 0.2; }
-        }
-        
-        .animate-pulse-slow {
-          animation: pulse-slow 3s ease-in-out infinite;
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          *, *::before, *::after {
-            animation-duration: 0.01ms !important;
-            transition-duration: 0.01ms !important;
+          @media (min-width: 1280px) {
+            .report-main-inner {
+              padding-right: ${TOC_W + TOC_GAP}px;
+              max-width: none;
+            }
           }
-        }
-      `}</style>
-    </>
+
+          @keyframes pulse-slow {
+            0%, 100% { opacity: 0.1; }
+            50% { opacity: 0.2; }
+          }
+          
+          .animate-pulse-slow {
+            animation: pulse-slow 3s ease-in-out infinite;
+          }
+
+          @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+              animation-duration: 0.01ms !important;
+              transition-duration: 0.01ms !important;
+            }
+          }
+        `}</style>
+      </>
+    </Suspense>
   );
 }
