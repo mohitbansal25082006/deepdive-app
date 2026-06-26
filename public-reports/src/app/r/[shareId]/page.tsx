@@ -1,5 +1,6 @@
 // Public-Reports/src/app/r/[shareId]/page.tsx
 // Part 55.10 — Auto-tag integration + academic chip removed from ReportCard
+// Part 55.11 — Theme button added to navbar (desktop: right of share, mobile: left of share)
 // All Part 55.9 layout, theme, and loading behaviour preserved.
 
 import { notFound } from 'next/navigation';
@@ -23,6 +24,7 @@ import TableOfContents from '@/components/TableOfContents';
 import TrendingWidget from '@/components/TrendingWidget';
 import PublicSearchBar from '@/components/PublicSearchBar';
 import MobileActionBar from '@/components/MobileActionBar';
+import ThemeToggle from '@/components/ThemeToggle';
 import type { PublicReport, ReactionEmoji } from '@/types/report';
 import { enrichCitations } from '@/lib/sourceTrustScorer';
 import Link from 'next/link';
@@ -500,8 +502,9 @@ export default async function PublicReportPage({
                 />
               </div>
 
-              {/* Right side */}
+              {/* Right side actions */}
               <div className="flex items-center gap-2 ml-auto">
+                {/* View count */}
                 {report.viewCount > 0 && (
                   <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -510,6 +513,8 @@ export default async function PublicReportPage({
                     {report.viewCount.toLocaleString()}
                   </span>
                 )}
+                
+                {/* Share count */}
                 {report.shareCount > 0 && (
                   <span
                     className="hidden sm:flex items-center gap-1.5 text-xs"
@@ -523,6 +528,8 @@ export default async function PublicReportPage({
                     {report.shareCount.toLocaleString()}
                   </span>
                 )}
+
+                {/* Discover button */}
                 <Link
                   href="/discover"
                   className="hidden lg:flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all duration-300 hover:scale-105"
@@ -539,6 +546,19 @@ export default async function PublicReportPage({
                   </svg>
                   Discover
                 </Link>
+
+                {/* ─── THEME TOGGLE ─── */}
+                {/* Desktop: right of share button */}
+                <div className="hidden sm:block">
+                  <ThemeToggle variant="navbar" size="sm" />
+                </div>
+
+                {/* Mobile: left of share button (shown before CopyLinkIsland) */}
+                <div className="sm:hidden">
+                  <ThemeToggle variant="navbar" size="sm" />
+                </div>
+
+                {/* Share button */}
                 <CopyLinkIsland url={`${APP_URL}/r/${shareId}`} shareId={shareId} />
               </div>
             </div>
@@ -696,6 +716,22 @@ export default async function PublicReportPage({
             .report-main-inner {
               padding-right: ${TOC_W + TOC_GAP}px;
               max-width: none;
+            }
+          }
+
+          /* ─── Mobile optimizations for theme button ─── */
+          @media (max-width: 480px) {
+            .report-nav-actions {
+              gap: 4px !important;
+            }
+          }
+
+          @media (max-width: 380px) {
+            .report-nav-actions {
+              gap: 3px !important;
+            }
+            .report-nav-viewcount {
+              display: none !important;
             }
           }
 

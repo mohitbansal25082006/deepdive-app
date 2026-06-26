@@ -1,17 +1,12 @@
 // Public-Reports/src/app/topic/[tag]/page.tsx
 // Part 55.9 — Fully Themed Topic Tag Page
+// Part 55.11 — Theme button added to navbar (left of Get App button)
+// Part 55.12 — Fully mobile-optimized navbar with responsive breakpoints
 // Server-rendered topic tag page: /topic/[tag]
 // - generateStaticParams: pre-renders top 50 tags at build time
 // - ISR (60s revalidation) for all other tags
 // - Full SEO: Open Graph + JSON-LD CollectionPage
 // - Fully theme-integrated with modern design
-//
-// Fix (this pass): this is a Server Component (no 'use client'), and it had
-// numerous <a>/<Link> elements with onMouseEnter/onMouseLeave handlers that
-// mutated style imperatively. That throws "Event handlers cannot be passed
-// to Client Component props" because function props can't cross the
-// server→client serialization boundary on plain DOM elements rendered from
-// a Server Component. All instances replaced with CSS :hover classes.
 
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
@@ -19,6 +14,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { createSupabaseServer } from '@/lib/supabase-server';
 import ReportCard from '@/components/ReportCard';
+import ThemeToggle from '@/components/ThemeToggle';
 import type { PublicFeedReport, TagCount } from '@/types/report';
 
 // ── ISR ────────────────────────────────────────────────────────────────────────
@@ -163,7 +159,7 @@ export default async function TopicTagPage({
       <div className="min-h-screen pb-16" style={{ background: 'var(--theme-background)' }}>
         {/* ── Navbar ── */}
         <header
-          className="sticky top-0 z-40 px-4 py-3 transition-all duration-300"
+          className="sticky top-0 z-40 px-3 sm:px-4 py-2 sm:py-3 transition-all duration-300"
           style={{
             background: 'var(--theme-background)',
             backdropFilter: 'blur(20px)',
@@ -171,50 +167,50 @@ export default async function TopicTagPage({
             borderBottom: '1px solid var(--theme-border)',
           }}
         >
-          <div className="max-w-5xl mx-auto flex items-center gap-3">
+          <div className="max-w-5xl mx-auto flex items-center gap-2 sm:gap-3">
+            {/* ─── Logo ─── */}
             <Link
               href="/"
-              className="topic-logo-link"
+              className="topic-logo-link flex-shrink-0"
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
+                gap: 6,
                 textDecoration: 'none',
-                flexShrink: 0,
                 transition: 'transform 0.2s ease',
               }}
             >
               <div
                 style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 10,
+                  width: 28,
+                  height: 28,
+                  borderRadius: 8,
                   overflow: 'hidden',
                   background: '#FFFFFF',
                   border: '1px solid var(--theme-border)',
+                  flexShrink: 0,
                 }}
               >
-                <Image src="/icon.png" alt="DeepDive AI" width={32} height={32} style={{ objectFit: 'contain' }} priority />
+                <Image src="/icon.png" alt="DeepDive AI" width={28} height={28} style={{ objectFit: 'contain' }} priority />
               </div>
-              <span style={{
+              <span className="hidden xs:inline-block" style={{
                 color: 'var(--theme-text-primary)',
                 fontWeight: 800,
-                fontSize: '0.875rem',
+                fontSize: '0.8rem',
+                whiteSpace: 'nowrap',
               }}>
                 DeepDive <span className="dd-text-gradient">AI</span>
               </span>
             </Link>
 
-            {/* Breadcrumb */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
+            {/* ─── Breadcrumb ─── */}
+            <div className="hidden xs:flex items-center gap-1.5 sm:gap-2" style={{
               color: 'var(--theme-text-muted)',
-              fontSize: '0.8125rem',
+              fontSize: '0.7rem',
+              minWidth: 0,
             }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}>
                 <polyline points="9 18 15 12 9 6" />
               </svg>
               <Link
@@ -224,44 +220,68 @@ export default async function TopicTagPage({
                   color: 'var(--theme-text-muted)',
                   textDecoration: 'none',
                   transition: 'color 0.2s ease',
+                  whiteSpace: 'nowrap',
+                  fontSize: '0.7rem',
                 }}
               >
-                Discover
+                <span className="hidden sm:inline">Discover</span>
+                <span className="sm:hidden">Explore</span>
               </Link>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}>
                 <polyline points="9 18 15 12 9 6" />
               </svg>
               <span style={{
                 color: 'var(--theme-primary)',
                 fontWeight: 700,
+                fontSize: '0.7rem',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: '80px',
               }}>
                 #{tag}
               </span>
             </div>
 
-            <div style={{ flex: 1 }} />
+            <div style={{ flex: 1, minWidth: 8 }} />
 
-            <a
-              href={PLAY_STORE}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="topic-getapp-link"
-              style={{
-                flexShrink: 0,
-                padding: '7px 16px',
-                borderRadius: '999px',
-                background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-                color: '#FFFFFF',
-                fontWeight: 700,
-                fontSize: '0.8125rem',
-                textDecoration: 'none',
-                boxShadow: '0 2px 12px var(--theme-primary)',
-                transition: 'all 0.2s ease',
-              }}
-            >
-              Get App
-            </a>
+            {/* ─── Right side actions ─── */}
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+              {/* ─── THEME TOGGLE ─── */}
+              <ThemeToggle variant="navbar" size="sm" />
+
+              {/* ─── Get App Button ─── */}
+              <a
+                href={PLAY_STORE}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="topic-getapp-link"
+                style={{
+                  flexShrink: 0,
+                  padding: '6px 12px',
+                  borderRadius: '999px',
+                  background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+                  color: '#FFFFFF',
+                  fontWeight: 700,
+                  fontSize: '0.7rem',
+                  textDecoration: 'none',
+                  boxShadow: '0 2px 12px var(--theme-primary)',
+                  transition: 'all 0.2s ease',
+                  whiteSpace: 'nowrap',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  minHeight: 32,
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+                  <path d="M3 18.5v-13c0-.83.95-1.3 1.6-.8l11 6.5c.6.35.6 1.25 0 1.6l-11 6.5c-.65.5-1.6.03-1.6-.8z"/>
+                </svg>
+                <span className="hidden xs:inline">Get App</span>
+                <span className="xs:hidden">App</span>
+              </a>
+            </div>
           </div>
         </header>
 
@@ -594,6 +614,40 @@ export default async function TopicTagPage({
         .topic-bottom-cta:hover {
           transform: scale(1.05);
           box-shadow: 0 6px 32px var(--theme-primary);
+        }
+
+        /* ─── Responsive breakpoints ─── */
+        
+        /* Extra small screens (0-400px) */
+        @media (max-width: 400px) {
+          .topic-getapp-link {
+            padding: 5px 8px !important;
+            font-size: 0.6rem !important;
+            min-height: 28px !important;
+          }
+          .topic-getapp-link svg {
+            width: 10px !important;
+            height: 10px !important;
+          }
+          header {
+            padding: 6px 8px !important;
+          }
+        }
+
+        /* Small screens (401-640px) */
+        @media (max-width: 640px) {
+          .topic-logo-link .dd-text-gradient {
+            font-size: 0.7rem;
+          }
+        }
+
+        /* Hide scrollbar on mobile for horizontal scroll */
+        .scrollbar-hide {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+        .scrollbar-hide::-webkit-scrollbar {
+          display: none;
         }
 
         @media (prefers-reduced-motion: reduce) {

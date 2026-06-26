@@ -42,6 +42,14 @@
   --theme-gradient-pro-2: #EA580C;
 }
 
+/* ─── Dark theme overrides (applied via JavaScript) ────────────────────────── */
+
+/* 
+  These are applied by the ThemeProvider when dark mode is active.
+  The JavaScript sets CSS custom properties directly on document.documentElement.
+  We keep these as a reference for what dark mode values should look like.
+*/
+
 /* ─── Base ───────────────────────────────────────────────────────────────────── */
 
 *, *::before, *::after {
@@ -57,13 +65,19 @@ html {
 body {
   background: var(--theme-background);
   color: var(--theme-text-primary);
-  font-family: var(--font-body, system-ui, sans-serif);
+  font-family: var(--font-body, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
   min-height: 100vh;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* ─── Selection ──────────────────────────────────────────────────────────────── */
 
 ::selection {
+  background: var(--theme-primary);
+  color: #FFFFFF;
+}
+
+::-moz-selection {
   background: var(--theme-primary);
   color: #FFFFFF;
 }
@@ -80,9 +94,16 @@ body {
 ::-webkit-scrollbar-thumb {
   background: var(--theme-border);
   border-radius: 3px;
+  transition: background 0.3s ease;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--theme-text-muted);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--theme-border) transparent;
 }
 
 /* ─── Typography utilities ───────────────────────────────────────────────────── */
@@ -107,18 +128,21 @@ body {
   background: var(--theme-background-card);
   border: 1px solid var(--theme-border);
   border-radius: 14px;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .card-elevated {
   background: var(--theme-background-elevated);
   border: 1px solid var(--theme-border);
   border-radius: 14px;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .card-brand {
   background: linear-gradient(135deg, var(--theme-background-elevated), var(--theme-background-card));
   border: 1px solid var(--theme-primary);
   border-radius: 20px;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 /* ─── Prose ───────────────────────────────────────────────────────────────────── */
@@ -127,6 +151,7 @@ body {
   color: var(--theme-text-secondary);
   font-size: 0.9375rem;
   line-height: 1.75;
+  transition: color 0.3s ease;
 }
 
 .prose-report p { margin-bottom: 1em; }
@@ -136,6 +161,7 @@ body {
   color: var(--theme-primary);
   text-decoration: underline;
   text-underline-offset: 3px;
+  transition: opacity 0.2s ease;
 }
 .prose-report a:hover { opacity: 0.8; }
 
@@ -156,12 +182,40 @@ body {
   40% { transform: translateY(-6px); opacity: 1; }
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+@keyframes pulse-ring {
+  0% { opacity: 0.6; transform: scale(0.95); }
+  50% { opacity: 0.2; transform: scale(1.05); }
+  100% { opacity: 0.6; transform: scale(0.95); }
+}
+
 .animate-fade-in-up {
   animation: fadeInUp 0.45s ease-out both;
 }
 
 .animate-fade-in {
   animation: fadeIn 0.35s ease-out both;
+}
+
+.animate-spin {
+  animation: spin 0.8s linear infinite;
+}
+
+.animate-shimmer {
+  background-size: 400px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2s ease-in-out infinite;
 }
 
 .stagger-children > * { animation: fadeInUp 0.45s ease-out both; }
@@ -179,11 +233,13 @@ body {
   border-color: var(--theme-success);
   background: var(--theme-success);
 }
+
 .depth-deep {
   color: var(--theme-primary);
   border-color: var(--theme-primary);
   background: var(--theme-primary);
 }
+
 .depth-expert {
   color: var(--theme-warning);
   border-color: var(--theme-warning);
@@ -207,4 +263,75 @@ body {
 .focus-ring:focus-visible {
   outline: 2px solid var(--theme-primary);
   outline-offset: 2px;
+}
+
+/* ─── Touch-friendly tap feedback ───────────────────────────────────────────── */
+
+.tap-btn {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tap-btn:active {
+  opacity: 0.7;
+  transform: scale(0.97);
+}
+
+/* ─── Responsive utilities ──────────────────────────────────────────────────── */
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ─── Mobile optimizations ──────────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  .text-gradient {
+    -webkit-text-fill-color: currentColor;
+    background: none;
+  }
+  
+  .text-gradient-warm {
+    -webkit-text-fill-color: currentColor;
+    background: none;
+  }
+}
+
+/* ─── Reduced motion ───────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Print styles ──────────────────────────────────────────────────────────── */
+
+@media print {
+  body {
+    background: #FFFFFF;
+    color: #000000;
+  }
+  
+  .card {
+    border: 1px solid #DDDDDD;
+    background: #FFFFFF;
+  }
+  
+  .no-print {
+    display: none !important;
+  }
 }

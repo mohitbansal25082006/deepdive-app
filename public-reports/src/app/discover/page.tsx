@@ -28,6 +28,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import ReportCard from '@/components/ReportCard';
 import ResearcherCard from '@/components/ResearcherCard';
+import ThemeToggle from '@/components/ThemeToggle';
 import type { PublicFeedReport, TagCount } from '@/types/report';
 import type { ResearcherRow } from '@/app/api/researchers/route';
 
@@ -127,6 +128,28 @@ const GLOBAL_STYLES = `
     .hero-sub    { font-size: 0.875rem !important; }
     .sort-row    { gap: 6px !important; }
     .tag-chip    { font-size: 0.75rem !important; padding: 6px 10px !important; }
+  }
+
+  /* ─── Navbar responsive adjustments for ThemeToggle ── */
+  @media (max-width: 480px) {
+    .discover-nav-pills {
+      gap: 4px !important;
+    }
+    .theme-toggle-label {
+      display: none !important;
+    }
+  }
+
+  @media (max-width: 380px) {
+    .discover-nav-pills {
+      gap: 3px !important;
+    }
+    .theme-toggle-mode {
+      display: none !important;
+    }
+    .discover-nav-getapp-label {
+      display: none !important;
+    }
   }
 `;
 
@@ -799,16 +822,34 @@ function DiscoverClient() {
               DeepDive <span className="dd-text-gradient">AI</span>
             </span>
           </Link>
+          
           <div style={{ flex: 1 }} />
-          <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
-            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
-            padding: '7px 14px', minHeight: 36, borderRadius: '999px',
-            background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-            color: '#FFFFFF', fontSize: '0.8125rem', fontWeight: 700,
-            textDecoration: 'none', boxShadow: '0 2px 12px var(--theme-primary)',
+
+          {/* ─── Navbar Actions ─── */}
+          <div className="discover-nav-pills" style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexShrink: 0,
           }}>
-            Get App
-          </a>
+            {/* ─── Theme Toggle (Navbar variant) ─── */}
+            <ThemeToggle variant="navbar" size="sm" />
+
+            {/* ─── Get App Button ─── */}
+            <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="tap-btn" style={{
+              flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', minHeight: 36, borderRadius: '999px',
+              background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+              color: '#FFFFFF', fontSize: '0.8125rem', fontWeight: 700,
+              textDecoration: 'none', boxShadow: '0 2px 12px var(--theme-primary)',
+              whiteSpace: 'nowrap',
+            }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+                <path d="M3 18.5v-13c0-.83.95-1.3 1.6-.8l11 6.5c.6.35.6 1.25 0 1.6l-11 6.5c-.65.5-1.6.03-1.6-.8z"/>
+              </svg>
+              <span className="discover-nav-getapp-label">Get App</span>
+            </a>
+          </div>
         </div>
       </header>
 

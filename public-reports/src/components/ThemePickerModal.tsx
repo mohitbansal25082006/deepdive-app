@@ -6,6 +6,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useTheme } from '../context/ThemeContext';
 import {
   THEME_DEFINITIONS,
@@ -26,6 +27,7 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
   const modalRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isClosing, setIsClosing] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   // Swipe-to-close state — stored in refs to avoid re-render on every touch move
   const touchStartY = useRef(0);
@@ -33,14 +35,13 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
   const isDragging = useRef(false);
   const dragTranslateY = useRef(0);
 
+  // ── Mount effect ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
+
   // ── Body scroll lock ──────────────────────────────────────────────────────
-  // The correct cross-platform approach:
-  //   • Save the current window.scrollY
-  //   • Set body to position:fixed with top:-scrollY (prevents iOS jump-to-top)
-  //   • On unlock, restore scrollY with window.scrollTo
-  //
-  // Do NOT use overflow:hidden alone — it doesn't work on iOS Safari.
-  // Do NOT set position:fixed without saving/restoring scrollY — page jumps.
   const savedScrollY = useRef(0);
 
   const lockBodyScroll = useCallback(() => {
@@ -49,7 +50,6 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     document.body.style.position = 'fixed';
     document.body.style.top = `-${savedScrollY.current}px`;
     document.body.style.width = '100%';
-    // Prevent scroll chaining on non-fixed browsers
     document.documentElement.style.overscrollBehavior = 'none';
   }, []);
 
@@ -59,10 +59,10 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     document.body.style.top = '';
     document.body.style.width = '';
     document.documentElement.style.overscrollBehavior = '';
-    // Restore scroll position that was lost due to position:fixed
     window.scrollTo(0, savedScrollY.current);
   }, []);
 
+  // ── Handle open/close ──────────────────────────────────────────────────────
   useEffect(() => {
     if (isOpen) {
       lockBodyScroll();
@@ -84,7 +84,6 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     setTimeout(() => {
       onClose();
       setIsClosing(false);
-      // Reset any dragged transform
       if (modalRef.current) {
         modalRef.current.style.transform = '';
         modalRef.current.style.opacity = '';
@@ -99,17 +98,13 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
   };
 
   // ── Swipe-to-close touch handlers ─────────────────────────────────────────
-  // Only activate swipe when the scroll container is scrolled to the very top,
-  // so that normal inner scrolling still works correctly.
   const handleTouchStart = (e: React.TouchEvent) => {
     const scrollEl = scrollContainerRef.current;
-    // Only begin swipe-dismiss if at the top of the inner scroll
     if (scrollEl && scrollEl.scrollTop > 2) return;
     touchStartY.current = e.touches[0].clientY;
     touchCurrentY.current = e.touches[0].clientY;
     isDragging.current = true;
     dragTranslateY.current = 0;
-    // Remove transition while dragging for instant feedback
     if (modalRef.current) {
       modalRef.current.style.transition = 'none';
     }
@@ -121,12 +116,10 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     const diff = currentY - touchStartY.current;
     touchCurrentY.current = currentY;
 
-    // Only allow downward swipe
     if (diff > 0) {
       dragTranslateY.current = diff;
       const modal = modalRef.current;
       if (modal) {
-        // Resistance factor: 0.55 makes it feel natural
         const dampedDiff = diff * 0.55;
         modal.style.transform = `translateY(${dampedDiff}px)`;
         modal.style.opacity = `${Math.max(0.3, 1 - dampedDiff / 350)}`;
@@ -142,7 +135,6 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     const modal = modalRef.current;
 
     if (diff > 160) {
-      // Threshold met → dismiss
       if (modal) {
         modal.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
         modal.style.transform = 'translateY(100%)';
@@ -158,12 +150,10 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
         }
       }, 260);
     } else {
-      // Snap back
       if (modal) {
         modal.style.transition = 'transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease';
         modal.style.transform = 'translateY(0)';
         modal.style.opacity = '1';
-        // Clean up inline transition after snap
         setTimeout(() => {
           if (modal) modal.style.transition = '';
         }, 320);
@@ -171,20 +161,31 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
     }
   };
 
+  // Don't render on server
+  if (!mounted) return null;
+
+  // Don't render if not open and not closing
   if (!isOpen && !isClosing) return null;
 
-  return (
+  // ─── Modal Content ──────────────────────────────────────────────────────────
+  const modalContent = (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+      className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center"
       style={{
-        background: `rgba(0,0,0,0.6)`,
+        background: 'rgba(0,0,0,0.6)',
         backdropFilter: 'blur(8px)',
         WebkitBackdropFilter: 'blur(8px)',
         opacity: isClosing ? 0 : 1,
         transition: 'opacity 0.3s ease',
-        // Let the backdrop itself be touch-action none to stop background scroll
-        // without blocking the modal's internal scroll
         touchAction: 'none',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        position: 'fixed',
+        pointerEvents: isClosing ? 'none' : 'auto',
+        // Ensure it's above everything
+        zIndex: 9999,
       }}
       onClick={handleBackdropClick}
     >
@@ -199,16 +200,20 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
             ? 'transform 0.3s ease, opacity 0.3s ease'
             : 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)',
           opacity: isClosing ? 0 : 1,
-          // On mobile: take up to 92dvh; on desktop: constrain height
-          maxHeight: '92dvh',
+          maxHeight: 'min(92dvh, 800px)',
+          maxWidth: 'min(100% - 16px, 640px)',
+          width: '100%',
           display: 'flex',
           flexDirection: 'column',
-          // Remove bottom radius on mobile (sheet sits at bottom)
           borderBottomLeftRadius: 0,
           borderBottomRightRadius: 0,
+          margin: '0 auto',
+          position: 'relative',
+          overflow: 'hidden',
+          // Center the modal vertically on desktop
+          transformOrigin: 'center center',
         }}
         onClick={(e) => e.stopPropagation()}
-        // Restore touch-action on the modal card itself so inner scroll works
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -225,7 +230,7 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
           />
         </div>
 
-        {/* ── Header (sticky, flex-shrink-0 so it never scrolls away) ── */}
+        {/* ── Header (sticky) ── */}
         <div
           className="flex-shrink-0 px-4 sm:px-6 py-3 sm:py-4 border-b flex items-center justify-between"
           style={{
@@ -233,7 +238,7 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
             borderColor: COLORS.border,
           }}
         >
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <div
               className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center flex-shrink-0"
               style={{
@@ -249,18 +254,18 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
                 <line x1="17.66" y1="17.66" x2="19.07" y2="19.07" />
               </svg>
             </div>
-            <div>
-              <h2 className="font-extrabold text-base sm:text-lg" style={{ color: COLORS.textPrimary }}>
+            <div className="min-w-0">
+              <h2 className="font-extrabold text-base sm:text-lg truncate" style={{ color: COLORS.textPrimary }}>
                 Choose Theme
               </h2>
-              <p className="text-xs" style={{ color: COLORS.textMuted }}>
+              <p className="text-xs truncate" style={{ color: COLORS.textMuted }}>
                 Personalize your DeepDive experience
               </p>
             </div>
           </div>
           <button
             onClick={handleClose}
-            className="p-1.5 sm:p-2 rounded-xl transition-all hover:bg-white/5 active:scale-90"
+            className="p-1.5 sm:p-2 rounded-xl transition-all hover:bg-white/5 active:scale-90 flex-shrink-0"
             style={{ color: COLORS.textMuted }}
             aria-label="Close theme picker"
           >
@@ -271,28 +276,18 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
           </button>
         </div>
 
-        {/* ── Scrollable Content ──────────────────────────────────────────────
-             KEY FIXES applied here:
-             1. overflow-y: auto  → enables scrolling
-             2. -webkit-overflow-scrolling: touch → iOS momentum scroll
-             3. overscroll-behavior: contain → stops scroll chaining to body
-             4. flex: 1 + min-height: 0 → flexbox children must have min-height:0
-                or the browser won't constrain them and scroll won't work
-             5. touch-action: pan-y → tells the browser this element scrolls
-                vertically, so it doesn't hand touch events to our swipe handler
-        ── */}
+        {/* ── Scrollable Content ── */}
         <div
           ref={scrollContainerRef}
           className="p-4 sm:p-6 space-y-5 sm:space-y-6"
           style={{
             flex: 1,
-            minHeight: 0,               // CRITICAL for flexbox scroll to work
+            minHeight: 0,
             overflowY: 'auto',
             overflowX: 'hidden',
-            WebkitOverflowScrolling: 'touch',  // iOS momentum scrolling
-            overscrollBehavior: 'contain',      // Stop scroll chaining to body
-            touchAction: 'pan-y',               // Let this div handle vertical touch
-            // Safe-area padding so content isn't hidden behind home indicator
+            WebkitOverflowScrolling: 'touch',
+            overscrollBehavior: 'contain',
+            touchAction: 'pan-y',
             paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
           }}
         >
@@ -438,7 +433,28 @@ export default function ThemePickerModal({ isOpen, onClose }: ThemePickerModalPr
             animation-duration: 0.01ms !important;
           }
         }
+        
+        /* Fix for iOS Safari */
+        @supports (-webkit-touch-callout: none) {
+          .theme-modal-content {
+            max-height: -webkit-fill-available;
+          }
+        }
+        
+        /* Ensure modal backdrop covers everything */
+        .theme-modal-backdrop {
+          position: fixed !important;
+          inset: 0 !important;
+          z-index: 9999 !important;
+        }
       `}</style>
     </div>
+  );
+
+  // ─── Render with Portal ──────────────────────────────────────────────────────
+  // This ensures the modal renders at the root level, outside of any stacking contexts
+  return createPortal(
+    modalContent,
+    document.body
   );
 }
