@@ -1,10 +1,19 @@
 // src/components/StatCards.tsx
-// Public-Reports — Part 55.9 Fully Themed Infographic Stat Cards
-// Redesigned to match the "trending-up" style:
-//   - Colored top border per card
-//   - Icon + label row
-//   - Large bold value
-//   - Arrow indicator + change text
+// Public-Reports — Part 55.12 Fully Themed Infographic Stat Cards (Overlap-Proof Redesign)
+// Changes from 55.11:
+//   - Removed the relative/absolute hover-wash layer and flex-1 spacer div that
+//     could cause text to visually collide on cards with wrapped, multi-line content
+//   - Removed -webkit-line-clamp tricks entirely — every text block now just
+//     wraps naturally with its own margin/line-height, so nothing is ever
+//     clipped, cut off, or overlapping a neighboring row
+//   - Label, value, and change rows are now three independent block-level
+//     elements stacked in a plain flex column — each one's height is exactly
+//     its content's height, so the card simply grows to fit
+//   - Change row uses mt-auto to stay pinned to the bottom on short cards,
+//     without needing an empty spacer div that could misbehave
+//   - Value font-size uses fixed px steps (not clamp()) so line-height math
+//     stays predictable across all card widths
+//   - Bar chart row labels simplified the same way (natural wrap, fixed width)
 
 import type { InfographicData, InfographicStat } from '@/types/report';
 
@@ -26,8 +35,11 @@ const CHANGE_COLORS = {
 
 function ArrowIcon({ up }: { up: boolean }) {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg
+      width="12" height="12" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+      style={{ flexShrink: 0 }}
+    >
       {up
         ? <><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></>
         : <><line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" /></>
@@ -54,41 +66,98 @@ function StatCard({ stat, index }: { stat: InfographicStat; index: number }) {
     ? stat.change.replace(/^[↑↓→]\s*/, '').trim()
     : '';
 
+  // Roughly scale font size down as value text gets longer, so very long
+  // values (e.g. "$1,234,567.89" or long strings) still fit comfortably.
+  // Plain px sizes (no clamp()) keep line-height math predictable so
+  // nothing can collide with the row below it.
+  const valueLength = String(stat.value ?? '').length;
+  const valueFontSize =
+    valueLength > 14 ? '18px'
+      : valueLength > 9 ? '22px'
+        : '28px';
+
   return (
     <div
-      className="flex flex-col gap-2 p-4 rounded-2xl transition-all duration-300 hover:scale-105 hover:shadow-xl"
+      className="relative flex flex-col p-4 rounded-2xl transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl"
       style={{
         background: 'var(--theme-background-card)',
         border: '1px solid var(--theme-border)',
         borderTopWidth: '3px',
         borderTopColor: color,
         animationDelay: `${index * 50}ms`,
+        isolation: 'isolate',
       }}
     >
-      {/* Icon + label row */}
-      <div className="flex items-center gap-2">
-        {stat.icon && <span className="text-lg leading-none">{stat.icon}</span>}
+      {/* Icon + label row — own block, natural height, never clipped */}
+      <div className="flex items-center gap-2 mb-2.5" style={{ minWidth: 0 }}>
+        {stat.icon && (
+          <span
+            className="flex items-center justify-center flex-shrink-0 rounded-lg"
+            style={{
+              width: 22,
+              height: 22,
+              fontSize: '0.8rem',
+              lineHeight: 1,
+              background: `${color}1A`,
+            }}
+          >
+            {stat.icon}
+          </span>
+        )}
         <p
-          className="text-xs font-semibold uppercase tracking-wider leading-tight flex-1 min-w-0 truncate"
-          style={{ color: 'var(--theme-text-muted)' }}
+          className="text-xs font-semibold uppercase tracking-wider"
+          style={{
+            color: 'var(--theme-text-muted)',
+            margin: 0,
+            minWidth: 0,
+            flex: '1 1 auto',
+            lineHeight: 1.4,
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word',
+          }}
         >
           {stat.label}
         </p>
       </div>
 
-      {/* Value */}
+      {/* Value — own block, wraps freely, fixed px size avoids clamp() edge cases */}
       <p
-        className="font-extrabold leading-none"
-        style={{ color, fontSize: 'clamp(1.4rem, 3.5vw, 2rem)' }}
+        className="font-extrabold"
+        style={{
+          color,
+          fontSize: valueFontSize,
+          lineHeight: 1.25,
+          margin: '0 0 6px 0',
+          minWidth: 0,
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word',
+        }}
       >
         {stat.value}
       </p>
 
-      {/* Change row */}
+      {/* Change row — mt-auto pins it to the bottom without needing a spacer div */}
       {stat.change && (
-        <div className="flex items-center gap-1.5" style={{ color: changeColor }}>
-          {hasArrow && <ArrowIcon up={isPositive} />}
-          <span className="text-xs font-semibold leading-none">{changeText}</span>
+        <div
+          className="flex items-start gap-1.5 mt-auto pt-1"
+          style={{ color: changeColor, minWidth: 0 }}
+        >
+          {hasArrow && (
+            <span style={{ flexShrink: 0, marginTop: 2 }}>
+              <ArrowIcon up={isPositive} />
+            </span>
+          )}
+          <span
+            className="text-xs font-semibold"
+            style={{
+              lineHeight: 1.4,
+              minWidth: 0,
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word',
+            }}
+          >
+            {changeText}
+          </span>
         </div>
       )}
     </div>
@@ -118,26 +187,46 @@ function InlineBarChart({
         border: '1px solid var(--theme-border)',
       }}
     >
-      <p className="text-sm font-bold mb-4" style={{ color: 'var(--theme-text-primary)' }}>{title}</p>
+      <p
+        className="text-sm font-bold mb-4 break-words"
+        style={{ color: 'var(--theme-text-primary)', overflowWrap: 'anywhere' }}
+      >
+        {title}
+      </p>
       <div className="space-y-2.5">
         {labels.map((label, i) => {
           const pct = Math.round((data[i] / max) * 100);
           return (
             <div key={i} className="flex items-center gap-3 group">
-              <span className="text-xs w-28 flex-shrink-0 truncate text-right font-medium"
-                style={{ color: 'var(--theme-text-secondary)' }}>
+              <span
+                className="text-xs flex-shrink-0 text-right font-medium"
+                style={{
+                  width: 96,
+                  color: 'var(--theme-text-secondary)',
+                  lineHeight: 1.4,
+                  overflowWrap: 'break-word',
+                  wordBreak: 'break-word',
+                }}
+              >
                 {label}
               </span>
-              <div className="flex-1 h-2 rounded-full overflow-hidden"
-                style={{ background: 'var(--theme-background-elevated)' }}>
-                <div className="h-full rounded-full transition-all duration-700 ease-out group-hover:opacity-80"
+              <div
+                className="flex-1 h-2 rounded-full overflow-hidden"
+                style={{ background: 'var(--theme-background-elevated)' }}
+              >
+                <div
+                  className="h-full rounded-full transition-all duration-700 ease-out group-hover:opacity-80"
                   style={{
                     width: `${pct}%`,
                     background: color,
                     boxShadow: `0 0 12px ${color}40`,
-                  }} />
+                  }}
+                />
               </div>
-              <span className="text-xs font-bold w-8 text-right flex-shrink-0" style={{ color }}>
+              <span
+                className="text-xs font-bold flex-shrink-0 text-right"
+                style={{ color, minWidth: 32 }}
+              >
                 {data[i]}
               </span>
             </div>
@@ -162,11 +251,13 @@ export default function StatCards({ data }: StatCardsProps) {
       {/* Stat grid */}
       {hasStats && (
         <div>
-          <p className="text-xs font-extrabold uppercase tracking-widest mb-3"
-            style={{ color: 'var(--theme-text-muted)' }}>
+          <p
+            className="text-xs font-extrabold uppercase tracking-widest mb-3"
+            style={{ color: 'var(--theme-text-muted)' }}
+          >
             📊 Key Statistics at a Glance
           </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 items-stretch">
             {data.stats.slice(0, 6).map((stat, i) => (
               <StatCard key={stat.id ?? i} stat={stat} index={i} />
             ))}
@@ -204,11 +295,17 @@ export default function StatCards({ data }: StatCardsProps) {
                 }}
               >
                 <span className="text-base flex-shrink-0">💡</span>
-                <div>
-                  <p className="text-xs font-semibold mb-0.5" style={{ color: '#FFFFFF' }}>
+                <div className="min-w-0">
+                  <p
+                    className="text-xs font-semibold mb-0.5 break-words"
+                    style={{ color: '#FFFFFF', overflowWrap: 'anywhere' }}
+                  >
                     {chart.title}
                   </p>
-                  <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.8)' }}>
+                  <p
+                    className="text-xs leading-relaxed break-words"
+                    style={{ color: 'rgba(255,255,255,0.8)', overflowWrap: 'anywhere' }}
+                  >
                     {chart.insight}
                   </p>
                 </div>

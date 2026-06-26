@@ -1,5 +1,6 @@
 // Public-Reports/src/app/r/[shareId]/page.tsx
-// Part 55.9 — Fully Themed Report Page with Modern Design & Loading
+// Part 55.10 — Auto-tag integration + academic chip removed from ReportCard
+// All Part 55.9 layout, theme, and loading behaviour preserved.
 
 import { notFound } from 'next/navigation';
 import { headers } from 'next/headers';
@@ -32,19 +33,19 @@ import Image from 'next/image';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LEFT_SIDEBAR_W = 220;
-const SIDEBAR_GAP = 32;
-const TOC_W = 220;
-const TOC_GAP = 32;
-const OUTER_MAX_W = LEFT_SIDEBAR_W + SIDEBAR_GAP + 672 + TOC_GAP + TOC_W;
+const SIDEBAR_GAP    = 32;
+const TOC_W          = 220;
+const TOC_GAP        = 32;
+const OUTER_MAX_W    = LEFT_SIDEBAR_W + SIDEBAR_GAP + 672 + TOC_GAP + TOC_W;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Loading Component - Fully Themed
+// Loading Component
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ReportPageLoading() {
   return (
-    <div style={{ 
-      minHeight: '100vh', 
+    <div style={{
+      minHeight: '100vh',
       background: 'var(--theme-background)',
       display: 'flex',
       flexDirection: 'column',
@@ -52,7 +53,6 @@ function ReportPageLoading() {
       justifyContent: 'center',
       padding: '24px',
     }}>
-      {/* Loading spinner with theme colors */}
       <div style={{
         width: 48,
         height: 48,
@@ -62,7 +62,6 @@ function ReportPageLoading() {
         animation: 'dd-spin 0.8s linear infinite',
         marginBottom: 24,
       }} />
-      
       <div style={{
         width: 200,
         height: 8,
@@ -79,7 +78,6 @@ function ReportPageLoading() {
           animation: 'dd-shimmer-loading 1.2s ease-in-out infinite',
         }} />
       </div>
-      
       <p style={{
         color: 'var(--theme-text-secondary)',
         fontSize: '0.875rem',
@@ -88,11 +86,8 @@ function ReportPageLoading() {
       }}>
         Loading research report...
       </p>
-
       <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes dd-spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes dd-spin { to { transform: rotate(360deg); } }
         @keyframes dd-shimmer-loading {
           0% { transform: translateX(-100%); }
           100% { transform: translateX(300%); }
@@ -127,14 +122,43 @@ export async function generateMetadata(
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getIpHash(): Promise<string> {
-  const hdrs = await headers();
+  const hdrs      = await headers();
   const forwarded = hdrs.get('x-forwarded-for');
-  const realIp = hdrs.get('x-real-ip');
-  const ip = forwarded?.split(',')[0]?.trim() ?? realIp ?? '127.0.0.1';
+  const realIp    = hdrs.get('x-real-ip');
+  const ip        = forwarded?.split(',')[0]?.trim() ?? realIp ?? '127.0.0.1';
   return createHash('sha256')
     .update(ip + 'deepdive-ai-salt-2025')
     .digest('hex')
     .slice(0, 32);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Part 55.10: Auto-tag trigger
+// Called server-side after we have the full report data.
+// Fire-and-forget — we don't await it on the critical render path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function triggerAutoTag(report: PublicReport, shareId: string): void {
+  // Only trigger if tags are empty
+  if (report.tags && report.tags.length > 0) return;
+
+  const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? '';
+  if (!APP_URL) return;
+
+  // Fire and forget — do not await
+  fetch(`${APP_URL}/api/auto-tag`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      shareId,
+      title:       report.title,
+      query:       report.query,
+      summary:     report.executiveSummary?.slice(0, 400) ?? '',
+      keyFindings: report.keyFindings?.slice(0, 5) ?? [],
+    }),
+  }).catch(err => {
+    console.warn('[PublicReportPage] auto-tag fire-and-forget failed:', err);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,52 +176,57 @@ async function fetchReport(shareId: string): Promise<PublicReport | null> {
 
   const row = data[0];
 
+  // Increment view count — fire and forget
   supabaseServer
     .rpc('increment_share_view', { p_share_id: shareId })
-    .then(({ error: e }) => { if (e) console.warn('[PublicReportPage] view increment:', e.message); });
+    .then(({ error: e }) => {
+      if (e) console.warn('[PublicReportPage] view increment:', e.message);
+    });
+
+  const tags = Array.isArray(row.tags) ? row.tags.filter(Boolean) : [];
 
   return {
-    reportId: row.report_id,
-    shareLinkId: row.share_link_id,
-    viewCount: row.view_count ?? 0,
-    shareCount: row.share_count ?? 0,
-    tags: Array.isArray(row.tags) ? row.tags : [],
-    query: row.query,
-    depth: row.depth,
-    title: row.title ?? row.query,
+    reportId:         row.report_id,
+    shareLinkId:      row.share_link_id,
+    viewCount:        row.view_count     ?? 0,
+    shareCount:       row.share_count    ?? 0,
+    tags,
+    query:            row.query,
+    depth:            row.depth,
+    title:            row.title ?? row.query,
     executiveSummary: row.executive_summary ?? '',
-    sections: Array.isArray(row.sections) ? row.sections : [],
-    keyFindings: Array.isArray(row.key_findings) ? row.key_findings : [],
-    futurePredictions: Array.isArray(row.future_predictions) ? row.future_predictions : [],
-    citations: enrichCitations(Array.isArray(row.citations) ? [...row.citations] : []),
-    statistics: Array.isArray(row.statistics) ? row.statistics : [],
-    sourcesCount: row.sources_count ?? 0,
+    sections:         Array.isArray(row.sections)           ? row.sections           : [],
+    keyFindings:      Array.isArray(row.key_findings)       ? row.key_findings       : [],
+    futurePredictions:Array.isArray(row.future_predictions) ? row.future_predictions : [],
+    citations:        enrichCitations(Array.isArray(row.citations) ? [...row.citations] : []),
+    statistics:       Array.isArray(row.statistics)         ? row.statistics         : [],
+    sourcesCount:     row.sources_count     ?? 0,
     reliabilityScore: row.reliability_score ?? 0,
-    infographicData: row.infographic_data ?? undefined,
-    sourceImages: row.source_images ?? [],
-    researchMode: row.research_mode ?? 'standard',
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-    ownerUsername: row.owner_username ?? undefined,
-    ownerAvatarUrl: row.owner_avatar_url ?? undefined,
+    infographicData:  row.infographic_data  ?? undefined,
+    sourceImages:     row.source_images     ?? [],
+    researchMode:     row.research_mode     ?? 'standard',
+    completedAt:      row.completed_at,
+    createdAt:        row.created_at,
+    ownerUsername:    row.owner_username    ?? undefined,
+    ownerAvatarUrl:   row.owner_avatar_url  ?? undefined,
   };
 }
 
 async function fetchReactions(
   shareId: string,
-  ipHash: string,
+  ipHash:  string,
 ): Promise<Record<string, Partial<Record<ReactionEmoji, { count: number; hasReacted: boolean }>>>> {
   try {
     const { data, error } = await supabaseServer.rpc('get_report_reactions', {
       p_share_id: shareId,
-      p_ip_hash: ipHash,
+      p_ip_hash:  ipHash,
     });
     if (error || !data) return {};
     const bySection: Record<string, Partial<Record<ReactionEmoji, { count: number; hasReacted: boolean }>>> = {};
     for (const row of data as Array<{ section_id: string; emoji: string; count: number; has_reacted: boolean }>) {
       if (!bySection[row.section_id]) bySection[row.section_id] = {};
       bySection[row.section_id][row.emoji as ReactionEmoji] = {
-        count: Number(row.count ?? 0),
+        count:      Number(row.count      ?? 0),
         hasReacted: Boolean(row.has_reacted),
       };
     }
@@ -208,20 +237,22 @@ async function fetchReactions(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Store buttons - Themed
+// Store buttons
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AppStoreBtn() {
   return (
-    <div className="inline-flex items-center gap-3 py-3 px-5 rounded-xl text-sm transition-all duration-300"
-         title="Not on App Store yet"
-         style={{
-           background: 'var(--theme-background-elevated)',
-           border: '1px solid var(--theme-border)',
-           cursor: 'default',
-           opacity: 0.6,
-           color: 'var(--theme-text-secondary)',
-         }}>
+    <div
+      className="inline-flex items-center gap-3 py-3 px-5 rounded-xl text-sm"
+      title="Not on App Store yet"
+      style={{
+        background: 'var(--theme-background-elevated)',
+        border: '1px solid var(--theme-border)',
+        cursor: 'default',
+        opacity: 0.6,
+        color: 'var(--theme-text-secondary)',
+      }}
+    >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
         <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
       </svg>
@@ -239,19 +270,25 @@ function AppStoreBtn() {
 
 function PlayStoreBtn({ url }: { url: string }) {
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer"
-       className="inline-flex items-center gap-3 py-3 px-5 rounded-xl font-bold text-sm transition-all duration-300 hover:scale-105 hover:shadow-xl"
-       style={{
-         background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-         color: '#FFFFFF',
-         textDecoration: 'none',
-         boxShadow: '0 4px 20px var(--theme-primary)',
-       }}>
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-3 py-3 px-5 rounded-xl font-bold text-sm transition-all duration-300 hover:scale-105 hover:shadow-xl"
+      style={{
+        background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+        color: '#FFFFFF',
+        textDecoration: 'none',
+        boxShadow: '0 4px 20px var(--theme-primary)',
+      }}
+    >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
         <path d="M3 18.5v-13c0-.83.95-1.3 1.6-.8l11 6.5c.6.35.6 1.25 0 1.6l-11 6.5c-.65.5-1.6.03-1.6-.8z"/>
       </svg>
       <div>
-        <p className="text-xs font-normal leading-none mb-0.5" style={{ color: 'rgba(255,255,255,0.75)' }}>Get it on</p>
+        <p className="text-xs font-normal leading-none mb-0.5" style={{ color: 'rgba(255,255,255,0.75)' }}>
+          Get it on
+        </p>
         <p className="font-bold text-sm leading-none">Google Play</p>
       </div>
     </a>
@@ -259,7 +296,7 @@ function PlayStoreBtn({ url }: { url: string }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper components - Themed
+// Helper components
 // ─────────────────────────────────────────────────────────────────────────────
 
 function Divider({ label }: { label: string }) {
@@ -283,13 +320,24 @@ function SourceImagesStrip({ images }: { images: { url: string; title?: string; 
       </p>
       <div className="flex gap-2 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }}>
         {images.slice(0, 8).map((img, i) => (
-          <a key={i} href={img.url} target="_blank" rel="noopener noreferrer" title={img.title}
-             className="flex-shrink-0 w-24 h-16 rounded-xl overflow-hidden transition-all duration-300 hover:scale-105 hover:shadow-lg"
-             style={{
-               background: 'var(--theme-background-card)',
-               border: '1px solid var(--theme-border)',
-             }}>
-            <img src={img.thumbnailUrl ?? img.url} alt={img.title ?? ''} className="w-full h-full object-cover" loading="lazy" />
+          <a
+            key={i}
+            href={img.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={img.title}
+            className="flex-shrink-0 w-24 h-16 rounded-xl overflow-hidden transition-all duration-300 hover:scale-105 hover:shadow-lg"
+            style={{
+              background: 'var(--theme-background-card)',
+              border: '1px solid var(--theme-border)',
+            }}
+          >
+            <img
+              src={img.thumbnailUrl ?? img.url}
+              alt={img.title ?? ''}
+              className="w-full h-full object-cover"
+              loading="lazy"
+            />
           </a>
         ))}
       </div>
@@ -298,45 +346,48 @@ function SourceImagesStrip({ images }: { images: { url: string; title?: string; 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BottomCTA - Themed
+// BottomCTA
 // ─────────────────────────────────────────────────────────────────────────────
 
 function BottomCTA({ report, playStoreUrl }: { report: PublicReport; playStoreUrl: string }) {
   return (
-    <div className="rounded-3xl p-8 text-center relative overflow-hidden"
-         style={{
-           background: 'linear-gradient(135deg, var(--theme-background-elevated), var(--theme-background-card))',
-           border: '2px solid var(--theme-primary)',
-         }}>
+    <div
+      className="rounded-3xl p-8 text-center relative overflow-hidden"
+      style={{
+        background: 'linear-gradient(135deg, var(--theme-background-elevated), var(--theme-background-card))',
+        border: '2px solid var(--theme-primary)',
+      }}
+    >
       <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute -top-1/2 -left-1/2 w-full h-full rounded-full blur-3xl opacity-10 animate-pulse"
-             style={{
-               background: 'var(--theme-primary)',
-               animationDuration: '6s',
-             }} />
-        <div className="absolute -bottom-1/2 -right-1/2 w-full h-full rounded-full blur-3xl opacity-10 animate-pulse"
-             style={{
-               background: 'var(--theme-secondary)',
-               animationDuration: '8s',
-               animationDelay: '3s',
-             }} />
+        <div
+          className="absolute -top-1/2 -left-1/2 w-full h-full rounded-full blur-3xl opacity-10 animate-pulse"
+          style={{ background: 'var(--theme-primary)', animationDuration: '6s' }}
+        />
+        <div
+          className="absolute -bottom-1/2 -right-1/2 w-full h-full rounded-full blur-3xl opacity-10 animate-pulse"
+          style={{ background: 'var(--theme-secondary)', animationDuration: '8s', animationDelay: '3s' }}
+        />
       </div>
       <div className="relative">
-        <div className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center transition-all duration-300 hover:scale-110"
-             style={{
-               background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-               boxShadow: '0 0 40px var(--theme-primary)',
-             }}>
+        <div
+          className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center transition-all duration-300 hover:scale-110"
+          style={{
+            background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+            boxShadow: '0 0 40px var(--theme-primary)',
+          }}
+        >
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
           </svg>
         </div>
-        <h3 className="text-2xl font-extrabold mb-3"
-            style={{
-              fontFamily: 'var(--font-display)',
-              color: 'var(--theme-text-primary)',
-              letterSpacing: '-0.02em',
-            }}>
+        <h3
+          className="text-2xl font-extrabold mb-3"
+          style={{
+            fontFamily: 'var(--font-display)',
+            color: 'var(--theme-text-primary)',
+            letterSpacing: '-0.02em',
+          }}
+        >
           Create Your Own AI Research Report
         </h3>
         <p className="text-sm mb-6 max-w-md mx-auto" style={{ color: 'var(--theme-text-secondary)', lineHeight: 1.7 }}>
@@ -347,12 +398,15 @@ function BottomCTA({ report, playStoreUrl }: { report: PublicReport; playStoreUr
         </p>
         <div className="flex flex-wrap justify-center gap-2 mb-6">
           {['🔬 Multi-agent', '📊 Infographics', '🎙 Podcast', '⚖️ Debate', '🎓 Papers', '📱 iOS & Android'].map(f => (
-            <span key={f} className="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-300 hover:scale-105"
-                  style={{
-                    background: 'var(--theme-primary)',
-                    color: '#FFFFFF',
-                    border: '1px solid var(--theme-primary)',
-                  }}>
+            <span
+              key={f}
+              className="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-300 hover:scale-105"
+              style={{
+                background: 'var(--theme-primary)',
+                color: '#FFFFFF',
+                border: '1px solid var(--theme-primary)',
+              }}
+            >
               {f}
             </span>
           ))}
@@ -379,14 +433,18 @@ export default async function PublicReportPage({
   params: Promise<{ shareId: string }>;
 }) {
   const { shareId } = await params;
-  const report = await fetchReport(shareId);
+  const report      = await fetchReport(shareId);
   if (!report) notFound();
 
-  const ipHash = await getIpHash();
+  const ipHash    = await getIpHash();
   const reactions = await fetchReactions(shareId, ipHash);
 
-  const jsonLd = buildJsonLd(report, shareId);
-  const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? '';
+  // ── Part 55.10: trigger auto-tag generation if tags are empty ──
+  // Fire-and-forget — does NOT block page render
+  triggerAutoTag(report, shareId);
+
+  const jsonLd    = buildJsonLd(report, shareId);
+  const APP_URL   = process.env.NEXT_PUBLIC_APP_URL ?? '';
   const PLAY_STORE = process.env.DEEPDIVE_PLAY_STORE_URL ?? '#';
   const chatLimit = parseInt(process.env.PUBLIC_CHAT_QUESTION_LIMIT ?? '3', 10);
 
@@ -405,9 +463,7 @@ export default async function PublicReportPage({
 
         <div className="min-h-screen pb-24" style={{ background: 'var(--theme-background)' }}>
 
-          {/* ════════════════════════════════════════════════════════
-              NAVBAR - Fully Themed
-          ════════════════════════════════════════════════════════ */}
+          {/* ═══════════════════════════════ NAVBAR ═══════════════════════════ */}
           <header
             className="sticky top-0 z-40 px-4 py-3 transition-all duration-300"
             style={{
@@ -419,13 +475,15 @@ export default async function PublicReportPage({
           >
             <div className="max-w-3xl mx-auto flex items-center gap-3">
               {/* Logo */}
-              <Link href="/" className="flex items-center gap-2 transition-all duration-300 hover:scale-105 flex-shrink-0"
-                    style={{ textDecoration: 'none' }}>
-                <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0"
-                     style={{
-                       background: '#FFFFFF',
-                       border: '1px solid var(--theme-border)',
-                     }}>
+              <Link
+                href="/"
+                className="flex items-center gap-2 transition-all duration-300 hover:scale-105 flex-shrink-0"
+                style={{ textDecoration: 'none' }}
+              >
+                <div
+                  className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0"
+                  style={{ background: '#FFFFFF', border: '1px solid var(--theme-border)' }}
+                >
                   <Image src="/icon.png" alt="DeepDive AI" width={32} height={32} style={{ objectFit: 'contain' }} priority />
                 </div>
                 <span className="text-sm font-bold hidden sm:block" style={{ color: 'var(--theme-text-primary)' }}>
@@ -433,15 +491,17 @@ export default async function PublicReportPage({
                 </span>
               </Link>
 
-              {/* Search bar — desktop only (md+) */}
+              {/* Search bar — desktop only */}
               <div className="flex-1 hidden md:block">
-                <PublicSearchBar mode="page" placeholder="Search all research…"
-                  style={{ width: '100%', maxWidth: 360 }} />
+                <PublicSearchBar
+                  mode="page"
+                  placeholder="Search all research…"
+                  style={{ width: '100%', maxWidth: 360 }}
+                />
               </div>
 
-              {/* Right side stats + actions */}
+              {/* Right side */}
               <div className="flex items-center gap-2 ml-auto">
-                {/* View count */}
                 {report.viewCount > 0 && (
                   <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -450,10 +510,12 @@ export default async function PublicReportPage({
                     {report.viewCount.toLocaleString()}
                   </span>
                 )}
-                {/* Share count */}
                 {report.shareCount > 0 && (
-                  <span className="hidden sm:flex items-center gap-1.5 text-xs" style={{ color: 'var(--theme-text-muted)' }}
-                        title={`Shared ${report.shareCount} times`}>
+                  <span
+                    className="hidden sm:flex items-center gap-1.5 text-xs"
+                    style={{ color: 'var(--theme-text-muted)' }}
+                    title={`Shared ${report.shareCount} times`}
+                  >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
                       <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
@@ -461,30 +523,28 @@ export default async function PublicReportPage({
                     {report.shareCount.toLocaleString()}
                   </span>
                 )}
-                {/* Discover link — desktop */}
-                <Link href="/discover"
-                   className="hidden lg:flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all duration-300 hover:scale-105"
-                   style={{
-                     color: '#FFFFFF',
-                     background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-                     border: '1px solid var(--theme-primary)',
-                     textDecoration: 'none',
-                     boxShadow: '0 2px 12px var(--theme-primary)',
-                   }}>
+                <Link
+                  href="/discover"
+                  className="hidden lg:flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all duration-300 hover:scale-105"
+                  style={{
+                    color: '#FFFFFF',
+                    background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+                    border: '1px solid var(--theme-primary)',
+                    textDecoration: 'none',
+                    boxShadow: '0 2px 12px var(--theme-primary)',
+                  }}
+                >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                     <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
                   </svg>
                   Discover
                 </Link>
-                {/* Copy link */}
                 <CopyLinkIsland url={`${APP_URL}/r/${shareId}`} shareId={shareId} />
               </div>
             </div>
           </header>
 
-          {/* ════════════════════════════════════════════════════════
-              MOBILE ACTION BAR
-          ════════════════════════════════════════════════════════ */}
+          {/* Mobile action bar */}
           <MobileActionBar
             shareUrl={`${APP_URL}/r/${shareId}`}
             shareId={shareId}
@@ -492,9 +552,7 @@ export default async function PublicReportPage({
             shareCount={report.shareCount}
           />
 
-          {/* ════════════════════════════════════════════════════════
-              TABLE OF CONTENTS
-          ════════════════════════════════════════════════════════ */}
+          {/* Table of contents */}
           {report.sections.length > 1 && (
             <TableOfContents
               sections={report.sections}
@@ -503,42 +561,30 @@ export default async function PublicReportPage({
             />
           )}
 
-          {/* ════════════════════════════════════════════════════════
-              3-COLUMN OUTER WRAPPER
-          ════════════════════════════════════════════════════════ */}
-          <div
-            className="mx-auto px-4 pt-8"
-            style={{ maxWidth: OUTER_MAX_W }}
-          >
-            <div
-              className="xl:flex xl:gap-8"
-              style={{ alignItems: 'flex-start' }}
-            >
+          {/* 3-column outer wrapper */}
+          <div className="mx-auto px-4 pt-8" style={{ maxWidth: OUTER_MAX_W }}>
+            <div className="xl:flex xl:gap-8" style={{ alignItems: 'flex-start' }}>
 
-              {/* ── LEFT SIDEBAR: Trending widget ── */}
+              {/* Left sidebar — Trending */}
               <aside
                 aria-label="Trending reports"
                 className="hidden xl:block xl:flex-shrink-0"
                 style={{ width: LEFT_SIDEBAR_W }}
               >
-                <div
-                  style={{
-                    position: 'sticky',
-                    top: 88,
-                    width: LEFT_SIDEBAR_W,
-                    maxHeight: 'calc(100vh - 108px)',
-                    overflowY: 'auto',
-                    scrollbarWidth: 'none',
-                  }}
-                >
+                <div style={{
+                  position: 'sticky',
+                  top: 88,
+                  width: LEFT_SIDEBAR_W,
+                  maxHeight: 'calc(100vh - 108px)',
+                  overflowY: 'auto',
+                  scrollbarWidth: 'none',
+                }}>
                   <TrendingWidget currentShareId={shareId} limit={5} />
                 </div>
               </aside>
 
-              {/* ── MAIN CONTENT ── */}
-              <main
-                className="flex-1 min-w-0"
-              >
+              {/* Main content */}
+              <main className="flex-1 min-w-0">
                 <div className="report-main-inner">
 
                   <ReportHeader report={report} />
@@ -565,7 +611,7 @@ export default async function PublicReportPage({
                   <section className="space-y-3" aria-label="Report sections">
                     {report.sections.map((section, i) => {
                       const sectionReactionId = section.id || `sec-${i}`;
-                      const initialReactions = reactions[sectionReactionId] ?? {};
+                      const initialReactions  = reactions[sectionReactionId] ?? {};
                       return (
                         <ReportSectionCard
                           key={section.id ?? i}
@@ -598,7 +644,7 @@ export default async function PublicReportPage({
                     </>
                   )}
 
-                  {/* ── TRENDING: Mobile / non-xl inline ── */}
+                  {/* Trending — mobile inline */}
                   {report.sections.length > 0 && (
                     <div className="xl:hidden">
                       <Divider label="Trending this week" />
@@ -607,8 +653,11 @@ export default async function PublicReportPage({
                           <p className="text-xs" style={{ color: 'var(--theme-text-muted)' }}>
                             Most viewed in the last 7 days across the DeepDive community.
                           </p>
-                          <Link href="/discover" className="text-xs font-bold transition-all duration-300 hover:scale-105"
-                             style={{ color: 'var(--theme-primary)', textDecoration: 'none' }}>
+                          <Link
+                            href="/discover"
+                            className="text-xs font-bold transition-all duration-300 hover:scale-105"
+                            style={{ color: 'var(--theme-primary)', textDecoration: 'none' }}
+                          >
                             Browse all →
                           </Link>
                         </div>
@@ -648,15 +697,6 @@ export default async function PublicReportPage({
               padding-right: ${TOC_W + TOC_GAP}px;
               max-width: none;
             }
-          }
-
-          @keyframes pulse-slow {
-            0%, 100% { opacity: 0.1; }
-            50% { opacity: 0.2; }
-          }
-          
-          .animate-pulse-slow {
-            animation: pulse-slow 3s ease-in-out infinite;
           }
 
           @media (prefers-reduced-motion: reduce) {

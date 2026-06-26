@@ -1,6 +1,7 @@
 // Public-Reports/src/components/ReportHeader.tsx
 // Part 55.9 — Fully Themed Report Header
 // Part 34 update: added clickable topic tag chips (→ /topic/[tag])
+// Part 56 update: clickable researcher avatar/name (→ /u/[username])
 // All Part 33 behaviour preserved exactly.
 
 import Link from 'next/link';
@@ -187,32 +188,53 @@ export default function ReportHeader({ report }: ReportHeaderProps) {
         </div>
       </div>
 
-      {/* ── Owner attribution ── */}
+      {/* ── Part 56: Owner attribution with clickable link ── */}
       {report.ownerUsername && (
         <div
           className="flex items-center gap-3 mt-5 pt-4"
           style={{ borderTop: '1px solid var(--theme-border)' }}
         >
-          <div
-            className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold transition-all duration-200 hover:scale-110"
+          <Link
+            href={`/u/${report.ownerUsername}`}
+            className="flex items-center gap-3 group"
             style={{
-              background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
-              color: '#FFFFFF',
-              boxShadow: '0 2px 8px var(--theme-primary)',
+              textDecoration: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
             }}
           >
-            {(report.ownerUsername[0] ?? 'D').toUpperCase()}
-          </div>
-          <span className="text-sm" style={{ color: 'var(--theme-text-muted)' }}>
-            Researched by{' '}
-            <span style={{ color: 'var(--theme-text-primary)', fontWeight: 700 }}>
-              @{report.ownerUsername}
-            </span>{' '}
-            using{' '}
-            <span className="dd-text-gradient" style={{ fontWeight: 700 }}>
-              DeepDive AI
+            {/* Avatar - clickable with hover effects */}
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold transition-all duration-200 group-hover:scale-110 group-hover:shadow-lg"
+              style={{
+                background: 'linear-gradient(135deg, var(--theme-gradient-primary-1), var(--theme-gradient-primary-2))',
+                color: '#FFFFFF',
+                boxShadow: '0 2px 8px var(--theme-primary)',
+                cursor: 'pointer',
+              }}
+            >
+              {(report.ownerUsername[0] ?? 'D').toUpperCase()}
+            </div>
+
+            {/* Username - clickable with hover effects */}
+            <span className="text-sm transition-colors duration-200 group-hover:text-[var(--theme-primary)]" style={{ color: 'var(--theme-text-muted)' }}>
+              Researched by{' '}
+              <span style={{ 
+                color: 'var(--theme-text-primary)', 
+                fontWeight: 700,
+                transition: 'color 0.2s ease',
+              }}
+              className="group-hover:text-[var(--theme-primary)]"
+              >
+                @{report.ownerUsername}
+              </span>{' '}
+              using{' '}
+              <span className="dd-text-gradient" style={{ fontWeight: 700 }}>
+                DeepDive AI
+              </span>
             </span>
-          </span>
+          </Link>
         </div>
       )}
 
