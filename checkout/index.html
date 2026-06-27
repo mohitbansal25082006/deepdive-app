@@ -5,390 +5,828 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>DeepDive AI — Checkout</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    /* ─── CSS Variables (defaults = Cosmic Indigo dark, overridden by JS) ─── */
     :root {
-      --bg: #0A0A1A; --card: #12122A; --border: #1E1E3A;
-      --primary: #6C63FF; --success: #10B981; --error: #EF4444;
-      --text: #E8E8F0; --muted: #6B6B8A; --radius: 16px;
+      --bg:           #0A0A1A;
+      --bg-card:      #12122A;
+      --bg-elevated:  #1A1A35;
+      --primary:      #6C63FF;
+      --primary-l:    #8B85FF;
+      --primary-d:    #4A42CC;
+      --accent:       #43E97B;
+      --text:         #FFFFFF;
+      --text-sec:     #A0A0C0;
+      --text-muted:   #5A5A7A;
+      --border:       #2A2A4A;
+      --success:      #43E97B;
+      --error:        #FF4757;
+      --warning:      #FFA726;
+      --grad-p1:      #6C63FF;
+      --grad-p2:      #8B5CF6;
+      --grad-card1:   #1A1A35;
+      --grad-card2:   #12122A;
+      --radius:       20px;
+      --radius-sm:    12px;
+      --radius-pill:  100px;
     }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg); color: var(--text);
-      min-height: 100vh; display: flex;
-      align-items: center; justify-content: center; padding: 24px 16px;
-    }
-    .card {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 32px 24px;
-      max-width: 440px; width: 100%; text-align: center;
-    }
-    .logo {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 64px; height: 64px;
-      background: linear-gradient(135deg, #6C63FF, #8B5CF6);
-      border-radius: 20px; margin-bottom: 20px;
-    }
-    .logo svg { width: 32px; height: 32px; fill: #fff; }
-    h1 { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
-    .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
-    .summary {
-      background: rgba(108,99,255,.08); border: 1px solid rgba(108,99,255,.2);
-      border-radius: 12px; padding: 18px; margin-bottom: 20px; text-align: left;
-    }
-    .row { display: flex; justify-content: space-between; margin-bottom: 8px; }
-    .row:last-child { margin-bottom: 0; }
-    .lbl { color: var(--muted); font-size: 13px; }
-    .val { font-size: 14px; font-weight: 700; }
-    .val.accent { color: var(--primary); font-size: 18px; }
-    .val.lg     { font-size: 20px; }
-    .divider    { height: 1px; background: var(--border); margin: 10px 0; }
-    .btn {
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-      width: 100%; padding: 16px; border: none; border-radius: 12px;
-      font-size: 16px; font-weight: 800; cursor: pointer;
-      margin-bottom: 10px; transition: opacity .15s, transform .1s;
-    }
-    .btn:active  { transform: scale(.98); opacity: .85; }
-    .btn-primary { background: linear-gradient(135deg,#6C63FF,#8B5CF6); color:#fff; }
-    .btn-outline { background: transparent; color: var(--muted); border: 1px solid var(--border); }
 
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px 16px;
+      /* Animated aurora background */
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* ─── Aurora background blobs ─── */
+    .aurora {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 0;
+    }
+    .aurora-blob {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.12;
+      animation: drift 12s ease-in-out infinite alternate;
+    }
+    .aurora-blob:nth-child(1) {
+      width: 400px; height: 400px;
+      background: var(--grad-p1);
+      top: -100px; left: -100px;
+      animation-delay: 0s;
+    }
+    .aurora-blob:nth-child(2) {
+      width: 350px; height: 350px;
+      background: var(--grad-p2);
+      bottom: -80px; right: -80px;
+      animation-delay: -4s;
+    }
+    .aurora-blob:nth-child(3) {
+      width: 250px; height: 250px;
+      background: var(--accent);
+      top: 40%; left: 60%;
+      opacity: 0.07;
+      animation-delay: -8s;
+    }
+    @keyframes drift {
+      0%   { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(30px, 20px) scale(1.08); }
+    }
+
+    /* ─── Card ─── */
+    .card {
+      position: relative;
+      z-index: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px 28px 28px;
+      max-width: 420px;
+      width: 100%;
+      /* Subtle glass shimmer */
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.04) inset,
+        0 32px 64px rgba(0,0,0,0.4),
+        0 0 80px -20px var(--primary);
+    }
+
+    /* ─── Logo ─── */
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .logo-icon {
+      width: 48px; height: 48px;
+      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 8px 24px -4px var(--primary);
+      flex-shrink: 0;
+    }
+    .logo-icon svg { width: 24px; height: 24px; fill: #fff; }
+    .logo-text { line-height: 1; }
+    .logo-name {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+    .logo-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* ─── Screen titles ─── */
+    .screen-title {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 4px;
+      line-height: 1.2;
+    }
+    .screen-sub {
+      color: var(--text-sec);
+      font-size: 13px;
+      margin-bottom: 22px;
+      line-height: 1.5;
+    }
+
+    /* ─── Order summary box ─── */
+    .summary {
+      background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-sm);
+      padding: 0;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+    .summary-header {
+      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .summary-header-text {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.9);
+    }
+    .summary-header svg { width: 14px; height: 14px; fill: rgba(255,255,255,0.9); flex-shrink: 0; }
+    .summary-body { padding: 16px; }
+    .sum-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .sum-row:last-child { margin-bottom: 0; }
+    .sum-lbl { color: var(--text-muted); font-size: 13px; }
+    .sum-val { font-size: 14px; font-weight: 700; color: var(--text); }
+    .sum-val.credits {
+      color: var(--grad-p1);
+      font-size: 20px;
+      font-weight: 900;
+      letter-spacing: -0.5px;
+    }
+    .sum-val.price {
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: -0.5px;
+    }
+    .sum-divider { height: 1px; background: var(--border); margin: 10px 0; }
+
+    /* ─── CTA button ─── */
+    .btn-pay {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      letter-spacing: -0.2px;
+      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
+      color: #fff;
+      position: relative;
+      overflow: hidden;
+      transition: opacity 0.15s, transform 0.1s;
+      box-shadow: 0 8px 24px -4px var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn-pay:active { transform: scale(0.98); opacity: 0.9; }
+    .btn-pay::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 60%);
+    }
+    .btn-pay svg { width: 18px; height: 18px; fill: #fff; position: relative; z-index: 1; }
+    .btn-pay span { position: relative; z-index: 1; }
+
+    .btn-sec {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-muted);
+      margin-top: 10px;
+      transition: opacity 0.15s;
+    }
+    .btn-sec:active { opacity: 0.7; }
+
+    /* ─── Trust footer ─── */
+    .trust-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .trust-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .trust-item svg { width: 12px; height: 12px; fill: var(--text-muted); }
+    .trust-dot {
+      width: 3px; height: 3px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+
+    /* ─── State visibility ─── */
     .state { display: none; }
     .state.active { display: block; }
 
-    .spinner {
-      width: 44px; height: 44px;
-      border: 3px solid rgba(108,99,255,.2); border-top-color: var(--primary);
-      border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 20px;
+    /* ─── Processing / Spinner ─── */
+    .spinner-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 0 8px;
+    }
+    .spinner-ring {
+      width: 56px; height: 56px;
+      position: relative;
+      margin-bottom: 20px;
+    }
+    .spinner-ring::before,
+    .spinner-ring::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+    }
+    .spinner-ring::before {
+      border: 3px solid rgba(255,255,255,0.06);
+    }
+    .spinner-ring::after {
+      border: 3px solid transparent;
+      border-top-color: var(--grad-p1);
+      border-right-color: var(--grad-p2);
+      animation: spin 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .icon {
-      width: 84px; height: 84px; border-radius: 26px;
-      display: flex; align-items: center; justify-content: center;
-      margin: 0 auto 18px; font-size: 40px;
+    /* ─── Status icons ─── */
+    .status-icon {
+      width: 80px; height: 80px;
+      border-radius: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 18px;
+      position: relative;
     }
-    .icon.ok  { background: rgba(16,185,129,.12); border: 2px solid rgba(16,185,129,.25); }
-    .icon.err { background: rgba(239,68,68,.12);  border: 2px solid rgba(239,68,68,.25); }
+    .status-icon.ok {
+      background: linear-gradient(135deg, rgba(67,233,123,0.15), rgba(56,249,215,0.08));
+      border: 1.5px solid rgba(67,233,123,0.25);
+    }
+    .status-icon.err {
+      background: linear-gradient(135deg, rgba(255,71,87,0.15), rgba(255,71,87,0.05));
+      border: 1.5px solid rgba(255,71,87,0.25);
+    }
+    .status-icon svg { width: 36px; height: 36px; }
+    /* Pulse ring on success */
+    .status-icon.ok::before {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      border-radius: 32px;
+      border: 1px solid rgba(67,233,123,0.15);
+      animation: pulse-ring 2s ease-out infinite;
+    }
+    .status-icon.ok::after {
+      content: '';
+      position: absolute;
+      inset: -16px;
+      border-radius: 38px;
+      border: 1px solid rgba(67,233,123,0.07);
+      animation: pulse-ring 2s ease-out 0.4s infinite;
+    }
+    @keyframes pulse-ring {
+      0%   { opacity: 1; transform: scale(1); }
+      100% { opacity: 0; transform: scale(1.15); }
+    }
 
-    .chip {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.3);
-      border-radius: 100px; padding: 7px 18px;
-      font-size: 15px; font-weight: 800; color: #10B981; margin-bottom: 20px;
+    /* ─── Credits chip ─── */
+    .credits-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: linear-gradient(135deg, rgba(67,233,123,0.12), rgba(56,249,215,0.06));
+      border: 1px solid rgba(67,233,123,0.25);
+      border-radius: var(--radius-pill);
+      padding: 8px 20px;
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--success);
+      margin: 0 auto 20px;
     }
+    .credits-chip svg { width: 16px; height: 16px; fill: var(--success); }
+
+    /* ─── Info card (success details / failure reason) ─── */
     .info-card {
-      background: rgba(16,185,129,.05); border: 1px solid rgba(16,185,129,.15);
-      border-radius: 12px; padding: 14px; margin-bottom: 22px; text-align: left;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      margin-bottom: 18px;
     }
-    .ir { display: flex; justify-content: space-between; margin-bottom: 6px; }
-    .ir:last-child { margin-bottom: 0; }
-    .il { color: var(--muted); font-size: 12px; }
-    .iv { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-all; max-width: 200px; text-align: right; }
-    .iv.g { color: #10B981; font-size: 15px; }
+    .info-card.ok-card  { border-color: rgba(67,233,123,0.15); }
+    .info-card.err-card { border-color: rgba(255,71,87,0.18); background: rgba(255,71,87,0.04); }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 11px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-lbl { color: var(--text-muted); font-size: 12px; }
+    .info-val {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      text-align: right;
+      max-width: 210px;
+      word-break: break-all;
+    }
+    .info-val.accent { color: var(--success); font-size: 15px; }
 
-    .return-notice {
-      background: rgba(16,185,129,.06);
-      border: 1px solid rgba(16,185,129,.2);
-      border-radius: 12px; padding: 16px;
-      display: flex; align-items: center; gap: 12px; text-align: left;
+    /* ─── Return / instruction notice ─── */
+    .notice {
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      text-align: left;
     }
-    .return-notice .notice-icon  { font-size: 24px; flex-shrink: 0; }
-    .return-notice .notice-text  { color: var(--text); font-size: 14px; font-weight: 700; line-height: 1.5; }
-    .return-notice .notice-sub   { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .notice.return-notice {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .notice.close-notice {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      margin-bottom: 14px;
+    }
+    .notice-emoji { font-size: 22px; flex-shrink: 0; line-height: 1.3; }
+    .notice-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+    .notice-body  { font-size: 12px; color: var(--text-sec); line-height: 1.55; }
 
-    /* Part 42: failure reason card */
-    .fail-reason-card {
-      background: rgba(239,68,68,.07);
-      border: 1px solid rgba(239,68,68,.2);
-      border-radius: 12px; padding: 14px;
-      margin-bottom: 16px; text-align: left;
+    /* ─── Failure reason block ─── */
+    .fail-reason {
+      background: rgba(255,71,87,0.07);
+      border: 1px solid rgba(255,71,87,0.2);
+      border-radius: var(--radius-sm);
+      padding: 13px 16px;
+      margin-bottom: 14px;
+      display: none;
     }
-    .fail-reason-card .fr-label {
-      font-size: 10px; font-weight: 800; letter-spacing: .8px;
-      text-transform: uppercase; color: rgba(239,68,68,.7); margin-bottom: 5px;
+    .fail-reason-label {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: rgba(255,71,87,0.7);
+      margin-bottom: 5px;
     }
-    .fail-reason-card .fr-text {
-      font-size: 13px; color: #E8E8F0; line-height: 1.55;
-    }
+    .fail-reason-text { font-size: 13px; color: var(--text); line-height: 1.55; }
 
-    /* Part 42: prominent "close this window" instruction box */
-    .close-instruction {
-      background: rgba(108,99,255,.08);
-      border: 1px solid rgba(108,99,255,.25);
-      border-radius: 12px; padding: 16px;
-      display: flex; align-items: flex-start; gap: 12px;
-      text-align: left; margin-bottom: 16px;
+    /* ─── Powered badge ─── */
+    .powered {
+      margin-top: 14px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 11px;
     }
-    .close-instruction .ci-arrow {
-      font-size: 26px; line-height: 1; flex-shrink: 0; margin-top: 2px;
-    }
-    .close-instruction .ci-text  { font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.5; }
-    .close-instruction .ci-sub   { font-size: 12px; color: var(--muted); margin-top: 3px; }
-
-    .hint { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 20px; }
-    .trust {
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-      color: var(--muted); font-size: 12px; margin-top: 18px;
-    }
-    .trust svg { width: 14px; height: 14px; fill: var(--muted); }
-    .powered { margin-top: 12px; color: var(--muted); font-size: 11px; }
     .powered strong { color: #5469d4; }
+
+    /* ─── Step indicators (ready state) ─── */
+    .steps {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 20px;
+    }
+    .step {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      position: relative;
+    }
+    .step:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      top: 14px;
+      left: calc(50% + 14px);
+      right: calc(-50% + 14px);
+      height: 1px;
+      background: var(--border);
+    }
+    .step-dot {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      position: relative;
+      z-index: 1;
+    }
+    .step-dot.active {
+      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
+      color: #fff;
+      box-shadow: 0 4px 12px -2px var(--primary);
+    }
+    .step-dot.inactive { background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }
+    .step-label { font-size: 10px; color: var(--text-muted); font-weight: 600; text-align: center; }
+    .step.current .step-label { color: var(--text-sec); }
+
+    /* ─── Light mode overrides ─── */
+    body.light-mode .card {
+      box-shadow:
+        0 0 0 1px rgba(0,0,0,0.04) inset,
+        0 24px 56px rgba(0,0,0,0.12),
+        0 0 60px -20px var(--primary);
+    }
+    body.light-mode .aurora-blob { opacity: 0.08; }
   </style>
 </head>
 <body>
-<div class="card">
-  <div class="logo">
-    <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+  <!-- Aurora background -->
+  <div class="aurora">
+    <div class="aurora-blob"></div>
+    <div class="aurora-blob"></div>
+    <div class="aurora-blob"></div>
   </div>
 
-  <!-- READY -->
-  <div id="s-ready" class="state active">
-    <h1>Complete Your Purchase</h1>
-    <p class="sub">Secure payment powered by Razorpay</p>
-    <div class="summary">
-      <div class="row"><span class="lbl">Pack</span>    <span class="val"       id="r-pack">—</span></div>
-      <div class="row"><span class="lbl">Credits</span> <span class="val accent" id="r-credits">—</span></div>
-      <div class="divider"></div>
-      <div class="row"><span class="lbl">Total</span>   <span class="val lg"    id="r-price">—</span></div>
-    </div>
-    <div class="trust">
-      <svg viewBox="0 0 24 24"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
-      Bank-grade SSL · UPI / Cards / Netbanking
-    </div>
-    <div class="powered">Powered by <strong>Razorpay</strong></div>
-  </div>
+  <div class="card">
 
-  <!-- PROCESSING -->
-  <div id="s-proc" class="state">
-    <div class="spinner"></div>
-    <h1>Opening Razorpay...</h1>
-    <p class="hint">Complete your payment in the Razorpay window.</p>
-  </div>
-
-  <!-- SUCCESS -->
-  <div id="s-ok" class="state">
-    <div class="icon ok">✓</div>
-    <h1 style="color:#10B981; margin-bottom:8px;">Payment Successful!</h1>
-    <p class="sub">Your payment has been confirmed by Razorpay.</p>
-    <div class="chip">⚡ <span id="ok-credits">—</span></div>
-    <div class="info-card">
-      <div class="ir"><span class="il">Pack</span>          <span class="iv"   id="ok-pack">—</span></div>
-      <div class="ir"><span class="il">Credits Added</span> <span class="iv g" id="ok-cr">—</span></div>
-      <div class="ir"><span class="il">Payment ID</span>    <span class="iv"   id="ok-pid" style="font-size:11px;">—</span></div>
-    </div>
-    <div class="return-notice">
-      <div class="notice-icon">↩</div>
-      <div>
-        <div class="notice-text">Return to the app</div>
-        <div class="notice-sub">Press the back button or swipe down to go back to DeepDive AI. Credits will appear automatically.</div>
+    <!-- Brand header (always visible) -->
+    <div class="logo-wrap">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
-    </div>
-  </div>
-
-  <!-- FAILED
-       Part 42 fix: window.close() / about:blank do NOT work in SFSafariViewController
-       (iOS) or ChromeCustomTabs (Android) — they are native containers, not popup windows.
-       Navigating to about:blank just shows a blank screen instead of closing the sheet.
-
-       Correct approach:
-       1. Show the failure reason immediately when payment.failed fires (rzp.close() hides
-          the Razorpay overlay; our failure screen appears behind it right away).
-       2. Show a very clear "close this window" instruction so the user knows to swipe/press back.
-       3. "Try Again" re-opens Razorpay inline — no blank screen involved.
-
-       The app polls after the user closes the native browser sheet manually.
-       With the faster poll schedule (500ms first check) this is still fast.
-  -->
-  <div id="s-fail" class="state">
-    <div class="icon err">✗</div>
-
-    <h1 id="fail-title" style="margin-bottom:8px;">Payment Failed</h1>
-    <p class="sub" id="fail-sub">No charges were made.</p>
-
-    <!-- Failure reason (shown when Razorpay provides one) -->
-    <div class="fail-reason-card" id="fail-reason-card" style="display:none;">
-      <div class="fr-label">Reason</div>
-      <div class="fr-text" id="fail-reason-text"></div>
-    </div>
-
-    <!-- Part 42 KEY FIX: explicit "close this window" instruction
-         instead of trying window.close() which shows a blank page.
-         Arrow points up on iOS (swipe down to close sheet) or
-         user can press the native × / back button. -->
-    <div class="close-instruction">
-      <div class="ci-arrow">↙</div>
-      <div>
-        <div class="ci-text">Close this window to return to the app</div>
-        <div class="ci-sub">Press the ✕ button or swipe this sheet down — then try again in DeepDive AI.</div>
+      <div class="logo-text">
+        <div class="logo-name">DeepDive AI</div>
+        <div class="logo-sub">Secure Checkout</div>
       </div>
     </div>
 
-    <button class="btn btn-primary" id="retry-btn" onclick="retryPayment()">Try Again</button>
+    <!-- ─── READY ─── -->
+    <div id="s-ready" class="state active">
+      <!-- Progress steps -->
+      <div class="steps">
+        <div class="step current">
+          <div class="step-dot active">1</div>
+          <div class="step-label">Review</div>
+        </div>
+        <div class="step">
+          <div class="step-dot inactive">2</div>
+          <div class="step-label">Pay</div>
+        </div>
+        <div class="step">
+          <div class="step-dot inactive">3</div>
+          <div class="step-label">Done</div>
+        </div>
+      </div>
+
+      <div class="screen-title">Complete Purchase</div>
+      <div class="screen-sub">Opening Razorpay payment — review your order below.</div>
+
+      <!-- Order summary -->
+      <div class="summary">
+        <div class="summary-header">
+          <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="summary-header-text">Order Summary</span>
+        </div>
+        <div class="summary-body">
+          <div class="sum-row">
+            <span class="sum-lbl">Pack</span>
+            <span class="sum-val" id="r-pack">—</span>
+          </div>
+          <div class="sum-row">
+            <span class="sum-lbl">Credits</span>
+            <span class="sum-val credits" id="r-credits">—</span>
+          </div>
+          <div class="sum-divider"></div>
+          <div class="sum-row">
+            <span class="sum-lbl">Total</span>
+            <span class="sum-val price" id="r-price">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="trust-row">
+        <div class="trust-item">
+          <svg viewBox="0 0 24 24"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
+          Bank-grade SSL
+        </div>
+        <div class="trust-dot"></div>
+        <div class="trust-item">UPI · Cards · Netbanking</div>
+        <div class="trust-dot"></div>
+        <div class="trust-item">₹ Razorpay</div>
+      </div>
+    </div>
+
+    <!-- ─── PROCESSING ─── -->
+    <div id="s-proc" class="state">
+      <div class="spinner-wrap">
+        <div class="spinner-ring"></div>
+        <div class="screen-title" style="text-align:center; margin-bottom:8px;">Opening Razorpay</div>
+        <div class="screen-sub" style="text-align:center; margin-bottom:0;">
+          Complete your payment in the secure Razorpay window.
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SUCCESS ─── -->
+    <div id="s-ok" class="state">
+      <div class="status-icon ok">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#43E97B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+
+      <div class="screen-title" style="text-align:center; color:var(--success); margin-bottom:6px;">
+        Payment Successful!
+      </div>
+      <div class="screen-sub" style="text-align:center;">
+        Your credits have been confirmed and added instantly.
+      </div>
+
+      <div class="credits-chip">
+        <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span id="ok-credits">—</span>
+      </div>
+
+      <div class="info-card ok-card">
+        <div class="info-row">
+          <span class="info-lbl">Pack</span>
+          <span class="info-val" id="ok-pack">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-lbl">Credits Added</span>
+          <span class="info-val accent" id="ok-cr">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-lbl">Payment ID</span>
+          <span class="info-val" id="ok-pid" style="font-size:11px;">—</span>
+        </div>
+      </div>
+
+      <div class="notice return-notice">
+        <div class="notice-emoji">↩</div>
+        <div>
+          <div class="notice-title">Return to DeepDive AI</div>
+          <div class="notice-body">Press the back button or swipe this sheet down. Your credits are already in your account.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── FAILED ─── -->
+    <div id="s-fail" class="state">
+      <div class="status-icon err">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#FF4757" stroke-width="2.5" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </div>
+
+      <div class="screen-title" id="fail-title" style="text-align:center; margin-bottom:6px;">
+        Payment Failed
+      </div>
+      <div class="screen-sub" id="fail-sub" style="text-align:center;">
+        No charges were made.
+      </div>
+
+      <!-- Failure reason (shown when Razorpay provides one) -->
+      <div class="fail-reason" id="fail-reason-card">
+        <div class="fail-reason-label">Reason</div>
+        <div class="fail-reason-text" id="fail-reason-text"></div>
+      </div>
+
+      <!-- Close-window instruction -->
+      <div class="notice close-notice">
+        <div class="notice-emoji">↙</div>
+        <div>
+          <div class="notice-title">Close this window to return</div>
+          <div class="notice-body">Press ✕ or swipe this sheet down — then try again in DeepDive AI.</div>
+        </div>
+      </div>
+
+      <button class="btn-pay" onclick="retryPayment()">
+        <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        <span>Try Again</span>
+      </button>
+    </div>
+
+    <div class="powered">Powered by <strong>Razorpay</strong> · 256-bit encryption</div>
   </div>
-</div>
 
-<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-<script>
-  var p = new URLSearchParams(window.location.search);
-  var cfg = {
-    orderId:  p.get('order_id')     || '',
-    keyId:    p.get('key_id')       || '',
-    amount:   parseInt(p.get('amount') || '0', 10),
-    currency: p.get('currency')     || 'INR',
-    desc:     p.get('description')  || 'Credit Pack',
-    credits:  parseInt(p.get('credits') || '0', 10),
-    pack:     p.get('pack_name')    || 'Credit Pack',
-    email:    p.get('email')        || '',
-    name:     p.get('contact_name') || 'Researcher',
-  };
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    /* ─── Part 55.12: Read theme colors from URL params ─── */
+    var p = new URLSearchParams(window.location.search);
 
-  // Part 42: track whether payment.failed fired before ondismiss
-  var paymentActuallyFailed = false;
-  var rzpInstance           = null;
+    /* ── Theme params (Part 55.12) ── */
+    var themePrimary     = p.get('t_primary')     || '#6C63FF';
+    var themePrimaryL    = p.get('t_primary_l')   || '#8B85FF';
+    var themePrimaryD    = p.get('t_primary_d')   || '#4A42CC';
+    var themeAccent      = p.get('t_accent')      || '#43E97B';
+    var themeBg          = p.get('t_bg')          || '#0A0A1A';
+    var themeBgCard      = p.get('t_bg_card')     || '#12122A';
+    var themeBgElevated  = p.get('t_bg_el')       || '#1A1A35';
+    var themeText        = p.get('t_text')        || '#FFFFFF';
+    var themeTextSec     = p.get('t_text_s')      || '#A0A0C0';
+    var themeTextMuted   = p.get('t_text_m')      || '#5A5A7A';
+    var themeBorder      = p.get('t_border')      || '#2A2A4A';
+    var themeGradP1      = p.get('t_g1')          || '#6C63FF';
+    var themeGradP2      = p.get('t_g2')          || '#8B5CF6';
+    var themeGradCard1   = p.get('t_gc1')         || '#1A1A35';
+    var themeGradCard2   = p.get('t_gc2')         || '#12122A';
+    var themeIsLight     = p.get('t_light')       === '1';
 
-  function fmt(paise) {
-    return '₹' + (paise / 100).toLocaleString('en-IN');
-  }
-  function show(id) {
-    ['s-ready','s-proc','s-ok','s-fail'].forEach(function(s) {
-      document.getElementById(s).classList.remove('active');
-    });
-    document.getElementById(id).classList.add('active');
-  }
-  function set(id, v) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = v;
-  }
+    /* ── Apply theme to CSS variables ── */
+    var root = document.documentElement;
+    root.style.setProperty('--bg',          themeBg);
+    root.style.setProperty('--bg-card',     themeBgCard);
+    root.style.setProperty('--bg-elevated', themeBgElevated);
+    root.style.setProperty('--primary',     themePrimary);
+    root.style.setProperty('--primary-l',   themePrimaryL);
+    root.style.setProperty('--primary-d',   themePrimaryD);
+    root.style.setProperty('--accent',      themeAccent);
+    root.style.setProperty('--text',        themeText);
+    root.style.setProperty('--text-sec',    themeTextSec);
+    root.style.setProperty('--text-muted',  themeTextMuted);
+    root.style.setProperty('--border',      themeBorder);
+    root.style.setProperty('--grad-p1',     themeGradP1);
+    root.style.setProperty('--grad-p2',     themeGradP2);
+    root.style.setProperty('--grad-card1',  themeGradCard1);
+    root.style.setProperty('--grad-card2',  themeGradCard2);
 
-  // Part 42: show failure screen with reason + correct instruction
-  function showFailureScreen(reason, isGenuine) {
-    var titleEl = document.getElementById('fail-title');
-    var subEl   = document.getElementById('fail-sub');
-
-    if (isGenuine) {
-      if (titleEl) titleEl.textContent = 'Payment Failed';
-      if (subEl)   subEl.textContent   = 'No charges were made. Please try a different payment method.';
-    } else {
-      // User dismissed without paying
-      if (titleEl) titleEl.textContent = 'Payment Cancelled';
-      if (subEl)   subEl.textContent   = 'No charges were made. You can try again.';
+    if (themeIsLight) {
+      document.body.classList.add('light-mode');
+      /* Light mode: ensure text is dark enough on light bg */
+      root.style.setProperty('--text',       themeText);
+      root.style.setProperty('--text-sec',   themeTextSec);
+      root.style.setProperty('--text-muted', themeTextMuted);
     }
 
-    if (reason && reason.trim().length > 0) {
-      var card = document.getElementById('fail-reason-card');
-      var text = document.getElementById('fail-reason-text');
-      if (card) card.style.display = 'block';
-      if (text) text.textContent   = reason;
-    }
-
-    show('s-fail');
-  }
-
-  function retryPayment() {
-    // Reset state for fresh attempt
-    paymentActuallyFailed = false;
-    // Hide reason card for clean retry
-    var card = document.getElementById('fail-reason-card');
-    if (card) { card.style.display = 'none'; }
-    var text = document.getElementById('fail-reason-text');
-    if (text) { text.textContent = ''; }
-    openRazorpay();
-  }
-
-  function openRazorpay() {
-    show('s-proc');
-    paymentActuallyFailed = false;
-
-    var options = {
-      key:         cfg.keyId,
-      amount:      cfg.amount,
-      currency:    cfg.currency,
-      name:        'DeepDive AI',
-      description: cfg.desc,
-      order_id:    cfg.orderId,
-      prefill:     { email: cfg.email, name: cfg.name },
-      theme:       { color: '#6C63FF' },
-      modal: {
-        ondismiss: function() {
-          // Part 42: if payment.failed already fired, we already called showFailureScreen()
-          // from inside the payment.failed handler (after rzp.close() ran).
-          // ondismiss fires AFTER rzp.close() — nothing more to do here.
-          // If paymentActuallyFailed=false, user just cancelled/closed manually.
-          if (!paymentActuallyFailed) {
-            showFailureScreen('', false);
-          }
-          // Either way: the failure/cancel screen is now visible.
-          // The user will close the native browser sheet → app polling starts.
-        },
-        escape: false,
-      },
-      handler: function(resp) {
-        // Payment captured — show success, user closes sheet manually
-        set('ok-credits', cfg.credits + ' credits added to your account');
-        set('ok-pack',    cfg.pack);
-        set('ok-cr',      '+' + cfg.credits + ' credits');
-        set('ok-pid',     resp.razorpay_payment_id || '');
-        show('s-ok');
-      },
+    /* ── Order params ── */
+    var cfg = {
+      orderId:  p.get('order_id')     || '',
+      keyId:    p.get('key_id')       || '',
+      amount:   parseInt(p.get('amount') || '0', 10),
+      currency: p.get('currency')     || 'INR',
+      desc:     p.get('description')  || 'Credit Pack',
+      credits:  parseInt(p.get('credits') || '0', 10),
+      pack:     p.get('pack_name')    || 'Credit Pack',
+      email:    p.get('email')        || '',
+      name:     p.get('contact_name') || 'Researcher',
     };
 
-    try {
-      rzpInstance = new window.Razorpay(options);
+    /* ── State ── */
+    var paymentActuallyFailed = false;
+    var rzpInstance = null;
 
-      // Part 42 KEY FIX: payment.failed fires from Razorpay IMMEDIATELY when the
-      // bank declines. We:
-      //   1. Set paymentActuallyFailed = true (so ondismiss doesn't show "cancelled")
-      //   2. Extract the real reason from the error object
-      //   3. Show our failure screen NOW (it renders behind the Razorpay overlay)
-      //   4. Call rzp.close() to dismiss the Razorpay overlay → ondismiss fires →
-      //      our failure screen is already visible, nothing more to do in ondismiss.
-      //
-      // IMPORTANT: We do NOT call window.close() or navigate to about:blank.
-      // SFSafariViewController (iOS) and ChromeCustomTabs (Android) are native
-      // container views — JavaScript cannot close them. Those calls just show a
-      // blank page or do nothing. The user must close the sheet with the native
-      // back/swipe gesture, which is clearly instructed on the failure screen.
-      //
-      // BEFORE this fix:
-      //   payment.failed fires → Razorpay keeps modal open with "Try Again" UI
-      //   → user reads Razorpay's error → manually closes Razorpay overlay
-      //   → ondismiss fires → we show s-fail → user reads it → closes native sheet
-      //   → app polling starts → first poll at 2000ms → "Payment Failed" shown ~8–25s later
-      //
-      // AFTER this fix:
-      //   payment.failed fires → we call rzp.close() (100ms delay for render)
-      //   → our failure screen appears immediately (reason already shown)
-      //   → user reads our clean failure screen (1–2s) → closes native sheet
-      //   → app polling starts → first poll at 500ms → "Payment Failed" shown ~2–4s later
-      rzpInstance.on('payment.failed', function(response) {
-        paymentActuallyFailed = true;
-
-        var err      = (response && response.error) ? response.error : {};
-        var reason   = err.description || err.reason || err.source || '';
-
-        // Show our screen right away (renders behind still-open Razorpay overlay)
-        showFailureScreen(reason, true);
-
-        // Dismiss the Razorpay overlay so the user can see our failure screen
-        setTimeout(function() {
-          try { if (rzpInstance) rzpInstance.close(); } catch(e) {}
-        }, 80);
-      });
-
-      setTimeout(function() { rzpInstance.open(); }, 500);
-    } catch(e) {
-      console.error('Razorpay init error:', e);
-      showFailureScreen('Could not open the payment window. Please check your internet connection.', false);
+    function fmt(paise) {
+      return '₹' + (paise / 100).toLocaleString('en-IN');
     }
-  }
+    function show(id) {
+      ['s-ready','s-proc','s-ok','s-fail'].forEach(function(s) {
+        document.getElementById(s).classList.remove('active');
+      });
+      document.getElementById(id).classList.add('active');
+    }
+    function set(id, v) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = v;
+    }
 
-  document.addEventListener('DOMContentLoaded', function() {
-    set('r-pack',    cfg.pack);
-    set('r-credits', cfg.credits + ' credits');
-    set('r-price',   fmt(cfg.amount));
-    if (!cfg.orderId || !cfg.keyId) return;
-    openRazorpay();
-  });
-</script>
+    function showFailureScreen(reason, isGenuine) {
+      var titleEl = document.getElementById('fail-title');
+      var subEl   = document.getElementById('fail-sub');
+      if (isGenuine) {
+        if (titleEl) titleEl.textContent = 'Payment Failed';
+        if (subEl)   subEl.textContent   = 'No charges were made. Please try a different payment method.';
+      } else {
+        if (titleEl) titleEl.textContent = 'Payment Cancelled';
+        if (subEl)   subEl.textContent   = 'No charges were made. You can try again.';
+      }
+      if (reason && reason.trim().length > 0) {
+        var card = document.getElementById('fail-reason-card');
+        var text = document.getElementById('fail-reason-text');
+        if (card) card.style.display = 'block';
+        if (text) text.textContent   = reason;
+      }
+      show('s-fail');
+    }
+
+    function retryPayment() {
+      paymentActuallyFailed = false;
+      var card = document.getElementById('fail-reason-card');
+      if (card) card.style.display = 'none';
+      var text = document.getElementById('fail-reason-text');
+      if (text) text.textContent = '';
+      openRazorpay();
+    }
+
+    function openRazorpay() {
+      show('s-proc');
+      paymentActuallyFailed = false;
+
+      var options = {
+        key:         cfg.keyId,
+        amount:      cfg.amount,
+        currency:    cfg.currency,
+        name:        'DeepDive AI',
+        description: cfg.desc,
+        order_id:    cfg.orderId,
+        prefill:     { email: cfg.email, name: cfg.name },
+        /* Part 55.12: use active theme's primary color in Razorpay modal */
+        theme:       { color: themePrimary },
+        modal: {
+          ondismiss: function() {
+            if (!paymentActuallyFailed) {
+              showFailureScreen('', false);
+            }
+          },
+          escape: false,
+        },
+        handler: function(resp) {
+          set('ok-credits', cfg.credits + ' credits added to your account');
+          set('ok-pack',    cfg.pack);
+          set('ok-cr',      '+' + cfg.credits + ' credits');
+          set('ok-pid',     resp.razorpay_payment_id || '');
+          show('s-ok');
+        },
+      };
+
+      try {
+        rzpInstance = new window.Razorpay(options);
+
+        /* Part 42 payment.failed logic (preserved from original) */
+        rzpInstance.on('payment.failed', function(response) {
+          paymentActuallyFailed = true;
+          var err    = (response && response.error) ? response.error : {};
+          var reason = err.description || err.reason || err.source || '';
+          showFailureScreen(reason, true);
+          setTimeout(function() {
+            try { if (rzpInstance) rzpInstance.close(); } catch(e) {}
+          }, 80);
+        });
+
+        setTimeout(function() { rzpInstance.open(); }, 500);
+      } catch(e) {
+        console.error('Razorpay init error:', e);
+        showFailureScreen('Could not open the payment window. Please check your internet connection.', false);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      set('r-pack',    cfg.pack);
+      set('r-credits', cfg.credits.toLocaleString() + ' credits');
+      set('r-price',   fmt(cfg.amount));
+      if (!cfg.orderId || !cfg.keyId) return;
+      openRazorpay();
+    });
+  </script>
 </body>
 </html>
