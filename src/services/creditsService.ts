@@ -13,6 +13,11 @@
 // bypassing the PostgREST array-wrapping issue entirely.
 // The ensure_user_credits RPC (which gives the signup bonus) is called separately
 // on first load only.
+//
+// Part 55.12 — buildCheckoutUrl gains an optional ThemeCheckoutParams argument.
+// When provided, 16 short `t_*` query params are appended so the Vercel-hosted
+// checkout/index.html can apply the user's active theme as CSS variables.
+// No other logic changed.
 
 import { supabase }              from '../lib/supabase';
 import type {
@@ -56,6 +61,33 @@ export interface CheckOrderResponse {
   payment_failed?:    boolean;
   fail_reason?:       string;
   error?:             string;
+}
+
+// ─── Part 55.12: theme params shape ──────────────────────────────────────────
+// A lightweight snapshot of the active COLORS palette taken at purchase time.
+// Only the fields the checkout page needs are included to keep URLs short.
+
+export interface ThemeCheckoutParams {
+  primary:             string;
+  primaryLight:        string;
+  primaryDark:         string;
+  accent:              string;
+  background:          string;
+  backgroundCard:      string;
+  backgroundElevated:  string;
+  textPrimary:         string;
+  textSecondary:       string;
+  textMuted:           string;
+  border:              string;
+  /** first stop of COLORS.gradientPrimary  */
+  gradP1:    string;
+  /** second stop of COLORS.gradientPrimary */
+  gradP2:    string;
+  /** first stop of COLORS.gradientCard     */
+  gradCard1: string;
+  /** second stop of COLORS.gradientCard    */
+  gradCard2: string;
+  isLight:   boolean;
 }
 
 // ─── Row mapper ───────────────────────────────────────────────────────────────
@@ -230,12 +262,36 @@ export async function createRazorpayOrder(
 }
 
 // ─── Build checkout URL ───────────────────────────────────────────────────────
+// Part 55.12: optional `theme` argument appends 16 short `t_*` params so the
+// Vercel checkout page renders in the user's active DeepDive theme.
+//
+// Param name map (kept short to avoid URL-length issues):
+//   t_primary   → primary accent
+//   t_primary_l → lighter shade
+//   t_primary_d → darker shade
+//   t_accent    → secondary accent (e.g. green)
+//   t_bg        → main background
+//   t_bg_card   → card surface
+//   t_bg_el     → elevated surface
+//   t_text      → primary text
+//   t_text_s    → secondary text
+//   t_text_m    → muted text
+//   t_border    → border
+//   t_g1        → gradientPrimary stop 1
+//   t_g2        → gradientPrimary stop 2
+//   t_gc1       → gradientCard stop 1
+//   t_gc2       → gradientCard stop 2
+//   t_light     → '1' when light mode (omitted for dark)
 
 export function buildCheckoutUrl(
-  order: CreateOrderResponse, userEmail: string, userName: string,
+  order:       CreateOrderResponse,
+  userEmail:   string,
+  userName:    string,
+  theme?:      ThemeCheckoutParams,
 ): string {
   const baseUrl = process.env.EXPO_PUBLIC_CHECKOUT_URL;
   if (!baseUrl) throw new Error('EXPO_PUBLIC_CHECKOUT_URL not set in .env');
+
   const params = new URLSearchParams({
     order_id:     order.order_id,
     key_id:       order.key_id,
@@ -247,6 +303,27 @@ export function buildCheckoutUrl(
     email:        userEmail,
     contact_name: userName || 'Researcher',
   });
+
+  // ── Part 55.12: append theme color params ─────────────────────────────────
+  if (theme) {
+    params.set('t_primary',   theme.primary);
+    params.set('t_primary_l', theme.primaryLight);
+    params.set('t_primary_d', theme.primaryDark);
+    params.set('t_accent',    theme.accent);
+    params.set('t_bg',        theme.background);
+    params.set('t_bg_card',   theme.backgroundCard);
+    params.set('t_bg_el',     theme.backgroundElevated);
+    params.set('t_text',      theme.textPrimary);
+    params.set('t_text_s',    theme.textSecondary);
+    params.set('t_text_m',    theme.textMuted);
+    params.set('t_border',    theme.border);
+    params.set('t_g1',        theme.gradP1);
+    params.set('t_g2',        theme.gradP2);
+    params.set('t_gc1',       theme.gradCard1);
+    params.set('t_gc2',       theme.gradCard2);
+    if (theme.isLight) params.set('t_light', '1');
+  }
+
   return `${baseUrl}?${params.toString()}`;
 }
 

@@ -4,26 +4,21 @@
 //   History) on both payment SUCCESS and FAILURE via notifyPaymentResult():
 //     • success  → fired inside pollCheckOrder when the order is confirmed paid
 //     • failure  → fired inside purchasePack when polling returns 'failed'
-//   These are in addition to the existing in-screen purchaseState UI, so the
-//   user is alerted (and can deep-link to their history) even after leaving the
-//   credits store.
 //
-// ROOT CAUSE OF CRASH:
-//   New OAuth users (Google/GitHub) don't go through the normal sign-up flow
-//   that creates their user_credits row. When CreditsContext calls
-//   fetchUserCredits() for a brand-new OAuth user, the DB returns no row.
-//   If creditsService.ts throws on a missing row (or returns null/undefined),
-//   the unhandled exception crashes the entire React provider tree.
-//   The crash happens so early (inside a Provider) that the app can't render
-//   anything on subsequent opens either — appears as "won't open".
+// Part 55.12 — Theme-integrated checkout.
+//   Two changes only — everything else is identical to the pre-55.12 file:
 //
-// THE FIX:
-//   1. loadBalance() wraps fetchUserCredits in try/catch and defaults to 0
-//      instead of crashing. Sets error state but does NOT throw.
-//   2. If the credits row is missing, we call the 'initialize_user_credits'
-//      RPC to create it (with the signup bonus) and then re-fetch.
-//   3. All other error paths also default to 0 balance instead of crashing.
-//   4. consume() and consumeTotal() also handle missing balance gracefully.
+//   1. getThemeCheckoutParams() — reads the live COLORS singleton (already
+//      mutated in-place by ThemeProvider) at the moment purchasePack() runs,
+//      producing a ThemeCheckoutParams snapshot. Safe to call at any time;
+//      no React subscription needed because COLORS is a plain mutable object.
+//
+//   2. buildCheckoutUrl() — now receives the theme snapshot as a 4th argument
+//      so the Vercel checkout page gets `t_*` color params and renders in the
+//      user's chosen theme.
+//
+//   3. WebBrowser.openBrowserAsync() toolbarColor / controlsColor now follow
+//      the active theme instead of being hardcoded dark values.
 //
 // All Part 42 faster payment detection logic preserved unchanged.
 // All Part 39 consumeTotal logic preserved unchanged.
@@ -43,6 +38,7 @@ import {
   buildCheckoutUrl,
   checkOrderAndAddCredits,
   InsufficientCreditsError,
+  type ThemeCheckoutParams,
 } from '../services/creditsService';
 import {
   getCachedBalance,
@@ -52,6 +48,8 @@ import {
 import { FEATURE_COSTS }  from '../constants/credits';
 // ── Part 54A: payment-result notification (→ Transaction History) ──
 import { notifyPaymentResult } from '../services/appNotificationService';
+// ── Part 55.12: read live theme colors ───────────────────────────────────────
+import { COLORS, isLightTheme } from '../constants/theme';
 import { supabase }       from '../lib/supabase';
 import type {
   CreditTransaction,
@@ -122,6 +120,35 @@ async function ensureCreditsRow(userId: string): Promise<number> {
   return 0;
 }
 
+// ── Part 55.12: snapshot the live theme colors for the checkout URL ───────────
+// Reads the COLORS singleton directly — it is already mutated in-place by
+// ThemeProvider so it always reflects the current active palette. No React
+// subscription is needed; this is a plain synchronous read.
+
+function getThemeCheckoutParams(): ThemeCheckoutParams {
+  const gPrimary = COLORS.gradientPrimary as readonly [string, string];
+  const gCard    = COLORS.gradientCard    as readonly [string, string];
+
+  return {
+    primary:             COLORS.primary,
+    primaryLight:        COLORS.primaryLight,
+    primaryDark:         COLORS.primaryDark,
+    accent:              COLORS.accent,
+    background:          COLORS.background,
+    backgroundCard:      COLORS.backgroundCard,
+    backgroundElevated:  COLORS.backgroundElevated,
+    textPrimary:         COLORS.textPrimary,
+    textSecondary:       COLORS.textSecondary,
+    textMuted:           COLORS.textMuted,
+    border:              COLORS.border,
+    gradP1:              gPrimary[0],
+    gradP2:              gPrimary[1],
+    gradCard1:           gCard[0],
+    gradCard2:           gCard[1],
+    isLight:             isLightTheme(),
+  };
+}
+
 export function CreditsProvider({ children }: { children: ReactNode }) {
   const { user, profile } = useAuth();
 
@@ -179,7 +206,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // ── Load balance — CRASH FIX: never throws, always defaults to 0 ─────────
+  // ── Load balance — CRASH FIX: never throws, always defaults to 0 ──────────
   const loadBalance = useCallback(async (showRefreshing = false) => {
     if (!user || loadingRef.current) return;
     loadingRef.current = true;
@@ -197,9 +224,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
         const credits = await fetchUserCredits(user.id);
         freshBalance = credits?.balance ?? 0;
       } catch (fetchErr: any) {
-        // ── CRASH FIX: Handle missing credits row for new OAuth users ────────
-        // fetchUserCredits throws when no row exists. Instead of crashing,
-        // initialize the row and use the returned balance.
+        // ── CRASH FIX: Handle missing credits row for new OAuth users ─────────
         console.warn('[Credits] fetchUserCredits failed, initializing row:', fetchErr?.message);
         try {
           freshBalance = await ensureCreditsRow(user.id);
@@ -214,10 +239,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       setError(null);
       loadedRef.current = true;
     } catch (outerErr) {
-      // ── CRASH FIX: Absolute last resort — never crash the Provider ────────
+      // ── CRASH FIX: Absolute last resort — never crash the Provider ─────────
       console.warn('[Credits] loadBalance outer error:', outerErr);
       setError('Could not load credits');
-      // Keep whatever balance we have (cached or 0) — do NOT throw
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -225,7 +249,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user]);
 
-  // ── On user change ─────────────────────────────────────────────────────────
+  // ── On user change ────────────────────────────────────────────────────────
   useEffect(() => {
     if (user) {
       loadedRef.current  = false;
@@ -248,7 +272,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(() => loadBalance(true), [loadBalance]);
 
-  // ── Load transactions ──────────────────────────────────────────────────────
+  // ── Load transactions ─────────────────────────────────────────────────────
   const loadTransactions = useCallback(async () => {
     if (!user) return;
     setTxLoading(true);
@@ -311,7 +335,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user, balance]);
 
-  // ── ConsumeTotal ───────────────────────────────────────────────────────────
+  // ── ConsumeTotal ──────────────────────────────────────────────────────────
   const consumeTotal = useCallback(async (
     feature:     CreditFeature,
     totalCost:   number,
@@ -350,7 +374,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, [user, balance]);
 
-  // ── Poll for payment ───────────────────────────────────────────────────────
+  // ── Poll for payment ──────────────────────────────────────────────────────
   const pollCheckOrder = useCallback(async (
     razorpayOrderId: string,
     pack:            CreditPack,
@@ -366,7 +390,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
 
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
       let delayMs: number;
-      if (i === 0)                  delayMs = INITIAL_DELAY_MS;
+      if (i === 0)                   delayMs = INITIAL_DELAY_MS;
       else if (i <= FAST_POLL_COUNT) delayMs = FAST_INTERVAL_MS;
       else                           delayMs = NORMAL_INTERVAL_MS;
 
@@ -410,7 +434,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     return 'timeout';
   }, [user]);
 
-  // ── Purchase ───────────────────────────────────────────────────────────────
+  // ── Purchase ──────────────────────────────────────────────────────────────
+  // Part 55.12: snapshot the live COLORS at purchase time and pass them into
+  // buildCheckoutUrl so the Vercel checkout page renders in the active theme.
   const purchasePack = useCallback(async (pack: CreditPack): Promise<void> => {
     if (!user) return;
 
@@ -434,11 +460,17 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
 
     let checkoutUrl: string;
     try {
-      checkoutUrl = buildCheckoutUrl(orderData, user.email ?? '', profile?.full_name ?? 'Researcher');
+      // ── Part 55.12: attach live theme snapshot ─────────────────────────────
+      const themeParams = getThemeCheckoutParams();
+      checkoutUrl = buildCheckoutUrl(
+        orderData,
+        user.email ?? '',
+        profile?.full_name ?? 'Researcher',
+        themeParams,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Checkout URL error';
       setPurchaseState(prev => ({ ...prev, phase: 'failed', error: msg }));
-      // ── Part 54A: notify failure (checkout URL error) ──
       notifyPaymentResult({
         success:       false,
         packName:      pack.name,
@@ -451,8 +483,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     try {
       await WebBrowser.openBrowserAsync(checkoutUrl, {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
-        toolbarColor:      '#0A0A1A',
-        controlsColor:     '#6C63FF',
+        // Part 55.12: match the native browser chrome to the active theme
+        toolbarColor: COLORS.background,
+        controlsColor: COLORS.primary,
       });
     } catch (err) {
       console.warn('[Credits] Browser error:', err);
@@ -493,7 +526,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     await loadBalance(false);
   }, [user, profile, balance, pollCheckOrder, loadBalance]);
 
-  // ── Reset ──────────────────────────────────────────────────────────────────
+  // ── Reset ─────────────────────────────────────────────────────────────────
   const resetPurchase = useCallback(() => {
     setPurchaseState({ phase: 'idle', selectedPack: null });
     if (user) loadBalance(false);
