@@ -1,13 +1,17 @@
 // supabase/functions/deepdive-bot/index.ts
 //
 // Part 50.5 — FIXED (image bug fix patch)
+// Part 56  — Cost reduction: GPT_MODEL moved from 'gpt-4o-mini' to 'gpt-4.1-nano'
+//            (cheaper $0.10/$0.40 and newer). Keep in sync with EDGE_CHAT_MODEL
+//            in src/constants/aiModels.ts. All chat answers here are short
+//            RAG/summary responses, which is exactly the nano tier's sweet spot.
 //
-// BUGS FIXED IN THIS PATCH:
+// BUGS FIXED IN THE 50.5 PATCH (unchanged):
 //
 //   BUG 1: System prompt confused GPT into thinking report content needs to be
 //          "in the chat". The old prompt said "answer ONLY using context above"
-//          but then injected chat history right below it — GPT-4o-mini saw
-//          chat messages with no quantum content and said "wasn't shared in chat".
+//          but then injected chat history right below it — GPT saw chat messages
+//          with no quantum content and said "wasn't shared in chat".
 //          FIX: Separate prompts. Research questions get ONLY research context.
 //               Chat questions get ONLY chat context. Never mix them.
 //
@@ -49,7 +53,9 @@ const MAX_CONTEXT_CHARS = 8000;  // FIX: was 3000, raised to fit full report con
 const MAX_CHAT_MESSAGES = 40;
 const OPENAI_CHAT_URL   = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_EMBED_URL  = 'https://api.openai.com/v1/embeddings';
-const GPT_MODEL         = 'gpt-4o-mini';
+// Part 56: nano tier — cheaper ($0.10/$0.40) and newer than gpt-4o-mini.
+// Keep in sync with EDGE_CHAT_MODEL in src/constants/aiModels.ts.
+const GPT_MODEL         = 'gpt-4.1-nano';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

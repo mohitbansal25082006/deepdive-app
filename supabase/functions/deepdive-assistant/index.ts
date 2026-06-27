@@ -1,6 +1,10 @@
 // supabase/functions/deepdive-assistant/index.ts
 //
 // Part 50.6 — Personal AI Assistant endpoint for Team Chat
+// Part 56  — Cost reduction: GPT_MODEL moved from 'gpt-4o-mini' to 'gpt-4.1-nano'
+//            (cheaper $0.10/$0.40 and newer). Keep in sync with EDGE_CHAT_MODEL
+//            in src/constants/aiModels.ts. Mirrors the deepdive-bot change so the
+//            two endpoints stay identical.
 //
 // This is the SAME AI as the @deepdive team-chat bot (deepdive-bot), exposed as
 // a direct request/response endpoint for the per-member "Ask DeepDive AI" screen:
@@ -36,7 +40,9 @@ const MAX_CONTEXT_CHARS = 8000;  // identical to deepdive-bot
 const MAX_HISTORY_TURNS = 6;     // recent personal turns sent for follow-up context
 const OPENAI_CHAT_URL   = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_EMBED_URL  = 'https://api.openai.com/v1/embeddings';
-const GPT_MODEL         = 'gpt-4o-mini';
+// Part 56: nano tier — cheaper ($0.10/$0.40) and newer than gpt-4o-mini.
+// Keep in sync with EDGE_CHAT_MODEL in src/constants/aiModels.ts.
+const GPT_MODEL         = 'gpt-4.1-nano';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

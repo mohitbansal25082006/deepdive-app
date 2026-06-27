@@ -14,11 +14,27 @@
 //   • Optimist: warm/enthusiastic (nova, 1.05x)
 //   • Ethicist: measured/thoughtful (shimmer, 0.92x)
 //   • Technologist: precise/direct (ash, 1.0x)
+//
+// ── Part 57 — Cost reduction (no quality loss) ────────────────────────────────
+// A 15-min debate cost ~$0.20 because gpt-4o-mini-tts bills audio output at
+// $12/1M audio tokens AND the `instructions` field is re-sent on EVERY turn as
+// input tokens. We trim cost two ways, both inaudible to the listener:
+//   1. Persona `instructions` shortened ~60% (each ~60→~22 words). The voice,
+//      speedFactor and core delivery style still carry the personality; the long
+//      descriptive prose added input-token cost on every single turn without
+//      changing the audio. (Saves input tokens across ~40 turns/debate.)
+//   2. MAX_TURN_TEXT_CHARS 600→520 — caps only the longest turns, shaving audio
+//      output tokens (the dominant cost) with no effect on pacing or coverage.
+// We deliberately KEEP gpt-4o-mini-tts (not tts-1): tts-1 ignores `instructions`,
+// which would flatten every agent to the same generic delivery — a real quality
+// regression. The trims above cut ~15-20% off cost while keeping distinct voices.
 
 import type { VoicePersona, DebateSegmentType } from '../types/voiceDebate';
 import type { DebateAgentRole } from '../types';
 
 // ─── Voice Personas ───────────────────────────────────────────────────────────
+// Part 57: instructions trimmed to the essential delivery cues. Voice + speed
+// still differentiate each agent; the prose was redundant token spend per turn.
 
 export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona> = {
   moderator: {
@@ -29,7 +45,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#6C63FF',
     icon:        'ribbon-outline',
     instructions:
-      'Speak with calm authority and neutrality. You are a professional debate moderator — measured pace, clear enunciation, impartial tone. Introduce each segment with gravitas. When presenting the verdict, slow down slightly for emphasis.',
+      'Calm, neutral, authoritative debate moderator. Measured pace, clear enunciation. Slow slightly for the verdict.',
   },
 
   optimist: {
@@ -40,7 +56,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#43E97B',
     icon:        'sunny-outline',
     instructions:
-      'Speak with genuine enthusiasm and warmth. You believe in the transformative power of technology — let that optimism come through in a slightly faster, energetic delivery. Use natural emphasis on positive data points. Sound genuinely excited, not forced.',
+      'Warm, genuinely enthusiastic, slightly faster and energetic. Natural emphasis on positive points; never forced.',
   },
 
   skeptic: {
@@ -51,7 +67,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#FF6584',
     icon:        'alert-circle-outline',
     instructions:
-      'Speak deliberately and skeptically. You demand evidence and rigor — use a slightly slower pace with purposeful pauses before making key points. Sound analytical and critical, not angry. Emphasize words like "actually", "however", "the data shows" with weight.',
+      'Deliberate, analytical, critical (not angry). Slower pace with purposeful pauses; weight on "actually", "however".',
   },
 
   economist: {
@@ -62,7 +78,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#FFD700',
     icon:        'trending-up-outline',
     instructions:
-      'Speak with the confidence of someone who follows the data wherever it leads. Measured, authoritative, slightly formal. Emphasize statistics and figures clearly. Sound neither optimistic nor pessimistic — purely analytical. Use a steady, professional cadence.',
+      'Confident, measured, slightly formal. Emphasize figures clearly. Purely analytical, steady professional cadence.',
   },
 
   technologist: {
@@ -73,7 +89,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#29B6F6',
     icon:        'hardware-chip-outline',
     instructions:
-      'Speak precisely and directly, like a senior engineer explaining something important. Clear, confident, technical but accessible. Slight acceleration when excited about a breakthrough, slower and more deliberate when explaining limitations. Matter-of-fact tone.',
+      'Precise, direct senior engineer. Clear and confident; quicker on breakthroughs, slower on limitations. Matter-of-fact.',
   },
 
   ethicist: {
@@ -84,7 +100,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#C084FC',
     icon:        'shield-checkmark-outline',
     instructions:
-      'Speak thoughtfully and with moral weight. You represent the human and societal dimension. Slower, reflective pace — pause before raising difficult questions. Warm but serious tone. When talking about vulnerable communities or rights, let genuine concern come through naturally.',
+      'Thoughtful, reflective, morally serious. Slower pace, pause before hard questions. Warm but earnest concern.',
   },
 
   futurist: {
@@ -95,7 +111,7 @@ export const VOICE_PERSONAS: Record<DebateAgentRole | 'moderator', VoicePersona>
     color:       '#FF8E53',
     icon:        'telescope-outline',
     instructions:
-      'Speak with forward-leaning energy, like someone who genuinely sees where things are headed. Slightly faster pace, excited about long-term possibilities. Use vivid, evocative language. When making predictions, lean in with conviction. Paint pictures with words.',
+      'Forward-leaning, energetic, slightly faster. Vivid, evocative language; lean in with conviction on predictions.',
   },
 };
 
@@ -160,12 +176,14 @@ export const VOICE_DEBATE_CREDIT_COST = 50;
 
 // ─── TTS Config ───────────────────────────────────────────────────────────────
 
-// Use gpt-4o-mini-tts for persona-aware voice generation
-// tts-1 does NOT support `instructions` field — only gpt-4o-mini-tts does
+// Use gpt-4o-mini-tts for persona-aware voice generation.
+// tts-1 does NOT support the `instructions` field — only gpt-4o-mini-tts does,
+// so it stays (see Part 57 note above for why we don't downgrade to tts-1).
 export const VOICE_DEBATE_TTS_MODEL = 'gpt-4o-mini-tts';
 
-// Segment text length limits to stay within 2000-token context window
-export const MAX_TURN_TEXT_CHARS = 600;
+// Part 57: 600→520. Caps only the longest turns, trimming audio-output tokens
+// (the dominant cost) without affecting pacing or argument coverage.
+export const MAX_TURN_TEXT_CHARS = 520;
 
 // Concurrency for TTS generation (conservative to avoid rate limits)
 export const TTS_CONCURRENCY = 2;

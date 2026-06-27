@@ -1,16 +1,11 @@
 // src/services/agents/knowledgeGraphAgent.ts
 // Advanced Knowledge Graph Agent — Part 4 (Upgraded)
-//
-// Generates a rich, multi-layered knowledge graph with:
-//  - Cluster groupings (thematic communities)
-//  - Relationship categories (causal, comparative, hierarchical, temporal, associative)
-//  - Sentiment polarity per node (positive / neutral / negative)
-//  - Importance tiers (1–5)
-//  - Source-backed node descriptions
-//  - Edge directionality flags
-//  - Central node detection score
+// Part 56 — Cost: routed to NANO tier (gpt-4.1-nano). Converting a report into a
+//   structured node/edge/cluster JSON is a mechanical transformation that nano
+//   performs reliably for ~25x less than gpt-4o.
 
 import { chatCompletionJSON }       from '../openaiClient';
+import { modelFor }                 from '../../constants/aiModels';
 import {
   ResearchReport,
   KnowledgeGraph,
@@ -23,7 +18,7 @@ import {
 export interface KnowledgeGraphCluster {
   id:    string;
   label: string;
-  color: string;       // hex — one of the palette constants below
+  color: string;
   nodeIds: string[];
 }
 
@@ -36,13 +31,13 @@ interface RawNodeOutput {
   id:           string;
   label:        string;
   type:         'root' | 'primary' | 'secondary' | 'concept' | 'company' | 'trend';
-  weight:       number;          // 1–10
+  weight:       number;
   description:  string;
   clusterId?:   string;
   sentiment?:   'positive' | 'neutral' | 'negative';
-  tier?:        number;          // 1–5
-  year?:        string;          // optional temporal context
-  value?:       string;          // optional numeric / stat
+  tier?:        number;
+  year?:        string;
+  value?:       string;
 }
 
 interface RawEdgeOutput {
@@ -50,7 +45,7 @@ interface RawEdgeOutput {
   source:      string;
   target:      string;
   label?:      string;
-  strength:    number;   // 0.1–1.0
+  strength:    number;
   category?:   'causal' | 'comparative' | 'hierarchical' | 'temporal' | 'associative';
   directed?:   boolean;
 }
@@ -70,17 +65,10 @@ interface RawGraphOutput {
 }
 
 // ─── Cluster palette ──────────────────────────────────────────────────────────
-// Fixed palette so each cluster gets a distinct, pre-tested color.
 
 export const CLUSTER_PALETTE = [
-  '#6C63FF',   // indigo
-  '#00D4AA',   // teal
-  '#FF6584',   // coral
-  '#F9CB42',   // amber
-  '#4FACFE',   // sky blue
-  '#F093FB',   // orchid
-  '#43E97B',   // green
-  '#FF8E53',   // orange
+  '#6C63FF', '#00D4AA', '#FF6584', '#F9CB42',
+  '#4FACFE', '#F093FB', '#43E97B', '#FF8E53',
 ] as const;
 
 // ─── Main agent ───────────────────────────────────────────────────────────────
@@ -192,16 +180,12 @@ Return ONLY valid JSON (no markdown, no explanation):
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: userPrompt },
     ],
-    { temperature: 0.35, maxTokens: 4000 }
+    { temperature: 0.35, maxTokens: 4000, model: modelFor('knowledgeGraph') } // ← Part 56 NANO
   );
-
-  // ── Validate ──────────────────────────────────────────────────────────────
 
   if (!Array.isArray(raw?.nodes) || raw.nodes.length < 5) {
     throw new Error('Knowledge graph agent returned insufficient nodes.');
   }
-
-  // ── Build nodes ───────────────────────────────────────────────────────────
 
   const nodes: KnowledgeGraphNode[] = raw.nodes.map(n => ({
     id:          n.id,
@@ -209,8 +193,6 @@ Return ONLY valid JSON (no markdown, no explanation):
     type:        n.type,
     weight:      Math.max(1, Math.min(10, n.weight ?? 5)),
     description: n.description,
-    // Store extended fields in a compatible way using optional fields
-    // We cast to any here to attach runtime-only metadata
     ...(n.clusterId  ? { clusterId:  n.clusterId  } : {}),
     ...(n.sentiment  ? { sentiment:  n.sentiment  } : {}),
     ...(n.tier       ? { tier:       n.tier       } : {}),
@@ -220,17 +202,15 @@ Return ONLY valid JSON (no markdown, no explanation):
 
   const nodeIds = new Set(nodes.map(n => n.id));
 
-  // ── Build edges ───────────────────────────────────────────────────────────
-
   const seenEdgePairs = new Set<string>();
   const edges: KnowledgeGraphEdge[] = (raw.edges ?? [])
     .filter(e => {
       const srcId = typeof e.source === 'string' ? e.source : (e.source as any).id;
       const tgtId = typeof e.target === 'string' ? e.target : (e.target as any).id;
       if (!nodeIds.has(srcId) || !nodeIds.has(tgtId)) return false;
-      if (srcId === tgtId) return false;                           // no self-loops
+      if (srcId === tgtId) return false;
       const pairKey = [srcId, tgtId].sort().join('→');
-      if (seenEdgePairs.has(pairKey)) return false;               // no duplicates
+      if (seenEdgePairs.has(pairKey)) return false;
       seenEdgePairs.add(pairKey);
       return true;
     })
@@ -240,12 +220,9 @@ Return ONLY valid JSON (no markdown, no explanation):
       target:   typeof e.target === 'string' ? e.target : (e.target as any).id,
       label:    e.label,
       strength: Math.max(0.1, Math.min(1, e.strength ?? 0.5)),
-      // Attach runtime-only metadata
       ...(e.category ? { category: e.category } : {}),
       ...(e.directed !== undefined ? { directed: e.directed } : {}),
     }));
-
-  // ── Build clusters ────────────────────────────────────────────────────────
 
   const clusters: KnowledgeGraphCluster[] = (raw.clusters ?? [])
     .filter(c => c.nodeIds?.length >= 2)

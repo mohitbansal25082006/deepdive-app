@@ -1,17 +1,13 @@
 // src/services/agents/analysisAgent.ts
-// Part 25 — Updated
-//
-// CHANGES FROM PART 24:
-//   • Handles larger result sets from deep/expert modes (100–260 results)
-//   • Prioritises Tier 1 & 2 sources in the context sent to the LLM
-//   • Includes source trust tier in the context text so LLM can weight claims
-//   • Extracts more facts/stats for deep/expert (10 facts, 8 stats minimum)
-//   • All previous output fields preserved (facts, statistics, trends,
-//     companies, keyThemes, contradictions)
+// Part 25 — Analysis agent.
+// Part 56 — Cost: routed to STANDARD tier (gpt-4.1-mini, ~6x cheaper than gpt-4o).
+//   Extraction quality on this prompt is indistinguishable. Context is already
+//   capped (50 premium + 30 general results) so input tokens stay bounded.
 
 import { chatCompletionJSON }          from '../openaiClient';
 import { SearchBatch, AnalysisOutput } from '../../types';
 import { TIER_LABELS }                 from '../sourceTrustScorer';
+import { modelFor }                    from '../../constants/aiModels';
 
 export async function runAnalysisAgent(
   topic:         string,
@@ -20,7 +16,6 @@ export async function runAnalysisAgent(
 
   // ── Build context: prioritise Tier 1 & 2 results ─────────────────────────
 
-  // Flatten & sort by trust (best first)
   const allResults = searchBatches.flatMap(b =>
     (b.results ?? []).map(r => ({ ...r, _query: b.query }))
   );
@@ -32,12 +27,9 @@ export async function runAnalysisAgent(
     return (a.trustScore?.credibilityScore ?? 5) > (b.trustScore?.credibilityScore ?? 5) ? -1 : 1;
   });
 
-  // Split into premium (T1/T2) and general (T3/T4)
   const premiumResults = allResults.filter(r => (r.trustScore?.tier ?? 3) <= 2);
   const generalResults = allResults.filter(r => (r.trustScore?.tier ?? 3) >= 3);
 
-  // Take up to 8 premium and 4 general per query batch to cap token usage
-  // but ensure top sources are always included
   const maxPremium = Math.min(premiumResults.length, 50);
   const maxGeneral = Math.min(generalResults.length, 30);
 
@@ -46,9 +38,7 @@ export async function runAnalysisAgent(
     ...generalResults.slice(0, maxGeneral),
   ];
 
-  // Build context grouped by trust tier for clarity
   const buildResultsText = (results: typeof allResults, maxPerGroup = 6): string => {
-    // Group by original query for readability
     const byQuery = new Map<string, typeof results>();
     for (const r of results) {
       const q = r._query ?? 'General';
@@ -72,7 +62,6 @@ export async function runAnalysisAgent(
 
   const searchContext = buildResultsText(contextResults, 6);
 
-  // Total unique source count for context
   const uniqueUrls   = new Set(allResults.map(r => r.url)).size;
   const tier1Count   = premiumResults.filter(r => r.trustScore?.tier === 1).length;
   const tier2Count   = premiumResults.filter(r => r.trustScore?.tier === 2).length;
@@ -140,9 +129,8 @@ EXTRACTION TARGETS (minimum):
   const analysis = await chatCompletionJSON<AnalysisOutput>([
     { role: 'system', content: systemPrompt },
     { role: 'user',   content: userPrompt   },
-  ], { temperature: 0.2, maxTokens: 4000 });
+  ], { temperature: 0.2, maxTokens: 4000, model: modelFor('analysis') });
 
-  // Validate and patch empty arrays
   return {
     facts:          Array.isArray(analysis?.facts)          ? analysis.facts          : [],
     statistics:     Array.isArray(analysis?.statistics)     ? analysis.statistics     : [],

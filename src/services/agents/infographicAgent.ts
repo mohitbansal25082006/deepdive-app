@@ -1,7 +1,11 @@
 // src/services/agents/infographicAgent.ts
 // Converts research statistics and trends into chart-ready data structures.
+// Part 56 — Cost: routed to NANO tier (gpt-4.1-nano). Producing chart JSON from
+//   already-extracted statistics is a deterministic shaping task; nano matches
+//   gpt-4o output here for ~25x less.
 
 import { chatCompletionJSON } from '../openaiClient';
+import { modelFor }           from '../../constants/aiModels';
 import {
   ResearchReport,
   InfographicData,
@@ -102,7 +106,7 @@ IMPORTANT: All dataset data arrays must contain only numbers. Labels must be con
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
-    { temperature: 0.3, maxTokens: 2000 }
+    { temperature: 0.3, maxTokens: 2000, model: modelFor('infographic') } // ← Part 57: STANDARD (was NANO — fixed broken Key Metrics)
   );
 
   const charts: InfographicChart[] = (raw.charts ?? []).map(c => ({
@@ -120,15 +124,37 @@ IMPORTANT: All dataset data arrays must contain only numbers. Labels must be con
     insight: c.insight,
   })).filter(c => c.type && c.title);
 
-  const stats: InfographicStat[] = (raw.stats ?? []).map(s => ({
-    id: s.id,
-    label: s.label,
-    value: s.value,
-    change: s.change,
-    changeType: s.changeType ?? 'neutral',
-    icon: s.icon ?? 'stats-chart',
-    color: s.color ?? '#6C63FF',
-  }));
+  // Part 57: only keep well-formed stat cards (must have a non-empty value AND
+  // label). nano used to emit blank/partial cards which rendered as "broken"
+  // Key Metrics.
+  let stats: InfographicStat[] = (raw.stats ?? [])
+    .filter(s => s && typeof s.value === 'string' && s.value.trim() && typeof s.label === 'string' && s.label.trim())
+    .map((s, i) => ({
+      id: s.id || `stat${i + 1}`,
+      label: s.label.trim(),
+      value: s.value.trim(),
+      change: s.change,
+      changeType: s.changeType ?? 'neutral',
+      icon: s.icon ?? 'stats-chart',
+      color: s.color ?? '#6C63FF',
+    }));
+
+  // Part 57: fallback — if the model returned no usable stat cards, derive them
+  // from the report's extracted statistics so Key Metrics is never empty.
+  if (stats.length === 0 && Array.isArray(report.statistics) && report.statistics.length > 0) {
+    const palette = ['#6C63FF', '#43E97B', '#FFA726', '#FF6584', '#29B6F6', '#8B5CF6'];
+    stats = report.statistics
+      .filter(s => s && typeof s.value === 'string' && s.value.trim())
+      .slice(0, 6)
+      .map((s, i) => ({
+        id: `stat${i + 1}`,
+        label: (s.context ?? 'Key Metric').toString().trim().slice(0, 48) || 'Key Metric',
+        value: s.value.trim(),
+        changeType: 'neutral' as const,
+        icon: 'stats-chart',
+        color: palette[i % palette.length],
+      }));
+  }
 
   return {
     charts,

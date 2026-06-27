@@ -1,14 +1,12 @@
 // src/services/agents/reportAgent.ts
-// Part 25 — Updated
-//
-// CHANGES FROM PART 24:
-//   • Citations now include trustScore from SourceTrustScorer
-//   • Citations are sorted: Tier 1 & 2 first, then by credibility score
-//   • Up to 30 citations for expert mode (was 20)
-//   • LLM prompt instructs it to reference higher-trust sources in sections
-//   • All previous output fields preserved
+// Part 25 — Non-streaming report agent (trust-scored citations).
+// Part 56 — Cost: routed to STANDARD tier (gpt-4.1-mini). maxTokens trimmed
+//   6000→4500 since 6 sections at ~250 words + metadata fit comfortably under
+//   4500 output tokens; the old ceiling was rarely reached and just raised the
+//   billable max. Same model swap as streamingReportAgent for parity.
 
 import { chatCompletionJSON } from '../openaiClient';
+import { modelFor }           from '../../constants/aiModels';
 import {
   ResearchInput,
   ResearchPlan,
@@ -19,7 +17,7 @@ import {
   Citation,
   ExtractedStatistic,
 } from '../../types';
-import { scoreSource, TIER_LABELS, TIER_COLORS } from '../sourceTrustScorer';
+import { scoreSource, TIER_LABELS } from '../sourceTrustScorer';
 
 interface ReportOutput {
   title:             string;
@@ -44,7 +42,6 @@ export async function runReportAgent(
   const citationMap = new Map<string, Citation>();
   let citationCounter = 0;
 
-  // Max citations scales with depth
   const maxCitationsPerBatch = input.depth === 'expert' ? 8 : input.depth === 'deep' ? 6 : 5;
   const maxTotalCitations    = input.depth === 'expert' ? 30 : input.depth === 'deep' ? 25 : 15;
 
@@ -58,7 +55,6 @@ export async function runReportAgent(
       let hostname = r.url;
       try { hostname = new URL(r.url).hostname; } catch {}
 
-      // Attach trust score (may already be scored from search step)
       const trust = r.trustScore ?? scoreSource(r.url, r.source);
 
       citationMap.set(r.url, {
@@ -73,7 +69,6 @@ export async function runReportAgent(
     });
   });
 
-  // Sort citations: Tier 1 first, then Tier 2, etc., within each tier by credibility
   const citations = Array.from(citationMap.values())
     .sort((a, b) => {
       const ta = a.trustScore?.tier ?? 3;
@@ -86,7 +81,6 @@ export async function runReportAgent(
   const citationIds            = citations.map(c => c.id);
   const availableCitationIds   = citationIds.slice(0, 20).join(', ');
 
-  // Build a trust summary for the prompt
   const tier1Cits = citations.filter(c => c.trustScore?.tier === 1);
   const tier2Cits = citations.filter(c => c.trustScore?.tier === 2);
 
@@ -107,7 +101,6 @@ CITATION GUIDANCE:
   • Each section should cite at minimum 2–3 of the highest-trust available sources
   • Structure flows logically: overview → specifics → future outlook`;
 
-  // Build safe context from analysis
   const verifiedFacts  = Array.isArray(factCheck?.verifiedFacts)  ? factCheck.verifiedFacts  : [];
   const statistics     = Array.isArray(analysis?.statistics)      ? analysis.statistics      : [];
   const trends         = Array.isArray(analysis?.trends)          ? analysis.trends          : [];
@@ -180,7 +173,7 @@ Each section: ≥2 paragraphs + 3 bullet points + 2–3 citation IDs from highes
   const reportRaw = await chatCompletionJSON<ReportOutput>([
     { role: 'system', content: systemPrompt },
     { role: 'user',   content: userPrompt   },
-  ], { temperature: 0.5, maxTokens: 6000 });
+  ], { temperature: 0.5, maxTokens: 4500, model: modelFor('reportSections') }); // ← Part 56: STANDARD + trimmed
 
   if (!reportRaw?.title) {
     throw new Error('Report agent returned an invalid response. Please try again.');
@@ -191,7 +184,7 @@ Each section: ≥2 paragraphs + 3 bullet points + 2–3 citation IDs from highes
     sections:          Array.isArray(reportRaw.sections)          ? reportRaw.sections          : [],
     keyFindings:       Array.isArray(reportRaw.keyFindings)       ? reportRaw.keyFindings       : [],
     futurePredictions: Array.isArray(reportRaw.futurePredictions) ? reportRaw.futurePredictions : [],
-    citations,           // ← trust-scored, sorted citations
-    statistics,          // ← from analysisAgent
+    citations,
+    statistics,
   };
 }

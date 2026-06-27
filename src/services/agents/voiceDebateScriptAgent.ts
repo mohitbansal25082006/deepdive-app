@@ -1,33 +1,12 @@
 // src/services/agents/voiceDebateScriptAgent.ts
-// Part 40 — Voice Debate Engine
-//
-// Two-phase dialectic script agent.
-//
-// PHASE 1 — Each of the 6 agents generates independently:
-//   • Opening statement grounded in the debate's existing perspectives
-//   • 2–3 key argument lines
-//   • A memorable key quote
-//   • Confidence score
-//
-// PHASE 2 — Each agent receives a digest of ALL other Phase 1 outputs:
-//   • 2 cross-examination challenges targeting specific opponents
-//   • A rebuttal responding to the strongest incoming challenge
-//   • Optional honest concession
-//   • Closing argument
-//   • Updated confidence score (may change after seeing others)
-//
-// ASSEMBLY — Moderator generates:
-//   • Intro/transition lines for each segment
-//   • 3 AI audience questions drawn from key tensions
-//   • Final balanced verdict
-//
-// OUTPUT — VoiceDebateScript with:
-//   • Fully ordered turns across 6 segments
-//   • ArgumentRef threading (who challenged whom)
-//   • Per-turn confidence
-//   • Segment boundary markers
+// Part 40 — Voice Debate Engine (two-phase dialectic script agent).
+// Part 56 — Cost routing:
+//   • generatePhase1 / generatePhase2 → STANDARD (gpt-4.1-mini) — these are the
+//     argued, spoken opening/rebuttal/closing turns (quality-sensitive).
+//   • generateModeratorLines → NANO — short transition/intro/question lines.
 
 import { chatCompletionJSON } from '../openaiClient';
+import { modelFor }           from '../../constants/aiModels';
 import {
   VOICE_PERSONAS,
   SEGMENT_LABELS,
@@ -60,7 +39,6 @@ function estimateDurationMs(text: string): number {
   return Math.round((wordCount(text) / DEBATE_WPM) * 60 * 1000);
 }
 
-// Truncate text to stay within gpt-4o-mini-tts 2000-token limit
 function truncateToLimit(text: string, maxChars = MAX_TURN_TEXT_CHARS): string {
   if (text.length <= maxChars) return text;
   const truncated = text.slice(0, maxChars);
@@ -70,7 +48,6 @@ function truncateToLimit(text: string, maxChars = MAX_TURN_TEXT_CHARS): string {
     : truncated.slice(0, truncated.lastIndexOf(' ')) + '...';
 }
 
-// Strip prosody markers that TTS can't speak (e.g. [laughs], [pause])
 function cleanForTTS(text: string): string {
   return text
     .replace(/\[.*?\]/g, '')
@@ -78,7 +55,6 @@ function cleanForTTS(text: string): string {
     .trim();
 }
 
-// Build a readable digest of a perspective for cross-analysis
 function buildPerspectiveDigest(p: DebatePerspective): string {
   const args = (p.arguments ?? []).slice(0, 3)
     .map((a, i) => `  ${i + 1}. ${a.point}: ${a.evidence.slice(0, 120)}`)
@@ -91,7 +67,7 @@ function buildPerspectiveDigest(p: DebatePerspective): string {
   ].filter(Boolean).join('\n');
 }
 
-// ─── PHASE 1: Generate opening arguments for one agent ────────────────────────
+// ─── PHASE 1: Generate opening arguments for one agent (STANDARD) ─────────────
 
 async function generatePhase1(
   topic:       string,
@@ -144,7 +120,7 @@ Return ONLY valid JSON, no markdown fences:
         { role: 'system', content: `You are ${persona.displayName} in a structured academic debate. Speak naturally, as if live. Return only valid JSON.` },
         { role: 'user',   content: prompt },
       ],
-      { temperature: 0.72, maxTokens: 600 },
+      { temperature: 0.72, maxTokens: 600, model: modelFor('voiceDebatePhase') }, // ← Part 56 STANDARD
     );
 
     return {
@@ -155,7 +131,6 @@ Return ONLY valid JSON, no markdown fences:
       confidence:   Math.min(10, Math.max(1, Math.round(raw.confidence ?? perspective.confidence ?? 5))),
     };
   } catch {
-    // Fallback to perspective data
     return {
       agentRole:    perspective.agentRole,
       openingText:  truncateToLimit(cleanForTTS(perspective.summary?.slice(0, 400) ?? 'I stand by my position on this debate topic.'), MAX_TURN_TEXT_CHARS),
@@ -166,7 +141,7 @@ Return ONLY valid JSON, no markdown fences:
   }
 }
 
-// ─── PHASE 2: Generate rebuttals after seeing all Phase 1 outputs ─────────────
+// ─── PHASE 2: Rebuttals after seeing all Phase 1 outputs (STANDARD) ───────────
 
 async function generatePhase2(
   topic:          string,
@@ -242,7 +217,7 @@ Return ONLY valid JSON:
         { role: 'system', content: `You are ${persona.displayName} in a live structured debate. All text is SPOKEN. Return only valid JSON.` },
         { role: 'user',   content: prompt },
       ],
-      { temperature: 0.70, maxTokens: 900 },
+      { temperature: 0.70, maxTokens: 900, model: modelFor('voiceDebatePhase') }, // ← Part 56 STANDARD
     );
 
     const validRoles: DebateAgentRole[] = [
@@ -275,7 +250,7 @@ Return ONLY valid JSON:
   }
 }
 
-// ─── MODERATOR: Generate intro/transition/question lines ──────────────────────
+// ─── MODERATOR: intro/transition/question lines (NANO) ────────────────────────
 
 interface ModeratorLines {
   intro:             string;
@@ -325,7 +300,7 @@ Return ONLY valid JSON:
         { role: 'system', content: 'You are a professional debate moderator. All output is spoken text. Return only valid JSON.' },
         { role: 'user',   content: prompt },
       ],
-      { temperature: 0.60, maxTokens: 800 },
+      { temperature: 0.60, maxTokens: 800, model: modelFor('voiceDebateModLines') }, // ← Part 56 NANO
     );
 
     return {
@@ -408,7 +383,7 @@ function assembleScript(
       type,
       label:        SEGMENT_LABELS[type],
       startTurnIdx: startIdx,
-      endTurnIdx:   startIdx, // will be updated at end
+      endTurnIdx:   startIdx,
     });
   }
 
@@ -439,7 +414,6 @@ function assembleScript(
     if (!p2) continue;
 
     for (const target of (p2.crossExamTargets ?? [])) {
-      // Find the opening turn index of the target agent for argRef
       const targetOpeningTurn = turns.find(
         t => t.speaker === target.targetRole && t.segmentType === 'opening',
       );
@@ -469,7 +443,6 @@ function assembleScript(
       addAgentTurn(role, p2.rebuttalText, 'rebuttal', undefined);
     }
     if (p2.concessionText) {
-      // Find the most recent cross-exam turn targeting this agent for argRef
       const challengeTurn = [...turns]
         .reverse()
         .find(t => t.argRef?.targetAgentRole === role && t.segmentType === 'cross_exam');
@@ -494,13 +467,11 @@ function assembleScript(
     for (const question of modLines.audienceQuestions) {
       addModeratorTurn(question, 'qa');
 
-      // Pick one agent to answer each Q&A (rotating through roles)
       const qIdx    = modLines.audienceQuestions.indexOf(question);
       const responder = agentRoles[qIdx % agentRoles.length];
       const p2      = phase2Results.find(r => r.agentRole === responder);
       const p1      = phase1Results.find(r => r.agentRole === responder);
 
-      // Use the agent's key argument as a short Q&A answer
       const keyArg  = p1?.keyArguments?.[qIdx % (p1?.keyArguments?.length ?? 1)] ?? '';
       if (keyArg) {
         const qaText = `${keyArg}. ${(p2?.rebuttalText ?? '').split('.')[0] ?? ''}`.trim();
@@ -549,16 +520,14 @@ export async function generateVoiceDebateScript(
 ): Promise<VoiceDebateScript> {
   const { topic, question, perspectives, moderator, agentRoles, onPhaseProgress } = input;
 
-  // Reset turn ID counter for this generation
   _turnId = 0;
 
-  // ── PHASE 1: All agents generate opening arguments ────────────────────────
+  // ── PHASE 1 ──────────────────────────────────────────────────────────────
 
   onPhaseProgress?.('Phase 1: Agents forming opening arguments...');
 
   const phase1Results: AgentPhase1Raw[] = [];
 
-  // Run Phase 1 in parallel (all 6 agents simultaneously)
   const phase1Promises = agentRoles.map(async role => {
     const perspective = perspectives.find(p => p.agentRole === role);
     if (!perspective) return;
@@ -570,25 +539,21 @@ export async function generateVoiceDebateScript(
 
   await Promise.allSettled(phase1Promises);
 
-  // Ensure we have at least some Phase 1 results
   if (phase1Results.length === 0) {
     throw new Error('All Phase 1 agents failed to generate opening arguments.');
   }
 
-  // ── CROSS-ANALYSIS: Each agent reads all Phase 1 outputs ──────────────────
+  // ── CROSS-ANALYSIS ───────────────────────────────────────────────────────
 
   onPhaseProgress?.('Cross-analysis: Each agent reviews opposing views...');
-
-  // Small delay to ensure all Phase 1 results are stable before Phase 2
   await new Promise(r => setTimeout(r, 200));
 
-  // ── PHASE 2: Rebuttals (sequential to avoid rate limits) ─────────────────
+  // ── PHASE 2 (sequential) ─────────────────────────────────────────────────
 
   onPhaseProgress?.('Phase 2: Generating rebuttals & cross-examination...');
 
   const phase2Results: AgentPhase2Raw[] = [];
 
-  // Run Phase 2 sequentially (each agent needs to see all Phase 1 outputs)
   for (const role of agentRoles) {
     const perspective = perspectives.find(p => p.agentRole === role);
     if (!perspective) continue;
@@ -600,7 +565,6 @@ export async function generateVoiceDebateScript(
       phase2Results.push(result);
     } catch (err) {
       console.warn(`[VoiceDebateScriptAgent] Phase 2 failed for ${role}:`, err);
-      // Fallback Phase 2 result
       const p1 = phase1Results.find(r => r.agentRole === role);
       phase2Results.push({
         agentRole:        role,

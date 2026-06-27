@@ -1,16 +1,14 @@
 // src/services/agents/factCheckAgent.ts
-// Part 25 — Updated
-//
-// CHANGES FROM PART 24:
-//   • Trust scores from SourceTrustScorer are used to weight the reliability
-//     calculation — facts from Tier 1 sources boost the score, Tier 4 lower it
-//   • sourceDiversity now accounts for both domain count AND tier diversity
-//   • flaggedClaims include a trustNote when the source is low-tier
-//   • All previous logic preserved, just more accurate scoring
+// Part 25 — Fact checker with trust-weighted scoring.
+// Part 56 — Cost: routed to STANDARD tier (gpt-4.1-mini). The heavy lifting here
+//   is the LOCAL trust-weighted math (zero tokens); the LLM only refines the
+//   score + flags claims, which mini does as well as gpt-4o. Local scoring is
+//   the fallback, so quality is doubly protected.
 
 import { chatCompletionJSON }              from '../openaiClient';
 import { AnalysisOutput, FactCheckOutput } from '../../types';
 import { scoreSource, TIER_LABELS }        from '../sourceTrustScorer';
+import { modelFor }                        from '../../constants/aiModels';
 
 export async function runFactCheckerAgent(
   topic:    string,
@@ -23,7 +21,6 @@ export async function runFactCheckerAgent(
 
   // ── Local trust-weighted scoring ──────────────────────────────────────────
 
-  // Score each fact source
   const factSourceScores = facts.map(f => {
     if (!f?.url && !f?.source) return { tier: 3, score: 5.0 };
     const ts = scoreSource(f.url ?? '', f.source);
@@ -36,34 +33,22 @@ export async function runFactCheckerAgent(
     return { tier: ts.tier, score: ts.credibilityScore };
   });
 
-  // Trust-weighted average confidence
   const avgTrustScore = factSourceScores.length > 0
     ? factSourceScores.reduce((sum, fs) => sum + fs.score, 0) / factSourceScores.length
     : 5.0;
 
-  // Tier distribution
   const tier1Facts = factSourceScores.filter(fs => fs.tier === 1).length;
   const tier2Facts = factSourceScores.filter(fs => fs.tier === 2).length;
   const tier3Facts = factSourceScores.filter(fs => fs.tier === 3).length;
   const tier4Facts = factSourceScores.filter(fs => fs.tier === 4).length;
 
-  // Unique source count
   const allSources    = [...facts.map(f => f?.source ?? f?.url ?? ''), ...statistics.map(s => s?.source ?? s?.url ?? '')].filter(Boolean);
   const uniqueSources = new Set(allSources);
   const uniqueCount   = uniqueSources.size;
 
-  // Avg fact confidence (from analysis agent)
   const avgConfidence = facts.length > 0
     ? facts.reduce((sum, f) => sum + (f?.confidence ?? 0.5), 0) / facts.length
     : 0.5;
-
-  // ── Local reliability formula (trust-weighted) ───────────────────────────
-  // Components:
-  //   • Base confidence from analysis agent           0–3.0
-  //   • Trust-weighted source quality                 0–3.5
-  //   • Source diversity (unique count + tier spread) 0–2.0
-  //   • Statistics depth                              0–1.0
-  //   • Contradiction penalty                         0–0.5
 
   const baseConfComponent    = avgConfidence * 3.0;
   const trustComponent       = (avgTrustScore / 10) * 3.5;
@@ -78,8 +63,6 @@ export async function runFactCheckerAgent(
   const localDiversity = Math.min(10,
     Math.round(Math.min(10, uniqueCount * 0.8 + tier1Facts * 0.3 + tier2Facts * 0.1) * 10) / 10
   );
-
-  // ── Build tier summary for LLM context ───────────────────────────────────
 
   const tierSummary = [
     tier1Facts > 0 ? `${tier1Facts} from Tier 1 (${TIER_LABELS[1]}) sources` : null,
@@ -167,12 +150,11 @@ Perform thorough fact-checking. Return ONLY valid JSON:
     const factCheck = await chatCompletionJSON<FactCheckOutput>([
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: userPrompt   },
-    ], { temperature: 0.1, maxTokens: 2500 });
+    ], { temperature: 0.1, maxTokens: 2500, model: modelFor('factCheck') });
 
     const reliability = Number(factCheck?.reliabilityScore);
     const diversity   = Number(factCheck?.sourceDiversity);
 
-    // Reject the AI score if it's suspiciously round (typical hallucinated values)
     const SUSPICIOUS_SCORES = new Set([8.2, 7.5, 8.5, 9.0, 7.0, 6.5, 8.0]);
     const reliabilityFinal = (!isNaN(reliability) && reliability > 0 && !SUSPICIOUS_SCORES.has(reliability))
       ? Math.round(reliability * 10) / 10

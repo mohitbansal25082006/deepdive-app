@@ -1,22 +1,14 @@
 // src/services/knowledgeBaseAgent.ts
-// Part 26 — Personal AI Knowledge Base Agent
-//
-// This agent differs from researchAssistantAgent (Part 6) in one key way:
-//   • Part 6 = RAG within a SINGLE report
-//   • Part 26 = RAG across ALL of the user's reports simultaneously
-//
-// Architecture:
-//   1. Query expansion  — GPT-4o generates 2–3 sub-queries for better recall
-//   2. Global retrieval — match_global_knowledge RPC searches all embeddings
-//   3. Dedup & rank     — remove duplicate chunks, sort by similarity
-//   4. Build context    — group chunks by report for clear attribution
-//   5. Synthesize       — GPT-4o answer with multi-report citations
-//
-// The agent is stateless — call runKnowledgeBaseAgent() per turn.
+// Part 26 — Personal AI Knowledge Base Agent (cross-report RAG).
+// Part 56 — Cost routing:
+//   • expandQuery       → NANO  (1 query → 2-3 sub-queries; mechanical)
+//   • main chat answer  → STANDARD (synthesis with multi-report citations)
+//   • generateSessionTitle → NANO (2-4 word title)
 
 import { supabase }            from '../lib/supabase';
 import { chatCompletion, chatCompletionJSON, ChatMessage } from './openaiClient';
 import { createEmbedding }     from './embeddingService';
+import { modelFor }            from '../constants/aiModels';
 import {
   KBAgentResponse,
   KBRetrievedChunk,
@@ -26,18 +18,12 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MAX_CHUNKS        = 14;   // max chunks across all reports
-const SIMILARITY_THRESH = 0.26; // slightly lower than single-report (more recall)
-const MAX_CONTEXT_CHARS = 6000; // max characters of context passed to GPT
+const MAX_CHUNKS        = 14;
+const SIMILARITY_THRESH = 0.26;
+const MAX_CONTEXT_CHARS = 6000;
 
-// ─── Step 1: Query Expansion ──────────────────────────────────────────────────
+// ─── Step 1: Query Expansion (NANO) ───────────────────────────────────────────
 
-/**
- * Generate 2–3 semantically distinct sub-queries to improve recall.
- * Example: "AI startup funding" → ["AI startup funding rounds 2024",
- *   "venture capital investment artificial intelligence",
- *   "AI company valuations technology sector"]
- */
 async function expandQuery(query: string): Promise<string[]> {
   try {
     const result = await chatCompletionJSON<{ queries: string[] }>(
@@ -55,37 +41,32 @@ async function expandQuery(query: string): Promise<string[]> {
           content: `Original question: "${query}"\n\nReturn 2–3 expanded search queries.`,
         },
       ],
-      { temperature: 0.4, maxTokens: 200 },
+      { temperature: 0.4, maxTokens: 200, model: modelFor('queryExpansion') }, // ← Part 56 NANO
     );
     const expanded = result?.queries ?? [];
-    // Always include the original query
     const allQueries = [query, ...expanded].slice(0, 4);
-    return [...new Set(allQueries)]; // deduplicate
+    return [...new Set(allQueries)];
   } catch {
-    return [query]; // fallback: just use original
+    return [query];
   }
 }
 
 // ─── Step 2: Global Retrieval ─────────────────────────────────────────────────
 
-/**
- * Run match_global_knowledge for each expanded query and merge results.
- * Deduplicates by chunk ID, keeps highest similarity per chunk.
- */
 async function retrieveGlobalChunks(
   queries:   string[],
   userId:    string,
   topK:      number = MAX_CHUNKS,
   threshold: number = SIMILARITY_THRESH,
 ): Promise<KBRetrievedChunk[]> {
-  const chunkMap = new Map<string, KBRetrievedChunk>(); // chunkId → best result
+  const chunkMap = new Map<string, KBRetrievedChunk>();
 
   for (const query of queries) {
     let embedding: number[];
     try {
       embedding = await createEmbedding(query);
     } catch {
-      continue; // skip this sub-query if embedding fails
+      continue;
     }
 
     const { data, error } = await supabase.rpc('match_global_knowledge', {
@@ -117,7 +98,6 @@ async function retrieveGlobalChunks(
     }
   }
 
-  // Sort by similarity desc, return top K
   return Array.from(chunkMap.values())
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, topK);
@@ -167,7 +147,6 @@ function buildSourceReports(chunks: KBRetrievedChunk[]): KBSourceReport[] {
 function buildContext(chunks: KBRetrievedChunk[]): string {
   if (chunks.length === 0) return '';
 
-  // Group chunks by report
   const byReport = new Map<string, { title: string; chunks: KBRetrievedChunk[] }>();
   for (const chunk of chunks) {
     const existing = byReport.get(chunk.reportId);
@@ -239,14 +218,6 @@ ANSWER STYLE:
 
 // ─── Main Agent Function ──────────────────────────────────────────────────────
 
-/**
- * Run the Knowledge Base agent for one conversational turn.
- *
- * @param userQuery         The user's natural language question
- * @param userId            For RLS and retrieval scoping
- * @param totalReportCount  Total reports in the user's library (for context)
- * @param conversationHistory Previous messages in this session (last 10)
- */
 export async function runKnowledgeBaseAgent(
   userQuery:           string,
   userId:              string,
@@ -254,37 +225,25 @@ export async function runKnowledgeBaseAgent(
   conversationHistory: Pick<KBMessage, 'role' | 'content'>[],
 ): Promise<KBAgentResponse> {
 
-  // ── 1. Query expansion ─────────────────────────────────────────────────────
   const expandedQueries = await expandQuery(userQuery);
-
-  // ── 2. Global retrieval ────────────────────────────────────────────────────
   const chunks = await retrieveGlobalChunks(expandedQueries, userId);
-
-  // ── 3. Attribution ─────────────────────────────────────────────────────────
   const sourceReports = buildSourceReports(chunks);
-
-  // ── 4. Context ─────────────────────────────────────────────────────────────
   const contextText = buildContext(chunks);
-
-  // ── 5. System prompt ───────────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(sourceReports, contextText, totalReportCount);
 
-  // ── 6. Conversation history ────────────────────────────────────────────────
   const historyMsgs: ChatMessage[] = conversationHistory
     .slice(-10)
     .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-  // ── 7. LLM call ────────────────────────────────────────────────────────────
   const content = await chatCompletion(
     [
       { role: 'system', content: systemPrompt },
       ...historyMsgs,
       { role: 'user', content: userQuery },
     ],
-    { temperature: 0.45, maxTokens: 1200 },
+    { temperature: 0.45, maxTokens: 1200, model: modelFor('knowledgeBaseChat') }, // ← Part 56 STANDARD
   );
 
-  // ── 8. Confidence ──────────────────────────────────────────────────────────
   const avgSim = chunks.length > 0
     ? chunks.reduce((s, c) => s + c.similarity, 0) / chunks.length
     : 0;
@@ -304,17 +263,8 @@ export async function runKnowledgeBaseAgent(
   };
 }
 
-// ─── Auto Session Title Generator ────────────────────────────────────────────
+// ─── Auto Session Title Generator (NANO) ──────────────────────────────────────
 
-/**
- * Generate a concise 3–5 word session title from the user's first message.
- * Used to auto-name sessions after the first exchange.
- * Falls back to 'New Chat' on any error.
- *
- * Examples:
- *   "What have I researched about AI startups?" → "AI Startup Research"
- *   "Compare my findings on climate tech"       → "Climate Tech Comparison"
- */
 export async function generateSessionTitle(firstMessage: string): Promise<string> {
   try {
     const result = await chatCompletionJSON<{ title: string }>(
@@ -331,10 +281,9 @@ export async function generateSessionTitle(firstMessage: string): Promise<string
           content: `Message: "${firstMessage.slice(0, 200)}"`,
         },
       ],
-      { temperature: 0.3, maxTokens: 30 },
+      { temperature: 0.3, maxTokens: 30, model: modelFor('sessionTitle') }, // ← Part 56 NANO
     );
     const title = (result?.title ?? '').trim();
-    // Validate: must be non-empty and under 80 chars
     if (title && title.length > 1 && title.length <= 80) return title;
     return 'New Chat';
   } catch {

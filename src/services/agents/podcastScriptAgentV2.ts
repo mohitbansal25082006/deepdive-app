@@ -1,157 +1,263 @@
-// src/services/agents/podcastScriptAgent.ts
-// Part 39 — Advanced Podcast Script Agent V2
-//
-// MAJOR UPGRADES over V1 (podcastScriptAgent.ts):
-//
-// 1. THREE-SPEAKER SUPPORT
-//    - host + guest1 + guest2 with distinct AI personas
-//    - Guest chemistry system (tension/agreement based on persona combos)
-//    - Dynamic speaker alternation weighted by persona role
-//
-// 2. ADVANCED SCRIPT STRUCTURE
-//    - cold_open    → hook statement before intro (10-30s)
-//    - intro        → host introduces topic + guests
-//    - chapter      → natural topic transitions (3-5 chapters per episode)
-//    - listener_qa  → 3 AI-generated fictional listener questions
-//    - hot_take     → each speaker's most controversial opinion
-//    - rapid_fire   → quick Q&A at episode end (proportional to duration)
-//    - outro        → wrap-up + teaser for follow-up episode
-//    - Callback moments (references to earlier dialogue)
-//    - Inside joke established in turn 1, referenced later
-//    - Cliff-hanger at episode midpoint
-//
-// 3. NATURAL SPEECH PATTERNS
-//    - Filler words at appropriate frequency
-//    - [laughs], [stressed], [pause] prosody markers
-//    - Statistic storytelling (stats as narratives, not raw numbers)
-//    - Disagreement escalation across episode
-//
-// 4. WEB SEARCH GROUNDING
-//    - SerpAPI search before script generation
-//    - Facts woven into dialogue naturally
-//
-// 5. CHUNKED GENERATION (preserved from V1)
-//    - Episodes > 7 min use 2 GPT calls to prevent quality drop-off
-//    - Top-up call if word count falls short
-//
-// BACKWARD COMPATIBILITY:
-//    - runPodcastScriptAgent() still exported for V1 orchestrator usage
-//    - runPodcastScriptAgentV2() is the new entry point
+// src/services/agents/podcastScriptAgentV2.ts
+// Part 35 — Podcast Script Agent V2 (multi-speaker + dynamic length + outline-first).
+// Part 56 — Cost routing:
+//   • All V2 generation calls (outline, single-pass, chunked halves) → STANDARD
+//     (gpt-4.1-mini). Creative multi-speaker dialogue matches gpt-4o for ~6x less.
+//   • topUpShortTurns → NANO — purely mechanical "make these turns longer".
+//   The backward-compat `runPodcastScriptAgent` V1 wrapper just delegates to V2,
+//   so it inherits the same routing automatically.
 
-import { chatCompletionJSON }    from '../openaiClient';
-import { serpSearchBatch }       from '../serpApiClient';
-import type {
+import { chatCompletionJSON } from '../openaiClient';
+import { serpSearchBatch }    from '../serpApiClient';
+import { modelFor }           from '../../constants/aiModels';
+import {
   ResearchReport,
   PodcastScript,
+  PodcastTurn,
   PodcastConfig,
+  PodcastVoice,
   SearchBatch,
 } from '../../types';
-import type {
-  PodcastScriptV2,
-  PodcastTurnV2,
-  ChapterMarker,
-  ScriptSegmentType,
-  SpeakerConfig,
-  VoicePresetStyleV2,
-  GuestPersona,
-} from '../../types/podcast_v2';
-import {
-  GUEST_PERSONA_CONFIG,
-  GUEST_CHEMISTRY,
-} from '../../constants/podcastV2';
+import type { SpeakerConfig } from '../../types/podcast_v2';
+import type { ScriptAgentInput, ScriptAgentResult, VoicePresetStyle } from './podcastScriptAgent';
 
-// ─── Re-export original type for backward compat ──────────────────────────────
-export type VoicePresetStyle = VoicePresetStyleV2;
+// Re-export the script-agent types so callers can import them from this V2 module
+// too (usePodcast.ts and podcastOrchestrator.ts both do). Without this re-export,
+// `import { VoicePresetStyle } from './podcastScriptAgentV2'` fails because a plain
+// `import type … from` brings the name in locally but does NOT re-expose it.
+export type { ScriptAgentInput, ScriptAgentResult, VoicePresetStyle };
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
+// ─── Local agent types ────────────────────────────────────────────────────────
+// podcast_v2.ts (Part 39) defines SpeakerConfig but not an internal "speaker with
+// a stable string id" shape or an outline shape, so Part 35's agent declares them
+// here. PodcastSpeakerConfig adds a string `id` used to tag turns; the public V2
+// entry point also accepts the richer SpeakerConfig[] and adapts it.
 
-const TTS_WPM            = 120;
-const AVG_WORDS_PER_TURN = 120;
+export interface PodcastSpeakerConfig {
+  id:       string;        // 'host' | 'guest' | 'guest2' | 'guest3'
+  name:     string;
+  role:     'host' | 'guest' | 'guest2' | 'guest3';
+  voice?:   PodcastVoice;
+  persona?: string;
+  style?:   string;
+}
+
+export interface PodcastSegmentPlan {
+  title:         string;
+  goal:          string;
+  talkingPoints: string[];
+}
+
+export interface PodcastOutline {
+  segments: PodcastSegmentPlan[];
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+// Part 57 — Duration calibration fix.
+//   The previous math overshot badly: TTS_WPM was 120 with a ×1.2 inflation, and
+//   calculateTargetTurns floored every podcast at 14 turns. A 5-min request then
+//   became 14 turns × ~115 words ≈ 1600 words ≈ 11 min of audio.
+//   tts-1 / tts-1-hd actually speak at ~150 words/min (≈825 chars/min). We now:
+//     • set SPEAKING_WPM = 150 to match real playback,
+//     • drop the ×1.2 inflation (target the requested length directly),
+//     • derive turn count from the word budget with a low, speaker-aware floor so
+//       short podcasts get few turns and long ones get many,
+//     • keep MIN/MAX per-turn bounds but compute an explicit AVG that fits budget.
+
+const SPEAKING_WPM = 150;          // real tts-1 playback rate (≈825 chars/min)
+const TTS_WPM = SPEAKING_WPM;      // kept for estimateTTSDurationMs back-compat
+const AVG_WORDS_PER_TURN = 115;
 const MIN_WORDS_PER_TURN = 70;
-const MAX_WORDS_PER_TURN = 180;
-const CHUNKED_THRESHOLD  = 7; // minutes
-const WORD_TOLERANCE     = 0.88;
+const MAX_WORDS_PER_TURN = 185;
+const CHUNKED_THRESHOLD_MINS = 11; // only split very long episodes now
+// Part 57c: the short-script top-up trigger lives inline at the call site
+// (TOPUP_TRIGGER = 0.70) so the extra LLM call only fires on a real shortfall.
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface RawTurnV2 {
-  speaker:     'host' | 'guest1' | 'guest2';
-  text:        string;
-  segmentType?: ScriptSegmentType;
-  chapterId?:  string;
+  speaker: string;   // speaker id (host/guest/guest2/...) — validated against config
+  text: string;
 }
 
-interface RawScriptV2 {
-  title:        string;
-  description:  string;
-  chapters:     { id: string; title: string; startTurnIdx: number }[];
-  turns:        RawTurnV2[];
-  teaser?:      string;
+interface RawScriptResponseV2 {
+  title: string;
+  description: string;
+  turns: RawTurnV2[];
 }
 
-interface RawTurnsOnly {
-  turns:     RawTurnV2[];
-  chapters?: { id: string; title: string; startTurnIdx: number }[];
-}
-
-export interface ScriptAgentV2Result {
-  script:           PodcastScriptV2;
-  title:            string;
-  description:      string;
-  teaser:           string;
-  webSearchUsed:    boolean;
-  searchQueries:    string[];
+interface RawTurnsOnlyV2 {
+  turns: RawTurnV2[];
 }
 
 export interface ScriptAgentV2Input {
-  topic:        string;
-  report?:      ResearchReport | null;
-  speakers:     SpeakerConfig[];
-  speakerCount: 2 | 3;
-  targetDurationMinutes: number;
-  presetStyleV2: VoicePresetStyleV2;
-  /** Legacy compat */
-  config?: PodcastConfig;
+  topic: string;
+  report?: ResearchReport | null;
+  config: PodcastConfig;
+  // Accepts either the role-based SpeakerConfig (from the UI/orchestrator) or the
+  // id-based PodcastSpeakerConfig; normalizeSpeakers() unifies them at runtime.
+  speakers: Array<SpeakerConfig | PodcastSpeakerConfig>;
+  speakerCount?: 2 | 3;
+  presetStyleV2?: string;
+  presetStyle?: VoicePresetStyle;
+  onProgress?: (label: string) => void;
 }
 
-// ─── Word / Turn Math ──────────────────────────────────────────────────────────
+// ─── Word / Turn Math ─────────────────────────────────────────────────────────
 
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
 export function estimateTTSDurationMs(text: string): number {
-  // Strip prosody hints before estimating
-  const cleaned = text.replace(/\[(laughs|stressed|pause|sighs|chuckles)\]/gi, '');
-  return Math.round((countWords(cleaned) / TTS_WPM) * 60 * 1000);
+  return Math.round((countWords(text) / SPEAKING_WPM) * 60 * 1000);
 }
 
-function requiredWordCount(mins: number): number {
-  return Math.round(mins * TTS_WPM * 1.2);
+// Part 57: target the requested duration directly (no inflation).
+function requiredWordCount(targetMinutes: number): number {
+  return Math.round(targetMinutes * SPEAKING_WPM);
 }
 
-function calculateTargetTurns(mins: number): number {
-  const raw = Math.round(requiredWordCount(mins) / AVG_WORDS_PER_TURN);
-  return Math.min(70, Math.max(14, raw));
+// Part 57: turn count follows the word budget. The floor is small and scales
+// with speaker count only so every speaker gets at least a couple of turns —
+// it no longer forces 14 turns onto a 5-minute episode.
+function calculateTargetTurns(targetMinutes: number, speakerCount: number): number {
+  const needed = requiredWordCount(targetMinutes);
+  const raw    = Math.round(needed / AVG_WORDS_PER_TURN);
+  const floor  = Math.max(speakerCount * 2, 4);   // was max(14, speakerCount*6)
+  const ceil   = 80;
+  return Math.min(ceil, Math.max(floor, raw));
 }
 
 function maxTokensForTurns(turns: number): number {
-  return Math.min(16000, turns * AVG_WORDS_PER_TURN * 2 + 800);
+  return Math.min(16000, turns * AVG_WORDS_PER_TURN * 2 + 700);
 }
 
-// ─── Strip prosody hints for TTS ──────────────────────────────────────────────
-
-function stripProsodyHints(text: string): string {
-  return text.replace(/\[(laughs|stressed|pause|sighs|chuckles|clears throat)\]/gi, '').replace(/\s+/g, ' ').trim();
+// Part 57b: split text into sentences for safe turn-splitting. Keeps the
+// punctuation attached. Falls back to the whole string if no sentence breaks.
+function splitIntoSentences(text: string): string[] {
+  const matches = text.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g);
+  if (!matches) return [text.trim()].filter(Boolean);
+  return matches.map(s => s.trim()).filter(Boolean);
 }
 
-function hasProsodyHints(text: string): boolean {
-  return /\[(laughs|stressed|pause|sighs|chuckles)\]/i.test(text);
+// Part 57b: break any turn longer than maxWords into consecutive turns by the
+// SAME speaker, split at sentence boundaries. This keeps each TTS segment a sane
+// length (good pacing + safely under the 4096-char tts-1 request limit) without
+// changing who says what. A single 320-word monologue becomes e.g. three ~110-
+// word turns from the same speaker, which sounds natural.
+function splitLongTurns(turns: RawTurnV2[], maxWords: number): RawTurnV2[] {
+  const out: RawTurnV2[] = [];
+
+  for (const turn of turns) {
+    const text = (turn.text ?? '').trim();
+    if (!text) continue;
+
+    if (countWords(text) <= maxWords) {
+      out.push({ speaker: turn.speaker, text });
+      continue;
+    }
+
+    // Accumulate sentences into chunks of <= maxWords.
+    const sentences = splitIntoSentences(text);
+    let buffer: string[] = [];
+    let bufferWords = 0;
+
+    const flush = () => {
+      if (buffer.length === 0) return;
+      out.push({ speaker: turn.speaker, text: buffer.join(' ').trim() });
+      buffer = [];
+      bufferWords = 0;
+    };
+
+    for (const sentence of sentences) {
+      const w = countWords(sentence);
+      // A single sentence longer than the cap: hard-wrap it by words so it can't
+      // exceed the limit on its own.
+      if (w > maxWords) {
+        flush();
+        const words = sentence.split(/\s+/);
+        for (let i = 0; i < words.length; i += maxWords) {
+          out.push({ speaker: turn.speaker, text: words.slice(i, i + maxWords).join(' ').trim() });
+        }
+        continue;
+      }
+      if (bufferWords + w > maxWords) flush();
+      buffer.push(sentence);
+      bufferWords += w;
+    }
+    flush();
+  }
+
+  return out;
+}
+
+// ─── Speaker helpers ──────────────────────────────────────────────────────────
+
+function buildSpeakerRoster(speakers: PodcastSpeakerConfig[]): string {
+  return speakers
+    .map(s => `  - id "${s.id}" → ${s.name} (${s.role}${s.persona ? `; ${s.persona}` : ''})`)
+    .join('\n');
+}
+
+function validSpeakerId(id: string, speakers: PodcastSpeakerConfig[]): string {
+  const found = speakers.find(s => s.id === id);
+  if (found) return found.id;
+  const byName = speakers.find(s => s.name.toLowerCase() === id.toLowerCase());
+  if (byName) return byName.id;
+  return speakers[0].id;
+}
+
+// Part 57: collapse the 5 celebrity V2 styles onto the 6 base styles that
+// getStyleGuide understands, so style is never silently dropped.
+function mapV2StyleToBase(v2: string): VoicePresetStyle {
+  switch (v2) {
+    case 'formal_broadcaster': return 'news';
+    case 'npr_journalist':     return 'narrative';
+    case 'bbc_documentary':    return 'narrative';
+    case 'casual_youtuber':    return 'casual';
+    case 'joe_rogan':          return 'expert';
+    default:                   return 'casual';
+  }
+}
+
+// Part 57: unify the two speaker shapes used across the app.
+// SpeakerConfig (UI/orchestrator): { name, voice, role: 'host'|'guest1'|'guest2' }
+// PodcastSpeakerConfig (agent):     { id, name, role: 'host'|'guest'|'guest2'|'guest3', voice }
+function normalizeSpeakers(
+  raw: Array<SpeakerConfig | PodcastSpeakerConfig>,
+): PodcastSpeakerConfig[] {
+  return raw.map((s, i) => {
+    // already in agent shape?
+    if ((s as PodcastSpeakerConfig).id) {
+      const p = s as PodcastSpeakerConfig;
+      return { id: p.id, name: p.name, role: p.role, voice: p.voice, persona: p.persona, style: p.style };
+    }
+    const sc = s as SpeakerConfig;
+    const id =
+      sc.role === 'host'   ? 'host'   :
+      sc.role === 'guest1' ? 'guest'  :
+      sc.role === 'guest2' ? 'guest2' :
+      `speaker${i}`;
+    const role: PodcastSpeakerConfig['role'] =
+      sc.role === 'host'   ? 'host'   :
+      sc.role === 'guest1' ? 'guest'  :
+      sc.role === 'guest2' ? 'guest2' :
+      'guest';
+    return {
+      id,
+      name:    sc.name,
+      role,
+      voice:   sc.voice,
+      persona: sc.persona,
+      style:   sc.style,
+    };
+  });
 }
 
 // ─── SerpAPI ──────────────────────────────────────────────────────────────────
 
-function buildPodcastSearchQueries(topic: string): string[] {
+function buildSearchQueries(topic: string): string[] {
   return [
     `${topic} latest news 2025`,
     `${topic} statistics data research`,
@@ -160,13 +266,13 @@ function buildPodcastSearchQueries(topic: string): string[] {
   ];
 }
 
-function formatSearchContext(batches: SearchBatch[]): string {
-  const lines = ['━━━ LIVE WEB RESEARCH (weave 6+ facts naturally into dialogue) ━━━'];
+function formatSearchResults(batches: SearchBatch[]): string {
+  const lines: string[] = ['━━━ LIVE WEB RESEARCH (weave 6+ of these into dialogue) ━━━'];
   let count = 0;
   for (const batch of batches) {
-    if (count >= 20) break;
+    if (count >= 18) break;
     for (const r of batch.results.slice(0, 3)) {
-      if (!r.snippet || count >= 20) continue;
+      if (!r.snippet || count >= 18) continue;
       lines.push(`• [${r.source ?? r.url}] ${r.snippet}`);
       count++;
     }
@@ -175,209 +281,177 @@ function formatSearchContext(batches: SearchBatch[]): string {
   return lines.join('\n');
 }
 
-// ─── Report Context ────────────────────────────────────────────────────────────
+// ─── Report Context ───────────────────────────────────────────────────────────
 
 function buildReportContext(report: ResearchReport): string {
-  const stats    = (report.statistics    ?? []).slice(0, 10);
-  const findings = (report.keyFindings   ?? []).slice(0, 8);
-  const preds    = (report.futurePredictions ?? []).slice(0, 5);
-  const sections = (report.sections      ?? []).slice(0, 4);
+  const stats       = (report.statistics    ?? []).slice(0, 10);
+  const findings    = (report.keyFindings   ?? []).slice(0, 8);
+  const predictions = (report.futurePredictions ?? []).slice(0, 5);
+  const sections    = (report.sections      ?? []).slice(0, 4);
 
-  const secText = sections.map(s => {
+  const sectionText = sections.map(s => {
     const bullets = (s.bullets ?? []).slice(0, 3).map(b => `  • ${b}`).join('\n');
-    // FIX: wrap the ?? operand in parentheses to avoid mixing || and ?? without parens
-    return `${s.title}:\n${bullets || (s.content?.slice(0, 300) ?? '')}`;
+    const content = s.content ? `  ${s.content.slice(0, 250)}` : '';
+    return `${s.title}:\n${bullets || content}`;
   }).join('\n\n');
 
-  return `━━━━ RESEARCH REPORT: "${report.title}" ━━━━
+  return `
+━━━━ RESEARCH REPORT: "${report.title}" ━━━━
 SUMMARY: ${report.executiveSummary?.slice(0, 500) ?? ''}
-KEY FINDINGS:\n${findings.map((f, i) => `${i + 1}. ${f}`).join('\n')}
-STATISTICS (use exact numbers):\n${stats.map(s => `• ${s.value}: ${s.context} (${s.source})`).join('\n')}
-PREDICTIONS:\n${preds.map(p => `• ${p}`).join('\n')}
-SECTIONS:\n${secText}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`.trim();
+
+KEY FINDINGS:
+${findings.map((f, i) => `${i + 1}. ${f}`).join('\n')}
+
+STATISTICS (use exact numbers):
+${stats.map(s => `• ${s.value}: ${s.context} (${s.source})`).join('\n')}
+
+PREDICTIONS:
+${predictions.map(p => `• ${p}`).join('\n')}
+
+SECTIONS:
+${sectionText}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`.trim();
 }
 
-// ─── Speaker System Prompt Builder ────────────────────────────────────────────
+// ─── Style Guides ─────────────────────────────────────────────────────────────
 
-function buildSpeakerDescriptions(speakers: SpeakerConfig[]): string {
-  return speakers.map(s => {
-    const persona = s.persona ? GUEST_PERSONA_CONFIG[s.persona] : null;
-    const catchphrases = (s.catchphrases?.length ?? 0) > 0
-      ? `\n  Catchphrases to use occasionally: ${s.catchphrases?.join(', ')}`
-      : '';
-    return `${s.role.toUpperCase()} — ${s.name}:
-  Style: ${s.style ?? 'engaging conversationalist'}
-  ${persona ? `Persona: ${persona.label} — ${persona.styleGuide}` : ''}${catchphrases}`;
-  }).join('\n\n');
-}
-
-function getChemistryNote(speakers: SpeakerConfig[]): string {
-  if (speakers.length < 3) return '';
-  const p1 = speakers[1]?.persona;
-  const p2 = speakers[2]?.persona;
-  if (!p1 || !p2) return '';
-  const key = `${p1}+${p2}`;
-  const tension = GUEST_CHEMISTRY[key] ?? GUEST_CHEMISTRY[`${p2}+${p1}`] ?? 0.5;
-  if (tension >= 0.7) return '\n⚡ HIGH TENSION: These two guests naturally disagree. Let their conflict build naturally — escalate across the episode.';
-  if (tension <= 0.3) return '\n🤝 COLLABORATIVE: These guests agree often. Create harmony and build on each other\'s points.';
-  return '\n⚖️ BALANCED: These guests respectfully challenge each other with occasional disagreements.';
-}
-
-function buildStyleGuide(style: VoicePresetStyleV2, speakers: SpeakerConfig[]): string {
-  const [host, g1, g2] = speakers;
-  const names = g2 ? `${host?.name}, ${g1?.name}, and ${g2?.name}` : `${host?.name} and ${g1?.name}`;
-
-  const styleGuides: Record<VoicePresetStyleV2, string> = {
-    casual:            `STYLE: Casual Conversation. ${names} are like smart friends over coffee. Use contractions, informal language, humor, tangents. Short punchy reactions (20-40w) mixed with paragraph-length (80-160w) turns.`,
-    expert:            `STYLE: Expert Interview. ${host?.name} is a sharp journalist probing ${g1?.name}, a leading authority. Substantive, precise, data-driven. Most turns 100-160w. Include historical context and expert challenges.`,
-    tech:              `STYLE: Tech Podcast. Technical depth with plain-English explanations. Real product examples, engineering war stories. 100-160w per turn. ${names} debate implementation details.`,
-    narrative:         `STYLE: Documentary Storytelling. Scene-setting, suspense, revelation. ${names} build a story with insider perspectives. 100-180w per turn. Cinematic pacing.`,
-    debate:            `STYLE: Structured Debate. ${host?.name} moderates while guests take opposing positions. Steel-man every argument. Evidence-based rebuttals. Tension escalates toward midpoint.`,
-    news:              `STYLE: News Analysis. Authoritative, current, explanatory. Ground every claim in recent data. ${names} analyze implications. 90-160w per turn.`,
-    formal_broadcaster:`STYLE: Formal Broadcast. BBC-level gravitas. Precise language, no slang. ${names} report and analyze with authority. Measured pace, 110-160w per turn.`,
-    casual_youtuber:   `STYLE: Casual YouTube energy. Loud, reactive, Gen-Z vibes. Short bursts (30-60w) of hype mixed with longer explanations. Lots of "no cap", "lowkey", "that's insane". Tangents are good.`,
-    npr_journalist:    `STYLE: NPR-style. Empathetic, nuanced, human-centered. Stories about real people impacted by the topic. Thoughtful pauses and follow-up questions. 100-160w per turn.`,
-    joe_rogan:         `STYLE: Long-form conversational. Unfiltered opinions, genuine curiosity, tangents welcomed. ${host?.name} challenges everything. Some turns very long (150-180w), some short. "That's insane dude" energy.`,
-    bbc_documentary:   `STYLE: BBC Documentary narration. ${host?.name} narrates the story, guests provide expert context. Slow, deliberate, authoritative. Sense of gravity. 120-180w per turn.`,
+function getStyleGuide(style: VoicePresetStyle, speakers: PodcastSpeakerConfig[]): string {
+  const roster = speakers.map(s => `${s.name} (${s.role})`).join(', ');
+  const guides: Record<VoicePresetStyle, string> = {
+    casual:    `STYLE: Casual multi-voice conversation between ${roster}. Warm, curious, friends-over-coffee energy. Contractions, humor, natural interruptions. Mix short reactions with substantive paragraphs.`,
+    expert:    `STYLE: Expert panel/interview with ${roster}. NPR Fresh Air calibre. Substantive, precise, probing follow-ups. Most turns 100-160 words with data and historical context.`,
+    tech:      `STYLE: Tech roundtable with ${roster}. Changelog meets Lex Fridman. Technical depth, plain-English explanations, real product examples.`,
+    narrative: `STYLE: Storytelling with ${roster}. Serial-podcast scene-setting, suspense, human stories and revelations.`,
+    debate:    `STYLE: Moderated debate among ${roster}. Intelligence Squared. Steel-man opposing views, evidence-based rebuttals, a moderator keeping order.`,
+    news:      `STYLE: News analysis desk with ${roster}. BBC World Service authority. Current, explanatory, every claim grounded in recent data.`,
   };
-
-  return (styleGuides[style] ?? styleGuides.casual) + getChemistryNote(speakers);
+  return guides[style] ?? guides.casual;
 }
 
-// ─── Script Structure Planner ──────────────────────────────────────────────────
-
-function buildStructurePlan(targetTurns: number, speakerCount: 2 | 3, targetMins: number): string {
-  const hasRapidFire = targetMins >= 10;
-  const chapterCount = targetMins <= 7 ? 2 : targetMins <= 12 ? 3 : 4;
-
-  return `REQUIRED SCRIPT STRUCTURE (${targetTurns} total turns):
-
-1. COLD OPEN (turns 1-2): Hook statement — start mid-thought, NOT "welcome to the podcast". Something provocative or fascinating about the topic. ${speakerCount === 3 ? 'All three speakers react.' : ''}
-
-2. INTRO (turns 3-4): Brief intro of topic and speakers.
-
-3. CHAPTERS (${chapterCount} chapters): Natural topic progression. Mark each with a chapter transition phrase like "Let's shift to..." or "Here's what most people miss about..."
-   - Chapter 1: Context & background (turns ~5-${Math.round(targetTurns * 0.3)})
-   - Chapter 2: Deep dive into data & mechanisms (turns ~${Math.round(targetTurns * 0.3)}-${Math.round(targetTurns * 0.55)})
-   ${chapterCount >= 3 ? `- Chapter 3: Controversies, challenges, real examples (turns ~${Math.round(targetTurns * 0.55)}-${Math.round(targetTurns * 0.72)})` : ''}
-   ${chapterCount >= 4 ? `- Chapter 4: Future outlook & predictions (turns ~${Math.round(targetTurns * 0.72)}-${Math.round(targetTurns * 0.82)})` : ''}
-
-4. MIDPOINT CLIFF-HANGER (around turn ${Math.round(targetTurns * 0.5)}): Peak tension or a surprising revelation. Make the listener NEED to keep going.
-
-5. LISTENER Q&A (3 turns): Host reads 3 fictional listener questions relevant to the topic. Guests answer each in 1-2 turns.
-
-6. HOT TAKES (${speakerCount} turns): Each speaker gives their most controversial opinion on the topic.
-${hasRapidFire ? `
-7. RAPID FIRE ROUND (~4 turns): Host fires short yes/no or one-word questions. Guests must answer quickly. Fast, punchy, fun.
-` : ''}
-8. OUTRO (turns ${targetTurns - 2}-${targetTurns}): Wrap up key takeaways. Tease the follow-up episode topic.
-
-CALLBACKS: Reference something from earlier turns at least 2 times ("Like we said earlier about X...", "Remember what you mentioned about Y...").
-INSIDE JOKE: Establish a running joke or phrase in turn 2-3. Reference it again in turns ~${Math.round(targetTurns * 0.6)} and ${targetTurns - 1}.`;
-}
-
-// ─── System Prompt Builder ─────────────────────────────────────────────────────
+// ─── Shared system prompt builder ─────────────────────────────────────────────
 
 function buildSystemPromptV2(
   styleGuide:    string,
-  speakers:      SpeakerConfig[],
   requiredWords: number,
   targetMins:    number,
+  speakers:      PodcastSpeakerConfig[],
 ): string {
-  return `You are an award-winning podcast scriptwriter. You write for Radiolab, NPR, Lex Fridman, and BBC Documentaries.
+  return `You are an award-winning podcast scriptwriter for Radiolab, 99% Invisible, and Lex Fridman.
 
 ${styleGuide}
 
-SPEAKERS:
-${buildSpeakerDescriptions(speakers)}
+SPEAKER ROSTER (use these EXACT speaker ids in the "speaker" field):
+${buildSpeakerRoster(speakers)}
 
-DURATION RULES:
+CRITICAL DURATION RULES:
 - This podcast must produce ${targetMins} minutes of audio when read aloud at ${TTS_WPM} WPM
-- Requires AT LEAST ${requiredWords} total spoken words
-- Most turns must be ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words — full paragraphs, not one-liners
-- Short "reaction" turns (20-40 words) are allowed sparingly for natural flow
+- That requires AT LEAST ${requiredWords} total spoken words
+- EVERY turn must be ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words — full paragraphs, NOT one-liners
+- Distribute turns across ALL speakers; do not let one speaker dominate
+- Short filler turns ("Great point!") waste word budget — write substantive paragraphs
 
-NATURAL SPEECH RULES:
+WRITING RULES:
 1. Use contractions: "it's", "we're", "that's", "you'd"
-2. Add filler phrases: "I mean...", "Here's the thing—", "What's fascinating is..."
-3. Use prosody markers sparingly: [laughs], [pause], [stressed] — 1-2 per 10 turns max
-4. Present statistics as stories: NOT "revenue grew 47%" BUT "they went from nearly bankrupt to a $2 billion valuation in just three years"
-5. Flowing prose ONLY — no bullet points, no lists in dialogue
-6. ${speakers.length === 3 ? 'All three speakers must contribute throughout — no speaker should be silent for more than 4 consecutive turns' : 'Both speakers must contribute throughout'}
-7. DISAGREEMENT ESCALATION: Early turns are polite agreement. Middle turns have gentle pushback. Later turns have stronger, more direct challenges.`;
+2. Natural speech: "I mean...", "What's fascinating is...", "Here's the thing—"
+3. Flowing prose ONLY — no bullet points, no lists
+4. Include specific data points, company names, statistics, dates
+5. Every sentence moves the conversation forward
+6. The "speaker" field of every turn MUST be one of the exact ids in the roster above`;
 }
 
-// ─── Chapter Builder ───────────────────────────────────────────────────────────
+// ─── Outline generation (STANDARD) ────────────────────────────────────────────
 
-function buildChaptersFromRaw(
-  rawChapters: { id: string; title: string; startTurnIdx: number }[],
-  turns:       PodcastTurnV2[],
-): ChapterMarker[] {
-  return (rawChapters ?? []).map((rc, idx) => {
-    const nextStart = rawChapters[idx + 1]?.startTurnIdx ?? turns.length;
-    const chTurns   = turns.slice(rc.startTurnIdx, nextStart);
-    const timeMs    = turns.slice(0, rc.startTurnIdx).reduce((s, t) => s + (t.durationMs ?? 0), 0);
-    return {
-      id:           rc.id,
-      title:        rc.title,
-      startTurnIdx: rc.startTurnIdx,
-      endTurnIdx:   nextStart - 1,
-      timeMs,
-    };
-  });
+async function generateOutline(
+  topic:         string,
+  targetMins:    number,
+  speakers:      PodcastSpeakerConfig[],
+  reportContext: string,
+): Promise<PodcastOutline | null> {
+  try {
+    const segmentCount = Math.max(3, Math.min(7, Math.round(targetMins / 2.5)));
+    const raw = await chatCompletionJSON<PodcastOutline>(
+      [
+        {
+          role: 'system',
+          content: 'You are a podcast producer. Plan a tight segment outline before scripting. Return only valid JSON.',
+        },
+        {
+          role: 'user',
+          content: `Plan a ${targetMins}-minute podcast about: "${topic}"
+
+Speakers: ${speakers.map(s => `${s.name} (${s.role})`).join(', ')}
+
+${reportContext}
+
+Create EXACTLY ${segmentCount} segments forming a narrative arc (hook → context → deep dives → future → wrap).
+
+Return ONLY valid JSON:
+{
+  "segments": [
+    { "title": "Segment title", "goal": "What this segment accomplishes", "talkingPoints": ["point 1", "point 2", "point 3"] }
+  ]
+}`,
+        },
+      ],
+      { temperature: 0.5, maxTokens: 1200, model: modelFor('podcastScript') }, // ← Part 56 STANDARD
+    );
+
+    if (Array.isArray(raw?.segments) && raw.segments.length > 0) {
+      return { segments: raw.segments.slice(0, segmentCount) };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
-// ─── Single-pass Generation ────────────────────────────────────────────────────
+function outlineToText(outline: PodcastOutline | null): string {
+  if (!outline?.segments?.length) return '';
+  return [
+    '━━━ EPISODE OUTLINE (follow this arc) ━━━',
+    ...outline.segments.map((seg: PodcastSegmentPlan, i: number) =>
+      `${i + 1}. ${seg.title} — ${seg.goal}\n   Points: ${(seg.talkingPoints ?? []).join('; ')}`,
+    ),
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+  ].join('\n');
+}
+
+// ─── Single-pass generation (STANDARD) ───────────────────────────────────────
 
 async function generateSinglePassV2(
   topic:         string,
   targetTurns:   number,
   requiredWords: number,
-  speakers:      SpeakerConfig[],
-  speakerCount:  2 | 3,
+  speakers:      PodcastSpeakerConfig[],
   styleGuide:    string,
   reportContext: string,
   searchContext: string,
+  outlineText:   string,
   targetMins:    number,
-): Promise<RawScriptV2> {
-  const structure  = buildStructurePlan(targetTurns, speakerCount, targetMins);
-  const systemPrompt = buildSystemPromptV2(styleGuide, speakers, requiredWords, targetMins);
-
-  const speakerRoles = speakerCount === 3
-    ? `Speakers: host="${speakers[0]?.name}", guest1="${speakers[1]?.name}", guest2="${speakers[2]?.name}"`
-    : `Speakers: host="${speakers[0]?.name}", guest1="${speakers[1]?.name}"`;
+): Promise<{ turns: RawTurnV2[]; title: string; description: string }> {
+  const systemPrompt = buildSystemPromptV2(styleGuide, requiredWords, targetMins, speakers);
 
   const userPrompt = `Write a complete ${targetMins}-minute podcast episode about: "${topic}"
 
 ${reportContext}
 
-${searchContext ? searchContext + '\n\n' : ''}
+${outlineText ? outlineText + '\n\n' : ''}${searchContext ? searchContext + '\n\n' : ''}
 
-${speakerRoles}
-
-${structure}
-
-TOTAL TURNS: Exactly ${targetTurns} turns
-TOTAL WORDS: At least ${requiredWords} words
+Write EXACTLY ${targetTurns} turns across all ${speakers.length} speakers.
+EVERY turn must be ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words — paragraph length, NOT one sentence.
+Total word count across all turns: AT LEAST ${requiredWords} words.
 
 Return ONLY valid JSON:
 {
   "title": "Compelling episode title (8-16 words)",
   "description": "2-3 sentence description that makes someone want to listen",
-  "teaser": "1 sentence teasing the next episode topic",
-  "chapters": [
-    { "id": "ch1", "title": "Chapter title", "startTurnIdx": 4 }
-  ],
   "turns": [
-    { "speaker": "host", "text": "70-180 word paragraph...", "segmentType": "cold_open", "chapterId": null },
-    { "speaker": "guest1", "text": "70-180 word paragraph...", "segmentType": "cold_open", "chapterId": null }
+    { "speaker": "${speakers[0].id}", "text": "70-185 word paragraph of natural spoken dialogue..." },
+    { "speaker": "${speakers[1]?.id ?? speakers[0].id}", "text": "70-185 word paragraph..." }
   ]
-}
+}`;
 
-segmentType must be one of: cold_open, intro, chapter, listener_qa, hot_take, rapid_fire, outro, normal`;
-
-  const raw = await chatCompletionJSON<RawScriptV2>(
+  const raw = await chatCompletionJSON<RawScriptResponseV2>(
     [
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: userPrompt   },
@@ -385,73 +459,57 @@ segmentType must be one of: cold_open, intro, chapter, listener_qa, hot_take, ra
     {
       temperature: 0.72,
       maxTokens:   maxTokensForTurns(targetTurns),
+      model:       modelFor('podcastScript'), // ← Part 56 STANDARD
     }
   );
 
   return {
+    turns:       raw?.turns       ?? [],
     title:       raw?.title?.trim()       ?? `${topic} — Deep Dive`,
     description: raw?.description?.trim() ?? '',
-    teaser:      raw?.teaser?.trim()      ?? '',
-    chapters:    raw?.chapters            ?? [],
-    turns:       raw?.turns               ?? [],
   };
 }
 
-// ─── Chunked Generation ────────────────────────────────────────────────────────
+// ─── Chunked generation (STANDARD) ───────────────────────────────────────────
 
 async function generateChunkedV2(
   topic:         string,
   targetTurns:   number,
   requiredWords: number,
-  speakers:      SpeakerConfig[],
-  speakerCount:  2 | 3,
+  speakers:      PodcastSpeakerConfig[],
   styleGuide:    string,
   reportContext: string,
   searchContext: string,
+  outlineText:   string,
   targetMins:    number,
-): Promise<RawScriptV2> {
+): Promise<{ turns: RawTurnV2[]; title: string; description: string }> {
   const halfTurns    = Math.ceil(targetTurns / 2);
   const secondHalf   = targetTurns - halfTurns;
   const wordsPerHalf = Math.ceil(requiredWords / 2);
-  const structurePlan = buildStructurePlan(targetTurns, speakerCount, targetMins);
-  const systemPrompt  = buildSystemPromptV2(styleGuide, speakers, requiredWords, targetMins);
-  const speakerRoles  = speakerCount === 3
-    ? `host="${speakers[0]?.name}", guest1="${speakers[1]?.name}", guest2="${speakers[2]?.name}"`
-    : `host="${speakers[0]?.name}", guest1="${speakers[1]?.name}"`;
 
-  // ── Call A: First half ──────────────────────────────────────────────────────
+  const systemPrompt = buildSystemPromptV2(styleGuide, requiredWords, targetMins, speakers);
 
   const promptA = `Write the FIRST HALF of a ${targetMins}-minute podcast about: "${topic}"
 
 ${reportContext}
 
-${searchContext ? searchContext + '\n\n' : ''}
+${outlineText ? outlineText + '\n\n' : ''}${searchContext ? searchContext + '\n\n' : ''}
 
-Speakers: ${speakerRoles}
+This is turns 1-${halfTurns} of a ${targetTurns}-turn episode across ${speakers.length} speakers.
+Write EXACTLY ${halfTurns} turns, each ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words.
+Total words for this half: AT LEAST ${wordsPerHalf} words.
 
-STRUCTURE OVERVIEW (full episode):
-${structurePlan}
-
-FIRST HALF INSTRUCTIONS (turns 1-${halfTurns}):
-- Include: cold_open, intro, and the first 2 chapters
-- End with the CLIFF-HANGER — the tension peak that makes listeners stay
-- Words for this half: at least ${wordsPerHalf}
-- Establish the inside joke/running phrase that will be called back later
+Cover: hook/intro, context & background, first deep dive into data.
+End mid-conversation — the second half continues from here.
 
 Return ONLY valid JSON:
 {
   "title": "Episode title (8-16 words)",
-  "description": "2-3 sentence description",
-  "teaser": "",
-  "chapters": [
-    { "id": "ch1", "title": "Chapter title", "startTurnIdx": 4 }
-  ],
-  "turns": [
-    { "speaker": "host", "text": "...", "segmentType": "cold_open", "chapterId": null }
-  ]
+  "description": "2-3 sentence compelling description",
+  "turns": [ { "speaker": "${speakers[0].id}", "text": "70-185 word paragraph..." } ]
 }`;
 
-  const rawA = await chatCompletionJSON<RawScriptV2>(
+  const rawA = await chatCompletionJSON<RawScriptResponseV2>(
     [
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: promptA      },
@@ -459,50 +517,39 @@ Return ONLY valid JSON:
     {
       temperature: 0.72,
       maxTokens:   maxTokensForTurns(halfTurns),
+      model:       modelFor('podcastScript'), // ← Part 56 STANDARD
     }
   );
 
-  const turnsA      = rawA?.turns    ?? [];
-  const chaptersA   = rawA?.chapters ?? [];
+  const turnsA      = rawA?.turns ?? [];
   const title       = rawA?.title?.trim()       ?? `${topic} — Deep Dive`;
   const description = rawA?.description?.trim() ?? '';
 
-  // Build context for second half
-  const firstHalfContext = turnsA.slice(-5).map(
-    t => `${t.speaker === 'host' ? speakers[0]?.name : t.speaker === 'guest1' ? speakers[1]?.name : speakers[2]?.name}: "${t.text.slice(0, 150)}..."`
-  ).join('\n');
-
-  // ── Call B: Second half ──────────────────────────────────────────────────────
+  const firstHalfSummary = turnsA.slice(-4).map(t => {
+    const spk = speakers.find(s => s.id === t.speaker)?.name ?? t.speaker;
+    return `${spk}: "${t.text.slice(0, 120)}..."`;
+  }).join('\n');
 
   const promptB = `Continue the podcast episode about: "${topic}"
 
-The first half just ended here:
+The first half just ended with this conversation:
 ---
-${firstHalfContext}
+${firstHalfSummary}
 ---
 
-SECOND HALF INSTRUCTIONS (turns ${halfTurns + 1}-${targetTurns}):
-- Include: remaining chapters, listener Q&A, hot takes, ${targetMins >= 10 ? 'rapid fire round,' : ''} and outro
-- CALLBACK: Reference something from the first half at least twice
-- INSIDE JOKE: Call back the running phrase established in the first half  
-- Outro must tease a follow-up episode topic
-- Words for this half: at least ${wordsPerHalf}
-- This is the CONCLUSION — build to a memorable close
+Now write the SECOND HALF — turns ${halfTurns + 1}-${targetTurns} across ${speakers.length} speakers.
+Write EXACTLY ${secondHalf} turns, each ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words.
+Total words for this half: AT LEAST ${wordsPerHalf} words.
 
-Speakers: ${speakerRoles}
+Cover: complexity & challenges, future outlook & predictions, wrap-up & key takeaway.
+This is the CONCLUSION — end with a memorable closing statement.
 
-Return ONLY valid JSON:
+Return ONLY valid JSON (no title/description — just turns):
 {
-  "turns": [
-    { "speaker": "guest1", "text": "...", "segmentType": "chapter", "chapterId": "ch2" }
-  ],
-  "chapters": [
-    { "id": "ch3", "title": "Chapter title", "startTurnIdx": ${halfTurns + 5} }
-  ],
-  "teaser": "One sentence teasing the follow-up episode topic"
+  "turns": [ { "speaker": "${speakers[1]?.id ?? speakers[0].id}", "text": "70-185 word paragraph..." } ]
 }`;
 
-  const rawB = await chatCompletionJSON<RawTurnsOnly>(
+  const rawB = await chatCompletionJSON<RawTurnsOnlyV2>(
     [
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: promptB      },
@@ -510,59 +557,45 @@ Return ONLY valid JSON:
     {
       temperature: 0.72,
       maxTokens:   maxTokensForTurns(secondHalf),
+      model:       modelFor('podcastScript'), // ← Part 56 STANDARD
     }
   );
 
-  const turnsB    = rawB?.turns    ?? [];
-  const chaptersB = (rawB?.chapters ?? []).map(ch => ({
-    ...ch,
-    startTurnIdx: ch.startTurnIdx, // already offset from B's perspective
-  }));
+  const turnsB = rawB?.turns ?? [];
 
-  return {
-    title,
-    description,
-    teaser:   (rawB as any)?.teaser?.trim() ?? '',
-    chapters: [...chaptersA, ...chaptersB],
-    turns:    [...turnsA, ...turnsB],
-  };
+  return { turns: [...turnsA, ...turnsB], title, description };
 }
 
-// ─── Top-up call ────────────────────────────────────────────────────────────────
+// ─── Top-up call (NANO) ───────────────────────────────────────────────────────
 
 async function topUpShortTurns(
-  turns:        RawTurnV2[],
-  targetWords:  number,
-  speakers:     SpeakerConfig[],
+  turns:       RawTurnV2[],
+  targetWords: number,
+  speakers:    PodcastSpeakerConfig[],
 ): Promise<RawTurnV2[]> {
   const currentWords = turns.reduce((s, t) => s + countWords(t.text), 0);
   const shortfall    = targetWords - currentWords;
+
   if (shortfall <= 0) return turns;
 
   const indexed  = turns.map((t, i) => ({ ...t, idx: i, wc: countWords(t.text) }));
   const shortest = [...indexed].sort((a, b) => a.wc - b.wc).slice(0, 6);
 
-  const getSpeakerName = (role: string) => {
-    if (role === 'host')   return speakers[0]?.name ?? 'Host';
-    if (role === 'guest2') return speakers[2]?.name ?? 'Guest 2';
-    return speakers[1]?.name ?? 'Guest';
-  };
+  const nameFor = (id: string) => speakers.find(s => s.id === id)?.name ?? id;
 
-  const expansionPrompt = `Expand each podcast turn to be 120-160 words while keeping the same voice, content, and speaker personality. Add specific details, examples, or statistics.
+  const expansionPrompt = `The following podcast turns are too short. Expand each one to be 120-160 words while keeping the same speaker voice and content direction. Add specific details, examples, or statistics. Do NOT change what is being said — only make it longer and richer.
 
-${shortest.map((t, i) => `TURN ${i + 1} (${getSpeakerName(t.speaker)}, ${t.wc} words):\n"${t.text}"`).join('\n\n')}
+${shortest.map((t, i) => `TURN ${i + 1} (${nameFor(t.speaker)}, currently ${t.wc} words):\n"${t.text}"`).join('\n\n')}
 
-Need ${shortfall} more total words. Return ONLY valid JSON:
-{
-  "expanded": [
-    { "index": 0, "text": "Expanded text 120-160 words..." }
-  ]
-}`;
+We need ${shortfall} more words total across these ${shortest.length} turns.
+
+Return ONLY valid JSON:
+{ "expanded": [ { "index": 0, "text": "Expanded turn text 120-160 words..." } ] }`;
 
   try {
     const result = await chatCompletionJSON<{ expanded: { index: number; text: string }[] }>(
       [{ role: 'user', content: expansionPrompt }],
-      { temperature: 0.65, maxTokens: shortfall * 2 + 400 }
+      { temperature: 0.65, maxTokens: shortfall * 2 + 400, model: modelFor('podcastTopUp') } // ← Part 56 NANO
     );
 
     if (result?.expanded) {
@@ -576,195 +609,201 @@ Need ${shortfall} more total words. Return ONLY valid JSON:
       return updated;
     }
   } catch (err) {
-    console.warn('[PodcastScriptAgentV2] Top-up failed (non-fatal):', err);
+    console.warn('[PodcastScriptAgentV2] Top-up call failed (non-fatal):', err);
   }
+
   return turns;
 }
 
-// ─── Main V2 Agent ─────────────────────────────────────────────────────────────
+// ─── Main Agent V2 ────────────────────────────────────────────────────────────
 
 export async function runPodcastScriptAgentV2(
-  input: ScriptAgentV2Input,
-): Promise<ScriptAgentV2Result> {
-  const { topic, report, speakers, speakerCount, targetDurationMinutes, presetStyleV2 } = input;
-  const targetMins    = targetDurationMinutes;
-  const targetTurns   = calculateTargetTurns(targetMins);
+  input: ScriptAgentV2Input
+): Promise<ScriptAgentResult> {
+  const { topic, report, config } = input;
+  // Part 57: accept presetStyleV2 (orchestrator) as well as presetStyle (V1).
+  // getStyleGuide only knows the 6 base styles, so map celebrity V2 styles down.
+  const rawStyle = (input.presetStyle ?? input.presetStyleV2 ?? 'casual') as string;
+  const style: VoicePresetStyle = ([
+    'casual', 'expert', 'tech', 'narrative', 'debate', 'news',
+  ].includes(rawStyle) ? rawStyle : mapV2StyleToBase(rawStyle)) as VoicePresetStyle;
+  const targetMins    = config.targetDurationMinutes;
+
+  // Part 57 FIX (3-speaker bug): the orchestrator/screen pass speakers shaped as
+  // SpeakerConfig (role 'host'|'guest1'|'guest2', NO `id`). The agent tags turns
+  // by a stable string `id` and builds the model roster from it, so without
+  // normalization every turn collapsed onto speaker[0] and 3-speaker episodes
+  // produced nothing usable. Normalize any incoming shape into PodcastSpeakerConfig.
+  const speakers: PodcastSpeakerConfig[] = normalizeSpeakers(input.speakers);
+
+  const targetTurns   = calculateTargetTurns(targetMins, speakers.length);
   const requiredWords = requiredWordCount(targetMins);
 
-  // ── Web search ────────────────────────────────────────────────────────────
+  if (!speakers || speakers.length < 2) {
+    throw new Error('Podcast V2 requires at least 2 speakers.');
+  }
 
-  let searchContext  = '';
-  let webSearchUsed  = false;
-  const searchQueries: string[] = [];
+  // ── Web research ───────────────────────────────────────────────────────────
 
+  let searchContext = '';
+  let webSearchUsed = false;
+  const searchQueriesUsed: string[] = [];
+
+  input.onProgress?.('Searching the web for the latest information...');
   try {
     const serpKey = process.env.EXPO_PUBLIC_SERPAPI_KEY;
     if (serpKey && serpKey.trim() && serpKey !== 'your_serpapi_key_here') {
-      const queries = buildPodcastSearchQueries(topic);
-      searchQueries.push(...queries);
+      const queries = buildSearchQueries(topic);
+      searchQueriesUsed.push(...queries);
       const batches = await serpSearchBatch(queries);
       const hasReal = batches.some(b => b.results.some(r => !r.url.includes('example.com')));
       if (hasReal) {
-        searchContext = formatSearchContext(batches);
+        searchContext = formatSearchResults(batches);
         webSearchUsed = true;
       }
     }
   } catch (err) {
-    console.warn('[PodcastScriptAgentV2] SerpAPI failed (non-fatal):', err);
+    console.warn('[PodcastScriptAgentV2] SerpAPI failed, continuing:', err);
   }
-
-  // ── Build contexts ─────────────────────────────────────────────────────────
 
   const reportContext = report
     ? buildReportContext(report)
     : `Topic: "${topic}"\nUse realistic, specific industry statistics and expert knowledge.`;
 
-  const styleGuide = buildStyleGuide(presetStyleV2, speakers);
+  const styleGuide = getStyleGuide(style, speakers);
 
-  // ── Generate script ────────────────────────────────────────────────────────
+  // ── Outline first (only when it pays for itself) ───────────────────────────
+  // Part 57c COST: the outline is a separate LLM call. For short episodes the
+  // single-pass writer already produces a coherent arc, so we skip the outline
+  // entirely (saves one call per podcast). We only spend it on longer episodes
+  // (chunked path) where a shared outline keeps the chunks consistent.
+  const useOutline = targetMins > CHUNKED_THRESHOLD_MINS;
+  let outlineText = '';
+  if (useOutline) {
+    input.onProgress?.('Planning the episode outline...');
+    const outline = await generateOutline(topic, targetMins, speakers, reportContext);
+    outlineText   = outlineToText(outline);
+  }
 
-  let rawScript: RawScriptV2;
+  // ── Script generation ──────────────────────────────────────────────────────
 
-  if (targetMins > CHUNKED_THRESHOLD) {
-    rawScript = await generateChunkedV2(
-      topic, targetTurns, requiredWords,
-      speakers, speakerCount, styleGuide,
-      reportContext, searchContext, targetMins,
+  input.onProgress?.(`Writing the ${targetMins}-minute script...`);
+
+  let rawTurns: RawTurnV2[];
+  let title:    string;
+  let desc:     string;
+
+  if (targetMins > CHUNKED_THRESHOLD_MINS) {
+    const result = await generateChunkedV2(
+      topic, targetTurns, requiredWords, speakers,
+      styleGuide, reportContext, searchContext, outlineText, targetMins,
     );
+    rawTurns = result.turns; title = result.title; desc = result.description;
   } else {
-    rawScript = await generateSinglePassV2(
-      topic, targetTurns, requiredWords,
-      speakers, speakerCount, styleGuide,
-      reportContext, searchContext, targetMins,
+    const result = await generateSinglePassV2(
+      topic, targetTurns, requiredWords, speakers,
+      styleGuide, reportContext, searchContext, outlineText, targetMins,
     );
+    rawTurns = result.turns; title = result.title; desc = result.description;
   }
 
-  if (!rawScript.turns || rawScript.turns.length === 0) {
-    throw new Error('Script agent returned empty dialogue. Please try again.');
+  if (!rawTurns || rawTurns.length === 0) {
+    throw new Error('Podcast script agent V2 returned an empty dialogue. Please try again.');
   }
 
-  // ── Top-up if needed ───────────────────────────────────────────────────────
+  // Part 57b: enforce a hard per-turn length cap. The model sometimes emits one
+  // huge monologue (300+ words) which (a) reads badly as a single TTS segment and
+  // (b) can blow past the 4096-char TTS request limit. Split any overlong turn
+  // into consecutive turns by the SAME speaker, broken at sentence boundaries.
+  rawTurns = splitLongTurns(rawTurns, MAX_WORDS_PER_TURN);
 
-  let rawTurns = rawScript.turns;
+  // ── Top-up if short ────────────────────────────────────────────────────────
+
+  // ── Top-up only on a real shortfall ────────────────────────────────────────
+  // Part 57c COST: the top-up is a third LLM call. The single-pass writer is
+  // already prompted to hit the word target, so we only pay for a top-up when the
+  // script comes in well short (< 70% of target) — not merely a little under.
+  // This makes the extra call rare while still rescuing genuinely thin scripts.
   const currentWords = rawTurns.reduce((s, t) => s + countWords(t.text ?? ''), 0);
-  if (currentWords < requiredWords * WORD_TOLERANCE) {
-    console.log(`[PodcastScriptAgentV2] Topping up: ${currentWords} < ${Math.round(requiredWords * WORD_TOLERANCE)} target`);
+  const TOPUP_TRIGGER = 0.70;   // was WORD_COUNT_TOLERANCE (0.85)
+  if (currentWords < requiredWords * TOPUP_TRIGGER) {
+    input.onProgress?.('Enriching the conversation to hit target length...');
     rawTurns = await topUpShortTurns(rawTurns, requiredWords, speakers);
+    // Re-split in case the top-up produced any overlong turns.
+    rawTurns = splitLongTurns(rawTurns, MAX_WORDS_PER_TURN);
   }
 
-  // ── Transform to PodcastTurnV2[] ──────────────────────────────────────────
+  // ── Hydrate turns ──────────────────────────────────────────────────────────
+  // Part 57: emit a V2-style `speaker` role ('host' | 'guest1' | 'guest2') so the
+  // orchestrator's getSpeakerVoiceForV2Turn() can route each speaker — including
+  // the 3rd — to its own voice. `speakerId` is kept as extra metadata.
+  const idToV2Role = (id: string, role: PodcastSpeakerConfig['role']): 'host' | 'guest1' | 'guest2' => {
+    if (role === 'host' || id === 'host') return 'host';
+    if (role === 'guest2' || id === 'guest2') return 'guest2';
+    return 'guest1';
+  };
 
-  const turns: PodcastTurnV2[] = rawTurns.map((raw, index) => {
-    const speaker     = (raw?.speaker ?? 'host') as 'host' | 'guest1' | 'guest2';
-    const rawText     = (raw?.text ?? '').trim();
-    const cleanText   = stripProsodyHints(rawText);
-    const segmentType = (raw?.segmentType ?? 'normal') as ScriptSegmentType;
-
-    const speakerName =
-      speaker === 'host'   ? (speakers[0]?.name ?? 'Host') :
-      speaker === 'guest2' ? (speakers[2]?.name ?? 'Guest 2') :
-                             (speakers[1]?.name ?? 'Guest');
-
+  const turns: PodcastTurn[] = rawTurns.map((raw, index) => {
+    const speakerId = validSpeakerId(raw?.speaker ?? speakers[0].id, speakers);
+    const spk       = speakers.find(s => s.id === speakerId) ?? speakers[0];
+    const text      = (raw?.text ?? '').trim();
+    const v2Role    = idToV2Role(spk.id, spk.role);
+    // `speaker` carries the V2 role for voice routing; `speakerId` is extra
+    // metadata. Cast keeps both on the object without changing shared types.
     return {
-      id:               `turn-${index}`,
-      segmentIndex:     index,
-      speaker,
-      speakerName,
-      text:             cleanText, // TTS gets clean text
-      audioPath:        undefined,
-      durationMs:       estimateTTSDurationMs(cleanText),
-      segmentType,
-      chapterId:        raw?.chapterId ?? undefined,
-      hasProsodyHints:  hasProsodyHints(rawText),
-    };
+      id:           `turn-${index}`,
+      segmentIndex: index,
+      speaker:      v2Role,
+      speakerId,
+      speakerName:  spk.name,
+      text,
+      durationMs:   estimateTTSDurationMs(text),
+    } as unknown as PodcastTurn;
   });
-
-  // ── Build chapter markers ──────────────────────────────────────────────────
-
-  const chapters = buildChaptersFromRaw(rawScript.chapters ?? [], turns);
 
   const totalWords = turns.reduce((sum, t) => sum + countWords(t.text), 0);
   const estimatedDurationMinutes = Math.round((totalWords / TTS_WPM) * 10) / 10;
 
-  const script: PodcastScriptV2 = {
-    turns,
-    chapters,
-    totalWords,
-    estimatedDurationMinutes,
-    speakerCount,
-    webSearchUsed,
-  };
+  const script: PodcastScript = { turns, totalWords, estimatedDurationMinutes };
 
   return {
     script,
-    title:         rawScript.title       || `${topic} — Deep Dive`,
-    description:   rawScript.description || `An in-depth ${targetMins}-minute exploration of ${topic}.`,
-    teaser:        rawScript.teaser      || '',
+    title:         title || `${topic} — Deep Dive`,
+    description:   desc  || `An in-depth ${targetMins}-minute exploration of ${topic}.`,
     webSearchUsed,
-    searchQueries,
+    searchQueries: searchQueriesUsed,
   };
 }
 
-// ─── Backward-compat V1 wrapper ────────────────────────────────────────────────
-// Allows podcastOrchestrator.ts (V1) to still call this without changes.
-
-export interface ScriptAgentInput {
-  topic:        string;
-  report?:      ResearchReport | null;
-  config:       PodcastConfig;
-  presetStyle?: VoicePresetStyle;
-}
-
-export interface ScriptAgentResult {
-  script:         PodcastScript;
-  title:          string;
-  description:    string;
-  webSearchUsed:  boolean;
-  searchQueries:  string[];
-}
+// ─── Backward-compat V1 wrapper ───────────────────────────────────────────────
+// Part 35 introduced V2; older call sites still import runPodcastScriptAgent from
+// this module. It maps the single host/guest V1 config to a 2-speaker V2 roster
+// and delegates. Part 56 routing is inherited automatically (no model strings here).
 
 export async function runPodcastScriptAgent(
-  input: ScriptAgentInput,
+  input: ScriptAgentInput
 ): Promise<ScriptAgentResult> {
-  const { topic, report, config, presetStyle } = input;
-
-  const speakers: SpeakerConfig[] = [
-    { name: config.hostName,  voice: config.hostVoice,  role: 'host'   },
-    { name: config.guestName, voice: config.guestVoice, role: 'guest1' },
+  // hostVoice/guestVoice may not exist on the base PodcastConfig type; read them
+  // defensively so V1 callers compile whether or not those fields are declared.
+  const cfg = input.config as PodcastConfig & { hostVoice?: PodcastVoice; guestVoice?: PodcastVoice };
+  const speakers: PodcastSpeakerConfig[] = [
+    { id: 'host',  name: cfg.hostName,  role: 'host',  voice: cfg.hostVoice  ?? 'alloy' },
+    { id: 'guest', name: cfg.guestName, role: 'guest', voice: cfg.guestVoice ?? 'onyx'  },
   ];
 
-  const v2Input: ScriptAgentV2Input = {
-    topic,
-    report:                report ?? null,
+  return runPodcastScriptAgentV2({
+    topic:       input.topic,
+    report:      input.report,
+    config:      input.config,
     speakers,
-    speakerCount:          2,
-    targetDurationMinutes: config.targetDurationMinutes,
-    presetStyleV2:         (presetStyle as VoicePresetStyleV2) ?? 'casual',
-    config,
-  };
+    presetStyle: input.presetStyle,
+  });
+}
 
-  const v2Result = await runPodcastScriptAgentV2(v2Input);
-
-  // Convert PodcastScriptV2 → PodcastScript (V1 format)
-  const v1Script: PodcastScript = {
-    turns: v2Result.script.turns.map(t => ({
-      id:           t.id,
-      segmentIndex: t.segmentIndex,
-      speaker:      t.speaker === 'host' ? 'host' : 'guest',
-      speakerName:  t.speakerName,
-      text:         t.text,
-      audioPath:    t.audioPath,
-      durationMs:   t.durationMs,
-    })),
-    totalWords:               v2Result.script.totalWords,
-    estimatedDurationMinutes: v2Result.script.estimatedDurationMinutes,
-  };
-
-  return {
-    script:       v1Script,
-    title:        v2Result.title,
-    description:  v2Result.description,
-    webSearchUsed: v2Result.webSearchUsed,
-    searchQueries: v2Result.searchQueries,
-  };
+// ─── Adapter: SpeakerConfig[] → agent roster (kept for external callers) ───────
+// Thin alias over normalizeSpeakers so any caller holding a PodcastConfigV2's
+// SpeakerConfig[] can pre-convert. normalizeSpeakers also runs internally, so
+// passing raw SpeakerConfig[] straight to runPodcastScriptAgentV2 works too.
+export function speakerConfigsToRoster(speakers: SpeakerConfig[]): PodcastSpeakerConfig[] {
+  return normalizeSpeakers(speakers);
 }

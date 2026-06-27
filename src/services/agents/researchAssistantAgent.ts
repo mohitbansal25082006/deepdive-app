@@ -1,44 +1,95 @@
 // src/services/agents/researchAssistantAgent.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Research Assistant Agent — FULL THEME COMPATIBILITY
-// 
-// Upgrades the plain follow-up chat into a true research assistant with 7 modes:
 //
-//   general        → Expert RAG-powered Q&A using semantic search context
-//   beginner       → ELI5 / simplified explanations with analogies
-//   compare        → Structured comparison with another topic
-//   contradictions → Critical analysis: find gaps, flaws, inconsistencies
-//   questions      → Generate deeper research questions (tiered by depth)
-//   summarize      → Concise, structured summary on demand
-//   factcheck      → Verify claims against report data with confidence rating
+// 7 modes: general, beginner, compare, contradictions, questions, summarize, factcheck
 //
-// The mode is either:
-//   (a) explicitly set by the user via the mode picker UI, or
-//   (b) auto-detected from the user's query text via detectAssistantMode()
+// Part 56 — Cost: the single LLM call (runResearchAssistantAgent) is routed to
+//   the STANDARD tier (gpt-4.1-mini) via modelFor('assistantChat'). RAG answers
+//   are quality-sensitive but mini matches gpt-4o on grounded Q&A for ~6x less.
+//   MODE_PARAMS (temperature/maxTokens per mode) are unchanged.
 //
-// Each mode has:
-//   • A dedicated system prompt with specific output instructions
-//   • Tuned temperature and token limits
-//   • Suggested follow-up prompts tailored to the topic
-//   • Theme-aware colors for UI integration
+// Part 55 — THEME INTEGRATION
+//   Previously, every ModeConfig and QuickAction stored a hardcoded hex string
+//   for its `color` field (e.g. '#6C63FF', '#43E97B'). These were frozen at
+//   module-load time and never updated when the user switched the app theme,
+//   causing chips, badges and icons to render in stale, off-palette colors.
+//
+//   APPROACH — semantic token mapping (zero React dependency):
+//   ────────────────────────────────────────────────────────────
+//   This file is a pure service module (no JSX, no hooks). It cannot call
+//   useTheme(). Instead we use the live COLORS singleton from theme.ts, which
+//   is mutated in-place by applyTheme() before any component re-renders. Every
+//   color accessor in this file reads COLORS fresh on each call, so the values
+//   it returns are always aligned with the active palette — no stale closures.
+//
+//   Each mode is assigned a SEMANTIC TOKEN KEY (a keyof ThemePalette) that
+//   captures the mode's *intent*, not a fixed hex. For example:
+//     • 'general'       → primary   (brand / default)
+//     • 'beginner'      → success   (positive, approachable green)
+//     • 'compare'       → info      (calm analytical blue)
+//     • 'contradictions'→ secondary (alert / contrast)
+//     • 'questions'     → warning   (exploration / orange)
+//     • 'summarize'     → accent    (creative purple-adjacent)
+//     • 'factcheck'     → pro       (gold / trustworthy authority)
+//
+//   The static `color` field on ModeConfig / QuickAction is kept for backward
+//   compatibility (it seeds the value at module-load time from the DEFAULT
+//   palette's token). UI components that need a *live* color at render time
+//   should call `getModeColor(mode)` or `getThemeAwareModeColor(mode)` instead
+//   of reading `config.color` directly.
+//
+//   New exports:
+//     getThemeAwareModeColor(mode, opacity?)  — reads COLORS live
+//     getThemeAwareModeColors()               — full map, read live
+//     MODE_TOKEN_KEYS                         — the semantic mapping table
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { chatCompletion, ChatMessage } from '../openaiClient';
+import { modelFor }                     from '../../constants/aiModels';
 import { ResearchReport, AssistantMode, AssistantMessage } from '../../types';
 import { RAGContext } from '../ragService';
+import { COLORS }    from '../../constants/theme';
+import type { ThemePalette } from '../../constants/themes';
 
 // ─── Re-export convenience ───────────────────────────────────────────────────
 
 export type { AssistantMode };
 
+// ─── Semantic token mapping ───────────────────────────────────────────────────
+// Each mode maps to a key on ThemePalette. getModeColor() reads COLORS[key]
+// at call time so it always returns the live, theme-aware value.
+// The mapping choices:
+//   general       → primary      brand default — the "home base" tone
+//   beginner      → success      welcoming, positive, easy-going green
+//   compare       → info         analytical, calm, data-oriented blue
+//   contradictions→ secondary    contrast / alert — stands out intentionally
+//   questions     → warning      exploration, curiosity, amber energy
+//   summarize     → accent       creative, slightly different from primary
+//   factcheck     → pro          authority, trust, gold-standard credibility
+
+export const MODE_TOKEN_KEYS: Record<AssistantMode, keyof ThemePalette> = {
+  general:        'primary',
+  beginner:       'success',
+  compare:        'info',
+  contradictions: 'secondary',
+  questions:      'warning',
+  summarize:      'accent',
+  factcheck:      'pro',
+};
+
 // ─── Mode Config (used by UI: ModeSelector, chips, etc.) ─────────────────────
+// `color` is seeded from the DEFAULT palette at module-load time so existing
+// code that reads config.color gets a reasonable value on first paint.
+// For live, theme-responsive colors call getModeColor() / getThemeAwareModeColor().
 
 export interface ModeConfig {
   mode: AssistantMode;
   label: string;
   description: string;
-  icon: string;   // Ionicons name
-  color: string;   // hex colour — theme-agnostic base color
+  icon: string;
+  /** Seeded from default palette at module load. Read live via getModeColor(). */
+  color: string;
   examplePrompts: string[];
 }
 
@@ -48,7 +99,7 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Ask Anything',
     description: 'RAG-powered Q&A using your report',
     icon: 'chatbubble-ellipses-outline',
-    color: '#6C63FF',
+    color: COLORS.primary,
     examplePrompts: [
       'What are the main takeaways?',
       'Who are the key companies involved?',
@@ -60,9 +111,9 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Explain Simply',
     description: 'Break this down for a complete beginner',
     icon: 'school-outline',
-    color: '#43E97B',
+    color: COLORS.success,
     examplePrompts: [
-      'Explain this like I\'m a beginner',
+      "Explain this like I'm a beginner",
       'What does this mean in simple terms?',
       'Can you use an analogy?',
     ],
@@ -72,11 +123,11 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Compare Topics',
     description: 'Side-by-side comparison with another topic',
     icon: 'git-compare-outline',
-    color: '#29B6F6',
+    color: COLORS.info,
     examplePrompts: [
       'Compare this with traditional approaches',
       'How does this compare to 5 years ago?',
-      'What\'s the difference between X and Y here?',
+      "What's the difference between X and Y here?",
     ],
   },
   {
@@ -84,7 +135,7 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Find Flaws',
     description: 'Identify gaps, contradictions & weak claims',
     icon: 'alert-circle-outline',
-    color: '#FF6584',
+    color: COLORS.secondary,
     examplePrompts: [
       'Find contradictions in this research',
       'What are the weakest claims here?',
@@ -96,7 +147,7 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Go Deeper',
     description: 'Generate follow-up research questions',
     icon: 'telescope-outline',
-    color: '#FFA726',
+    color: COLORS.warning,
     examplePrompts: [
       'What should I research next?',
       'Generate 10 deeper questions',
@@ -108,7 +159,7 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Summarize',
     description: 'Get a concise structured overview',
     icon: 'document-text-outline',
-    color: '#8B5CF6',
+    color: COLORS.accent,
     examplePrompts: [
       'Give me a quick TL;DR',
       'What are the 5 most important points?',
@@ -120,7 +171,7 @@ export const MODE_CONFIGS: ModeConfig[] = [
     label: 'Fact Check',
     description: 'Verify claims with confidence ratings',
     icon: 'shield-checkmark-outline',
-    color: '#FF8C00',
+    color: COLORS.pro,
     examplePrompts: [
       'How reliable is this data?',
       'Verify the statistics in this report',
@@ -134,36 +185,24 @@ export const MODE_CONFIG_MAP: Record<AssistantMode, ModeConfig> =
 
 // ─── Mode Auto-Detection ──────────────────────────────────────────────────────
 
-/**
- * Detect the most appropriate assistant mode from the user's query text.
- * Uses regex keyword matching — fast, no extra API call needed.
- *
- * Falls back to 'general' when no specific mode matches.
- */
 export function detectAssistantMode(query: string): AssistantMode {
   const q = query.toLowerCase().trim();
 
-  // Beginner / ELI5
   if (/\b(explain|eli5|simple|simpli|basic|beginner|layman|dummy|5[\s-]?year|child|newbie|clear|easy|understand|break\s*down|no jargon)\b/.test(q))
     return 'beginner';
 
-  // Contradiction / Critical
   if (/\b(contradict|inconsisten|conflict|disagree|flaw|weak|wrong|bias|gaps?|miss|incomplete|problem with|issue with|challenge|dispute|unreliable|question the)\b/.test(q))
     return 'contradictions';
 
-  // Questions / Go Deeper
   if (/\b(what else|what (more|other)|question|dig deeper|explore more|research more|further|next steps?|should (i|we) (look|research|explore)|investigate|follow.?up)\b/.test(q))
     return 'questions';
 
-  // Compare
   if (/\b(compar|vs\.?|versus|differ|similar|contrast|how does .+ compar|relationship between|side by side|benchmark|against)\b/.test(q))
     return 'compare';
 
-  // Summarize
   if (/\b(summar|brief|short(en)?|tl;?dr|recap|overview|key points|main points|bottom line|distill|condense|in a nutshell|quick)\b/.test(q))
     return 'summarize';
 
-  // Fact check
   if (/\b(fact.?check|verify|is it true|is .+ true|accurate|correct|source|evidence|proof|cite|citation|reliable|credible)\b/.test(q))
     return 'factcheck';
 
@@ -178,7 +217,6 @@ function buildSystemPrompt(
   ragContext: RAGContext,
 ): string {
 
-  // ── Report metadata header ────────────────────────────────────────────────
   const reportHeader = `
 RESEARCH REPORT: "${report.title}"
 ORIGINAL QUERY: ${report.query}
@@ -188,8 +226,6 @@ SOURCES ANALYZED: ${report.sourcesCount}
 CITATIONS: ${report.citations?.length ?? 0}
 `.trim();
 
-  // ── Context block ─────────────────────────────────────────────────────────
-  // If RAG retrieved relevant chunks, use them. Otherwise use the executive summary.
   const contextBlock = ragContext.contextText?.trim()
     ? `\n\nRESEARCH CONTEXT (semantically matched to your question):\n${ragContext.contextText}`
     : `\n\nREPORT SUMMARY:\n${(report.executiveSummary ?? '').slice(0, 1200)}`;
@@ -200,12 +236,10 @@ CITATIONS: ${report.citations?.length ?? 0}
 
   const baseContext = `${reportHeader}${contextBlock}${ragBadge}`;
 
-  // ── Mode-specific system prompts ──────────────────────────────────────────
   const coreInstruction = `You are DeepDive AI, an expert research assistant. You have just completed a comprehensive research report and are now helping the user explore it further.\n\n${baseContext}`;
 
   switch (mode) {
 
-    // ── General ──────────────────────────────────────────────────────────────
     case 'general':
       return `${coreInstruction}
 
@@ -222,7 +256,6 @@ RULES:
 - Format lists with - or 1. 2. 3.
 - Separate sections with --- for visual clarity`;
 
-    // ── Beginner ─────────────────────────────────────────────────────────────
     case 'beginner':
       return `${coreInstruction}
 
@@ -240,7 +273,6 @@ RULES:
 - Format with **bold** for key concepts and \`code\` for data points
 - Use emojis sparingly to add warmth (🎯, 💡, ✅)`;
 
-    // ── Compare ───────────────────────────────────────────────────────────────
     case 'compare':
       return `${coreInstruction}
 
@@ -270,7 +302,6 @@ RULES:
 - Use **bold** for key comparison points
 - Use \`code\` for statistical differences`;
 
-    // ── Contradictions ────────────────────────────────────────────────────────
     case 'contradictions':
       return `${coreInstruction}
 
@@ -295,7 +326,6 @@ FORMAT for each issue:
 Be constructive — the goal is stronger research, not tearing it down.
 Use **bold** for key terms and \`code\` for data points.`;
 
-    // ── Questions ─────────────────────────────────────────────────────────────
     case 'questions':
       return `${coreInstruction}
 
@@ -326,7 +356,6 @@ RULES:
 - Use **bold** for key terms in each question
 - Number questions clearly`;
 
-    // ── Summarize ─────────────────────────────────────────────────────────────
     case 'summarize':
       return `${coreInstruction}
 
@@ -357,7 +386,6 @@ RULES:
 - If the user asks to summarize a specific section, focus only on that
 - Use emojis sparingly for visual structure (📌, 📋, 💡, 📊, 🔮)`;
 
-    // ── Fact Check ────────────────────────────────────────────────────────────
     case 'factcheck':
       return `${coreInstruction}
 
@@ -388,16 +416,16 @@ RULES:
   }
 }
 
-// ─── Temperature & Token Config per Mode ─────────────────────────────────────
+// ─── Temperature & Token Config per Mode ──────────────────────────────────────
 
 const MODE_PARAMS: Record<AssistantMode, { temperature: number; maxTokens: number }> = {
-  general: { temperature: 0.40, maxTokens: 1000 },
-  beginner: { temperature: 0.70, maxTokens: 900 },
-  compare: { temperature: 0.40, maxTokens: 1200 },
+  general:        { temperature: 0.40, maxTokens: 1000 },
+  beginner:       { temperature: 0.70, maxTokens: 900  },
+  compare:        { temperature: 0.40, maxTokens: 1200 },
   contradictions: { temperature: 0.45, maxTokens: 1400 },
-  questions: { temperature: 0.75, maxTokens: 1500 },
-  summarize: { temperature: 0.30, maxTokens: 800 },
-  factcheck: { temperature: 0.25, maxTokens: 1200 },
+  questions:      { temperature: 0.75, maxTokens: 1500 },
+  summarize:      { temperature: 0.30, maxTokens: 800  },
+  factcheck:      { temperature: 0.25, maxTokens: 1200 },
 };
 
 // ─── Follow-up Suggestions ────────────────────────────────────────────────────
@@ -413,7 +441,7 @@ function getFollowUpSuggestions(mode: AssistantMode, topic: string): string[] {
     ],
     beginner: [
       'Can you give me another real-world analogy?',
-      'What\'s the most important thing to remember?',
+      "What's the most important thing to remember?",
       'How does this affect everyday people?',
     ],
     compare: [
@@ -433,13 +461,13 @@ function getFollowUpSuggestions(mode: AssistantMode, topic: string): string[] {
     ],
     summarize: [
       'Give me more detail on the most important finding',
-      'What\'s the most actionable insight from this?',
+      "What's the most actionable insight from this?",
       'Expand just the future predictions for me',
     ],
     factcheck: [
       'Which claims need the most independent verification?',
       'Where can I cross-check this data externally?',
-      'What\'s the overall trustworthiness of this report?',
+      "What's the overall trustworthiness of this report?",
     ],
   };
 
@@ -451,8 +479,8 @@ function getFollowUpSuggestions(mode: AssistantMode, topic: string): string[] {
 export interface AssistantResponse {
   content: string;
   mode: AssistantMode;
-  detectedMode: AssistantMode;   // mode auto-detected from query
-  appliedMode: AssistantMode;   // mode actually used (may differ if forced)
+  detectedMode: AssistantMode;
+  appliedMode: AssistantMode;
   suggestedFollowUps: string[];
   usedRAG: boolean;
   retrievedChunkCount: number;
@@ -461,15 +489,6 @@ export interface AssistantResponse {
 
 // ─── Main Agent Function ──────────────────────────────────────────────────────
 
-/**
- * Run the Research Assistant Agent for one turn.
- *
- * @param userQuery          The user's message
- * @param report             The research report being discussed
- * @param conversationHistory Previous messages (used for multi-turn context)
- * @param ragContext          Pre-fetched RAG context (chunks + contextText)
- * @param forcedMode         If provided, override auto-detection
- */
 export async function runResearchAssistantAgent(
   userQuery: string,
   report: ResearchReport,
@@ -478,27 +497,22 @@ export async function runResearchAssistantAgent(
   forcedMode?: AssistantMode,
 ): Promise<AssistantResponse> {
 
-  // ── Determine mode ────────────────────────────────────────────────────────
   const detectedMode = detectAssistantMode(userQuery);
-  const appliedMode = forcedMode ?? detectedMode;
+  const appliedMode  = forcedMode ?? detectedMode;
 
-  // ── Build system prompt ───────────────────────────────────────────────────
   const systemPrompt = buildSystemPrompt(appliedMode, report, ragContext);
 
-  // ── Conversation history (last 12 messages for context) ──────────────────
   const historyMsgs: ChatMessage[] = conversationHistory
     .slice(-12)
     .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-  // ── Enrich query with mode hint for non-general modes ────────────────────
-  // This helps the LLM maintain the right format even mid-conversation
   const enrichedQuery = appliedMode !== 'general' && !forcedMode
     ? `[Detected mode: ${appliedMode.toUpperCase()}]\n${userQuery}`
     : userQuery;
 
-  // ── Call GPT-4o ───────────────────────────────────────────────────────────
   const params = MODE_PARAMS[appliedMode];
 
+  // Part 56: STANDARD tier (gpt-4.1-mini) instead of gpt-4o.
   const content = await chatCompletion(
     [
       { role: 'system', content: systemPrompt },
@@ -507,14 +521,11 @@ export async function runResearchAssistantAgent(
     ],
     {
       temperature: params.temperature,
-      maxTokens: params.maxTokens,
-    }
+      maxTokens:   params.maxTokens,
+      model:       modelFor('assistantChat'),
+    },
   );
 
-  // ── Confidence ────────────────────────────────────────────────────────────
-  // High  = 3+ chunks with good similarity
-  // Medium = 1–2 chunks OR fallback context
-  // Low   = no vector context
   const avgSimilarity = ragContext.chunks.length > 0
     ? ragContext.chunks.reduce((s, c) => s + c.similarity, 0) / ragContext.chunks.length
     : 0;
@@ -530,23 +541,22 @@ export async function runResearchAssistantAgent(
     detectedMode,
     appliedMode,
     suggestedFollowUps: getFollowUpSuggestions(appliedMode, report.query),
-    usedRAG: ragContext.usedVectorSearch && ragContext.chunks.length > 0,
+    usedRAG:             ragContext.usedVectorSearch && ragContext.chunks.length > 0,
     retrievedChunkCount: ragContext.chunks.length,
     confidence,
   };
 }
 
 // ─── Preset Prompts ───────────────────────────────────────────────────────────
+// `color` seeds from live COLORS at module-load time; call
+// getThemeAwareModeColor(action.mode) at render time for live updates.
 
-/**
- * Pre-built query + mode pairs for the quick-action chips in the UI.
- * Each maps a user-facing label to a specific (query, mode) combination.
- */
 export interface QuickAction {
   label: string;
   query: string;
   mode: AssistantMode;
   icon: string;
+  /** Seeded at module-load time. Use getThemeAwareModeColor() at render time. */
   color: string;
 }
 
@@ -554,92 +564,130 @@ export const QUICK_ACTIONS: QuickAction[] = [
   {
     label: 'Explain Simply',
     query: 'Explain this research like I am a complete beginner with no background knowledge. Use analogies and simple language.',
-    mode: 'beginner',
-    icon: 'school-outline',
-    color: '#43E97B',
+    mode:  'beginner',
+    icon:  'school-outline',
+    color: COLORS.success,
   },
   {
     label: 'Find Contradictions',
     query: 'Find all contradictions, weak claims, and important gaps in this research. Be thorough and constructive.',
-    mode: 'contradictions',
-    icon: 'alert-circle-outline',
-    color: '#FF6584',
+    mode:  'contradictions',
+    icon:  'alert-circle-outline',
+    color: COLORS.secondary,
   },
   {
     label: 'Deeper Questions',
     query: 'Generate a comprehensive list of follow-up research questions at surface, intermediate, and expert levels. Cover technical, business, and societal angles.',
-    mode: 'questions',
-    icon: 'telescope-outline',
-    color: '#FFA726',
+    mode:  'questions',
+    icon:  'telescope-outline',
+    color: COLORS.warning,
   },
   {
     label: 'Quick Summary',
     query: 'Give me a concise TL;DR summary of the most important findings and what they mean. Include key statistics.',
-    mode: 'summarize',
-    icon: 'document-text-outline',
-    color: '#8B5CF6',
+    mode:  'summarize',
+    icon:  'document-text-outline',
+    color: COLORS.accent,
   },
   {
     label: 'Fact Check',
     query: 'Evaluate the reliability of the key claims and statistics in this report. Rate each claim and provide an overall assessment.',
-    mode: 'factcheck',
-    icon: 'shield-checkmark-outline',
-    color: '#FF8C00',
+    mode:  'factcheck',
+    icon:  'shield-checkmark-outline',
+    color: COLORS.pro,
   },
 ];
 
-// ─── Helper: Get Mode Color for Theme Integration ────────────────────────────
+// ─── Live Color Accessors ─────────────────────────────────────────────────────
+// These read from the COLORS singleton at call-time, so they always return the
+// current-theme value regardless of when the module was first imported.
 
 /**
- * Returns a mode's color with optional opacity for theme-aware styling.
- * This helps UI components apply consistent colors across all themes.
+ * Returns the live, theme-aware color for a given mode, with optional opacity.
+ * Reads COLORS fresh on every call — safe to use in render functions.
+ *
+ * @example
+ *   // In a React component:
+ *   <View style={{ backgroundColor: getThemeAwareModeColor(mode, 0.15) }} />
  */
-export function getModeColor(mode: AssistantMode, opacity: number = 1): string {
-  const config = MODE_CONFIG_MAP[mode];
-  if (!config) return `rgba(108,99,255,${opacity})`;
-  const hex = config.color;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+export function getThemeAwareModeColor(mode: AssistantMode, opacity: number = 1): string {
+  const tokenKey = MODE_TOKEN_KEYS[mode] ?? 'primary';
+  const hex      = String(COLORS[tokenKey]);
+  if (opacity === 1) return hex;
+  return hexWithOpacity(hex, opacity);
 }
 
 /**
- * Returns a mode's icon name for Ionicons.
+ * Returns the full map of live, theme-aware colors for every mode.
+ * Computed fresh on every call — never stale.
  */
+export function getThemeAwareModeColors(): Record<AssistantMode, string> {
+  return Object.fromEntries(
+    (Object.keys(MODE_TOKEN_KEYS) as AssistantMode[]).map(mode => [
+      mode,
+      getThemeAwareModeColor(mode),
+    ]),
+  ) as Record<AssistantMode, string>;
+}
+
+/**
+ * Legacy helper — kept for backward compatibility with existing callers.
+ * Now reads the live COLORS singleton via the semantic token mapping instead
+ * of a frozen hex string, so it IS theme-aware even though it hasn't been
+ * renamed. Existing call sites (getModeColor(mode)) require no changes.
+ */
+export function getModeColor(mode: AssistantMode, opacity: number = 1): string {
+  return getThemeAwareModeColor(mode, opacity);
+}
+
 export function getModeIcon(mode: AssistantMode): string {
   return MODE_CONFIG_MAP[mode]?.icon ?? 'chatbubble-ellipses-outline';
 }
 
-/**
- * Returns a mode's label for display.
- */
 export function getModeLabel(mode: AssistantMode): string {
   return MODE_CONFIG_MAP[mode]?.label ?? 'Ask Anything';
 }
 
-/**
- * Returns a mode's description for tooltips or empty states.
- */
 export function getModeDescription(mode: AssistantMode): string {
   return MODE_CONFIG_MAP[mode]?.description ?? 'RAG-powered Q&A using your report';
 }
 
-/**
- * Returns example prompts for a mode.
- */
 export function getModeExamples(mode: AssistantMode): string[] {
   return MODE_CONFIG_MAP[mode]?.examplePrompts ?? MODE_CONFIGS[0].examplePrompts;
 }
 
-// ─── Export all mode configs for easy iteration ──────────────────────────────
+// ─── Derived maps — computed fresh on import from live COLORS ─────────────────
+// MODE_COLORS is the one map that must stay live. We expose it as a getter
+// function rather than a frozen object so callers always get current values.
 
-export const ALL_MODES = MODE_CONFIGS.map(c => c.mode);
+export const ALL_MODES   = MODE_CONFIGS.map(c => c.mode);
 export const MODE_LABELS = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.label]));
-export const MODE_ICONS = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.icon]));
-export const MODE_COLORS = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.color]));
+export const MODE_ICONS  = Object.fromEntries(MODE_CONFIGS.map(c => [c.mode, c.icon]));
 
-// ─── Error Handling Helpers ──────────────────────────────────────────────────
+/**
+ * @deprecated Use getThemeAwareModeColors() for a live snapshot, or
+ *   getThemeAwareModeColor(mode) per-mode inside render functions.
+ *   This export is kept for backward compatibility but reflects the palette at
+ *   the time this module was first imported, not the current theme.
+ */
+export const MODE_COLORS = Object.fromEntries(
+  MODE_CONFIGS.map(c => [c.mode, c.color]),
+);
+
+// ─── Internal utility ─────────────────────────────────────────────────────────
+
+function hexWithOpacity(hex: string, opacity: number): string {
+  const clean = hex.replace('#', '');
+  const full  = clean.length === 3
+    ? clean.split('').map(ch => ch + ch).join('')
+    : clean;
+  const r = parseInt(full.substring(0, 2), 16) || 0;
+  const g = parseInt(full.substring(2, 4), 16) || 0;
+  const b = parseInt(full.substring(4, 6), 16) || 0;
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+// ─── Error Handling Helpers ───────────────────────────────────────────────────
 
 export interface AssistantError {
   code: 'RAG_UNAVAILABLE' | 'CONTEXT_TOO_LONG' | 'API_ERROR' | 'RATE_LIMIT' | 'UNKNOWN';
@@ -647,52 +695,46 @@ export interface AssistantError {
   retryable: boolean;
 }
 
-/**
- * Format an error for display in the chat UI.
- */
 export function formatAssistantError(error: unknown): AssistantError {
-  const err = error as any;
+  const err     = error as any;
   const message = err?.message ?? 'An unexpected error occurred.';
 
   if (message.includes('rate limit') || message.includes('429')) {
     return {
-      code: 'RATE_LIMIT',
-      message: 'Too many requests. Please wait a moment before trying again.',
+      code:      'RATE_LIMIT',
+      message:   'Too many requests. Please wait a moment before trying again.',
       retryable: true,
     };
   }
 
   if (message.includes('context') || message.includes('token')) {
     return {
-      code: 'CONTEXT_TOO_LONG',
-      message: 'The conversation is getting long. Please start a new chat or simplify your question.',
+      code:      'CONTEXT_TOO_LONG',
+      message:   'The conversation is getting long. Please start a new chat or simplify your question.',
       retryable: false,
     };
   }
 
   if (message.includes('RAG') || message.includes('embedding') || message.includes('vector')) {
     return {
-      code: 'RAG_UNAVAILABLE',
-      message: 'Semantic search is unavailable. Using keyword fallback mode. Please try again.',
+      code:      'RAG_UNAVAILABLE',
+      message:   'Semantic search is unavailable. Using keyword fallback mode. Please try again.',
       retryable: true,
     };
   }
 
   return {
-    code: 'API_ERROR',
-    message: 'Something went wrong. Please try again in a moment.',
+    code:      'API_ERROR',
+    message:   'Something went wrong. Please try again in a moment.',
     retryable: true,
   };
 }
 
-/**
- * Check if an error is retryable.
- */
 export function isRetryableError(error: AssistantError): boolean {
   return error.retryable;
 }
 
-// ─── Streaming Support (for future implementation) ──────────────────────────
+// ─── Streaming Support (interface ready; uses non-streaming under the hood) ───
 
 export interface StreamChunk {
   type: 'start' | 'content' | 'end' | 'error';
@@ -705,10 +747,6 @@ export interface StreamChunk {
   error?: AssistantError;
 }
 
-/**
- * Placeholder for streaming implementation.
- * Currently uses the non-streaming API, but this interface is ready for future upgrade.
- */
 export async function* streamResearchAssistantAgent(
   userQuery: string,
   report: ResearchReport,
@@ -722,39 +760,35 @@ export async function* streamResearchAssistantAgent(
       report,
       conversationHistory,
       ragContext,
-      forcedMode
+      forcedMode,
     );
 
     yield {
-      type: 'start',
+      type:     'start',
       metadata: {
-        mode: response.mode,
-        confidence: response.confidence,
+        mode:                response.mode,
+        confidence:          response.confidence,
         retrievedChunkCount: response.retrievedChunkCount,
       },
     };
 
-    // Simulate streaming by sending the content in chunks
     const words = response.content.split(' ');
-    let buffer = '';
+    let buffer  = '';
     for (let i = 0; i < words.length; i++) {
       buffer += words[i] + ' ';
       if (buffer.length > 20 || i % 3 === 0) {
         yield { type: 'content', content: buffer };
         buffer = '';
-        // Yield control to the event loop for smooth UI updates
         await new Promise(resolve => setImmediate(resolve));
       }
     }
-    if (buffer) {
-      yield { type: 'content', content: buffer };
-    }
+    if (buffer) yield { type: 'content', content: buffer };
 
     yield { type: 'end' };
 
   } catch (error) {
     yield {
-      type: 'error',
+      type:  'error',
       error: formatAssistantError(error),
     };
   }

@@ -1,6 +1,11 @@
 // src/lib/ragPublic.ts
 // Public-Reports — RAG pipeline for public visitors
 //
+// Part 56 — Cost reduction: CHAT_MODEL moved from 'gpt-4o-mini' to 'gpt-4.1-nano'
+//           (cheaper $0.10/$0.40 and newer). Keep in sync with PUBLIC_CHAT_MODEL
+//           in src/constants/aiModels.ts. Public chat answers are short grounded
+//           RAG responses — the nano tier handles them as well as gpt-4o-mini.
+//
 // Mirrors the logic from the React Native app's ragService.ts + vectorStore.ts
 // but adapted for the server-side Next.js environment:
 //   - No user auth required — uses share_id to scope embeddings
@@ -16,7 +21,9 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 const EMBEDDING_DIM   = 1536;
-const CHAT_MODEL      = 'gpt-4o-mini'; // cost-effective for public chat
+// Part 56: nano tier — cheaper ($0.10/$0.40) and newer than gpt-4o-mini.
+// Keep in sync with PUBLIC_CHAT_MODEL in src/constants/aiModels.ts.
+const CHAT_MODEL      = 'gpt-4.1-nano'; // cost-effective for public chat
 
 // ─── Embed query ──────────────────────────────────────────────────────────────
 

@@ -1,10 +1,26 @@
 // src/components/research/InfographicCard.tsx
 // ─────────────────────────────────────────────────────────────────────────────
 // Infographics Panel — FULL THEME COMPATIBILITY
+//
+// Part 57 — Key Metrics no longer truncate:
+//   • Stat VALUE used a fixed lineHeight inside a fixed-height card, clipping
+//     long values ("$142.5B", "23.4M users", "1,250"). The value font is now
+//     pre-scaled by length AND set to auto-fit one line (numberOfLines={1} +
+//     adjustsFontSizeToFit + minimumFontScale), so it always renders in full.
+//     (Note: `adjustsFontSizeToFit` is the correct Text prop —
+//     `adjustsFontSizeToFitWidth` is a TextInput-only prop and does not exist on
+//     <Text>, which was the type error.)
+//   • Card grows with content (minHeight is a floor) and label wraps up to 3
+//     lines on the compact card.
+//   • TAP TO EXPAND: when a metric's label/value/change is long enough that the
+//     compact card can't show it all, the card becomes tappable and shows an
+//     "expand" icon + "Tap to expand" hint. Tapping opens a modal that renders
+//     the FULL value, change, and description with no truncation (scrollable).
+//     Short cards stay static and non-interactive.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useMemo } from 'react';
-import { View, Text, Dimensions } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, Text, Dimensions, Pressable, Modal, ScrollView } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -14,6 +30,7 @@ import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 import { useTheme } from '../../context/ThemeContext';
 
 const SCREEN_W = Dimensions.get('window').width;
+const SCREEN_H = Dimensions.get('window').height;
 
 const PALETTE = [
   '#6C63FF', '#4FACFE', '#43E97B', '#FA709A',
@@ -66,6 +83,7 @@ function SectionLabel({ icon, text }: { icon: string; text: string }) {
 
 function StatCard({ stat }: { stat: InfographicStat }) {
   const { isLight } = useTheme();
+  const [expanded, setExpanded] = useState(false);
   const accent = stat.color ?? COLORS.primary;
   const changeColor =
     stat.changeType === 'positive' ? COLORS.success
@@ -75,13 +93,30 @@ function StatCard({ stat }: { stat: InfographicStat }) {
   const bgGradient: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1C1C3A', '#13132B'];
   const gradientColors: readonly [string, string] = [accent, `${accent}99`] as const;
 
-  return (
+  // Part 57: scale the value font down for long values so they fit on the card.
+  const valueLen = (stat.value ?? '').length;
+  const valueFontSize =
+    valueLen > 14 ? FONTS.sizes.md
+    : valueLen > 10 ? FONTS.sizes.lg
+    : valueLen > 7  ? FONTS.sizes.xl
+    : FONTS.sizes['2xl'];
+
+  // Part 57: show the "expand" affordance/hint when content is long enough that
+  // the compact card might clip it. Thresholds lowered so typical long labels
+  // qualify. Independent of this, EVERY card is tappable to open the full view —
+  // so expand always works even if a card isn't flagged "long".
+  const labelLen  = (stat.label ?? '').length;
+  const changeLen = (stat.change ?? '').length;
+  const isLong = labelLen > 38 || valueLen > 12 || changeLen > 14;
+
+  const card = (
     <View style={{
       borderRadius: RADIUS.xl,
       overflow: 'hidden',
       borderWidth: 1,
       borderColor: `${accent}33`,
-      minHeight: 116,
+      // Part 57: floor only — the card grows with content.
+      minHeight: 124,
     }}>
       <LinearGradient
         colors={bgGradient}
@@ -93,33 +128,49 @@ function StatCard({ stat }: { stat: InfographicStat }) {
           backgroundColor: `${accent}22`,
         }} />
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+        {/* Header row: icon + label. */}
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10, gap: 9 }}>
           <LinearGradient
             colors={gradientColors}
             style={{
               width: 34, height: 34, borderRadius: 11,
               alignItems: 'center', justifyContent: 'center',
-              marginRight: 9, flexShrink: 0,
+              flexShrink: 0, marginTop: 1,
             }}
           >
             <Ionicons name={(stat.icon ?? 'stats-chart') as any} size={16} color="#FFF" />
           </LinearGradient>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1 }} numberOfLines={2}>
+          <Text
+            style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1, lineHeight: 16 }}
+            numberOfLines={3}
+          >
             {stat.label}
           </Text>
+          {isLong && (
+            <Ionicons name="expand-outline" size={13} color={`${accent}AA`} style={{ flexShrink: 0, marginTop: 2 }} />
+          )}
         </View>
 
-        <Text style={{
-          color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'],
-          fontWeight: '900', lineHeight: 32, letterSpacing: -0.5,
-        }}>
+        {/* Value: size pre-scaled by length AND auto-fit to one line. */}
+        <Text
+          style={{
+            color: COLORS.textPrimary,
+            fontSize: valueFontSize,
+            fontWeight: '900',
+            letterSpacing: -0.5,
+          }}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.5}
+          allowFontScaling={false}
+        >
           {stat.value}
         </Text>
 
         {stat.change ? (
           <View style={{
             flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
-            marginTop: 7, gap: 4,
+            marginTop: 8, gap: 4, maxWidth: '100%',
             backgroundColor: `${changeColor}18`,
             borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3,
           }}>
@@ -127,13 +178,143 @@ function StatCard({ stat }: { stat: InfographicStat }) {
               name={stat.changeType === 'positive' ? 'trending-up' : stat.changeType === 'negative' ? 'trending-down' : 'remove'}
               size={11} color={changeColor}
             />
-            <Text style={{ color: changeColor, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{stat.change}</Text>
+            <Text
+              style={{ color: changeColor, fontSize: FONTS.sizes.xs, fontWeight: '700', flexShrink: 1 }}
+              numberOfLines={1}
+            >
+              {stat.change}
+            </Text>
           </View>
         ) : (
           <View style={{ height: 2, width: 38, borderRadius: 2, backgroundColor: `${accent}66`, marginTop: 12 }} />
         )}
+
+        {/* "Tap to expand" hint, only on long cards. */}
+        {isLong && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 }}>
+            <Ionicons name="finger-print-outline" size={10} color={`${accent}99`} />
+            <Text style={{ color: `${accent}99`, fontSize: 9.5, fontWeight: '700' }}>Tap to expand</Text>
+          </View>
+        )}
       </LinearGradient>
     </View>
+  );
+
+  // Part 57: the WHOLE card is always tappable to open the full-detail modal —
+  // this guarantees expand works regardless of content length or any parent
+  // wrapper. The "expand" icon + hint are shown only when content is long, but
+  // tapping anywhere on any card opens the modal.
+  return (
+    <>
+      <Pressable
+        onPress={() => setExpanded(true)}
+        style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
+        android_ripple={{ color: `${accent}22` }}
+      >
+        {card}
+      </Pressable>
+
+      <StatDetailModal
+        visible={expanded}
+        stat={stat}
+        accent={accent}
+        changeColor={changeColor}
+        isLight={isLight}
+        onClose={() => setExpanded(false)}
+      />
+    </>
+  );
+}
+
+// ── Full-content modal for long stat cards ──────────────────────────────────────
+
+function StatDetailModal({
+  visible, stat, accent, changeColor, isLight, onClose,
+}: {
+  visible: boolean;
+  stat: InfographicStat;
+  accent: string;
+  changeColor: string;
+  isLight: boolean;
+  onClose: () => void;
+}) {
+  const sheetGradient: readonly [string, string] = isLight ? ['#F5F6FB', '#FFFFFF'] : ['#1A1A38', '#0A0A1A'];
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: SPACING.lg }}
+        onPress={onClose}
+      >
+        <Pressable onPress={e => e.stopPropagation()}>
+          <View style={{ borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: `${accent}55` }}>
+            <LinearGradient colors={sheetGradient} style={{ padding: SPACING.lg }}>
+              {/* Header */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.md }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, flex: 1 }}>
+                  <LinearGradient
+                    colors={[accent, `${accent}99`] as const}
+                    style={{ width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                  >
+                    <Ionicons name={(stat.icon ?? 'stats-chart') as any} size={19} color="#FFF" />
+                  </LinearGradient>
+                  <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', flex: 1 }}>
+                    Key Metric
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={onClose}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  style={{
+                    width: 32, height: 32, borderRadius: 10,
+                    backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)',
+                    alignItems: 'center', justifyContent: 'center',
+                    borderWidth: 1, borderColor: COLORS.border, flexShrink: 0,
+                  }}
+                >
+                  <Ionicons name="close" size={16} color={COLORS.textMuted} />
+                </Pressable>
+              </View>
+
+              <ScrollView style={{ maxHeight: SCREEN_H * 0.5 }} showsVerticalScrollIndicator={false}>
+                {/* Full value — wraps fully, no truncation */}
+                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '900', letterSpacing: -0.5, lineHeight: 36 }}>
+                  {stat.value}
+                </Text>
+
+                {/* Change pill */}
+                {stat.change ? (
+                  <View style={{
+                    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
+                    marginTop: 10, gap: 5,
+                    backgroundColor: `${changeColor}18`,
+                    borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5,
+                  }}>
+                    <Ionicons
+                      name={stat.changeType === 'positive' ? 'trending-up' : stat.changeType === 'negative' ? 'trending-down' : 'remove'}
+                      size={13} color={changeColor}
+                    />
+                    <Text style={{ color: changeColor, fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
+                      {stat.change}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {/* Full label — the part that was being truncated */}
+                <View style={{ marginTop: SPACING.lg }}>
+                  <Text style={{ color: COLORS.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 6 }}>
+                    Description
+                  </Text>
+                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.base, lineHeight: 24 }}>
+                    {stat.label}
+                  </Text>
+                </View>
+              </ScrollView>
+            </LinearGradient>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 

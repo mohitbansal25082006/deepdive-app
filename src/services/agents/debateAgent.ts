@@ -1,15 +1,13 @@
 // src/services/agents/debateAgent.ts
-// Part 20 — Updated: injects imported research report context into each agent
-// prompt so debates are grounded in verified facts + web search for latest info.
-//
-// Changes from Part 9:
-//   • runDebateAgent now accepts optional DebateReportContext
-//   • buildReportContextBlock() injects report findings/stats into prompts
-//   • Search queries are enriched using report's key themes when available
-//   • Confidence rubric unchanged — still honest evidence-based scoring
+// Part 20 — injects imported research report context into each agent prompt.
+// Part 56 — Cost routing:
+//   • generateSearchQueries → NANO (mechanical query generation)
+//   • generatePerspective   → STANDARD (argued, evidence-backed perspective)
+//   Confidence rubric and report-context logic unchanged.
 
 import { chatCompletionJSON }     from '../openaiClient';
 import { serpSearchBatch }        from '../serpApiClient';
+import { modelFor }               from '../../constants/aiModels';
 import {
   DebateAgentRole,
   DebatePerspective,
@@ -18,7 +16,6 @@ import {
   Citation,
 } from '../../types';
 
-// Import the new Part 20 type — merge this into src/types/index.ts
 export interface DebateReportContext {
   reportId:         string;
   reportTitle:      string;
@@ -117,8 +114,6 @@ Your role's inherent optimism/skepticism should NOT inflate or deflate this scor
 it measures evidence quality, not your conviction.`.trim();
 
 // ─── Part 20: Build report context block ─────────────────────────────────────
-// Formats the imported research report into a structured prompt section
-// that agents use as a verified knowledge base alongside web search.
 
 function buildReportContextBlock(ctx: DebateReportContext): string {
   const lines: string[] = [
@@ -171,8 +166,7 @@ function buildReportContextBlock(ctx: DebateReportContext): string {
   return lines.join('\n');
 }
 
-// ─── Search query generation ──────────────────────────────────────────────────
-// Part 20: enriches queries with report themes when a report is available
+// ─── Search query generation (NANO) ───────────────────────────────────────────
 
 async function generateSearchQueries(
   topic:         string,
@@ -180,8 +174,6 @@ async function generateSearchQueries(
   roleDef:       RoleDefinition,
   reportContext: DebateReportContext | null,
 ): Promise<string[]> {
-  // Build a hint about what the report already covers so web search
-  // adds NEW information rather than duplicating report content.
   const reportHint = reportContext
     ? `\nNote: We already have a research report covering: ${reportContext.keyThemes.slice(0, 4).join(', ')}. Your web searches should find RECENT updates (2024-2025) and angles NOT already in the report.`
     : '';
@@ -212,7 +204,7 @@ Rules:
 Return ONLY valid JSON: {"queries": ["query 1", "query 2", "query 3", "query 4"]}`,
         },
       ],
-      { temperature: 0.3, maxTokens: 400 },
+      { temperature: 0.3, maxTokens: 400, model: modelFor('debateSearchQuery') }, // ← Part 56 NANO
     );
 
     if (Array.isArray(result?.queries) && result.queries.length > 0) {
@@ -233,7 +225,7 @@ function getFallbackQueries(topic: string, roleDef: RoleDefinition): string[] {
   ];
 }
 
-// ─── Perspective generation ───────────────────────────────────────────────────
+// ─── Perspective generation (STANDARD) ────────────────────────────────────────
 
 interface DebatePerspectiveRaw {
   stanceLabel:  string;
@@ -264,12 +256,10 @@ async function generatePerspective(
       ? 'NOTE: Limited web search results available. Supplement with the research report data above. Calibrate confidence accordingly (likely 4-6).'
       : 'Both the research report AND fresh web search results are available above. Calibrate confidence based on consistency between them.';
 
-  // Part 20: prepend report context block if available
   const reportBlock = reportContext
     ? buildReportContextBlock(reportContext)
     : '';
 
-  // Part 20: add instruction to reference report when available
   const reportInstruction = reportContext
     ? `\nIMPORTANT: You have an imported research report above with verified findings and statistics. You MUST:\n  1. Reference specific data points from the report (cite as "per the research report" or use the report's citation URLs)\n  2. Combine report data with new web search findings to create the strongest possible argument\n  3. If web search CONTRADICTS the report, acknowledge the discrepancy honestly\n`
     : '';
@@ -329,7 +319,7 @@ IMPORTANT: The confidence field must be an integer you have genuinely computed u
       { role: 'system', content: roleDef.systemPrompt },
       { role: 'user',   content: userPrompt },
     ],
-    { temperature: 0.65, maxTokens: 2600 },
+    { temperature: 0.65, maxTokens: 2600, model: modelFor('debatePerspective') }, // ← Part 56 STANDARD
   );
 }
 
@@ -340,16 +330,12 @@ export async function runDebateAgent(
   question:      string,
   role:          DebateAgentRole,
   onProgress?:   (detail: string) => void,
-  reportContext: DebateReportContext | null = null,  // Part 20: new param
+  reportContext: DebateReportContext | null = null,
 ): Promise<DebatePerspective> {
   const roleDef = ROLE_DEFINITIONS[role];
 
-  // ── Step 1: Generate search queries ──────────────────────────────────────
-
   onProgress?.(`${roleDef.label}: Planning research queries...`);
   const searchQueries = await generateSearchQueries(topic, role, roleDef, reportContext);
-
-  // ── Step 2: Web search ────────────────────────────────────────────────────
 
   onProgress?.(`${roleDef.label}: Searching for latest evidence...`);
   const searchBatches = await serpSearchBatch(searchQueries);
@@ -372,7 +358,6 @@ export async function runDebateAgent(
     )
     .join('\n\n');
 
-  // Build citations from web results
   const sourcesUsed: Citation[] = allResults.slice(0, 7).map((r, i) => ({
     id:      `${role}-src-${i}`,
     title:   r.title   ?? 'Untitled',
@@ -382,7 +367,6 @@ export async function runDebateAgent(
     snippet: (r.snippet ?? '').slice(0, 200),
   }));
 
-  // Part 20: also include report citations as sources
   if (reportContext) {
     reportContext.citations.slice(0, 4).forEach((c, i) => {
       sourcesUsed.push({
@@ -395,8 +379,6 @@ export async function runDebateAgent(
     });
   }
 
-  // ── Step 3: Generate perspective ──────────────────────────────────────────
-
   onProgress?.(`${roleDef.label}: Forming arguments...`);
   const raw = await generatePerspective(
     topic,
@@ -406,8 +388,6 @@ export async function runDebateAgent(
     allResults.length,
     reportContext,
   );
-
-  // ── Step 4: Hydrate, validate, clamp confidence ───────────────────────────
 
   const hydratedArguments: DebateArgument[] = (raw.arguments ?? [])
     .slice(0, 4)
@@ -432,8 +412,6 @@ export async function runDebateAgent(
     ? parseFloat(rawConfidence as string)
     : NaN;
 
-  // Part 20: if report context is present, baseline fallback is slightly higher
-  // because we at least have report data even if web search was sparse
   const confidenceFallback = reportContext
     ? (allResults.length === 0 ? 5 : allResults.length < 4 ? 6 : 7)
     : (allResults.length === 0 ? 3 : allResults.length < 4 ? 4 : 6);

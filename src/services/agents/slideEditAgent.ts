@@ -1,22 +1,15 @@
 // src/services/agents/slideEditAgent.ts
-// Part 28 — AI editing agent: FULL REWRITE
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// CHANGES:
-//   1. All prompts are STRICT — model is forbidden from adding essays, lists,
-//      or explanations. Every operation returns ONLY the exact output requested.
-//   2. rewriteText now knows what KIND of field it's editing (title vs body vs
-//      bullet) and adjusts output length constraints accordingly.
-//   3. rewriteBullets() — rewrites an ENTIRE bullets array in one shot,
-//      preserving count, applying style to each item.
-//   4. rewriteSingleBullet() — rewrites ONE bullet point item.
-//   5. generateSlide() prompts are tightened — model MUST return exactly the
-//      fields needed for the chosen layout; no filler body text on bullet slides.
-//   6. generateSpeakerNotes() — strict 2-sentence cap unless slide is complex.
-//   7. suggestLayout() — unchanged but with tighter JSON contract.
+// Part 28 — AI editing agent: FULL REWRITE.
+// Part 56 — Cost routing:
+//   • rewriteText / rewriteBullets / rewriteSingleBullet → NANO (mechanical
+//     short-text edits — strict length-bounded outputs).
+//   • generateSlide → STANDARD (creating a new slide is more open-ended).
+//   • generateSpeakerNotes → NANO (2 sentences).
+//   • suggestLayout → NANO (tiny JSON classification).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { chatCompletion, chatCompletionJSON } from '../openaiClient';
+import { modelFor }                           from '../../constants/aiModels';
 import type {
   PresentationSlide,
   SlideLayout,
@@ -50,8 +43,6 @@ function classifyField(fieldKey: string): FieldKind {
   return 'title';
 }
 
-// ─── Length constraints per field kind and style ──────────────────────────────
-
 const LENGTH_RULES: Record<FieldKind, Record<AIRewriteStyle, string>> = {
   title: {
     shorter:  'Max 8 words. A punchy slide title only.',
@@ -80,7 +71,7 @@ const LENGTH_RULES: Record<FieldKind, Record<AIRewriteStyle, string>> = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. REWRITE A SINGLE TEXT FIELD
+// 1. REWRITE A SINGLE TEXT FIELD (NANO)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const REWRITE_BASE_SYSTEM = (fieldKind: FieldKind, style: AIRewriteStyle, rule: string) =>
@@ -122,7 +113,7 @@ export async function rewriteText(
       { role: 'system', content: REWRITE_BASE_SYSTEM(kind, style, rule) },
       { role: 'user',   content: userMsg },
     ],
-    { temperature: 0.55, maxTokens: kind === 'body' ? 200 : 80 },
+    { temperature: 0.55, maxTokens: kind === 'body' ? 200 : 80, model: modelFor('slideRewrite') }, // ← Part 56 NANO
   );
 
   return result
@@ -132,7 +123,7 @@ export async function rewriteText(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. REWRITE AN ENTIRE BULLETS ARRAY
+// 2. REWRITE AN ENTIRE BULLETS ARRAY (NANO)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const REWRITE_BULLETS_SYSTEM = (style: AIRewriteStyle, count: number) =>
@@ -145,30 +136,23 @@ STRICT OUTPUT RULES:
 - Do NOT include any text before or after the array.
 - If you cannot rewrite a bullet, copy it verbatim as-is.`;
 
-/** Parse the model's raw text into a string array, handling all common model output shapes */
 function parseBulletsResponse(raw: string, expected: number, fallback: string[]): string[] {
   let text = raw.trim();
 
-  // Strip markdown code fences: ```json ... ``` or ``` ... ```
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
 
-  // If model wrapped in object e.g. {"bullets":["a","b"]} or {"items":["a","b"]}
-  // Try to extract the first array value from the object
   const objMatch = text.match(/\{[^}]*"[^"]+"\s*:\s*(\[[\s\S]*\])/);
   if (objMatch) text = objMatch[1].trim();
 
-  // Now try to parse as JSON array
   try {
     const parsed = JSON.parse(text);
     if (Array.isArray(parsed)) {
       const strings = parsed.map(s =>
         typeof s === 'string' ? s.trim() : String(s).trim(),
       ).filter(s => s.length > 0);
-      // Pad with originals if too short; trim if too long
       while (strings.length < expected) strings.push(fallback[strings.length] ?? '');
       return strings.slice(0, expected);
     }
-    // If it parsed to an object, try to find the first array property
     if (typeof parsed === 'object' && parsed !== null) {
       const firstArray = Object.values(parsed).find(v => Array.isArray(v)) as string[] | undefined;
       if (firstArray) {
@@ -180,10 +164,9 @@ function parseBulletsResponse(raw: string, expected: number, fallback: string[])
       }
     }
   } catch {
-    // JSON.parse failed — fall through to line-by-line extraction
+    // fall through
   }
 
-  // Last resort: extract quoted strings or numbered/dashed lines
   const lineMatches = text.match(/"([^"]+)"/g);
   if (lineMatches && lineMatches.length > 0) {
     const strings = lineMatches
@@ -193,7 +176,6 @@ function parseBulletsResponse(raw: string, expected: number, fallback: string[])
     return strings.slice(0, expected);
   }
 
-  // Absolute fallback: split by newlines, strip numbering/dashes
   const lines = text
     .split(/\n/)
     .map(l => l.replace(/^[\d.\-•*\s]+/, '').replace(/^["'`]|["'`]$/g, '').trim())
@@ -204,7 +186,6 @@ function parseBulletsResponse(raw: string, expected: number, fallback: string[])
     return lines.slice(0, expected);
   }
 
-  // Nothing worked — return originals unchanged
   return fallback;
 }
 
@@ -218,21 +199,19 @@ export async function rewriteBullets(
   const numbered = bullets.map((b, i) => `${i + 1}. ${b}`).join('\n');
   const context  = report ? `\n\nContext: ${buildReportContext(report)}` : '';
 
-  // Use chatCompletion (plain text) instead of chatCompletionJSON — gives us
-  // full control over parsing and handles all model output variations robustly.
   const raw = await chatCompletion(
     [
       { role: 'system', content: REWRITE_BULLETS_SYSTEM(style, bullets.length) },
       { role: 'user',   content: `Rewrite these ${bullets.length} bullets:\n${numbered}${context}` },
     ],
-    { temperature: 0.5, maxTokens: bullets.length * 25 + 80 },
+    { temperature: 0.5, maxTokens: bullets.length * 25 + 80, model: modelFor('slideRewrite') }, // ← Part 56 NANO
   );
 
   return parseBulletsResponse(raw, bullets.length, bullets);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. REWRITE A SINGLE BULLET POINT
+// 3. REWRITE A SINGLE BULLET POINT (NANO)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SINGLE_BULLET_SYSTEM = (style: AIRewriteStyle) =>
@@ -250,7 +229,7 @@ export async function rewriteSingleBullet(
       { role: 'system', content: SINGLE_BULLET_SYSTEM(style) },
       { role: 'user',   content: `Bullet: ${bullet}` },
     ],
-    { temperature: 0.5, maxTokens: 40 },
+    { temperature: 0.5, maxTokens: 40, model: modelFor('slideRewrite') }, // ← Part 56 NANO
   );
 
   return result
@@ -260,7 +239,7 @@ export async function rewriteSingleBullet(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. GENERATE A NEW SLIDE
+// 4. GENERATE A NEW SLIDE (STANDARD)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GENERATE_SLIDE_SYSTEM = `You are an expert presentation designer. Generate exactly ONE polished presentation slide.
@@ -325,7 +304,7 @@ Choose the best layout for this content. Follow all layout rules strictly.`;
       { role: 'system', content: GENERATE_SLIDE_SYSTEM },
       { role: 'user',   content: userMsg },
     ],
-    { temperature: 0.45, maxTokens: 700 },
+    { temperature: 0.45, maxTokens: 700, model: modelFor('slideGenerateOne') }, // ← Part 56 STANDARD
   );
 
   const VALID_LAYOUTS: SlideLayout[] = [
@@ -337,7 +316,6 @@ Choose the best layout for this content. Follow all layout rules strictly.`;
     ? (raw.layout as SlideLayout)
     : 'content';
 
-  // Normalise bullets — strip any accidental numbering
   const bullets: string[] = Array.isArray(raw.bullets)
     ? raw.bullets
         .filter((b): b is string => typeof b === 'string' && b.trim().length > 0)
@@ -348,7 +326,6 @@ Choose the best layout for this content. Follow all layout rules strictly.`;
     ? raw.stats.filter(s => s && typeof s.value === 'string' && typeof s.label === 'string')
     : [];
 
-  // Enforce layout contract — ensure correct fields are populated
   const isBulletLayout = ['bullets', 'agenda', 'predictions', 'references'].includes(layout);
   const isStatsLayout  = layout === 'stats';
   const isBodyLayout   = ['content', 'chart_ref'].includes(layout);
@@ -360,9 +337,7 @@ Choose the best layout for this content. Follow all layout rules strictly.`;
                         ? raw.title.trim().slice(0, 120)
                         : 'New Slide',
     subtitle:         typeof raw.subtitle === 'string' ? raw.subtitle.trim() || undefined : undefined,
-    // Enforce: body only for content/chart_ref layouts
     body:             isBodyLayout && typeof raw.body === 'string' ? raw.body.trim() || undefined : undefined,
-    // Enforce: bullets only for bullet-type layouts
     bullets:          isBulletLayout && bullets.length > 0 ? bullets : undefined,
     stats:            isStatsLayout  && stats.length  > 0 ? stats  : undefined,
     quote:            layout === 'quote'   && typeof raw.quote === 'string' ? raw.quote.trim() || undefined : undefined,
@@ -378,7 +353,7 @@ Choose the best layout for this content. Follow all layout rules strictly.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. GENERATE SPEAKER NOTES
+// 5. GENERATE SPEAKER NOTES (NANO)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NOTES_SYSTEM = `You are a professional presentation coach. Write exactly 2 short, natural speaker notes sentences for the given slide.
@@ -407,7 +382,7 @@ export async function generateSpeakerNotes(
       { role: 'system', content: NOTES_SYSTEM },
       { role: 'user',   content: userMsg },
     ],
-    { temperature: 0.5, maxTokens: 160 },
+    { temperature: 0.5, maxTokens: 160, model: modelFor('slideNotes') }, // ← Part 56 NANO
   );
 
   return result
@@ -417,7 +392,7 @@ export async function generateSpeakerNotes(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. SUGGEST LAYOUT
+// 6. SUGGEST LAYOUT (NANO)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LAYOUT_SYSTEM = `You are a slide design expert. Analyze the slide and suggest the single best layout.
@@ -451,7 +426,7 @@ export async function suggestLayout(
         { role: 'system', content: LAYOUT_SYSTEM },
         { role: 'user',   content: `Slide:\n${parts.join('\n')}\n\nSuggest the best layout.` },
       ],
-      { temperature: 0.25, maxTokens: 120 },
+      { temperature: 0.25, maxTokens: 120, model: modelFor('slideLayoutSuggest') }, // ← Part 56 NANO
     );
 
     return {

@@ -1,16 +1,16 @@
 // src/services/debateOrchestrator.ts
 // Part 20 — passes DebateReportContext to every debate agent.
-// Part 53G — AbortSignal support at the pipeline level: checks signal.aborted
-//   between phases (before agents, before moderator, before save) and marks the
-//   row 'cancelled', so a cancelled debate stops progressing and never surfaces.
-//   The topic-refinement call aborts immediately; the parallel agent calls are
-//   short single-shot calls, so cancel takes effect at the next phase boundary.
+// Part 53G — AbortSignal support at the pipeline level.
+// Part 56 — Cost: the only direct LLM call here (refineTopicToQuestion: topic →
+//   debatable question) is routed to NANO. All agent/moderator model routing is
+//   handled inside debateAgent.ts / moderatorAgent.ts.
 
 import { supabase }           from '../lib/supabase';
 import { chatCompletionJSON } from './openaiClient';
 import { runDebateAgent, ROLE_DEFINITIONS } from './agents/debateAgent';
 import type { DebateReportContext } from './agents/debateAgent';
 import { runModeratorAgent }  from './agents/moderatorAgent';
+import { modelFor }           from '../constants/aiModels';
 import {
   DebateAgentRole,
   DebatePerspective,
@@ -54,7 +54,7 @@ Convert this into one clear, specific debatable question that:
 
 Return ONLY: {"question": "The refined question?"}` },
       ],
-      { temperature: 0.3, maxTokens: 120, signal },
+      { temperature: 0.3, maxTokens: 120, signal, model: modelFor('debateRefineTopic') }, // ← Part 56 NANO
     );
     return (result?.question?.trim()) || topic;
   } catch (err) {
@@ -68,7 +68,7 @@ export async function runDebatePipeline(
   topic:     string,
   config:    DebateConfigV2,
   callbacks: DebateOrchestratorCallbacks,
-  signal?:   AbortSignal,            // ── Part 53G ──
+  signal?:   AbortSignal,
 ): Promise<void> {
   const aborted = () => signal?.aborted === true;
   const roles         = config.agentRoles?.length ? config.agentRoles : DEFAULT_ROLES;
@@ -164,7 +164,7 @@ async function runPipelineCore(
   callbacks:     DebateOrchestratorCallbacks,
   updateAgent:   (role: DebateAgentRole, status: DebateAgentProgressItem['status'], detail?: string) => void,
   _setProgress:  (p: DebateAgentProgressItem[]) => void,
-  signal?:       AbortSignal,        // ── Part 53G ──
+  signal?:       AbortSignal,
 ): Promise<void> {
   const aborted = () => signal?.aborted === true;
   const sessionId = dbRow.id as string;

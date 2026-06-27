@@ -1,12 +1,17 @@
 // src/services/agents/paperSectionAgent.ts
 // Part 38 — AI writing tools for academic paper sections.
-// Part 38b — Added runPaperSubsectionAI, generateSubsectionTitleAI.
-// Part 38c FIX #5 — Added generateSubsectionBodyAI.
-// Part 41.8 — Added generateFullSectionAI: generates complete new section
-//              with title, content, and subsections for insertion into paper.
+// Part 41.8 — generateFullSectionAI.
+// Part 56 — Cost routing:
+//   • All prose rewrites (expand/shorten/formalize/fix_citations/counterargument/
+//     regenerate, section + subsection, full-section generation) → STANDARD tier
+//     (gpt-4.1-mini). These are quality-sensitive academic writing tasks.
+//   • Title-only generation (generateSubsectionTitleAI + the title half of
+//     generateSubsectionBodyAI/generateFullSectionAI is bundled with the body so
+//     it stays STANDARD; the dedicated short title call uses NANO).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { chatCompletion } from '../openaiClient';
+import { modelFor }       from '../../constants/aiModels';
 import type {
   AcademicSection,
   AcademicSubsection,
@@ -47,7 +52,7 @@ function subsectionContext(sub: AcademicSubsection, parentSection: AcademicSecti
   return `PARENT SECTION TYPE: ${parentSection.type}\nPARENT SECTION TITLE: ${parentSection.title}\nSUBSECTION TITLE: ${sub.title}\n\nCURRENT SUBSECTION CONTENT:\n${sub.content || '(empty)'}`;
 }
 
-// ─── Section-level tools ──────────────────────────────────────────────────────
+// ─── Section-level tools (all STANDARD tier) ──────────────────────────────────
 
 async function expandSection(section: AcademicSection, citations: Citation[]): Promise<string> {
   const prompt = `${sectionContext(section)}
@@ -65,7 +70,7 @@ Return ONLY the rewritten prose. No heading. No explanation.`;
 
   return chatCompletion(
     [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.45, maxTokens: 1200 },
+    { temperature: 0.45, maxTokens: 1200, model: modelFor('paperSectionAI') },
   );
 }
 
@@ -82,7 +87,7 @@ Return ONLY the condensed prose. No heading. No explanation.`;
 
   return chatCompletion(
     [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.35, maxTokens: 800 },
+    { temperature: 0.35, maxTokens: 800, model: modelFor('paperSectionAI') },
   );
 }
 
@@ -102,7 +107,7 @@ Return ONLY the rewritten prose. No heading. No explanation.`;
 
   return chatCompletion(
     [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.3, maxTokens: 1000 },
+    { temperature: 0.3, maxTokens: 1000, model: modelFor('paperSectionAI') },
   );
 }
 
@@ -134,7 +139,7 @@ Return ONLY the rewritten prose with corrected citations. No heading. No explana
 
   return chatCompletion(
     [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.25, maxTokens: 1000 },
+    { temperature: 0.25, maxTokens: 1000, model: modelFor('paperSectionAI') },
   );
 }
 
@@ -154,7 +159,7 @@ No heading. No explanation. Just the complete rewritten section prose.`;
 
   return chatCompletion(
     [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.5, maxTokens: 1000 },
+    { temperature: 0.5, maxTokens: 1000, model: modelFor('paperSectionAI') },
   );
 }
 
@@ -186,7 +191,7 @@ Return ONLY the new section prose. No heading. No explanation. No markdown.`;
 
   return chatCompletion(
     [{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.5, maxTokens: 1500 },
+    { temperature: 0.5, maxTokens: 1500, model: modelFor('paperSectionAI') },
   );
 }
 
@@ -212,7 +217,7 @@ export async function runPaperSectionAI(
   }
 }
 
-// ─── Subsection-level tools ───────────────────────────────────────────────────
+// ─── Subsection-level tools (all STANDARD tier) ───────────────────────────────
 
 async function expandSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[]): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
@@ -220,21 +225,21 @@ AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
 TASK: Expand this subsection to be more comprehensive. Add more detailed analysis, additional supporting evidence, and stronger logical flow.
 Target: increase word count by 40-60%. Preserve all existing key points.
 Return ONLY the rewritten prose. No heading. No explanation.`;
-  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.45, maxTokens: 800 });
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.45, maxTokens: 800, model: modelFor('paperSectionAI') });
 }
 
 async function shortenSubsection(sub: AcademicSubsection, parent: AcademicSection): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
 TASK: Condense this subsection to approximately 60-70% of its current length. Retain all key findings and arguments.
 Return ONLY the condensed prose. No heading. No explanation.`;
-  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.35, maxTokens: 600 });
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.35, maxTokens: 600, model: modelFor('paperSectionAI') });
 }
 
 async function formalizeSubsection(sub: AcademicSubsection, parent: AcademicSection): Promise<string> {
   const prompt = `${subsectionContext(sub, parent)}
 TASK: Rewrite this subsection in strict academic register. Replace informal language, use passive voice, hedging language, remove conversational phrases.
 Return ONLY the rewritten prose. No heading. No explanation.`;
-  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.3, maxTokens: 700 });
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.3, maxTokens: 700, model: modelFor('paperSectionAI') });
 }
 
 async function fixCitationsSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[], style: AcademicCitationStyle): Promise<string> {
@@ -247,7 +252,7 @@ AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
 CITATION STYLE: ${style.toUpperCase()} — ${styleGuide[style]}
 TASK: Rewrite this subsection ensuring all in-text citations follow ${style.toUpperCase()} format.
 Return ONLY the rewritten prose. No heading. No explanation.`;
-  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.25, maxTokens: 700 });
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.25, maxTokens: 700, model: modelFor('paperSectionAI') });
 }
 
 async function addCounterargumentSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[]): Promise<string> {
@@ -255,7 +260,7 @@ async function addCounterargumentSubsection(sub: AcademicSubsection, parent: Aca
 AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
 TASK: Add a brief counterargument (1-2 sentences acknowledging an opposing view + brief rebuttal).
 Return the FULL subsection content with the counterargument integrated. No heading.`;
-  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.5, maxTokens: 700 });
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.5, maxTokens: 700, model: modelFor('paperSectionAI') });
 }
 
 async function regenerateSubsection(sub: AcademicSubsection, parent: AcademicSection, citations: Citation[], paperTitle: string, keywords: string[]): Promise<string> {
@@ -266,7 +271,7 @@ AVAILABLE CITATIONS:\n${formatCitationsForPrompt(citations)}
 TASK: Write a completely new version of this subsection on the topic: "${sub.title}"
 150-300 words. Formal academic register. Support with available citations.
 Return ONLY the new prose. No heading. No markdown.`;
-  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.5, maxTokens: 800 });
+  return chatCompletion([{ role: 'system', content: BASE_SYSTEM }, { role: 'user', content: prompt }], { temperature: 0.5, maxTokens: 800, model: modelFor('paperSectionAI') });
 }
 
 export async function runPaperSubsectionAI(
@@ -284,7 +289,7 @@ export async function runPaperSubsectionAI(
   }
 }
 
-// ─── Subsection title generator ───────────────────────────────────────────────
+// ─── Subsection title generator (NANO tier — short label task) ────────────────
 
 const TITLE_SYSTEM = `You are a senior academic editor. Write concise, precise academic subsection titles.
 CRITICAL OUTPUT RULES:
@@ -304,12 +309,12 @@ Generate a precise academic title (3-8 words, title-case) for this subsection.
 Return ONLY the title. No quotes. No period at the end.`;
   const result = await chatCompletion(
     [{ role: 'system', content: TITLE_SYSTEM }, { role: 'user', content: prompt }],
-    { temperature: 0.3, maxTokens: 30 },
+    { temperature: 0.3, maxTokens: 30, model: modelFor('paperTitleAI') }, // ← Part 56 NANO
   );
   return result.replace(/^["'`]+|["'`]+$/g, '').replace(/\*+/g, '').trim();
 }
 
-// ─── Generate full subsection (title + body) ──────────────────────────────────
+// ─── Generate full subsection (title + body) — STANDARD (body is prose) ───────
 
 const SUBSECTION_SYSTEM = `You are a senior academic researcher writing a new subsection for a peer-reviewed paper.
 CRITICAL OUTPUT RULES:
@@ -339,7 +344,7 @@ Return ONLY a JSON object: {"title": "...", "content": "..."}`;
   try {
     const raw = await chatCompletion(
       [{ role: 'system', content: SUBSECTION_SYSTEM }, { role: 'user', content: prompt }],
-      { temperature: 0.5, maxTokens: 500 },
+      { temperature: 0.5, maxTokens: 500, model: modelFor('paperSectionAI') }, // ← Part 56 STANDARD
     );
     const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
     const parsed = JSON.parse(clean);
@@ -410,7 +415,7 @@ Return ONLY a JSON object:
   try {
     const raw = await chatCompletion(
       [{ role: 'system', content: FULL_SECTION_SYSTEM }, { role: 'user', content: prompt }],
-      { temperature: 0.5, maxTokens: 2000 },
+      { temperature: 0.5, maxTokens: 2000, model: modelFor('paperSectionAI') }, // ← Part 56 STANDARD
     );
 
     const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();

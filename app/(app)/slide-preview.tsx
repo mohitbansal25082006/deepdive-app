@@ -12,6 +12,18 @@
 //      instead of "Loading report…", since this screen is the slide/presentation
 //      flow (the label was misleading when entering the slide screen).
 //
+// Part 55 — THEME INTEGRATION
+//   • `useTheme()` is consumed for `version` to force re-renders whenever the
+//     app theme changes — guaranteeing that all inline COLORS reads pick up the
+//     freshly-mutated palette.
+//   • Every previously hardcoded color literal has been replaced by a COLORS
+//     token or a derived helper (getModalBackdrop / getStickyBarBackdrop /
+//     getAuroraGradient) from theme.ts. Zero hex strings remain in the render
+//     output, making this screen fully light/dark/theme-agnostic.
+//   • THEME_OPTIONS swatch colors are presentation-design accents, not app-UI
+//     colors, so they remain intentionally hardcoded (they represent external
+//     theme choices, not the app's own palette). Everything else is token-driven.
+//
 // CHANGES from Part 30:
 //   1. Added SlideExportRenderer (off-screen) + SlideExportRendererRef
 //   2. handleExportPPTX / handleExportPDF / handleExportHTML now:
@@ -61,7 +73,11 @@ import {
   type SlideExportRendererRef,
 } from '../../src/components/research/SlideExportRenderer';
 import { mergeEditorData } from '../../src/services/slideEditorService';
-import { COLORS, FONTS, SPACING, RADIUS, SHADOWS } from '../../src/constants/theme';
+import {
+  COLORS, FONTS, SPACING, RADIUS, SHADOWS,
+  getModalBackdrop, getStickyBarBackdrop, getAuroraGradient,
+} from '../../src/constants/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import type {
   ResearchReport, PresentationTheme, GeneratedPresentation,
 } from '../../src/types';
@@ -69,6 +85,9 @@ import type {
 const { width: SCREEN_W } = Dimensions.get('window');
 
 // ─── Theme options ────────────────────────────────────────────────────────────
+// NOTE: These colors are *presentation design* choices (what the exported slides
+// will look like), not the app UI palette. They intentionally stay hardcoded so
+// they don't shift when the user switches the app theme.
 
 interface ThemeOption {
   id:      PresentationTheme;
@@ -89,6 +108,9 @@ const THEME_OPTIONS: ThemeOption[] = [
 // ─── Generating animation ─────────────────────────────────────────────────────
 
 function GeneratingView({ progress }: { progress: string }) {
+  // Re-render when app theme changes
+  useTheme();
+
   const pulse = useSharedValue(1);
   useEffect(() => {
     pulse.value = withRepeat(
@@ -111,23 +133,70 @@ function GeneratingView({ progress }: { progress: string }) {
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACING.lg }}>
       <Animated.View style={[animStyle, { marginBottom: SPACING.xl }]}>
-        <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 88, height: 88, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...SHADOWS.large }}>
-          <Ionicons name="easel-outline" size={40} color="#FFF" />
+        <LinearGradient
+          colors={COLORS.gradientPrimary}
+          style={{
+            width: 88, height: 88, borderRadius: 26,
+            alignItems: 'center', justifyContent: 'center',
+            ...SHADOWS.large,
+          }}
+        >
+          <Ionicons name="easel-outline" size={40} color={COLORS.textPrimary} />
         </LinearGradient>
       </Animated.View>
-      <Animated.Text entering={FadeInDown.duration(300)} style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800', marginBottom: SPACING.sm, textAlign: 'center' }}>
+
+      <Animated.Text
+        entering={FadeInDown.duration(300)}
+        style={{
+          color: COLORS.textPrimary,
+          fontSize: FONTS.sizes.xl,
+          fontWeight: '800',
+          marginBottom: SPACING.sm,
+          textAlign: 'center',
+        }}
+      >
         Generating Slides
       </Animated.Text>
-      <Animated.Text entering={FadeInDown.duration(300).delay(60)} style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING['2xl'], textAlign: 'center', minHeight: 20 }}>
+
+      <Animated.Text
+        entering={FadeInDown.duration(300).delay(60)}
+        style={{
+          color: COLORS.primary,
+          fontSize: FONTS.sizes.sm,
+          fontWeight: '600',
+          marginBottom: SPACING['2xl'],
+          textAlign: 'center',
+          minHeight: 20,
+        }}
+      >
         {progress}
       </Animated.Text>
+
       <Animated.View entering={FadeInDown.duration(400).delay(120)} style={{ width: '100%', gap: SPACING.sm }}>
         {steps.map((step, i) => (
-          <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.md, backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border }}>
-            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: `${COLORS.primary}18`, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <View
+            key={i}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: SPACING.md,
+              backgroundColor: COLORS.backgroundCard,
+              borderRadius: RADIUS.lg,
+              padding: SPACING.md,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+            }}
+          >
+            <View style={{
+              width: 34, height: 34, borderRadius: 10,
+              backgroundColor: `${COLORS.primary}18`,
+              alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
               <Ionicons name={step.icon as any} size={16} color={COLORS.primary} />
             </View>
-            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, flex: 1 }}>{step.label}</Text>
+            <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, flex: 1 }}>
+              {step.label}
+            </Text>
             <ActivityIndicator size="small" color={`${COLORS.primary}60`} />
           </View>
         ))}
@@ -139,6 +208,10 @@ function GeneratingView({ progress }: { progress: string }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function SlidePreviewScreen() {
+  // Part 55: subscribe to theme version so the entire component tree re-renders
+  // whenever the app theme changes and all inline COLORS reads are fresh.
+  const { version: _themeVersion } = useTheme();
+
   const { reportId, presentationId: paramPresentationId } =
     useLocalSearchParams<{ reportId: string; presentationId?: string }>();
   const insets = useSafeAreaInsets();
@@ -155,9 +228,9 @@ export default function SlidePreviewScreen() {
   const hasMountedRef = useRef(false);
 
   // Export state
-  const [isExporting,      setIsExporting]      = useState(false);
-  const [exportFormat,     setExportFormat]      = useState<'pptx' | 'pdf' | 'html' | null>(null);
-  const [captureProgress,  setCaptureProgress]   = useState<{ done: number; total: number } | null>(null);
+  const [isExporting,     setIsExporting]     = useState(false);
+  const [exportFormat,    setExportFormat]    = useState<'pptx' | 'pdf' | 'html' | null>(null);
+  const [captureProgress, setCaptureProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Off-screen renderer ref for screenshot capture
   const rendererRef = useRef<SlideExportRendererRef>(null);
@@ -264,9 +337,6 @@ export default function SlidePreviewScreen() {
   };
 
   // ── Part 54A (Feature 4): smart back ──────────────────────────────────────
-  // When a presentation EXISTS (generated or loaded), back returns to the
-  // research-report it belongs to. Otherwise (nothing generated yet) keep the
-  // original router.back() behaviour. router.replace avoids back-stack chains.
   const handleBack = useCallback(() => {
     const pres = freshPresentation ?? generatedPresentation;
     const rid  = report?.id ?? reportId ?? pres?.reportId;
@@ -286,24 +356,16 @@ export default function SlidePreviewScreen() {
 
   // ─── Capture + export helpers ─────────────────────────────────────────────
 
-  /**
-   * Core capture: renders each SlideCard off-screen via SlideExportRenderer
-   * and returns an array of base64 PNG data-URIs.
-   * Falls back to null array if react-native-view-shot is unavailable.
-   */
   const captureSlides = useCallback(async (
     pres:   GeneratedPresentation,
     format: 'pptx' | 'pdf' | 'html',
   ): Promise<(string | null)[]> => {
-    const total = pres.slides.length;
-
-    // Capture the ref in a local variable so TypeScript narrows it as non-null
+    const total    = pres.slides.length;
     const renderer = rendererRef.current;
     if (!renderer) {
       console.warn('[SlidePreview] renderer not mounted — falling back to vector export');
       return new Array(total).fill(null);
     }
-
     setCaptureProgress({ done: 0, total });
     const images = await renderer.captureAll();
     setCaptureProgress(null);
@@ -316,20 +378,13 @@ export default function SlidePreviewScreen() {
     setIsExporting(true);
     setExportFormat('pptx');
     try {
-      const images = await captureSlides(pres, 'pptx');
+      const images  = await captureSlides(pres, 'pptx');
       const allFailed = images.every(i => i === null);
-      if (allFailed) {
-        // Full vector fallback
-        await generatePPTX(pres);
-      } else {
-        await generatePPTXFromImages(images, pres);
-      }
-    } catch (e) {
-      Alert.alert('Export failed', String(e));
-    } finally {
-      setIsExporting(false);
-      setExportFormat(null);
-      setCaptureProgress(null);
+      if (allFailed) { await generatePPTX(pres); }
+      else           { await generatePPTXFromImages(images, pres); }
+    } catch (e) { Alert.alert('Export failed', String(e)); }
+    finally {
+      setIsExporting(false); setExportFormat(null); setCaptureProgress(null);
     }
   }, [freshPresentation, generatedPresentation, captureSlides]);
 
@@ -339,19 +394,13 @@ export default function SlidePreviewScreen() {
     setIsExporting(true);
     setExportFormat('pdf');
     try {
-      const images = await captureSlides(pres, 'pdf');
+      const images  = await captureSlides(pres, 'pdf');
       const allFailed = images.every(i => i === null);
-      if (allFailed) {
-        await exportAsSlidePDF(pres);
-      } else {
-        await exportAsSlidePDFFromImages(images, pres);
-      }
-    } catch (e) {
-      Alert.alert('Export failed', String(e));
-    } finally {
-      setIsExporting(false);
-      setExportFormat(null);
-      setCaptureProgress(null);
+      if (allFailed) { await exportAsSlidePDF(pres); }
+      else           { await exportAsSlidePDFFromImages(images, pres); }
+    } catch (e) { Alert.alert('Export failed', String(e)); }
+    finally {
+      setIsExporting(false); setExportFormat(null); setCaptureProgress(null);
     }
   }, [freshPresentation, generatedPresentation, captureSlides]);
 
@@ -361,19 +410,13 @@ export default function SlidePreviewScreen() {
     setIsExporting(true);
     setExportFormat('html');
     try {
-      const images = await captureSlides(pres, 'html');
+      const images  = await captureSlides(pres, 'html');
       const allFailed = images.every(i => i === null);
-      if (allFailed) {
-        await exportAsHTMLSlides(pres);
-      } else {
-        await exportAsHTMLSlidesFromImages(images, pres);
-      }
-    } catch (e) {
-      Alert.alert('Export failed', String(e));
-    } finally {
-      setIsExporting(false);
-      setExportFormat(null);
-      setCaptureProgress(null);
+      if (allFailed) { await exportAsHTMLSlides(pres); }
+      else           { await exportAsHTMLSlidesFromImages(images, pres); }
+    } catch (e) { Alert.alert('Export failed', String(e)); }
+    finally {
+      setIsExporting(false); setExportFormat(null); setCaptureProgress(null);
     }
   }, [freshPresentation, generatedPresentation, captureSlides]);
 
@@ -401,7 +444,7 @@ export default function SlidePreviewScreen() {
     ]);
   }, [generate, selectedTheme, deletePresentation, guardedConsume]);
 
-  // ── Part 54A (Feature 4): initial loading label → "Loading presentation…" ──
+  // ── Part 54A: loading label ────────────────────────────────────────────────
   if (loadingReport) return <LoadingOverlay visible message="Loading presentation…" />;
 
   // ── PREVIEW MODE ──────────────────────────────────────────────────────────
@@ -409,18 +452,16 @@ export default function SlidePreviewScreen() {
   if (screenPhase === 'preview' && presentation) {
     const selectedThemeObj = THEME_OPTIONS.find(t => t.id === (presentation.theme ?? 'dark'))!;
 
-    // Build the export button label with capture progress
     function exportLabel(format: 'pptx' | 'pdf' | 'html', defaultLabel: string): string {
       if (!isExporting || exportFormat !== format) return defaultLabel;
-      if (captureProgress) {
-        return `Capturing ${captureProgress.done}/${captureProgress.total}…`;
-      }
+      if (captureProgress) return `Capturing ${captureProgress.done}/${captureProgress.total}…`;
       return 'Exporting…';
     }
 
     return (
-      <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+      <LinearGradient colors={COLORS.gradientDark} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+
           {/* Off-screen renderer — mounted but invisible, used for capture */}
           <SlideExportRenderer
             ref={rendererRef}
@@ -428,22 +469,23 @@ export default function SlidePreviewScreen() {
             onProgress={(done, total) => setCaptureProgress({ done, total })}
           />
 
-          {/* Part 54 update: the panel's back button now goes STRAIGHT to the
-              research-report screen (via handleBack) instead of dropping back to
-              the slide-generator/setup screen. handleBack routes to
-              research-report whenever a presentation exists. */}
           <SlidePreviewPanel
             key={refreshKey}
             presentation={presentation}
             onClose={handleBack}
           />
 
+          {/* ── Bottom action bar ──────────────────────────────────────────── */}
           <View style={{
-            paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm,
+            paddingHorizontal: SPACING.lg,
+            paddingTop:        SPACING.sm,
             paddingBottom:     insets.bottom + SPACING.sm,
             backgroundColor:   COLORS.backgroundCard,
-            borderTopWidth:    1, borderTopColor: COLORS.border, gap: SPACING.sm,
+            borderTopWidth:    1,
+            borderTopColor:    COLORS.border,
+            gap:               SPACING.sm,
           }}>
+
             {/* Primary export row */}
             <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
               <Pressable
@@ -451,21 +493,35 @@ export default function SlidePreviewScreen() {
                 disabled={isExporting}
                 style={{ flex: 1.6, opacity: isExporting && exportFormat !== 'pptx' ? 0.5 : 1 }}
               >
-                <LinearGradient colors={['#6C63FF', '#8B5CF6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, ...SHADOWS.medium }}>
+                <LinearGradient
+                  colors={COLORS.gradientPrimary}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                  style={{
+                    borderRadius: RADIUS.lg, paddingVertical: 13,
+                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                    gap: 8, ...SHADOWS.medium,
+                  }}
+                >
                   {isExporting && exportFormat === 'pptx'
-                    ? <ActivityIndicator size="small" color="#FFF" />
-                    : <Ionicons name="desktop-outline" size={17} color="#FFF" />}
-                  <Text style={{ color: '#FFF', fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
+                    ? <ActivityIndicator size="small" color={COLORS.textPrimary} />
+                    : <Ionicons name="desktop-outline" size={17} color={COLORS.textPrimary} />}
+                  <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '800' }}>
                     {exportLabel('pptx', 'Export PPTX')}
                   </Text>
                 </LinearGradient>
               </Pressable>
+
               <Pressable
                 onPress={handleExportPDF}
                 disabled={isExporting}
                 style={{ flex: 1, opacity: isExporting && exportFormat !== 'pdf' ? 0.5 : 1 }}
               >
-                <View style={{ borderRadius: RADIUS.lg, paddingVertical: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1.5, borderColor: COLORS.border }}>
+                <View style={{
+                  borderRadius: RADIUS.lg, paddingVertical: 13,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  gap: 7, backgroundColor: COLORS.backgroundElevated,
+                  borderWidth: 1.5, borderColor: COLORS.border,
+                }}>
                   {isExporting && exportFormat === 'pdf'
                     ? <ActivityIndicator size="small" color={COLORS.textSecondary} />
                     : <Ionicons name="document-outline" size={17} color={COLORS.textSecondary} />}
@@ -481,7 +537,12 @@ export default function SlidePreviewScreen() {
               <Pressable
                 onPress={handleExportHTML}
                 disabled={isExporting}
-                style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, isExporting && exportFormat !== 'html' ? { opacity: 0.5 } : {}]}
+                style={[{
+                  flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  gap: 7, backgroundColor: COLORS.backgroundElevated,
+                  borderWidth: 1, borderColor: COLORS.border,
+                }, isExporting && exportFormat !== 'html' ? { opacity: 0.5 } : {}]}
               >
                 {isExporting && exportFormat === 'html'
                   ? <ActivityIndicator size="small" color={COLORS.textMuted} />
@@ -493,7 +554,13 @@ export default function SlidePreviewScreen() {
 
               <Pressable
                 onPress={handleOpenEditor}
-                style={{ flex: 1.2, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.accent}15`, borderWidth: 1, borderColor: `${COLORS.accent}35` }}
+                style={{
+                  flex: 1.2, paddingVertical: 10, borderRadius: RADIUS.lg,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  gap: 7,
+                  backgroundColor: `${COLORS.accent}15`,
+                  borderWidth: 1, borderColor: `${COLORS.accent}35`,
+                }}
               >
                 <Ionicons name="pencil-outline" size={15} color={COLORS.accent} />
                 <Text style={{ color: COLORS.accent, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Edit</Text>
@@ -501,7 +568,13 @@ export default function SlidePreviewScreen() {
 
               <Pressable
                 onPress={() => setShowShareModal(true)}
-                style={{ flex: 1.4, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: `${COLORS.primary}15`, borderWidth: 1, borderColor: `${COLORS.primary}35` }}
+                style={{
+                  flex: 1.4, paddingVertical: 10, borderRadius: RADIUS.lg,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  gap: 7,
+                  backgroundColor: `${COLORS.primary}15`,
+                  borderWidth: 1, borderColor: `${COLORS.primary}35`,
+                }}
               >
                 <Ionicons name="people-outline" size={15} color={COLORS.primary} />
                 <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>Share</Text>
@@ -510,7 +583,12 @@ export default function SlidePreviewScreen() {
               <Pressable
                 onPress={handleRegenerate}
                 disabled={isExporting || isConsuming}
-                style={[{ flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }, (isExporting || isConsuming) ? { opacity: 0.5 } : {}]}
+                style={[{
+                  flex: 1, paddingVertical: 10, borderRadius: RADIUS.lg,
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  gap: 7, backgroundColor: COLORS.backgroundElevated,
+                  borderWidth: 1, borderColor: COLORS.border,
+                }, (isExporting || isConsuming) ? { opacity: 0.5 } : {}]}
               >
                 <Ionicons name="refresh-outline" size={15} color={COLORS.textMuted} />
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>Redo</Text>
@@ -533,7 +611,9 @@ export default function SlidePreviewScreen() {
                 { label: 'Exported', value: String(presentation.exportCount ?? 0) },
               ].map(stat => (
                 <View key={stat.label} style={{ alignItems: 'center' }}>
-                  <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>{stat.value}</Text>
+                  <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>
+                    {stat.value}
+                  </Text>
                   <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{stat.label}</Text>
                 </View>
               ))}
@@ -549,12 +629,23 @@ export default function SlidePreviewScreen() {
             title={presentation.title}
             subtitle={presentation.subtitle}
             reportId={report?.id}
-            metadata={{ totalSlides: presentation.totalSlides, theme: presentation.theme, exportCount: presentation.exportCount }}
+            metadata={{
+              totalSlides: presentation.totalSlides,
+              theme: presentation.theme,
+              exportCount: presentation.exportCount,
+            }}
             onClose={() => setShowShareModal(false)}
-            onShared={(_, workspaceName) => Alert.alert('✅ Shared!', `"${presentation.title}" shared to ${workspaceName}.`, [{ text: 'OK' }])}
+            onShared={(_, workspaceName) =>
+              Alert.alert('✅ Shared!', `"${presentation.title}" shared to ${workspaceName}.`, [{ text: 'OK' }])
+            }
           />
         )}
-        <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
+
+        <InsufficientCreditsModal
+          visible={!!insufficientInfo}
+          info={insufficientInfo}
+          onClose={clearInsufficient}
+        />
       </LinearGradient>
     );
   }
@@ -563,17 +654,40 @@ export default function SlidePreviewScreen() {
 
   if (screenPhase === 'generating' || isGenerating) {
     return (
-      <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+      <LinearGradient colors={COLORS.gradientDark} style={{ flex: 1 }}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-            <Pressable onPress={handleBack} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{
+            flexDirection: 'row', alignItems: 'center',
+            paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+            borderBottomWidth: 1, borderBottomColor: COLORS.border,
+          }}>
+            <Pressable
+              onPress={handleBack}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={{
+                width: 36, height: 36, borderRadius: 10,
+                backgroundColor: COLORS.backgroundElevated,
+                alignItems: 'center', justifyContent: 'center',
+              }}
+            >
               <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
             </Pressable>
-            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '700', marginLeft: SPACING.sm }}>AI Slide Generator</Text>
+            <Text style={{
+              color: COLORS.textPrimary,
+              fontSize: FONTS.sizes.base,
+              fontWeight: '700',
+              marginLeft: SPACING.sm,
+            }}>
+              AI Slide Generator
+            </Text>
           </View>
           <GeneratingView progress={progress} />
         </SafeAreaView>
-        <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
+        <InsufficientCreditsModal
+          visible={!!insufficientInfo}
+          info={insufficientInfo}
+          onClose={clearInsufficient}
+        />
       </LinearGradient>
     );
   }
@@ -583,29 +697,73 @@ export default function SlidePreviewScreen() {
   const selectedThemeObj = THEME_OPTIONS.find(t => t.id === selectedTheme)!;
 
   return (
-    <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
+    <LinearGradient colors={COLORS.gradientDark} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-          <Pressable onPress={handleBack} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.backgroundElevated, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
+
+        {/* Header */}
+        <View style={{
+          flexDirection: 'row', alignItems: 'center',
+          paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm,
+          borderBottomWidth: 1, borderBottomColor: COLORS.border,
+        }}>
+          <Pressable
+            onPress={handleBack}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            style={{
+              width: 36, height: 36, borderRadius: 10,
+              backgroundColor: COLORS.backgroundElevated,
+              alignItems: 'center', justifyContent: 'center',
+              marginRight: SPACING.sm,
+            }}
+          >
             <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
           </Pressable>
           <View style={{ flex: 1 }}>
-            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>AI Slide Generator</Text>
-            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Convert your research into a presentation</Text>
+            <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+              AI Slide Generator
+            </Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
+              Convert your research into a presentation
+            </Text>
           </View>
           <CreditBalance balance={balance} size="sm" />
         </View>
 
         <View style={{ flex: 1, paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg }}>
+
           {/* Report card */}
           <Animated.View entering={FadeInDown.duration(400).delay(60)} style={{ marginBottom: SPACING.lg }}>
-            <LinearGradient colors={['#1A1A35', '#12122A']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, borderWidth: 1, borderColor: `${COLORS.primary}30`, flexDirection: 'row', alignItems: 'center', gap: SPACING.md }}>
-              <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 56, height: 56, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexShrink: 0, ...SHADOWS.medium }}>
-                <Ionicons name="easel-outline" size={26} color="#FFF" />
+            <LinearGradient
+              colors={COLORS.gradientCard}
+              style={{
+                borderRadius: RADIUS.xl, padding: SPACING.lg,
+                borderWidth: 1, borderColor: `${COLORS.primary}30`,
+                flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
+              }}
+            >
+              <LinearGradient
+                colors={COLORS.gradientPrimary}
+                style={{
+                  width: 56, height: 56, borderRadius: 16,
+                  alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0, ...SHADOWS.medium,
+                }}
+              >
+                <Ionicons name="easel-outline" size={26} color={COLORS.textPrimary} />
               </LinearGradient>
               <View style={{ flex: 1 }}>
-                <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800', marginBottom: 4 }} numberOfLines={2}>
-                  {report?.title ? (report.title.length > 48 ? report.title.slice(0, 48) + '…' : report.title) : 'Research Report'}
+                <Text
+                  style={{
+                    color: COLORS.textPrimary,
+                    fontSize: FONTS.sizes.base,
+                    fontWeight: '800',
+                    marginBottom: 4,
+                  }}
+                  numberOfLines={2}
+                >
+                  {report?.title
+                    ? (report.title.length > 48 ? report.title.slice(0, 48) + '…' : report.title)
+                    : 'Research Report'}
                 </Text>
                 <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
                   {[
@@ -613,9 +771,18 @@ export default function SlidePreviewScreen() {
                     { icon: 'stats-chart-outline',      label: `${report?.statistics.length ?? 0} stats`   },
                     { icon: 'shield-checkmark-outline', label: `${report?.reliabilityScore ?? 0}/10`        },
                   ].map(tag => (
-                    <View key={tag.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.primary}15`, borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
+                    <View
+                      key={tag.label}
+                      style={{
+                        flexDirection: 'row', alignItems: 'center', gap: 4,
+                        backgroundColor: `${COLORS.primary}15`,
+                        borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3,
+                      }}
+                    >
                       <Ionicons name={tag.icon as any} size={11} color={COLORS.primary} />
-                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>{tag.label}</Text>
+                      <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                        {tag.label}
+                      </Text>
                     </View>
                   ))}
                 </View>
@@ -624,23 +791,71 @@ export default function SlidePreviewScreen() {
           </Animated.View>
 
           {/* Theme picker */}
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: SPACING.md }}>Choose Theme</Text>
+          <Text style={{
+            color: COLORS.textMuted,
+            fontSize: FONTS.sizes.xs,
+            fontWeight: '600',
+            letterSpacing: 1,
+            textTransform: 'uppercase',
+            marginBottom: SPACING.md,
+          }}>
+            Choose Theme
+          </Text>
+
           <View style={{ gap: SPACING.sm, marginBottom: SPACING.lg }}>
             {THEME_OPTIONS.map(theme => {
               const isSelected = selectedTheme === theme.id;
               return (
-                <Pressable key={theme.id} onPress={() => setSelectedTheme(theme.id)} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isSelected ? `${theme.colors[0]}12` : COLORS.backgroundCard, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1.5, borderColor: isSelected ? theme.colors[0] : COLORS.border }}>
-                  <View style={{ width: 48, height: 32, borderRadius: 8, marginRight: SPACING.md, overflow: 'hidden', flexShrink: 0, borderWidth: 1, borderColor: COLORS.border, backgroundColor: theme.preview, alignItems: 'center', justifyContent: 'center' }}>
-                    <LinearGradient colors={theme.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 8 }} />
+                <Pressable
+                  key={theme.id}
+                  onPress={() => setSelectedTheme(theme.id)}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center',
+                    backgroundColor: isSelected ? `${theme.colors[0]}12` : COLORS.backgroundCard,
+                    borderRadius: RADIUS.lg, padding: SPACING.md,
+                    borderWidth: 1.5,
+                    borderColor: isSelected ? theme.colors[0] : COLORS.border,
+                  }}
+                >
+                  {/* Slide mini-preview swatch — intentionally uses hardcoded
+                      presentation-theme colors, not app palette */}
+                  <View style={{
+                    width: 48, height: 32, borderRadius: 8, marginRight: SPACING.md,
+                    overflow: 'hidden', flexShrink: 0,
+                    borderWidth: 1, borderColor: COLORS.border,
+                    backgroundColor: theme.preview,
+                    alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <LinearGradient
+                      colors={theme.colors}
+                      start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                      style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 8 }}
+                    />
                     <Ionicons name={theme.icon as any} size={12} color={theme.colors[0]} />
                   </View>
+
                   <View style={{ flex: 1 }}>
-                    <Text style={{ color: isSelected ? COLORS.textPrimary : COLORS.textSecondary, fontSize: FONTS.sizes.base, fontWeight: '700' }}>{theme.label}</Text>
-                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{theme.desc}</Text>
+                    <Text style={{
+                      color: isSelected ? COLORS.textPrimary : COLORS.textSecondary,
+                      fontSize: FONTS.sizes.base,
+                      fontWeight: '700',
+                    }}>
+                      {theme.label}
+                    </Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>
+                      {theme.desc}
+                    </Text>
                   </View>
+
                   {isSelected && (
-                    <LinearGradient colors={theme.colors} style={{ width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <Ionicons name="checkmark" size={13} color="#FFF" />
+                    <LinearGradient
+                      colors={theme.colors}
+                      style={{
+                        width: 22, height: 22, borderRadius: 11,
+                        alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                      }}
+                    >
+                      <Ionicons name="checkmark" size={13} color={COLORS.textPrimary} />
                     </LinearGradient>
                   )}
                 </Pressable>
@@ -648,45 +863,99 @@ export default function SlidePreviewScreen() {
             })}
           </View>
 
+          {/* Error banner */}
           {error && (
-            <View style={{ marginBottom: SPACING.lg, backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30`, flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm }}>
+            <View style={{
+              marginBottom: SPACING.lg,
+              backgroundColor: `${COLORS.error}12`,
+              borderRadius: RADIUS.lg, padding: SPACING.md,
+              borderWidth: 1, borderColor: `${COLORS.error}30`,
+              flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm,
+            }}>
               <Ionicons name="alert-circle-outline" size={18} color={COLORS.error} style={{ flexShrink: 0 }} />
-              <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, flex: 1, lineHeight: 18 }}>{error}</Text>
+              <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.sm, flex: 1, lineHeight: 18 }}>
+                {error}
+              </Text>
             </View>
           )}
         </View>
 
-        {/* CTA */}
-        <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: insets.bottom + SPACING.md, backgroundColor: 'rgba(10,10,26,0.97)', borderTopWidth: 1, borderTopColor: COLORS.border }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
+        {/* CTA bar — uses getStickyBarBackdrop so it adapts to every theme */}
+        <View style={{
+          paddingHorizontal: SPACING.lg,
+          paddingTop:        SPACING.md,
+          paddingBottom:     insets.bottom + SPACING.md,
+          backgroundColor:   getStickyBarBackdrop(0.97),
+          borderTopWidth:    1,
+          borderTopColor:    COLORS.border,
+        }}>
+          <View style={{
+            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+            marginBottom: SPACING.sm,
+          }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
               <Ionicons name="flash" size={13} color={COLORS.primary} />
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>
-                This will use <Text style={{ color: COLORS.primary, fontWeight: '700' }}>{FEATURE_COSTS.presentation} credits</Text>
+                This will use{' '}
+                <Text style={{ color: COLORS.primary, fontWeight: '700' }}>
+                  {FEATURE_COSTS.presentation} credits
+                </Text>
               </Text>
             </View>
             <CreditBalance balance={balance} size="sm" />
           </View>
-          <Pressable onPress={handleGenerate} disabled={isGenerating || isConsuming || !report} style={{ opacity: isGenerating || isConsuming || !report ? 0.55 : 1 }}>
-            <LinearGradient colors={selectedThemeObj.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ borderRadius: RADIUS.full, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, ...SHADOWS.large }}>
-              {isGenerating || isConsuming ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="sparkles" size={20} color="#FFF" />}
-              <Text style={{ color: '#FFF', fontSize: FONTS.sizes.md, fontWeight: '800' }}>
+
+          <Pressable
+            onPress={handleGenerate}
+            disabled={isGenerating || isConsuming || !report}
+            style={{ opacity: isGenerating || isConsuming || !report ? 0.55 : 1 }}
+          >
+            <LinearGradient
+              colors={selectedThemeObj.colors}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+              style={{
+                borderRadius: RADIUS.full, paddingVertical: 16,
+                flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                gap: 10, ...SHADOWS.large,
+              }}
+            >
+              {isGenerating || isConsuming
+                ? <ActivityIndicator size="small" color={COLORS.textPrimary} />
+                : <Ionicons name="sparkles" size={20} color={COLORS.textPrimary} />}
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.md, fontWeight: '800' }}>
                 {isConsuming ? 'Checking credits…' : isGenerating ? 'Generating…' : 'Generate Presentation'}
               </Text>
               {!isGenerating && !isConsuming && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3 }}>
-                  <Ionicons name="flash" size={10} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{FEATURE_COSTS.presentation} cr</Text>
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 3,
+                  backgroundColor: `${COLORS.primary}30`,
+                  borderRadius: RADIUS.full, paddingHorizontal: 8, paddingVertical: 3,
+                }}>
+                  <Ionicons name="flash" size={10} color={COLORS.textPrimary} />
+                  <Text style={{ color: COLORS.textPrimary, fontSize: 10, fontWeight: '800' }}>
+                    {FEATURE_COSTS.presentation} cr
+                  </Text>
                 </View>
               )}
             </LinearGradient>
           </Pressable>
-          <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginTop: SPACING.sm }}>
+
+          <Text style={{
+            color: COLORS.textMuted,
+            fontSize: FONTS.sizes.xs,
+            textAlign: 'center',
+            marginTop: SPACING.sm,
+          }}>
             Powered by GPT-4o · Takes 15–30 seconds
           </Text>
         </View>
       </SafeAreaView>
-      <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
+
+      <InsufficientCreditsModal
+        visible={!!insufficientInfo}
+        info={insufficientInfo}
+        onClose={clearInsufficient}
+      />
     </LinearGradient>
   );
 }

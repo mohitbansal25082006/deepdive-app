@@ -1,18 +1,12 @@
 // src/services/agents/plannerAgent.ts
-// Part 25 — Updated
-//
-// CHANGES FROM PART 24:
-//   • Uses DEPTH_SEARCH_CONFIG to determine maxQueries per depth
-//     (Quick:4 / Deep:8 / Expert:12) — previously hardcoded
-//   • Generates `followUpSeeds` — topic angles the follow-up round will search
-//   • Generates `newsQuerySeeds` — topic seeds for the news search round
-//   • Prompts the model to produce higher diversity of query types:
-//     data/statistics, comparison, news/recent, expert opinion, geography-specific
-//   • All previous fields (topic, subtopics, searchQueries, researchGoals,
-//     estimatedDepth, keyEntities) are preserved exactly
+// Part 25 — Research planner.
+// Part 56 — Cost: routed to NANO tier (gpt-4.1-nano). Planning is a structured
+//   JSON task (topic, subtopics, search queries) that nano handles as well as
+//   gpt-4o for ~25x less. maxTokens trimmed 2000→1200 (output is a compact plan).
 
 import { chatCompletionJSON }    from '../openaiClient';
 import { ResearchInput, ResearchPlan, DEPTH_SEARCH_CONFIG } from '../../types';
+import { modelFor }              from '../../constants/aiModels';
 
 // Extended plan with Part 25 additions
 export interface ResearchPlanV2 extends ResearchPlan {
@@ -86,7 +80,7 @@ For newsQuerySeeds — provide news-focused topic angles (recent events, announc
   const plan = await chatCompletionJSON<ResearchPlanV2>([
     { role: 'system', content: systemPrompt },
     { role: 'user',   content: userPrompt   },
-  ], { temperature: 0.4, maxTokens: 2000 });
+  ], { temperature: 0.4, maxTokens: 1200, model: modelFor('planner') });
 
   // Validate & patch
   if (!plan.searchQueries || plan.searchQueries.length === 0) {

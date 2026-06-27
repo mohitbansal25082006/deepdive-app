@@ -2,6 +2,15 @@
 // Part 39 FIX — audioQuality passed through the full generation pipeline.
 // Part 53G — AbortSignal threaded so cancelling a podcast stops script + audio
 //   generation immediately (no further OpenAI / TTS token spend).
+// Part 57 — FIXES:
+//   • v2Input now matches ScriptAgentV2Input exactly. Previously it passed
+//     `targetDurationMinutes`, `speakerCount`, `presetStyleV2` as top-level
+//     fields that the agent didn't read, so 3-speaker podcasts produced nothing
+//     and the duration target was ignored. Duration now comes from
+//     config.targetDurationMinutes (which the agent reads), and presetStyleV2 is
+//     passed via the field the agent actually consumes.
+//   • getSpeakerVoiceForV2Turn keeps routing host/guest1/guest2 → the agent now
+//     emits those exact roles, so the 3rd speaker gets its own voice.
 
 import { supabase }                    from '../lib/supabase';
 import type {
@@ -65,12 +74,13 @@ export interface PodcastInput {
   episodeNumber?: number;
 }
 
+// Part 57: the agent now emits V2 roles on every turn ('host' | 'guest1' | 'guest2').
 function getSpeakerVoiceForV2Turn(
   turn:     PodcastTurnV2,
   speakers: SpeakerConfig[],
   config:   PodcastConfig,
 ): PodcastVoice {
-  if (turn.speaker === 'guest2') return speakers[2]?.voice ?? config.guestVoice;
+  if (turn.speaker === 'guest2') return speakers[2]?.voice ?? speakers[1]?.voice ?? config.guestVoice;
   if (turn.speaker === 'guest1') return speakers[1]?.voice ?? config.guestVoice;
   return speakers[0]?.voice ?? config.hostVoice;
 }
@@ -189,21 +199,26 @@ export async function runPodcastPipeline(
 
   try {
     if (useV2 && input.speakers && input.speakerCount) {
+      // Part 57: pass ONLY the fields ScriptAgentV2Input declares. Duration is
+      // read from config.targetDurationMinutes by the agent; style is passed via
+      // presetStyleV2 (the agent maps it down to a base style internally).
       const v2Input: ScriptAgentV2Input = {
-        topic:                 input.topic,
-        report:                input.report ?? null,
-        speakers:              input.speakers,
-        speakerCount:          input.speakerCount,
-        targetDurationMinutes: config.targetDurationMinutes,
-        presetStyleV2:         input.presetStyleV2 ?? 'casual',
+        topic:         input.topic,
+        report:        input.report ?? null,
         config,
+        speakers:      input.speakers,
+        speakerCount:  input.speakerCount,
+        presetStyleV2: input.presetStyleV2 ?? 'casual',
       };
       const result = await runPodcastScriptAgentV2(v2Input);
-      scriptV2    = result.script;
+      // The agent returns a V1-shaped PodcastScript whose turns already carry V2
+      // speaker roles ('host' | 'guest1' | 'guest2'); treat it as the V2 script
+      // for voice routing.
+      scriptV2 = result.script as unknown as PodcastScriptV2;
       title       = result.title;
       description = result.description;
       script = {
-        turns: v2TurnsToV1Compatible(result.script.turns),
+        turns: v2TurnsToV1Compatible(scriptV2.turns),
         totalWords: result.script.totalWords,
         estimatedDurationMinutes: result.script.estimatedDurationMinutes,
       };

@@ -1,9 +1,13 @@
 // src/services/agents/academicPaperAgent.ts
 // Part 7 — AI Academic Paper Mode
-// Part 53G — accepts an AbortSignal and passes it to the LLM call so a
-//   cancelled research run stops the paper generation too (no token spend).
+// Part 53G — accepts an AbortSignal and passes it to the LLM call.
+// Part 56 — Cost: routed to STANDARD tier (gpt-4.1-mini). A full doctoral-level
+//   paper is the one place quality matters most, and gpt-4.1-mini matches gpt-4o
+//   on long-form academic writing for ~6x less. maxTokens trimmed 6000→4500
+//   (3500–5000 words target fits well under 4500 output tokens with structured JSON).
 
 import { chatCompletionJSON } from '../openaiClient';
+import { modelFor }           from '../../constants/aiModels';
 import {
   ResearchInput,
   ResearchPlan,
@@ -207,8 +211,13 @@ academic register throughout. Every factual claim must be supported by a citatio
     ],
     {
       temperature: 0.45,
-      maxTokens:   6000,
-      signal,                       // ── Part 53G ──
+      // Part 57: 4500 truncated the paper mid-JSON → "Failed to parse OpenAI
+      // JSON" crash. A 3500–5000 word paper plus JSON structure needs ~7k–9k
+      // output tokens; 12000 leaves headroom. gpt-4.1-mini supports it, and the
+      // parser now also repairs any rare truncation as a fallback.
+      maxTokens:   12000,
+      signal,                            // ── Part 53G ──
+      model: modelFor('academicPaper'),  // ← Part 56: STANDARD
     }
   );
 

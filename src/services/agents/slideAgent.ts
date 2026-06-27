@@ -1,9 +1,12 @@
 // src/services/agents/slideAgent.ts
 // Part 41.9 — chart_ref slides include an editable editorData overlay block.
-// Part 53G — accepts an AbortSignal and passes it to the LLM call so cancelling
-//   presentation generation stops token spend immediately.
+// Part 53G — accepts an AbortSignal.
+// Part 56 — Cost: routed to STANDARD tier (gpt-4.1-mini). Generating a full
+//   13–15 slide deck from a report is quality-sensitive narrative work; mini
+//   matches gpt-4o for ~6x less.
 
 import { chatCompletionJSON } from '../openaiClient';
+import { modelFor }           from '../../constants/aiModels';
 import {
   ResearchReport,
   PresentationTheme,
@@ -196,7 +199,7 @@ STRICT JSON FORMAT:
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: userPrompt   },
     ],
-    { temperature: 0.4, maxTokens: 5000, signal }   // ── Part 53G ──
+    { temperature: 0.4, maxTokens: 5000, signal, model: modelFor('slideGeneration') } // ← Part 56 STANDARD
   );
 
   if (!raw?.slides?.length) {

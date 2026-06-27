@@ -1,11 +1,16 @@
 // src/services/agents/streamingReportAgent.ts
 // Part 21 — Streaming Report Agent.
-// Part 53G — Abort signal now threaded into EVERY OpenAI call (extractBullets,
-//   sync fallback, metadata) so cancelling research stops all token spend
-//   immediately, not just between sections.
+// Part 53G — Abort signal threaded into EVERY OpenAI call.
+// Part 56 — Cost:
+//   • Section streaming → STANDARD tier (gpt-4.1-mini) via chatCompletionStream
+//     default. This is the single highest token-volume task in the app.
+//   • Bullet extraction (extractBullets) → NANO tier — pure summarization.
+//   • Final metadata (title/summary/findings JSON) → NANO tier.
+//   • Sync fallback inside the loop keeps the cheap STANDARD model.
 
 import { chatCompletionStream } from '../openaiStreamClient';
 import { chatCompletionJSON, isAbortError }   from '../openaiClient';
+import { modelFor }             from '../../constants/aiModels';
 import {
   ResearchInput,
   ResearchPlan,
@@ -183,11 +188,11 @@ function buildSectionContext(
   ].join('\n');
 }
 
-/** Extracts bullet points from section prose using a fast GPT call */
+/** Extracts bullet points from section prose using a fast NANO call */
 async function extractBullets(
   sectionTitle: string,
   prose: string,
-  signal?: AbortSignal,            // ← Part 53G
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (!prose || prose.length < 100) return [];
   if (signal?.aborted) return [];
@@ -207,7 +212,7 @@ async function extractBullets(
           content: `Section: "${sectionTitle}"\n\nText:\n${prose.slice(0, 3000)}`,
         },
       ],
-      { temperature: 0.2, maxTokens: 400, signal },   // ← Part 53G
+      { temperature: 0.2, maxTokens: 400, signal, model: modelFor('bulletExtraction') }, // ← Part 56 NANO
     );
     return (result?.bullets ?? []).slice(0, 4).filter(b => b.length > 10);
   } catch (err) {
@@ -242,7 +247,7 @@ export async function runStreamingReportAgent(
     '\n• Be direct and punchy — every sentence must add value' +
     '\n• Stop writing after 250 words. Quality over quantity.';
 
-  // ── Stream each of the 6 sections ─────────────────────────────────────────
+  // ── Stream each of the 6 sections (STANDARD tier via stream default) ──────
 
   for (let i = 0; i < SECTION_DEFS.length; i++) {
     if (callbacks.signal?.aborted) return;
@@ -283,7 +288,7 @@ export async function runStreamingReportAgent(
         },
         signal: callbacks.signal,
       },
-      { temperature: 0.5, maxTokens: 800 },
+      { temperature: 0.5, maxTokens: 800, model: modelFor('reportSections') }, // ← Part 56 STANDARD
     );
 
     if (callbacks.signal?.aborted) return;
@@ -304,11 +309,11 @@ export async function runStreamingReportAgent(
                 `CONTEXT:\n${sectionContext}`,
             },
           ],
-          { temperature: 0.5, maxTokens: 800, signal: callbacks.signal },  // ← Part 53G
+          { temperature: 0.5, maxTokens: 800, signal: callbacks.signal, model: modelFor('reportSections') },
         );
         callbacks.onSectionToken(i, sectionText);
       } catch (syncErr) {
-        if (isAbortError(syncErr)) return;       // ← Part 53G: cancelled, bail
+        if (isAbortError(syncErr)) return;
         sectionText = `Analysis of ${def.title} for ${plan.topic} based on gathered research data.`;
       }
     }
@@ -337,7 +342,7 @@ export async function runStreamingReportAgent(
 
   if (callbacks.signal?.aborted) return;
 
-  // ── Final metadata (non-streaming) ────────────────────────────────────────
+  // ── Final metadata (non-streaming, NANO tier) ─────────────────────────────
 
   interface MetadataOutput {
     title:             string;
@@ -375,10 +380,10 @@ export async function runStreamingReportAgent(
             '}',
         },
       ],
-      { temperature: 0.35, maxTokens: 1500, signal: callbacks.signal },   // ← Part 53G
+      { temperature: 0.35, maxTokens: 1500, signal: callbacks.signal, model: modelFor('reportMetadata') }, // ← Part 56 NANO
     );
   } catch (err) {
-    if (isAbortError(err)) return;                // ← Part 53G: cancelled, bail
+    if (isAbortError(err)) return;
     metadata = {
       title:            `${plan.topic}: Comprehensive Research Report ${new Date().getFullYear()}`,
       executiveSummary: `This report provides a comprehensive analysis of ${plan.topic}, covering current state, key players, market data, challenges, and future outlook based on ${completedSections.length} in-depth sections.`,

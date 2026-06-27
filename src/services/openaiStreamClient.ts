@@ -1,20 +1,22 @@
 // src/services/openaiStreamClient.ts
 // Part 21 — Streaming OpenAI client.
+// Part 56 — Cost reduction: hardcoded gpt-4o removed. Streaming defaults to the
+//   STANDARD tier (gpt-4.1-mini, ~6x cheaper) and accepts a per-call `model`
+//   override via StreamOptions. Report-section streaming is one of the highest
+//   token-volume tasks in the app, so this single change is a large saving.
 //
-// CRITICAL FIX: React Native's built-in `fetch` polyfill does NOT implement
-// `response.body` as a ReadableStream — it always returns null/undefined.
-// We MUST use `expo/fetch` (available Expo SDK 52+) which is WinterCG-compliant
-// and properly supports `response.body.getReader()` on iOS and Android.
-//
-// Reference:
-//   https://docs.expo.dev/versions/latest/sdk/expo/#expofetch-api
-//   https://expo.dev/changelog/2024-11-12-sdk-52
+// CRITICAL FIX (unchanged from Part 21): React Native's built-in `fetch` does
+// NOT implement `response.body` as a ReadableStream. We use `expo/fetch`
+// (Expo SDK 52+) which properly supports `response.body.getReader()`.
 
 import { fetch as expoFetch } from 'expo/fetch';
 import { ChatMessage, chatCompletion } from './openaiClient';
+import { AI_TIER, type OpenAIModel } from '../constants/aiModels';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
-const MODEL = 'gpt-4o';
+
+// Part 56: default streaming model is the cheap STANDARD tier, not gpt-4o.
+const DEFAULT_STREAM_MODEL: OpenAIModel = AI_TIER.STANDARD;
 
 function getApiKey(): string {
   const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
@@ -33,6 +35,8 @@ export interface StreamCallbacks {
 export interface StreamOptions {
   temperature?: number;
   maxTokens?:   number;
+  /** Part 56: per-call model. Defaults to the cheap STANDARD tier. */
+  model?:       OpenAIModel;
 }
 
 /**
@@ -47,6 +51,7 @@ export async function chatCompletionStream(
   options:   StreamOptions = {},
 ): Promise<void> {
   const apiKey = getApiKey();
+  const model  = options.model ?? DEFAULT_STREAM_MODEL;   // ← Part 56
 
   let response: Response;
   try {
@@ -58,7 +63,7 @@ export async function chatCompletionStream(
         Accept:         'text/event-stream',
       },
       body: JSON.stringify({
-        model:       MODEL,
+        model,
         messages,
         stream:      true,
         temperature: options.temperature ?? 0.4,
@@ -101,6 +106,7 @@ export async function chatCompletionStream(
       const fullText = await chatCompletion(messages, {
         temperature: options.temperature,
         maxTokens:   options.maxTokens ?? 3000,
+        model,                                   // ← Part 56: keep same cheap model
       });
       // Emit word-by-word to keep the streaming UI alive
       const words = fullText.split(' ');

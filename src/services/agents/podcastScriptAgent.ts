@@ -1,31 +1,13 @@
 // src/services/agents/podcastScriptAgent.ts
-// Part 19 — DURATION FIX v2:
-//
-// ROOT CAUSE of "10 min → 5 min" bug:
-//   GPT-4o in JSON mode tends to write short turns (~50-70 words each)
-//   regardless of instructions. With 16 turns × 60 avg = ~960 words = ~7.5 min.
-//   For longer durations it gets worse — GPT front-loads effort then tapers off.
-//
-// THE REAL FIX — two-pronged approach:
-//
-//   1. CHUNKED GENERATION: For durations > 7 min, split into 2 GPT calls:
-//      • Call A generates turns 1..N/2 (first half of episode)
-//      • Call B generates turns N/2+1..N (second half, given first half as context)
-//      This prevents GPT from "running out of steam" and writing filler/short turns.
-//
-//   2. HIGHER WORD FLOOR: MIN_WORDS_PER_TURN raised to 80, avgWordsPerTurn = 120.
-//      Turns are asked to be "paragraph-length" — 80-160 words each.
-//      At 120 avg × 14 turns = 1,680 words ≈ 13.4 min (safely over 10 min target).
-//
-//   3. VALIDATION + TOP-UP: After generation, if totalWords < 90% of target,
-//      a top-up call asks GPT to expand the shortest turns until the word
-//      budget is met.
-//
-// TTS RATE: OpenAI TTS-1 speaks at 130-140 WPM. We use 120 as a conservative
-//   floor (some voices speak slightly slower on long sentences).
+// Part 19 — DURATION FIX v2 (chunked generation + top-up).
+// Part 56 — Cost routing:
+//   • All script generation calls (single-pass + chunked halves) → STANDARD
+//     (gpt-4.1-mini) — creative dialogue quality matches gpt-4o for ~6x less.
+//   • topUpShortTurns → NANO — purely mechanical "make these turns longer".
 
 import { chatCompletionJSON } from '../openaiClient';
 import { serpSearchBatch }    from '../serpApiClient';
+import { modelFor }           from '../../constants/aiModels';
 import {
   ResearchReport,
   PodcastScript,
@@ -36,38 +18,11 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/**
- * Conservative TTS words-per-minute.
- * OpenAI TTS-1 actual rate: 130-140 WPM. Using 120 as a safe floor so
- * we always generate MORE than enough rather than less.
- */
 const TTS_WPM = 120;
-
-/**
- * Target average words per turn. Higher than before — we want paragraph-length
- * turns so each GPT call contributes substantial audio time.
- */
 const AVG_WORDS_PER_TURN = 120;
-
-/**
- * Hard floor per turn. Turns below this feel too clipped.
- */
 const MIN_WORDS_PER_TURN = 80;
-
-/**
- * Soft ceiling per turn. Keeps individual TTS calls short enough to be fast.
- */
 const MAX_WORDS_PER_TURN = 180;
-
-/**
- * Durations above this threshold use chunked generation (2 GPT calls).
- * Below it, a single call is fine.
- */
 const CHUNKED_THRESHOLD_MINS = 7;
-
-/**
- * If actual word count is below this fraction of target, run a top-up call.
- */
 const WORD_COUNT_TOLERANCE = 0.88;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -120,29 +75,16 @@ export function estimateTTSDurationMs(text: string): number {
   return Math.round((countWords(text) / TTS_WPM) * 60 * 1000);
 }
 
-/**
- * How many total words are needed to fill targetMinutes at TTS_WPM.
- * 20% buffer to account for GPT writing shorter turns than instructed.
- */
 function requiredWordCount(targetMinutes: number): number {
   return Math.round(targetMinutes * TTS_WPM * 1.2);
 }
 
-/**
- * How many turns to request from GPT.
- * Uses AVG_WORDS_PER_TURN as the denominator, with a sensible min/max.
- */
 function calculateTargetTurns(targetMinutes: number): number {
   const needed = requiredWordCount(targetMinutes);
   const raw    = Math.round(needed / AVG_WORDS_PER_TURN);
-  // Min 14 turns (even for 5 min), max 60 turns (even for 20 min)
   return Math.min(60, Math.max(14, raw));
 }
 
-/**
- * Max tokens for a GPT call generating `turns` turns of ~AVG_WORDS_PER_TURN words.
- * Each word ≈ 1.35 tokens on average for dialogue. Add 600 tokens for JSON overhead.
- */
 function maxTokensForTurns(turns: number): number {
   return Math.min(16000, turns * AVG_WORDS_PER_TURN * 2 + 600);
 }
@@ -223,7 +165,7 @@ function getStyleGuide(
   return guides[style] ?? guides.casual;
 }
 
-// ─── Single-pass generation (≤ CHUNKED_THRESHOLD_MINS) ───────────────────────
+// ─── Single-pass generation (STANDARD) ───────────────────────────────────────
 
 async function generateSinglePass(
   topic:         string,
@@ -270,6 +212,7 @@ Return ONLY valid JSON:
     {
       temperature: 0.72,
       maxTokens:   maxTokensForTurns(targetTurns),
+      model:       modelFor('podcastScript'), // ← Part 56 STANDARD
     }
   );
 
@@ -280,7 +223,7 @@ Return ONLY valid JSON:
   };
 }
 
-// ─── Chunked generation (> CHUNKED_THRESHOLD_MINS) ───────────────────────────
+// ─── Chunked generation (STANDARD) ───────────────────────────────────────────
 
 async function generateChunked(
   topic:         string,
@@ -300,8 +243,6 @@ async function generateChunked(
   const systemPrompt = buildSystemPrompt(
     styleGuide, requiredWords, targetMins, hostName, guestName
   );
-
-  // ── Call A: First half ─────────────────────────────────────────────────
 
   const promptA = `Write the FIRST HALF of a ${targetMins}-minute podcast about: "${topic}"
 
@@ -335,6 +276,7 @@ Return ONLY valid JSON:
     {
       temperature: 0.72,
       maxTokens:   maxTokensForTurns(halfTurns),
+      model:       modelFor('podcastScript'), // ← Part 56 STANDARD
     }
   );
 
@@ -342,9 +284,6 @@ Return ONLY valid JSON:
   const title     = rawA?.title?.trim()       ?? `${topic} — Deep Dive`;
   const description = rawA?.description?.trim() ?? '';
 
-  // ── Call B: Second half (given first half as context) ─────────────────
-
-  // Build a compact summary of the first half to give GPT context
   const firstHalfSummary = turnsA.slice(-4).map(
     t => `${t.speaker === 'host' ? hostName : guestName}: "${t.text.slice(0, 120)}..."`
   ).join('\n');
@@ -378,6 +317,7 @@ Return ONLY valid JSON (no title/description — just turns):
     {
       temperature: 0.72,
       maxTokens:   maxTokensForTurns(secondHalf),
+      model:       modelFor('podcastScript'), // ← Part 56 STANDARD
     }
   );
 
@@ -390,7 +330,7 @@ Return ONLY valid JSON (no title/description — just turns):
   };
 }
 
-// ─── Top-up call (when word count falls short) ────────────────────────────────
+// ─── Top-up call (NANO) ───────────────────────────────────────────────────────
 
 async function topUpShortTurns(
   turns:        RawTurn[],
@@ -403,7 +343,6 @@ async function topUpShortTurns(
 
   if (shortfall <= 0) return turns;
 
-  // Find the 6 shortest turns to expand
   const indexed    = turns.map((t, i) => ({ ...t, idx: i, wc: countWords(t.text) }));
   const shortest   = [...indexed].sort((a, b) => a.wc - b.wc).slice(0, 6);
 
@@ -424,7 +363,7 @@ Return ONLY valid JSON:
   try {
     const result = await chatCompletionJSON<{ expanded: { index: number; text: string }[] }>(
       [{ role: 'user', content: expansionPrompt }],
-      { temperature: 0.65, maxTokens: shortfall * 2 + 400 }
+      { temperature: 0.65, maxTokens: shortfall * 2 + 400, model: modelFor('podcastTopUp') } // ← Part 56 NANO
     );
 
     if (result?.expanded) {
@@ -482,8 +421,6 @@ export async function runPodcastScriptAgent(
   const targetTurns = calculateTargetTurns(targetMins);
   const requiredWords = requiredWordCount(targetMins);
 
-  // ── SerpAPI web search ────────────────────────────────────────────────────
-
   let searchContext = '';
   let webSearchUsed = false;
   const searchQueriesUsed: string[] = [];
@@ -506,22 +443,17 @@ export async function runPodcastScriptAgent(
     console.warn('[PodcastScriptAgent] SerpAPI failed, continuing:', err);
   }
 
-  // ── Build shared context ──────────────────────────────────────────────────
-
   const reportContext = report
     ? buildReportContext(report)
     : `Topic: "${topic}"\nUse realistic, specific industry statistics and expert knowledge.`;
 
   const styleGuide = getStyleGuide(style, config.hostName, config.guestName);
 
-  // ── Generate script (single-pass or chunked) ──────────────────────────────
-
   let rawTurns: RawTurn[];
   let title:    string;
   let desc:     string;
 
   if (targetMins > CHUNKED_THRESHOLD_MINS) {
-    // CHUNKED: 2 GPT calls for longer episodes (> 7 min)
     const result = await generateChunked(
       topic, targetTurns, requiredWords,
       config.hostName, config.guestName,
@@ -531,7 +463,6 @@ export async function runPodcastScriptAgent(
     title    = result.title;
     desc     = result.description;
   } else {
-    // SINGLE-PASS: one GPT call for shorter episodes (≤ 7 min)
     const result = await generateSinglePass(
       topic, targetTurns, requiredWords,
       config.hostName, config.guestName,
@@ -546,8 +477,6 @@ export async function runPodcastScriptAgent(
     throw new Error('Podcast script agent returned an empty dialogue. Please try again.');
   }
 
-  // ── Top-up if word count is too low ──────────────────────────────────────
-
   const currentWords = rawTurns.reduce((s, t) => s + countWords(t.text ?? ''), 0);
   if (currentWords < requiredWords * WORD_COUNT_TOLERANCE) {
     console.log(
@@ -557,8 +486,6 @@ export async function runPodcastScriptAgent(
       rawTurns, requiredWords, config.hostName, config.guestName
     );
   }
-
-  // ── Transform raw turns → PodcastTurn[] ──────────────────────────────────
 
   const turns: PodcastTurn[] = rawTurns.map((raw, index) => {
     const speaker = raw?.speaker === 'guest' ? 'guest' : 'host';
@@ -572,8 +499,6 @@ export async function runPodcastScriptAgent(
       durationMs:   estimateTTSDurationMs(text),
     };
   });
-
-  // ── Compute totals ────────────────────────────────────────────────────────
 
   const totalWords = turns.reduce((sum, t) => sum + countWords(t.text), 0);
   const estimatedDurationMinutes = Math.round((totalWords / TTS_WPM) * 10) / 10;
