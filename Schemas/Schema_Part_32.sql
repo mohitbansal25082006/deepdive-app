@@ -8,6 +8,7 @@
 --   schema_patch_part32_deleted_status.sql
 --   schema_patch_part32_fix_test_orders.sql
 --   schema_patch_part32_credit_stats_rpc.sql
+--   schema_patch_part32_fix_showreviewed.sql   ← integrated in Section 6
 --
 -- Prerequisites: Parts 1–31 schema already applied (especially Part 31 admin tables).
 -- Safe to run multiple times — every statement is idempotent.
@@ -330,13 +331,24 @@ $$;
 --
 -- Returns abuse signals joined with profile data (name, account_status).
 -- Used by GET /api/admin/abuse after detection runs.
+--
+-- PATCH (schema_patch_part32_fix_showreviewed) — integrated here:
+--   The original signature used p_is_reviewed BOOLEAN DEFAULT FALSE with a
+--   nullable-boolean trick for "show all". Supabase's JS client omits null
+--   parameters entirely, so Postgres fell back to DEFAULT FALSE — passing null
+--   to mean "show all" silently became "show pending only", making the
+--   "Show Reviewed" toggle on the admin dashboard have no effect.
+--
+--   FIX: replaced with p_show_all BOOLEAN DEFAULT FALSE. When TRUE, the
+--   is_reviewed filter is skipped entirely, returning both pending and reviewed
+--   signals.
 -- ══════════════════════════════════════════════════════════════════════════════
 
 CREATE OR REPLACE FUNCTION public.get_abuse_signals_with_users(
-  p_is_reviewed  BOOLEAN  DEFAULT FALSE,
-  p_signal_type  TEXT     DEFAULT NULL,
-  p_severity     TEXT     DEFAULT NULL,
-  p_limit        INTEGER  DEFAULT 100
+  p_show_all    BOOLEAN  DEFAULT FALSE,   -- TRUE = return all; FALSE = pending only
+  p_signal_type TEXT     DEFAULT NULL,
+  p_severity    TEXT     DEFAULT NULL,
+  p_limit       INTEGER  DEFAULT 100
 )
 RETURNS TABLE (
   id             UUID,
@@ -376,7 +388,9 @@ BEGIN
   FROM public.abuse_signals s
   LEFT JOIN public.profiles p ON p.id = s.user_id
   WHERE
-    (p_is_reviewed IS NULL OR s.is_reviewed  = p_is_reviewed)
+    -- When p_show_all is TRUE skip the is_reviewed filter entirely (show all).
+    -- When FALSE (default) only return unreviewed/pending signals.
+    (p_show_all = TRUE OR s.is_reviewed = FALSE)
     AND (p_signal_type IS NULL OR s.signal_type = p_signal_type)
     AND (p_severity    IS NULL OR s.severity    = p_severity)
   ORDER BY
@@ -587,6 +601,17 @@ BEGIN
   ) >= 1,
   '❌ get_abuse_signals_with_users() RPC missing — check Section 6';
 
+  -- ── verify get_abuse_signals_with_users uses p_show_all parameter ────────────
+  ASSERT (
+    SELECT COUNT(*) FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_get_function_arguments(p.oid) args ON TRUE
+    WHERE n.nspname = 'public'
+      AND p.proname = 'get_abuse_signals_with_users'
+      AND args LIKE '%p_show_all%'
+  ) >= 1,
+  '❌ get_abuse_signals_with_users() is missing the p_show_all parameter — check Section 6';
+
   -- ── resolve_abuse_signal ─────────────────────────────────────────────────────
   ASSERT (
     SELECT COUNT(*) FROM pg_proc p
@@ -625,6 +650,7 @@ BEGIN
   RAISE NOTICE '   Section 4 → Realtime publication updated (check notices above)';
   RAISE NOTICE '   Section 5 → detect_abuse_signals() RPC created';
   RAISE NOTICE '   Section 6 → get_abuse_signals_with_users() RPC created';
+  RAISE NOTICE '              (p_show_all fix integrated — Show Reviewed toggle now works)';
   RAISE NOTICE '   Section 7 → resolve_abuse_signal() RPC created';
   RAISE NOTICE '   Section 8 → get_credit_stats() RPC created (fixes signup bonus 0)';
   RAISE NOTICE '';
@@ -635,4 +661,7 @@ BEGIN
   RAISE NOTICE '  2. Deploy the updated edge function:';
   RAISE NOTICE '     supabase functions deploy razorpay-create-order --no-verify-jwt';
   RAISE NOTICE '  3. Test payments made after edge function deploy will be tagged is_test=true';
+  RAISE NOTICE '  4. Update admin abuse page RPC call:';
+  RAISE NOTICE '     .rpc(''get_abuse_signals_with_users'', { p_show_all: showReviewed })';
+  RAISE NOTICE '     (was: { p_is_reviewed: showReviewed ? null : false })';
 END $$;

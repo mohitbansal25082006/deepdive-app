@@ -523,8 +523,8 @@ export const THEME_DEFINITIONS: ThemeDefinition[] = [
   },
 ];
 
-export const DEFAULT_THEME_ID: string = 'cosmic';
-export const DEFAULT_THEME_MODE: ThemeMode = 'dark';
+export const DEFAULT_THEME_ID: string = 'sunset';
+export const DEFAULT_THEME_MODE: ThemeMode = 'light';
 
 export function getThemeDefinition(id: string): ThemeDefinition {
   return THEME_DEFINITIONS.find(t => t.id === id) ?? THEME_DEFINITIONS[0];

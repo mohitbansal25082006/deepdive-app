@@ -66,9 +66,16 @@ export interface PodcastOutline {
 
 const SPEAKING_WPM = 150;          // real tts-1 playback rate (≈825 chars/min)
 const TTS_WPM = SPEAKING_WPM;      // kept for estimateTTSDurationMs back-compat
-const AVG_WORDS_PER_TURN = 115;
-const MIN_WORDS_PER_TURN = 70;
-const MAX_WORDS_PER_TURN = 185;
+// Part 57d — Conversational pacing: prefer MANY SHORT turns over a few long ones.
+// Total spoken words (and thus duration) is unchanged — the same word budget is
+// just spread across more, snappier turns so it reads like a real back-and-forth
+// podcast instead of alternating monologues.
+//   AVG 115 → 55   (≈22s/turn at 150 wpm → quicker exchanges)
+//   MIN  70 → 25   (allow brief reactions/interjections: "Right, but…", "Exactly.")
+//   MAX 185 → 90   (hard cap; splitLongTurns enforces it as a safety net)
+const AVG_WORDS_PER_TURN = 55;
+const MIN_WORDS_PER_TURN = 25;
+const MAX_WORDS_PER_TURN = 90;
 const CHUNKED_THRESHOLD_MINS = 11; // only split very long episodes now
 // Part 57c: the short-script top-up trigger lives inline at the call site
 // (TOPUP_TRIGGER = 0.70) so the extra LLM call only fires on a real shortfall.
@@ -119,18 +126,20 @@ function requiredWordCount(targetMinutes: number): number {
 }
 
 // Part 57: turn count follows the word budget. The floor is small and scales
-// with speaker count only so every speaker gets at least a couple of turns —
-// it no longer forces 14 turns onto a 5-minute episode.
+// with speaker count only so every speaker gets at least a couple of turns.
+// Part 57d: with the shorter AVG_WORDS_PER_TURN (55), this naturally yields ~2×
+// as many turns for the same duration, so the ceiling is raised to fit them.
 function calculateTargetTurns(targetMinutes: number, speakerCount: number): number {
   const needed = requiredWordCount(targetMinutes);
   const raw    = Math.round(needed / AVG_WORDS_PER_TURN);
-  const floor  = Math.max(speakerCount * 2, 4);   // was max(14, speakerCount*6)
-  const ceil   = 80;
+  const floor  = Math.max(speakerCount * 2, 6);
+  const ceil   = 160;                                // Part 57d: was 80
   return Math.min(ceil, Math.max(floor, raw));
 }
 
 function maxTokensForTurns(turns: number): number {
-  return Math.min(16000, turns * AVG_WORDS_PER_TURN * 2 + 700);
+  // ~AVG words/turn × ~1.6 tokens/word + per-turn JSON overhead (~12 tokens).
+  return Math.min(16000, turns * (AVG_WORDS_PER_TURN * 2 + 12) + 700);
 }
 
 // Part 57b: split text into sentences for safe turn-splitting. Keeps the
@@ -346,16 +355,23 @@ ${buildSpeakerRoster(speakers)}
 CRITICAL DURATION RULES:
 - This podcast must produce ${targetMins} minutes of audio when read aloud at ${TTS_WPM} WPM
 - That requires AT LEAST ${requiredWords} total spoken words
-- EVERY turn must be ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words — full paragraphs, NOT one-liners
-- Distribute turns across ALL speakers; do not let one speaker dominate
-- Short filler turns ("Great point!") waste word budget — write substantive paragraphs
+- Reach that total through MANY SHORT TURNS, not a few long ones
+- Each turn is ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words (aim for ~${AVG_WORDS_PER_TURN}); 2-4 sentences max
+- Keep it a fast, natural back-and-forth — speakers react to and build on each other
+- Distribute turns across ALL speakers; do not let one speaker monologue
+- Brief reactions/interjections ARE welcome ("Right, but here's the catch…", "Wait—say more.") as long as the conversation keeps advancing with real substance
+
+CONVERSATIONAL FLOW:
+- Hand off frequently: ask a question, then the other speaker answers and adds a new angle
+- Vary turn length naturally — a punchy 25-word reaction, then a 70-word explanation
+- Speakers can interrupt, agree, push back, and riff — like a real podcast, not a lecture
 
 WRITING RULES:
 1. Use contractions: "it's", "we're", "that's", "you'd"
 2. Natural speech: "I mean...", "What's fascinating is...", "Here's the thing—"
 3. Flowing prose ONLY — no bullet points, no lists
 4. Include specific data points, company names, statistics, dates
-5. Every sentence moves the conversation forward
+5. Every turn moves the conversation forward
 6. The "speaker" field of every turn MUST be one of the exact ids in the roster above`;
 }
 
@@ -438,7 +454,8 @@ ${reportContext}
 ${outlineText ? outlineText + '\n\n' : ''}${searchContext ? searchContext + '\n\n' : ''}
 
 Write EXACTLY ${targetTurns} turns across all ${speakers.length} speakers.
-EVERY turn must be ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words — paragraph length, NOT one sentence.
+Each turn is ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words (aim ~${AVG_WORDS_PER_TURN}) — short, punchy, conversational; 2-4 sentences, NOT long paragraphs.
+Keep a fast natural back-and-forth: speakers react, question, and build on each other.
 Total word count across all turns: AT LEAST ${requiredWords} words.
 
 Return ONLY valid JSON:
@@ -446,8 +463,8 @@ Return ONLY valid JSON:
   "title": "Compelling episode title (8-16 words)",
   "description": "2-3 sentence description that makes someone want to listen",
   "turns": [
-    { "speaker": "${speakers[0].id}", "text": "70-185 word paragraph of natural spoken dialogue..." },
-    { "speaker": "${speakers[1]?.id ?? speakers[0].id}", "text": "70-185 word paragraph..." }
+    { "speaker": "${speakers[0].id}", "text": "Short ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} word spoken turn..." },
+    { "speaker": "${speakers[1]?.id ?? speakers[0].id}", "text": "Reacts and adds a new angle, ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words..." }
   ]
 }`;
 
@@ -496,7 +513,7 @@ ${reportContext}
 ${outlineText ? outlineText + '\n\n' : ''}${searchContext ? searchContext + '\n\n' : ''}
 
 This is turns 1-${halfTurns} of a ${targetTurns}-turn episode across ${speakers.length} speakers.
-Write EXACTLY ${halfTurns} turns, each ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words.
+Write EXACTLY ${halfTurns} turns, each ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words (aim ~${AVG_WORDS_PER_TURN}) — short, punchy, conversational; fast back-and-forth, NOT long paragraphs.
 Total words for this half: AT LEAST ${wordsPerHalf} words.
 
 Cover: hook/intro, context & background, first deep dive into data.
@@ -506,7 +523,7 @@ Return ONLY valid JSON:
 {
   "title": "Episode title (8-16 words)",
   "description": "2-3 sentence compelling description",
-  "turns": [ { "speaker": "${speakers[0].id}", "text": "70-185 word paragraph..." } ]
+  "turns": [ { "speaker": "${speakers[0].id}", "text": "Short ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} word spoken turn..." } ]
 }`;
 
   const rawA = await chatCompletionJSON<RawScriptResponseV2>(
@@ -538,7 +555,7 @@ ${firstHalfSummary}
 ---
 
 Now write the SECOND HALF — turns ${halfTurns + 1}-${targetTurns} across ${speakers.length} speakers.
-Write EXACTLY ${secondHalf} turns, each ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words.
+Write EXACTLY ${secondHalf} turns, each ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words (aim ~${AVG_WORDS_PER_TURN}) — short, conversational, fast back-and-forth.
 Total words for this half: AT LEAST ${wordsPerHalf} words.
 
 Cover: complexity & challenges, future outlook & predictions, wrap-up & key takeaway.
@@ -546,7 +563,7 @@ This is the CONCLUSION — end with a memorable closing statement.
 
 Return ONLY valid JSON (no title/description — just turns):
 {
-  "turns": [ { "speaker": "${speakers[1]?.id ?? speakers[0].id}", "text": "70-185 word paragraph..." } ]
+  "turns": [ { "speaker": "${speakers[1]?.id ?? speakers[0].id}", "text": "Short ${MIN_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} word spoken turn..." } ]
 }`;
 
   const rawB = await chatCompletionJSON<RawTurnsOnlyV2>(
@@ -583,14 +600,14 @@ async function topUpShortTurns(
 
   const nameFor = (id: string) => speakers.find(s => s.id === id)?.name ?? id;
 
-  const expansionPrompt = `The following podcast turns are too short. Expand each one to be 120-160 words while keeping the same speaker voice and content direction. Add specific details, examples, or statistics. Do NOT change what is being said — only make it longer and richer.
+  const expansionPrompt = `The following podcast turns are too short. Expand each one to about ${AVG_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words while keeping the same speaker voice and content direction. Add a specific detail, example, or statistic. Keep it conversational and natural — do NOT turn it into a long monologue, and do NOT change what is being said.
 
 ${shortest.map((t, i) => `TURN ${i + 1} (${nameFor(t.speaker)}, currently ${t.wc} words):\n"${t.text}"`).join('\n\n')}
 
 We need ${shortfall} more words total across these ${shortest.length} turns.
 
 Return ONLY valid JSON:
-{ "expanded": [ { "index": 0, "text": "Expanded turn text 120-160 words..." } ] }`;
+{ "expanded": [ { "index": 0, "text": "Expanded turn ${AVG_WORDS_PER_TURN}-${MAX_WORDS_PER_TURN} words..." } ] }`;
 
   try {
     const result = await chatCompletionJSON<{ expanded: { index: number; text: string }[] }>(

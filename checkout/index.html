@@ -3,505 +3,170 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>DeepDive AI — Checkout</title>
+  <title>DeepDive AI — Secure Checkout</title>
   <style>
-    /* ─── CSS Variables (defaults = Cosmic Indigo dark, overridden by JS) ─── */
+    /* ─────────────────────────────────────────────────────────────────────────
+       THEME VARIABLES
+       Defaults below = Sunset Coral (LIGHT) to match the app's new default theme.
+       At runtime applyTheme() overwrites ALL of these from the signed token's
+       palette snapshot, so the checkout always matches the user's active theme
+       (any of the 6 themes, light or dark).
+    ───────────────────────────────────────────────────────────────────────── */
     :root {
-      --bg:           #0A0A1A;
-      --bg-card:      #12122A;
-      --bg-elevated:  #1A1A35;
-      --primary:      #6C63FF;
-      --primary-l:    #8B85FF;
-      --primary-d:    #4A42CC;
-      --accent:       #43E97B;
-      --text:         #FFFFFF;
-      --text-sec:     #A0A0C0;
-      --text-muted:   #5A5A7A;
-      --border:       #2A2A4A;
-      --success:      #43E97B;
-      --error:        #FF4757;
-      --warning:      #FFA726;
-      --grad-p1:      #6C63FF;
-      --grad-p2:      #8B5CF6;
-      --grad-card1:   #1A1A35;
-      --grad-card2:   #12122A;
-      --radius:       20px;
-      --radius-sm:    12px;
-      --radius-pill:  100px;
+      --bg:#FFF7F8; --bg-card:#FFFFFF; --bg-elevated:#FCE8EC;
+      --primary:#E11D48; --primary-l:#F43F5E; --primary-d:#9F1239; --accent:#D97706;
+      --text:#3B0A18; --text-sec:#6B3340; --text-muted:#B07984; --border:#F6D5DC;
+      --success:#16A34A; --error:#DC2626; --warning:#D97706;
+      --grad-p1:#E11D48; --grad-p2:#F43F5E; --grad-card1:#FFFFFF; --grad-card2:#FCE8EC;
+      --radius:22px; --radius-sm:13px; --radius-pill:100px;
+      --on-primary:#FFFFFF;
+      --shadow-card:0 24px 56px rgba(0,0,0,.12), 0 0 60px -24px var(--primary);
+      --scrim:rgba(0,0,0,.04);
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100%;}
+    body{
+      font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Roboto,sans-serif;
+      background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;
+      justify-content:center;padding:20px 16px;position:relative;overflow-x:hidden;
+      transition:background .35s ease,color .35s ease;
+      -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
     }
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    /* Aurora background — derived from theme tones */
+    .aurora{position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:0;}
+    .aurora-blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.16;animation:drift 14s ease-in-out infinite alternate;}
+    .aurora-blob:nth-child(1){width:420px;height:420px;background:var(--grad-p1);top:-120px;left:-110px;animation-delay:0s;}
+    .aurora-blob:nth-child(2){width:360px;height:360px;background:var(--grad-p2);bottom:-90px;right:-90px;animation-delay:-5s;}
+    .aurora-blob:nth-child(3){width:260px;height:260px;background:var(--accent);top:42%;left:62%;opacity:.10;animation-delay:-9s;}
+    @keyframes drift{0%{transform:translate(0,0) scale(1);}100%{transform:translate(34px,22px) scale(1.10);}}
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px 16px;
-      /* Animated aurora background */
-      position: relative;
-      overflow-x: hidden;
+    /* Card */
+    .card{
+      position:relative;z-index:1;background:var(--bg-card);border:1px solid var(--border);
+      border-radius:var(--radius);padding:30px 26px 24px;max-width:430px;width:100%;
+      backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
+      box-shadow:var(--shadow-card);animation:cardIn .5s cubic-bezier(.2,.7,.2,1) both;
     }
+    @keyframes cardIn{from{opacity:0;transform:translateY(14px) scale(.985);}to{opacity:1;transform:none;}}
 
-    /* ─── Aurora background blobs ─── */
-    .aurora {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      overflow: hidden;
-      z-index: 0;
+    /* Brand row — logo with WHITE rounded background */
+    .logo-wrap{display:flex;align-items:center;gap:13px;margin-bottom:22px;}
+    .logo-badge{
+      width:52px;height:52px;border-radius:15px;flex-shrink:0;
+      background:#FFFFFF;                 /* white background behind the logo */
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 8px 22px -6px rgba(0,0,0,.30), 0 0 0 1px rgba(0,0,0,.06) inset;
+      overflow:hidden;padding:6px;
     }
-    .aurora-blob {
-      position: absolute;
-      border-radius: 50%;
-      filter: blur(80px);
-      opacity: 0.12;
-      animation: drift 12s ease-in-out infinite alternate;
-    }
-    .aurora-blob:nth-child(1) {
-      width: 400px; height: 400px;
-      background: var(--grad-p1);
-      top: -100px; left: -100px;
-      animation-delay: 0s;
-    }
-    .aurora-blob:nth-child(2) {
-      width: 350px; height: 350px;
-      background: var(--grad-p2);
-      bottom: -80px; right: -80px;
-      animation-delay: -4s;
-    }
-    .aurora-blob:nth-child(3) {
-      width: 250px; height: 250px;
-      background: var(--accent);
-      top: 40%; left: 60%;
-      opacity: 0.07;
-      animation-delay: -8s;
-    }
-    @keyframes drift {
-      0%   { transform: translate(0, 0) scale(1); }
-      100% { transform: translate(30px, 20px) scale(1.08); }
-    }
+    .logo-badge img{width:100%;height:100%;object-fit:contain;display:block;}
+    /* Fallback bolt (shown only if the logo image fails / is absent) */
+    .logo-badge .bolt{width:60%;height:60%;display:none;}
+    .logo-badge .bolt path{fill:var(--primary);}
+    .logo-text{line-height:1.1;}
+    .logo-name{font-size:17px;font-weight:800;letter-spacing:-.3px;color:var(--text);}
+    .logo-sub{font-size:12px;color:var(--text-muted);margin-top:2px;font-weight:500;}
 
-    /* ─── Card ─── */
-    .card {
-      position: relative;
-      z-index: 1;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 32px 28px 28px;
-      max-width: 420px;
-      width: 100%;
-      /* Subtle glass shimmer */
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      box-shadow:
-        0 0 0 1px rgba(255,255,255,0.04) inset,
-        0 32px 64px rgba(0,0,0,0.4),
-        0 0 80px -20px var(--primary);
-    }
+    /* Step indicator */
+    .steps{display:flex;gap:6px;margin-bottom:22px;}
+    .step{flex:1;display:flex;flex-direction:column;align-items:center;gap:7px;position:relative;}
+    .step:not(:last-child)::after{content:'';position:absolute;top:14px;left:calc(50% + 16px);right:calc(-50% + 16px);height:2px;background:var(--border);border-radius:2px;}
+    .step.done:not(:last-child)::after{background:var(--primary);}
+    .step-dot{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;position:relative;z-index:1;transition:.3s;}
+    .step-dot.active{background:linear-gradient(135deg,var(--grad-p1),var(--grad-p2));color:var(--on-primary);box-shadow:0 5px 14px -3px var(--primary);}
+    .step-dot.inactive{background:var(--bg-elevated);color:var(--text-muted);border:1px solid var(--border);}
+    .step-label{font-size:10px;color:var(--text-muted);font-weight:600;letter-spacing:.2px;}
+    .step.current .step-label{color:var(--text-sec);}
 
-    /* ─── Logo ─── */
-    .logo-wrap {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 24px;
-    }
-    .logo-icon {
-      width: 48px; height: 48px;
-      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
-      border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 8px 24px -4px var(--primary);
-      flex-shrink: 0;
-    }
-    .logo-icon svg { width: 24px; height: 24px; fill: #fff; }
-    .logo-text { line-height: 1; }
-    .logo-name {
-      font-size: 16px;
-      font-weight: 800;
-      letter-spacing: -0.3px;
-      color: var(--text);
-    }
-    .logo-sub {
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
+    .screen-title{font-size:23px;font-weight:800;letter-spacing:-.5px;margin-bottom:5px;line-height:1.2;color:var(--text);}
+    .screen-sub{color:var(--text-sec);font-size:13.5px;margin-bottom:22px;line-height:1.55;}
 
-    /* ─── Screen titles ─── */
-    .screen-title {
-      font-size: 22px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-      margin-bottom: 4px;
-      line-height: 1.2;
-    }
-    .screen-sub {
-      color: var(--text-sec);
-      font-size: 13px;
-      margin-bottom: 22px;
-      line-height: 1.5;
-    }
+    /* Order summary */
+    .summary{background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:20px;overflow:hidden;}
+    .summary-header{background:linear-gradient(135deg,var(--grad-p1),var(--grad-p2));padding:12px 16px;display:flex;align-items:center;gap:8px;}
+    .summary-header-text{font-size:11px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--on-primary);opacity:.95;}
+    .summary-header svg{width:14px;height:14px;fill:var(--on-primary);flex-shrink:0;opacity:.95;}
+    .summary-body{padding:16px;}
+    .sum-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;}
+    .sum-row:last-child{margin-bottom:0;}
+    .sum-lbl{color:var(--text-muted);font-size:13px;font-weight:500;}
+    .sum-val{font-size:14px;font-weight:700;color:var(--text);}
+    .sum-val.credits{color:var(--primary);font-size:21px;font-weight:900;letter-spacing:-.5px;}
+    .sum-val.price{font-size:23px;font-weight:900;letter-spacing:-.5px;color:var(--text);}
+    .sum-divider{height:1px;background:var(--border);margin:11px 0;}
 
-    /* ─── Order summary box ─── */
-    .summary {
-      background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: var(--radius-sm);
-      padding: 0;
-      margin-bottom: 20px;
-      overflow: hidden;
-    }
-    .summary-header {
-      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
-      padding: 12px 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .summary-header-text {
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 0.8px;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.9);
-    }
-    .summary-header svg { width: 14px; height: 14px; fill: rgba(255,255,255,0.9); flex-shrink: 0; }
-    .summary-body { padding: 16px; }
-    .sum-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .sum-row:last-child { margin-bottom: 0; }
-    .sum-lbl { color: var(--text-muted); font-size: 13px; }
-    .sum-val { font-size: 14px; font-weight: 700; color: var(--text); }
-    .sum-val.credits {
-      color: var(--grad-p1);
-      font-size: 20px;
-      font-weight: 900;
-      letter-spacing: -0.5px;
-    }
-    .sum-val.price {
-      font-size: 22px;
-      font-weight: 900;
-      letter-spacing: -0.5px;
-    }
-    .sum-divider { height: 1px; background: var(--border); margin: 10px 0; }
+    /* Buttons */
+    .btn-pay{width:100%;padding:16px;border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:800;cursor:pointer;letter-spacing:-.2px;background:linear-gradient(135deg,var(--grad-p1),var(--grad-p2));color:var(--on-primary);position:relative;overflow:hidden;transition:transform .1s,box-shadow .2s;box-shadow:0 10px 26px -6px var(--primary);display:flex;align-items:center;justify-content:center;gap:8px;}
+    .btn-pay:active{transform:scale(.98);}
+    .btn-pay::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.16) 0%,transparent 55%);}
+    .btn-pay svg{width:18px;height:18px;fill:var(--on-primary);position:relative;z-index:1;}
+    .btn-pay span{position:relative;z-index:1;}
 
-    /* ─── CTA button ─── */
-    .btn-pay {
-      width: 100%;
-      padding: 16px;
-      border: none;
-      border-radius: var(--radius-sm);
-      font-size: 15px;
-      font-weight: 800;
-      cursor: pointer;
-      letter-spacing: -0.2px;
-      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
-      color: #fff;
-      position: relative;
-      overflow: hidden;
-      transition: opacity 0.15s, transform 0.1s;
-      box-shadow: 0 8px 24px -4px var(--primary);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-    .btn-pay:active { transform: scale(0.98); opacity: 0.9; }
-    .btn-pay::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 60%);
-    }
-    .btn-pay svg { width: 18px; height: 18px; fill: #fff; position: relative; z-index: 1; }
-    .btn-pay span { position: relative; z-index: 1; }
+    .trust-row{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:18px;flex-wrap:wrap;}
+    .trust-item{display:flex;align-items:center;gap:5px;color:var(--text-muted);font-size:11px;font-weight:500;}
+    .trust-item svg{width:12px;height:12px;fill:var(--text-muted);}
+    .trust-dot{width:3px;height:3px;border-radius:50%;background:var(--border);}
 
-    .btn-sec {
-      width: 100%;
-      padding: 12px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      background: transparent;
-      color: var(--text-muted);
-      margin-top: 10px;
-      transition: opacity 0.15s;
-    }
-    .btn-sec:active { opacity: 0.7; }
+    /* States */
+    .state{display:none;animation:fadeUp .4s ease both;}
+    .state.active{display:block;}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
 
-    /* ─── Trust footer ─── */
-    .trust-row {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 16px;
-      margin-top: 18px;
-    }
-    .trust-item {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      color: var(--text-muted);
-      font-size: 11px;
-    }
-    .trust-item svg { width: 12px; height: 12px; fill: var(--text-muted); }
-    .trust-dot {
-      width: 3px; height: 3px;
-      border-radius: 50%;
-      background: var(--border);
-    }
+    .spinner-wrap{display:flex;flex-direction:column;align-items:center;padding:18px 0 8px;}
+    .spinner-ring{width:58px;height:58px;position:relative;margin-bottom:20px;}
+    .spinner-ring::before,.spinner-ring::after{content:'';position:absolute;inset:0;border-radius:50%;}
+    .spinner-ring::before{border:3px solid var(--scrim);}
+    .spinner-ring::after{border:3px solid transparent;border-top-color:var(--grad-p1);border-right-color:var(--grad-p2);animation:spin .9s cubic-bezier(.4,0,.2,1) infinite;}
+    @keyframes spin{to{transform:rotate(360deg);}}
 
-    /* ─── State visibility ─── */
-    .state { display: none; }
-    .state.active { display: block; }
+    .status-icon{width:82px;height:82px;border-radius:24px;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;position:relative;}
+    .status-icon.ok{background:linear-gradient(135deg,color-mix(in srgb,var(--success) 18%,transparent),color-mix(in srgb,var(--success) 6%,transparent));border:1.5px solid color-mix(in srgb,var(--success) 30%,transparent);}
+    .status-icon.err{background:linear-gradient(135deg,color-mix(in srgb,var(--error) 16%,transparent),color-mix(in srgb,var(--error) 5%,transparent));border:1.5px solid color-mix(in srgb,var(--error) 28%,transparent);}
+    .status-icon.warn{background:linear-gradient(135deg,color-mix(in srgb,var(--warning) 18%,transparent),color-mix(in srgb,var(--warning) 6%,transparent));border:1.5px solid color-mix(in srgb,var(--warning) 30%,transparent);}
+    .status-icon svg{width:38px;height:38px;}
+    .status-icon.ok::before{content:'';position:absolute;inset:-8px;border-radius:32px;border:1px solid color-mix(in srgb,var(--success) 18%,transparent);animation:pulse-ring 2s ease-out infinite;}
+    .status-icon.ok::after{content:'';position:absolute;inset:-16px;border-radius:38px;border:1px solid color-mix(in srgb,var(--success) 9%,transparent);animation:pulse-ring 2s ease-out .4s infinite;}
+    @keyframes pulse-ring{0%{opacity:1;transform:scale(1);}100%{opacity:0;transform:scale(1.16);}}
 
-    /* ─── Processing / Spinner ─── */
-    .spinner-wrap {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 16px 0 8px;
-    }
-    .spinner-ring {
-      width: 56px; height: 56px;
-      position: relative;
-      margin-bottom: 20px;
-    }
-    .spinner-ring::before,
-    .spinner-ring::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      border-radius: 50%;
-    }
-    .spinner-ring::before {
-      border: 3px solid rgba(255,255,255,0.06);
-    }
-    .spinner-ring::after {
-      border: 3px solid transparent;
-      border-top-color: var(--grad-p1);
-      border-right-color: var(--grad-p2);
-      animation: spin 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .credits-chip{display:inline-flex;align-items:center;gap:7px;background:color-mix(in srgb,var(--success) 12%,transparent);border:1px solid color-mix(in srgb,var(--success) 28%,transparent);border-radius:var(--radius-pill);padding:9px 20px;font-size:14px;font-weight:800;color:var(--success);margin:0 auto 20px;}
+    .credits-chip svg{width:16px;height:16px;fill:var(--success);}
 
-    /* ─── Status icons ─── */
-    .status-icon {
-      width: 80px; height: 80px;
-      border-radius: 24px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 0 auto 18px;
-      position: relative;
-    }
-    .status-icon.ok {
-      background: linear-gradient(135deg, rgba(67,233,123,0.15), rgba(56,249,215,0.08));
-      border: 1.5px solid rgba(67,233,123,0.25);
-    }
-    .status-icon.err {
-      background: linear-gradient(135deg, rgba(255,71,87,0.15), rgba(255,71,87,0.05));
-      border: 1.5px solid rgba(255,71,87,0.25);
-    }
-    .status-icon svg { width: 36px; height: 36px; }
-    /* Pulse ring on success */
-    .status-icon.ok::before {
-      content: '';
-      position: absolute;
-      inset: -8px;
-      border-radius: 32px;
-      border: 1px solid rgba(67,233,123,0.15);
-      animation: pulse-ring 2s ease-out infinite;
-    }
-    .status-icon.ok::after {
-      content: '';
-      position: absolute;
-      inset: -16px;
-      border-radius: 38px;
-      border: 1px solid rgba(67,233,123,0.07);
-      animation: pulse-ring 2s ease-out 0.4s infinite;
-    }
-    @keyframes pulse-ring {
-      0%   { opacity: 1; transform: scale(1); }
-      100% { opacity: 0; transform: scale(1.15); }
-    }
+    .info-card{background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:18px;}
+    .info-row{display:flex;justify-content:space-between;align-items:center;padding:11px 16px;border-bottom:1px solid var(--border);}
+    .info-row:last-child{border-bottom:none;}
+    .info-lbl{color:var(--text-muted);font-size:12px;font-weight:500;}
+    .info-val{font-size:12px;font-weight:700;color:var(--text);text-align:right;max-width:210px;word-break:break-all;}
+    .info-val.accent{color:var(--success);font-size:15px;}
 
-    /* ─── Credits chip ─── */
-    .credits-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      background: linear-gradient(135deg, rgba(67,233,123,0.12), rgba(56,249,215,0.06));
-      border: 1px solid rgba(67,233,123,0.25);
-      border-radius: var(--radius-pill);
-      padding: 8px 20px;
-      font-size: 14px;
-      font-weight: 800;
-      color: var(--success);
-      margin: 0 auto 20px;
-    }
-    .credits-chip svg { width: 16px; height: 16px; fill: var(--success); }
+    .notice{border-radius:var(--radius-sm);padding:14px 16px;display:flex;align-items:flex-start;gap:12px;text-align:left;background:var(--bg-elevated);border:1px solid var(--border);}
+    .notice.mb{margin-bottom:14px;}
+    .notice-emoji{font-size:22px;flex-shrink:0;line-height:1.3;}
+    .notice-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:3px;}
+    .notice-body{font-size:12px;color:var(--text-sec);line-height:1.55;}
 
-    /* ─── Info card (success details / failure reason) ─── */
-    .info-card {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.07);
-      border-radius: var(--radius-sm);
-      overflow: hidden;
-      margin-bottom: 18px;
-    }
-    .info-card.ok-card  { border-color: rgba(67,233,123,0.15); }
-    .info-card.err-card { border-color: rgba(255,71,87,0.18); background: rgba(255,71,87,0.04); }
-    .info-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 11px 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-    }
-    .info-row:last-child { border-bottom: none; }
-    .info-lbl { color: var(--text-muted); font-size: 12px; }
-    .info-val {
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--text);
-      text-align: right;
-      max-width: 210px;
-      word-break: break-all;
-    }
-    .info-val.accent { color: var(--success); font-size: 15px; }
+    .fail-reason{background:color-mix(in srgb,var(--error) 7%,transparent);border:1px solid color-mix(in srgb,var(--error) 22%,transparent);border-radius:var(--radius-sm);padding:13px 16px;margin-bottom:14px;display:none;}
+    .fail-reason-label{font-size:10px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--error);opacity:.8;margin-bottom:5px;}
+    .fail-reason-text{font-size:13px;color:var(--text);line-height:1.55;}
 
-    /* ─── Return / instruction notice ─── */
-    .notice {
-      border-radius: var(--radius-sm);
-      padding: 14px 16px;
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      text-align: left;
-    }
-    .notice.return-notice {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.08);
-    }
-    .notice.close-notice {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.08);
-      margin-bottom: 14px;
-    }
-    .notice-emoji { font-size: 22px; flex-shrink: 0; line-height: 1.3; }
-    .notice-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
-    .notice-body  { font-size: 12px; color: var(--text-sec); line-height: 1.55; }
+    .diag{display:none;font-size:11px;color:var(--text-muted);text-align:center;margin:0 0 14px;padding:9px 12px;background:var(--scrim);border:1px solid var(--border);border-radius:10px;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-word;}
 
-    /* ─── Failure reason block ─── */
-    .fail-reason {
-      background: rgba(255,71,87,0.07);
-      border: 1px solid rgba(255,71,87,0.2);
-      border-radius: var(--radius-sm);
-      padding: 13px 16px;
-      margin-bottom: 14px;
-      display: none;
-    }
-    .fail-reason-label {
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: 0.8px;
-      text-transform: uppercase;
-      color: rgba(255,71,87,0.7);
-      margin-bottom: 5px;
-    }
-    .fail-reason-text { font-size: 13px; color: var(--text); line-height: 1.55; }
-
-    /* ─── Powered badge ─── */
-    .powered {
-      margin-top: 14px;
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 11px;
-    }
-    .powered strong { color: #5469d4; }
-
-    /* ─── Step indicators (ready state) ─── */
-    .steps {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 20px;
-    }
-    .step {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 6px;
-      position: relative;
-    }
-    .step:not(:last-child)::after {
-      content: '';
-      position: absolute;
-      top: 14px;
-      left: calc(50% + 14px);
-      right: calc(-50% + 14px);
-      height: 1px;
-      background: var(--border);
-    }
-    .step-dot {
-      width: 28px; height: 28px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 800;
-      position: relative;
-      z-index: 1;
-    }
-    .step-dot.active {
-      background: linear-gradient(135deg, var(--grad-p1), var(--grad-p2));
-      color: #fff;
-      box-shadow: 0 4px 12px -2px var(--primary);
-    }
-    .step-dot.inactive { background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }
-    .step-label { font-size: 10px; color: var(--text-muted); font-weight: 600; text-align: center; }
-    .step.current .step-label { color: var(--text-sec); }
-
-    /* ─── Light mode overrides ─── */
-    body.light-mode .card {
-      box-shadow:
-        0 0 0 1px rgba(0,0,0,0.04) inset,
-        0 24px 56px rgba(0,0,0,0.12),
-        0 0 60px -20px var(--primary);
-    }
-    body.light-mode .aurora-blob { opacity: 0.08; }
+    .powered{margin-top:14px;text-align:center;color:var(--text-muted);font-size:11px;font-weight:500;}
+    .powered strong{color:#5469d4;}
   </style>
 </head>
 <body>
-  <!-- Aurora background -->
-  <div class="aurora">
-    <div class="aurora-blob"></div>
-    <div class="aurora-blob"></div>
-    <div class="aurora-blob"></div>
-  </div>
+  <div class="aurora"><div class="aurora-blob"></div><div class="aurora-blob"></div><div class="aurora-blob"></div></div>
 
   <div class="card">
-
-    <!-- Brand header (always visible) -->
+    <!-- Brand -->
     <div class="logo-wrap">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      <div class="logo-badge">
+        <!-- Logo lives at checkout/logo.png and is served at /logo.png (root-relative
+             so it resolves no matter the URL path). It renders on a white badge.
+             If the file is ever missing, the bolt fallback is shown automatically. -->
+        <img id="brand-logo" src="/logo.png" alt="DeepDive AI"
+             onerror="this.onerror=null;this.style.display='none';var b=this.parentNode.querySelector('.bolt');if(b)b.style.display='block';" />
+        <svg class="bolt" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
       <div class="logo-text">
         <div class="logo-name">DeepDive AI</div>
@@ -509,152 +174,111 @@
       </div>
     </div>
 
-    <!-- ─── READY ─── -->
-    <div id="s-ready" class="state active">
-      <!-- Progress steps -->
-      <div class="steps">
-        <div class="step current">
-          <div class="step-dot active">1</div>
-          <div class="step-label">Review</div>
-        </div>
-        <div class="step">
-          <div class="step-dot inactive">2</div>
-          <div class="step-label">Pay</div>
-        </div>
-        <div class="step">
-          <div class="step-dot inactive">3</div>
-          <div class="step-label">Done</div>
-        </div>
+    <!-- ─── LOADING ─── -->
+    <div id="s-loading" class="state active">
+      <div class="spinner-wrap">
+        <div class="spinner-ring"></div>
+        <div class="screen-title" style="text-align:center;margin-bottom:8px;">Securing your checkout</div>
+        <div class="screen-sub" style="text-align:center;margin-bottom:0;">Verifying your encrypted order…</div>
       </div>
+    </div>
 
+    <!-- ─── READY ─── -->
+    <div id="s-ready" class="state">
+      <div class="steps">
+        <div class="step done current"><div class="step-dot active">1</div><div class="step-label">Review</div></div>
+        <div class="step"><div class="step-dot inactive">2</div><div class="step-label">Pay</div></div>
+        <div class="step"><div class="step-dot inactive">3</div><div class="step-label">Done</div></div>
+      </div>
       <div class="screen-title">Complete Purchase</div>
-      <div class="screen-sub">Opening Razorpay payment — review your order below.</div>
-
-      <!-- Order summary -->
+      <div class="screen-sub">Opening Razorpay — review your order below.</div>
       <div class="summary">
         <div class="summary-header">
           <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="summary-header-text">Order Summary</span>
         </div>
         <div class="summary-body">
-          <div class="sum-row">
-            <span class="sum-lbl">Pack</span>
-            <span class="sum-val" id="r-pack">—</span>
-          </div>
-          <div class="sum-row">
-            <span class="sum-lbl">Credits</span>
-            <span class="sum-val credits" id="r-credits">—</span>
-          </div>
+          <div class="sum-row"><span class="sum-lbl">Pack</span><span class="sum-val" id="r-pack">—</span></div>
+          <div class="sum-row"><span class="sum-lbl">Credits</span><span class="sum-val credits" id="r-credits">—</span></div>
           <div class="sum-divider"></div>
-          <div class="sum-row">
-            <span class="sum-lbl">Total</span>
-            <span class="sum-val price" id="r-price">—</span>
-          </div>
+          <div class="sum-row"><span class="sum-lbl">Total</span><span class="sum-val price" id="r-price">—</span></div>
         </div>
       </div>
-
       <div class="trust-row">
-        <div class="trust-item">
-          <svg viewBox="0 0 24 24"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
-          Bank-grade SSL
-        </div>
-        <div class="trust-dot"></div>
-        <div class="trust-item">UPI · Cards · Netbanking</div>
-        <div class="trust-dot"></div>
-        <div class="trust-item">₹ Razorpay</div>
+        <div class="trust-item"><svg viewBox="0 0 24 24"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>Bank-grade SSL</div>
+        <div class="trust-dot"></div><div class="trust-item">UPI · Cards · Netbanking</div>
+        <div class="trust-dot"></div><div class="trust-item">₹ Razorpay</div>
       </div>
     </div>
 
     <!-- ─── PROCESSING ─── -->
     <div id="s-proc" class="state">
+      <div class="steps">
+        <div class="step done"><div class="step-dot active">✓</div><div class="step-label">Review</div></div>
+        <div class="step done current"><div class="step-dot active">2</div><div class="step-label">Pay</div></div>
+        <div class="step"><div class="step-dot inactive">3</div><div class="step-label">Done</div></div>
+      </div>
       <div class="spinner-wrap">
         <div class="spinner-ring"></div>
-        <div class="screen-title" style="text-align:center; margin-bottom:8px;">Opening Razorpay</div>
-        <div class="screen-sub" style="text-align:center; margin-bottom:0;">
-          Complete your payment in the secure Razorpay window.
-        </div>
+        <div class="screen-title" style="text-align:center;margin-bottom:8px;">Opening Razorpay</div>
+        <div class="screen-sub" style="text-align:center;margin-bottom:0;">Complete your payment in the secure Razorpay window.</div>
       </div>
     </div>
 
     <!-- ─── SUCCESS ─── -->
     <div id="s-ok" class="state">
-      <div class="status-icon ok">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#43E97B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12"/>
-        </svg>
+      <div class="steps">
+        <div class="step done"><div class="step-dot active">✓</div><div class="step-label">Review</div></div>
+        <div class="step done"><div class="step-dot active">✓</div><div class="step-label">Pay</div></div>
+        <div class="step done current"><div class="step-dot active">✓</div><div class="step-label">Done</div></div>
       </div>
-
-      <div class="screen-title" style="text-align:center; color:var(--success); margin-bottom:6px;">
-        Payment Successful!
+      <div class="status-icon ok"><svg viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+      <div class="screen-title" style="text-align:center;color:var(--success);margin-bottom:6px;">Payment Successful!</div>
+      <div class="screen-sub" style="text-align:center;">Your credits have been confirmed and added instantly.</div>
+      <div class="credits-chip"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><span id="ok-credits">—</span></div>
+      <div class="info-card">
+        <div class="info-row"><span class="info-lbl">Pack</span><span class="info-val" id="ok-pack">—</span></div>
+        <div class="info-row"><span class="info-lbl">Credits Added</span><span class="info-val accent" id="ok-cr">—</span></div>
+        <div class="info-row"><span class="info-lbl">Payment ID</span><span class="info-val" id="ok-pid" style="font-size:11px;">—</span></div>
       </div>
-      <div class="screen-sub" style="text-align:center;">
-        Your credits have been confirmed and added instantly.
-      </div>
-
-      <div class="credits-chip">
-        <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        <span id="ok-credits">—</span>
-      </div>
-
-      <div class="info-card ok-card">
-        <div class="info-row">
-          <span class="info-lbl">Pack</span>
-          <span class="info-val" id="ok-pack">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">Credits Added</span>
-          <span class="info-val accent" id="ok-cr">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">Payment ID</span>
-          <span class="info-val" id="ok-pid" style="font-size:11px;">—</span>
-        </div>
-      </div>
-
-      <div class="notice return-notice">
+      <div class="notice">
         <div class="notice-emoji">↩</div>
-        <div>
-          <div class="notice-title">Return to DeepDive AI</div>
-          <div class="notice-body">Press the back button or swipe this sheet down. Your credits are already in your account.</div>
-        </div>
+        <div><div class="notice-title">Return to DeepDive AI</div><div class="notice-body">Press the back button or swipe this sheet down. Your credits are already in your account.</div></div>
       </div>
     </div>
 
     <!-- ─── FAILED ─── -->
     <div id="s-fail" class="state">
-      <div class="status-icon err">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#FF4757" stroke-width="2.5" stroke-linecap="round">
-          <line x1="18" y1="6" x2="6" y2="18"/>
-          <line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </div>
-
-      <div class="screen-title" id="fail-title" style="text-align:center; margin-bottom:6px;">
-        Payment Failed
-      </div>
-      <div class="screen-sub" id="fail-sub" style="text-align:center;">
-        No charges were made.
-      </div>
-
-      <!-- Failure reason (shown when Razorpay provides one) -->
+      <div class="status-icon err"><svg viewBox="0 0 24 24" fill="none" stroke="var(--error)" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>
+      <div class="screen-title" id="fail-title" style="text-align:center;margin-bottom:6px;">Payment Failed</div>
+      <div class="screen-sub" id="fail-sub" style="text-align:center;">No charges were made.</div>
       <div class="fail-reason" id="fail-reason-card">
-        <div class="fail-reason-label">Reason</div>
-        <div class="fail-reason-text" id="fail-reason-text"></div>
+        <div class="fail-reason-label">Reason</div><div class="fail-reason-text" id="fail-reason-text"></div>
       </div>
-
-      <!-- Close-window instruction -->
-      <div class="notice close-notice">
+      <div class="notice mb">
         <div class="notice-emoji">↙</div>
-        <div>
-          <div class="notice-title">Close this window to return</div>
-          <div class="notice-body">Press ✕ or swipe this sheet down — then try again in DeepDive AI.</div>
-        </div>
+        <div><div class="notice-title">Close this window to return</div><div class="notice-body">Press ✕ or swipe this sheet down — then try again in DeepDive AI.</div></div>
       </div>
-
-      <button class="btn-pay" onclick="retryPayment()">
+      <button class="btn-pay" id="retry-btn">
         <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         <span>Try Again</span>
       </button>
+    </div>
+
+    <!-- ─── EXPIRED / ERROR ─── -->
+    <div id="s-expired" class="state">
+      <div class="status-icon warn"><svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12" y2="16.5"/></svg></div>
+      <div class="screen-title" style="text-align:center;margin-bottom:6px;">Checkout Session Expired</div>
+      <div class="screen-sub" id="expired-sub" style="text-align:center;">This secure checkout link is no longer valid. Please return to DeepDive AI and start your purchase again.</div>
+      <div class="diag" id="expired-detail"></div>
+      <button class="btn-pay" id="expired-retry-btn" style="margin-bottom:14px;">
+        <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        <span>Try Again</span>
+      </button>
+      <div class="notice">
+        <div class="notice-emoji">↙</div>
+        <div><div class="notice-title">Close this window to return</div><div class="notice-body">Swipe down or press ✕, then tap Buy Credits again in the app.</div></div>
+      </div>
     </div>
 
     <div class="powered">Powered by <strong>Razorpay</strong> · 256-bit encryption</div>
@@ -662,171 +286,198 @@
 
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <script>
-    /* ─── Part 55.12: Read theme colors from URL params ─── */
-    var p = new URLSearchParams(window.location.search);
+    /* ═══════════════════════════════════════════════════════════════════════
+       SECURE TOKEN-BASED CHECKOUT (theme-integrated)
+       URL carries only ?t=<signed-token>&api=<supabase-url>&k=<anon-key>.
+       The token's palette snapshot drives ALL theme variables below.
+       ═══════════════════════════════════════════════════════════════════════ */
+    var qs    = new URLSearchParams(window.location.search);
+    var TOKEN = qs.get('t')  || '';
+    var API   = (qs.get('api') || '').replace(/\/+$/, '');
+    var ANON  = qs.get('k')  || '';
 
-    /* ── Theme params (Part 55.12) ── */
-    var themePrimary     = p.get('t_primary')     || '#6C63FF';
-    var themePrimaryL    = p.get('t_primary_l')   || '#8B85FF';
-    var themePrimaryD    = p.get('t_primary_d')   || '#4A42CC';
-    var themeAccent      = p.get('t_accent')      || '#43E97B';
-    var themeBg          = p.get('t_bg')          || '#0A0A1A';
-    var themeBgCard      = p.get('t_bg_card')     || '#12122A';
-    var themeBgElevated  = p.get('t_bg_el')       || '#1A1A35';
-    var themeText        = p.get('t_text')        || '#FFFFFF';
-    var themeTextSec     = p.get('t_text_s')      || '#A0A0C0';
-    var themeTextMuted   = p.get('t_text_m')      || '#5A5A7A';
-    var themeBorder      = p.get('t_border')      || '#2A2A4A';
-    var themeGradP1      = p.get('t_g1')          || '#6C63FF';
-    var themeGradP2      = p.get('t_g2')          || '#8B5CF6';
-    var themeGradCard1   = p.get('t_gc1')         || '#1A1A35';
-    var themeGradCard2   = p.get('t_gc2')         || '#12122A';
-    var themeIsLight     = p.get('t_light')       === '1';
-
-    /* ── Apply theme to CSS variables ── */
-    var root = document.documentElement;
-    root.style.setProperty('--bg',          themeBg);
-    root.style.setProperty('--bg-card',     themeBgCard);
-    root.style.setProperty('--bg-elevated', themeBgElevated);
-    root.style.setProperty('--primary',     themePrimary);
-    root.style.setProperty('--primary-l',   themePrimaryL);
-    root.style.setProperty('--primary-d',   themePrimaryD);
-    root.style.setProperty('--accent',      themeAccent);
-    root.style.setProperty('--text',        themeText);
-    root.style.setProperty('--text-sec',    themeTextSec);
-    root.style.setProperty('--text-muted',  themeTextMuted);
-    root.style.setProperty('--border',      themeBorder);
-    root.style.setProperty('--grad-p1',     themeGradP1);
-    root.style.setProperty('--grad-p2',     themeGradP2);
-    root.style.setProperty('--grad-card1',  themeGradCard1);
-    root.style.setProperty('--grad-card2',  themeGradCard2);
-
-    if (themeIsLight) {
-      document.body.classList.add('light-mode');
-      /* Light mode: ensure text is dark enough on light bg */
-      root.style.setProperty('--text',       themeText);
-      root.style.setProperty('--text-sec',   themeTextSec);
-      root.style.setProperty('--text-muted', themeTextMuted);
-    }
-
-    /* ── Order params ── */
-    var cfg = {
-      orderId:  p.get('order_id')     || '',
-      keyId:    p.get('key_id')       || '',
-      amount:   parseInt(p.get('amount') || '0', 10),
-      currency: p.get('currency')     || 'INR',
-      desc:     p.get('description')  || 'Credit Pack',
-      credits:  parseInt(p.get('credits') || '0', 10),
-      pack:     p.get('pack_name')    || 'Credit Pack',
-      email:    p.get('email')        || '',
-      name:     p.get('contact_name') || 'Researcher',
-    };
-
-    /* ── State ── */
+    var cfg = null;
     var paymentActuallyFailed = false;
     var rzpInstance = null;
 
-    function fmt(paise) {
-      return '₹' + (paise / 100).toLocaleString('en-IN');
-    }
-    function show(id) {
-      ['s-ready','s-proc','s-ok','s-fail'].forEach(function(s) {
-        document.getElementById(s).classList.remove('active');
+    function fmt(paise){ return '₹' + (paise/100).toLocaleString('en-IN'); }
+    function show(id){
+      ['s-loading','s-ready','s-proc','s-ok','s-fail','s-expired'].forEach(function(s){
+        var el=document.getElementById(s); if(el) el.classList.remove('active');
       });
-      document.getElementById(id).classList.add('active');
+      var t=document.getElementById(id); if(t) t.classList.add('active');
     }
-    function set(id, v) {
-      var el = document.getElementById(id);
-      if (el) el.textContent = v;
+    function set(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; }
+    function signal(hash){ try { window.location.hash = hash; } catch(e){} }
+
+    /* Determine readable on-primary text + an appropriate scrim from luminance. */
+    function luminance(hex){
+      var c=(hex||'').replace('#',''); if(c.length===3) c=c.split('').map(function(x){return x+x;}).join('');
+      var r=parseInt(c.substr(0,2),16)/255, g=parseInt(c.substr(2,2),16)/255, b=parseInt(c.substr(4,2),16)/255;
+      if(isNaN(r)) return 0.5;
+      return 0.2126*r + 0.7152*g + 0.0722*b;
     }
 
-    function showFailureScreen(reason, isGenuine) {
-      var titleEl = document.getElementById('fail-title');
-      var subEl   = document.getElementById('fail-sub');
-      if (isGenuine) {
-        if (titleEl) titleEl.textContent = 'Payment Failed';
-        if (subEl)   subEl.textContent   = 'No charges were made. Please try a different payment method.';
+    /* Apply the FULL theme snapshot from the token to the CSS variables. */
+    function applyTheme(t){
+      if(!t) return;
+      var root=document.documentElement;
+      function s(k,v){ if(v) root.style.setProperty(k,v); }
+      s('--bg',t.background); s('--bg-card',t.backgroundCard); s('--bg-elevated',t.backgroundElevated);
+      s('--primary',t.primary); s('--primary-l',t.primaryLight); s('--primary-d',t.primaryDark);
+      s('--accent',t.accent); s('--text',t.textPrimary); s('--text-sec',t.textSecondary);
+      s('--text-muted',t.textMuted); s('--border',t.border);
+      s('--grad-p1',t.gradP1||t.primary); s('--grad-p2',t.gradP2||t.primaryLight);
+      s('--grad-card1',t.gradCard1||t.backgroundCard); s('--grad-card2',t.gradCard2||t.backgroundElevated);
+      if(t.success) s('--success',t.success);
+      if(t.error)   s('--error',t.error);
+      if(t.warning) s('--warning',t.warning);
+
+      /* Pick legible text on the gradient buttons + a matching scrim. */
+      var onPrimary = luminance(t.primary) > 0.6 ? '#1a1020' : '#FFFFFF';
+      s('--on-primary', onPrimary);
+      s('--scrim', t.isLight ? 'rgba(0,0,0,.045)' : 'rgba(255,255,255,.05)');
+      s('--shadow-card', t.isLight
+        ? '0 24px 56px rgba(0,0,0,.12), 0 0 60px -24px ' + (t.primary||'#E11D48')
+        : '0 0 0 1px rgba(255,255,255,.04) inset, 0 32px 64px rgba(0,0,0,.45), 0 0 80px -20px ' + (t.primary||'#6C63FF'));
+    }
+
+    function showFailureScreen(reason,isGenuine){
+      var titleEl=document.getElementById('fail-title');
+      var subEl=document.getElementById('fail-sub');
+      if(isGenuine){
+        if(titleEl) titleEl.textContent='Payment Failed';
+        if(subEl)   subEl.textContent='No charges were made. Please try a different payment method.';
+        signal('failed');
       } else {
-        if (titleEl) titleEl.textContent = 'Payment Cancelled';
-        if (subEl)   subEl.textContent   = 'No charges were made. You can try again.';
+        if(titleEl) titleEl.textContent='Payment Cancelled';
+        if(subEl)   subEl.textContent='No charges were made. You can try again.';
+        signal('cancelled');
       }
-      if (reason && reason.trim().length > 0) {
-        var card = document.getElementById('fail-reason-card');
-        var text = document.getElementById('fail-reason-text');
-        if (card) card.style.display = 'block';
-        if (text) text.textContent   = reason;
+      if(reason && reason.trim().length>0){
+        var card=document.getElementById('fail-reason-card');
+        var text=document.getElementById('fail-reason-text');
+        if(card) card.style.display='block';
+        if(text) text.textContent=reason;
       }
       show('s-fail');
     }
 
-    function retryPayment() {
-      paymentActuallyFailed = false;
-      var card = document.getElementById('fail-reason-card');
-      if (card) card.style.display = 'none';
-      var text = document.getElementById('fail-reason-text');
-      if (text) text.textContent = '';
-      openRazorpay();
-    }
-
-    function openRazorpay() {
+    function openRazorpay(){
+      if(!cfg){ return; }
       show('s-proc');
-      paymentActuallyFailed = false;
+      paymentActuallyFailed=false;
+      signal('processing');
 
-      var options = {
-        key:         cfg.keyId,
-        amount:      cfg.amount,
-        currency:    cfg.currency,
-        name:        'DeepDive AI',
-        description: cfg.desc,
-        order_id:    cfg.orderId,
-        prefill:     { email: cfg.email, name: cfg.name },
-        /* Part 55.12: use active theme's primary color in Razorpay modal */
-        theme:       { color: themePrimary },
-        modal: {
-          ondismiss: function() {
-            if (!paymentActuallyFailed) {
-              showFailureScreen('', false);
-            }
-          },
-          escape: false,
+      var options={
+        key:cfg.key_id, amount:cfg.amount, currency:cfg.currency,
+        name:'DeepDive AI', description:cfg.description, order_id:cfg.order_id,
+        prefill:{ email:cfg.email, name:cfg.contact_name },
+        theme:{ color: (cfg.theme && cfg.theme.primary) || '#E11D48' },
+        modal:{
+          ondismiss:function(){ if(!paymentActuallyFailed){ showFailureScreen('',false); } },
+          escape:false,
         },
-        handler: function(resp) {
-          set('ok-credits', cfg.credits + ' credits added to your account');
-          set('ok-pack',    cfg.pack);
-          set('ok-cr',      '+' + cfg.credits + ' credits');
-          set('ok-pid',     resp.razorpay_payment_id || '');
+        handler:function(resp){
+          signal('success');
+          set('ok-credits', cfg.credits+' credits added to your account');
+          set('ok-pack', cfg.pack_name || 'Credit Pack');
+          set('ok-cr', '+'+cfg.credits+' credits');
+          set('ok-pid', resp.razorpay_payment_id || '');
           show('s-ok');
         },
       };
 
       try {
-        rzpInstance = new window.Razorpay(options);
-
-        /* Part 42 payment.failed logic (preserved from original) */
-        rzpInstance.on('payment.failed', function(response) {
-          paymentActuallyFailed = true;
-          var err    = (response && response.error) ? response.error : {};
-          var reason = err.description || err.reason || err.source || '';
-          showFailureScreen(reason, true);
-          setTimeout(function() {
-            try { if (rzpInstance) rzpInstance.close(); } catch(e) {}
-          }, 80);
+        rzpInstance=new window.Razorpay(options);
+        rzpInstance.on('payment.failed', function(response){
+          paymentActuallyFailed=true;
+          var er=(response && response.error)?response.error:{};
+          var reason=er.description||er.reason||er.source||'';
+          showFailureScreen(reason,true);
+          setTimeout(function(){ try{ if(rzpInstance) rzpInstance.close(); }catch(e){} },80);
         });
-
-        setTimeout(function() { rzpInstance.open(); }, 500);
-      } catch(e) {
-        console.error('Razorpay init error:', e);
-        showFailureScreen('Could not open the payment window. Please check your internet connection.', false);
+        setTimeout(function(){ rzpInstance.open(); },400);
+      } catch(e){
+        console.error('Razorpay init error:',e);
+        showFailureScreen('Could not open the payment window. Please check your internet connection.',false);
       }
     }
 
-    document.addEventListener('DOMContentLoaded', function() {
-      set('r-pack',    cfg.pack);
-      set('r-credits', cfg.credits.toLocaleString() + ' credits');
-      set('r-price',   fmt(cfg.amount));
-      if (!cfg.orderId || !cfg.keyId) return;
+    document.getElementById('retry-btn').addEventListener('click', function(){
+      paymentActuallyFailed=false;
+      var card=document.getElementById('fail-reason-card'); if(card) card.style.display='none';
+      var text=document.getElementById('fail-reason-text'); if(text) text.textContent='';
       openRazorpay();
     });
+
+    /* ── Token resolution with POST→GET fallback + diagnostics ── */
+    function showExpired(mainMsg, detail){
+      var sub=document.getElementById('expired-sub'); if(sub) sub.textContent=mainMsg;
+      var dbg=document.getElementById('expired-detail');
+      if(dbg){ if(detail){ dbg.textContent=detail; dbg.style.display='block'; } else { dbg.style.display='none'; } }
+      show('s-expired'); signal('error');
+    }
+
+    function doResolveFetch(useGet){
+      var baseUrl=API+'/functions/v1/checkout-resolve';
+      var controller=(typeof AbortController!=='undefined')?new AbortController():null;
+      var timer=controller?setTimeout(function(){controller.abort();},15000):null;
+      var url, opts;
+      if(useGet){
+        url=baseUrl+'?token='+encodeURIComponent(TOKEN)+(ANON?('&apikey='+encodeURIComponent(ANON)):'');
+        opts={ method:'GET', signal:controller?controller.signal:undefined };
+      } else {
+        url=baseUrl;
+        var headers={ 'Content-Type':'application/json' };
+        if(ANON){ headers['apikey']=ANON; headers['Authorization']='Bearer '+ANON; }
+        opts={ method:'POST', headers:headers, body:JSON.stringify({ token:TOKEN }), signal:controller?controller.signal:undefined };
+      }
+      return fetch(url,opts).then(function(r){
+        if(timer) clearTimeout(timer);
+        return r.text().then(function(t){ var j=null; try{ j=JSON.parse(t); }catch(e){} return { ok:r.ok, status:r.status, j:j, raw:t }; });
+      }).catch(function(e){ if(timer) clearTimeout(timer); throw e; });
+    }
+
+    function handleResolved(res){
+      if(!res.ok || !res.j || res.j.error){
+        var serverMsg=(res.j && res.j.error)?res.j.error:(res.raw?res.raw.slice(0,140):'Unknown error');
+        var friendly=(res.status===401||res.status===409)?serverMsg:'This checkout session could not be verified.';
+        showExpired(friendly, 'HTTP '+res.status+' · '+serverMsg);
+        return;
+      }
+      cfg=res.j;
+      applyTheme(cfg.theme);
+      set('r-pack', cfg.pack_name || 'Credit Pack');
+      set('r-credits', (cfg.credits||0).toLocaleString()+' credits');
+      set('r-price', fmt(cfg.amount));
+      show('s-ready');
+      setTimeout(openRazorpay, 380);
+    }
+
+    function resolveToken(){
+      show('s-loading');
+      if(!TOKEN){ showExpired('This checkout link is missing its secure token. Please start your purchase again in DeepDive AI.','missing ?t= token'); return; }
+      if(!API){  showExpired('This checkout link is missing the service address. Please update the app and try again.','missing ?api= param'); return; }
+
+      doResolveFetch(false)
+        .then(handleResolved)
+        .catch(function(ePost){
+          console.warn('POST resolve failed, trying GET fallback:', ePost && ePost.message);
+          doResolveFetch(true)
+            .then(handleResolved)
+            .catch(function(eGet){
+              console.error('GET resolve also failed:', eGet);
+              var detail=(eGet && eGet.name==='AbortError')
+                ? 'request timed out (15s) - the function did not respond'
+                : ('network/CSP error: ' + (eGet && eGet.message ? eGet.message : String(eGet)));
+              showExpired('We could not reach the secure checkout service. Please check your connection and try again.', detail);
+            });
+        });
+    }
+
+    document.getElementById('expired-retry-btn').addEventListener('click', resolveToken);
+    document.addEventListener('DOMContentLoaded', resolveToken);
   </script>
 </body>
 </html>

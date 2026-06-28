@@ -1,5 +1,9 @@
 // src/types/onboarding.ts
 // Part 27 (Patch C) — 12 focused milestones replacing the previous 20.
+// Part 57 — Refer & Earn removed:
+//   • Deleted ReferralStats / ReferralRedeemResult / ReferralState interfaces.
+//   • Removed the 'first_referral' milestone id and badge.
+//   • MilestoneId now has 11 entries (was 12).
 
 // ─── Onboarding Status ────────────────────────────────────────────────────────
 
@@ -136,7 +140,7 @@ export interface TopicChartItem {
   percent: number;
 }
 
-// ── 12 milestone IDs — accurate and meaningful ────────────────────────────────
+// ── 11 milestone IDs (Part 57: 'first_referral' removed) ──────────────────────
 
 export type MilestoneId =
   // Research volume (3)
@@ -153,9 +157,7 @@ export type MilestoneId =
   // Content creation (3)
   | 'first_podcast'
   | 'first_debate'
-  | 'all_formats'
-  // Power user (1)
-  | 'first_referral';
+  | 'all_formats';
 
 export interface MilestoneBadge {
   id:            MilestoneId;
@@ -184,37 +186,11 @@ export interface AnalyticsDashboardData {
   totalSourcesAll:    number;
   expertReports:      number;
   kbQueriesCount:     number;
-  referralsCount:     number;
   weeklyHeatmap:      WeeklyHeatmapDay[];
   currentStreak:      number;
   longestStreak:      number;
   topicDistribution:  TopicChartItem[];
   milestones:         MilestoneBadge[];
-}
-
-// ─── Referral ─────────────────────────────────────────────────────────────────
-
-export interface ReferralStats {
-  code:           string;
-  totalReferrals: number;
-  creditsEarned:  number;
-  /** Number of different codes this user has successfully redeemed (0 = none yet) */
-  redeemedCount:  number;
-}
-
-export interface ReferralRedeemResult {
-  success:         boolean;
-  message:         string;
-  creditsAwarded?: number;
-  newBalance?:     number;
-}
-
-export interface ReferralState {
-  stats:        ReferralStats | null;
-  isLoading:    boolean;
-  isRedeeming:  boolean;
-  redeemResult: ReferralRedeemResult | null;
-  error:        string | null;
 }
 
 // ─── Topic chart colours ──────────────────────────────────────────────────────

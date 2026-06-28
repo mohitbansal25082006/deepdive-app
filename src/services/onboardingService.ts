@@ -1,22 +1,9 @@
 // src/services/onboardingService.ts
 // Part 43 CRASH FIX — never throws for new OAuth users.
-//
-// ROOT CAUSE:
-//   New OAuth users have no row in the onboarding_status table.
-//   checkOnboardingStatus() called get_onboarding_status RPC which either
-//   threw or returned null for missing users. The caller in app/(app)/_layout.tsx
-//   catches this, but the throw could race with other provider initialization.
-//   More critically, completeOnboarding() in onboarding-flow.tsx could also
-//   throw for brand-new users if the RPC doesn't handle missing rows via upsert.
-//
-// THE FIX:
-//   1. checkOnboardingStatus() catches ALL errors and returns a safe default
-//      { onboardingCompleted: false } instead of throwing.
-//   2. completeOnboarding() tries the RPC first, falls back to direct upsert
-//      if the RPC errors, and NEVER throws to the caller.
-//   3. All analytics functions also wrapped in safe try/catch.
-//
-// All Part 27 milestone/analytics/streak logic preserved unchanged.
+// Part 57 — Refer & Earn removed:
+//   • Dropped referralsCount from analytics + milestone inputs.
+//   • Removed the 'first_referral' ("Ambassador") milestone.
+//   • get_user_analytics_data may still return referrals_count; we simply ignore it.
 
 import { supabase }     from '../lib/supabase';
 import AsyncStorage     from '@react-native-async-storage/async-storage';
@@ -32,7 +19,6 @@ import {
 const onboardingCacheKey = (userId: string) =>
   `@deepdive/onboarding_v1_${userId}`;
 
-// Safe default for new users who have no onboarding row yet
 const defaultStatus = (userId: string): OnboardingStatus => ({
   userId,
   onboardingCompleted: false,
@@ -50,33 +36,24 @@ export async function checkOnboardingStatus(
 ): Promise<OnboardingStatus> {
   const cacheKey = onboardingCacheKey(userId);
 
-  // Check cache first (unless forced)
   if (!force) {
     try {
       const raw = await AsyncStorage.getItem(cacheKey);
       if (raw) return JSON.parse(raw) as OnboardingStatus;
-    } catch {
-      // Cache read failed — proceed to DB
-    }
+    } catch {}
   }
 
-  // ── CRASH FIX: wrap entire DB call in try/catch, never throw ─────────────
   try {
     const { data, error } = await supabase
       .rpc('get_onboarding_status', { p_user_id: userId });
 
-    // If RPC errors or returns nothing, return safe default (new user)
     if (error || !data) {
       console.warn('[Onboarding] get_onboarding_status returned no data for user:', userId);
       return defaultStatus(userId);
     }
 
     const row = Array.isArray(data) ? data[0] : data;
-
-    // If row is null/empty (new user, no DB record yet), return safe default
-    if (!row) {
-      return defaultStatus(userId);
-    }
+    if (!row) return defaultStatus(userId);
 
     const status: OnboardingStatus = {
       userId,
@@ -87,18 +64,9 @@ export async function checkOnboardingStatus(
       completedAt:         row?.completed_at          ?? null,
     };
 
-    // Cache the result
-    try {
-      await AsyncStorage.setItem(cacheKey, JSON.stringify(status));
-    } catch {
-      // Cache write failed — non-fatal
-    }
-
+    try { await AsyncStorage.setItem(cacheKey, JSON.stringify(status)); } catch {}
     return status;
-
   } catch (err) {
-    // ── CRASH FIX: Any unexpected error → return safe default ────────────────
-    // This handles network errors, RPC not existing, schema mismatches, etc.
     console.warn('[Onboarding] checkOnboardingStatus error (returning default):', err);
     return defaultStatus(userId);
   }
@@ -109,18 +77,15 @@ export async function completeOnboarding(
   interests:   string[],
   monthlyGoal: number = 10,
 ): Promise<OnboardingStatus> {
-  // ── CRASH FIX: try RPC first, fall back to direct upsert ─────────────────
   try {
     const { data, error } = await supabase.rpc('complete_onboarding', {
       p_user_id:      userId,
       p_interests:    interests,
       p_monthly_goal: monthlyGoal,
     });
-
     if (error) throw error;
 
     const row = Array.isArray(data) ? data[0] : data;
-
     const status: OnboardingStatus = {
       userId,
       onboardingCompleted: true,
@@ -129,17 +94,10 @@ export async function completeOnboarding(
       completedStep:       4,
       completedAt:         row?.completed_at         ?? new Date().toISOString(),
     };
-
-    try {
-      await AsyncStorage.setItem(onboardingCacheKey(userId), JSON.stringify(status));
-    } catch {}
-
+    try { await AsyncStorage.setItem(onboardingCacheKey(userId), JSON.stringify(status)); } catch {}
     return status;
-
   } catch (rpcErr) {
     console.warn('[Onboarding] complete_onboarding RPC failed, trying direct upsert:', rpcErr);
-
-    // Fallback: direct upsert into onboarding_status table
     try {
       await supabase
         .from('onboarding_status')
@@ -153,9 +111,7 @@ export async function completeOnboarding(
         }, { onConflict: 'user_id' });
     } catch (upsertErr) {
       console.warn('[Onboarding] Direct upsert also failed:', upsertErr);
-      // Non-fatal — still return a completed status so user proceeds to home
     }
-
     const status: OnboardingStatus = {
       userId,
       onboardingCompleted: true,
@@ -164,26 +120,15 @@ export async function completeOnboarding(
       completedStep:       4,
       completedAt:         new Date().toISOString(),
     };
-
-    try {
-      await AsyncStorage.setItem(onboardingCacheKey(userId), JSON.stringify(status));
-    } catch {}
-
+    try { await AsyncStorage.setItem(onboardingCacheKey(userId), JSON.stringify(status)); } catch {}
     return status;
   }
 }
 
-export async function updateMonthlyGoal(
-  userId: string,
-  goal:   number,
-): Promise<void> {
+export async function updateMonthlyGoal(userId: string, goal: number): Promise<void> {
   try {
-    const { error } = await supabase.rpc('update_monthly_goal', {
-      p_user_id: userId,
-      p_goal:    goal,
-    });
+    const { error } = await supabase.rpc('update_monthly_goal', { p_user_id: userId, p_goal: goal });
     if (error) throw error;
-
     try {
       const cacheKey = onboardingCacheKey(userId);
       const raw = await AsyncStorage.getItem(cacheKey);
@@ -195,24 +140,18 @@ export async function updateMonthlyGoal(
     } catch {}
   } catch (err) {
     console.warn('[Onboarding] updateMonthlyGoal error:', err);
-    // Non-fatal — don't throw
   }
 }
 
 export async function clearOnboardingCache(userId: string): Promise<void> {
-  try {
-    await AsyncStorage.removeItem(onboardingCacheKey(userId));
-  } catch {}
+  try { await AsyncStorage.removeItem(onboardingCacheKey(userId)); } catch {}
 }
 
 // ─── Analytics data ───────────────────────────────────────────────────────────
 
 export async function getAnalyticsData(userId: string): Promise<AnalyticsDashboardData> {
   try {
-    const { data, error } = await supabase.rpc('get_user_analytics_data', {
-      p_user_id: userId,
-    });
-
+    const { data, error } = await supabase.rpc('get_user_analytics_data', { p_user_id: userId });
     if (error) throw error;
 
     const raw = (Array.isArray(data) ? data[0] : data) ?? {};
@@ -227,7 +166,6 @@ export async function getAnalyticsData(userId: string): Promise<AnalyticsDashboa
     const expertReports      = Number(raw.expert_reports      ?? 0);
     const totalSourcesAll    = Number(raw.total_sources_all   ?? 0);
     const kbQueriesCount     = Number(raw.kb_queries_count    ?? 0);
-    const referralsCount     = Number(raw.referrals_count     ?? 0);
     const totalWords         = Number(raw.total_words         ?? 0);
 
     const activityDates: string[] = Array.isArray(raw.activity_dates) ? raw.activity_dates : [];
@@ -241,7 +179,7 @@ export async function getAnalyticsData(userId: string): Promise<AnalyticsDashboa
     const topicDistribution = buildTopicDistribution(topicRows);
     const milestones        = buildMilestones({
       totalReports, expertReports, totalPodcasts, totalDebates,
-      totalPapers, totalPresentations, referralsCount,
+      totalPapers, totalPresentations,
       currentStreak, longestStreak,
     });
 
@@ -258,7 +196,6 @@ export async function getAnalyticsData(userId: string): Promise<AnalyticsDashboa
       totalSourcesAll,
       expertReports,
       kbQueriesCount,
-      referralsCount,
       weeklyHeatmap,
       currentStreak,
       longestStreak,
@@ -267,13 +204,12 @@ export async function getAnalyticsData(userId: string): Promise<AnalyticsDashboa
     };
   } catch (err) {
     console.warn('[Onboarding] getAnalyticsData error:', err);
-    // Return empty analytics instead of crashing
     return {
       hoursResearched: 0, wordsGenerated: 0, totalReports: 0,
       reportsThisMonth: 0, monthlyGoal: 10, totalPodcasts: 0,
       totalDebates: 0, totalPapers: 0, totalPresentations: 0,
       totalSourcesAll: 0, expertReports: 0, kbQueriesCount: 0,
-      referralsCount: 0, weeklyHeatmap: buildWeeklyHeatmap([]),
+      weeklyHeatmap: buildWeeklyHeatmap([]),
       currentStreak: 0, longestStreak: 0,
       topicDistribution: [], milestones: [],
     };
@@ -314,7 +250,6 @@ function computeStreaks(dates: string[]): { current: number; longest: number } {
     if (diff === 1) { run++; if (run > longest) longest = run; }
     else run = 1;
   }
-
   return { current, longest: Math.max(longest, current) };
 }
 
@@ -353,7 +288,7 @@ function buildTopicDistribution(rows: { keyword: string; score: number }[]): Top
   }));
 }
 
-// ─── Milestones ───────────────────────────────────────────────────────────────
+// ─── Milestones (Part 57: 'first_referral' removed) ───────────────────────────
 
 interface MilestoneInput {
   totalReports:       number;
@@ -362,7 +297,6 @@ interface MilestoneInput {
   totalDebates:       number;
   totalPapers:        number;
   totalPresentations: number;
-  referralsCount:     number;
   currentStreak:      number;
   longestStreak:      number;
 }
@@ -399,17 +333,16 @@ function buildMilestones(d: MilestoneInput): MilestoneBadge[] {
   }
 
   return [
-    badge('first_report',   'Spark',           'Complete your first research report',                       'flash',        '#FFD700', ['#FFD700', '#FFA500'], 'Research',   d.totalReports,   1),
-    badge('research_10',    'Analyst',          'Complete 10 research reports',                              'analytics',    '#6C63FF', ['#6C63FF', '#8B5CF6'], 'Research',   d.totalReports,   10),
-    badge('research_50',    'Research Master',  'Complete 50 research reports',                              'ribbon',       '#A855F7', ['#A855F7', '#7C3AED'], 'Research',   d.totalReports,   50),
-    badge('first_expert',   'Deep Diver',       'Run your first Expert-depth research',                      'telescope',    '#29B6F6', ['#29B6F6', '#0288D1'], 'Depth',      d.expertReports,  1),
-    badge('expert_5',       'Expert Mind',      'Complete 5 Expert-depth research reports',                  'school',       '#0288D1', ['#0288D1', '#01579B'], 'Depth',      d.expertReports,  5),
-    badge('streak_3',       'On Fire 🔥',       'Maintain a 3-day activity streak',                         'flame',        '#FF6B35', ['#FF6B35', '#FFA500'], 'Streak',     maxStreak,        3),
-    badge('streak_7',       'Star Scholar',     'Maintain a 7-day activity streak',                         'star-outline', '#FFC107', ['#FFC107', '#FF8F00'], 'Streak',     maxStreak,        7),
-    badge('streak_30',      'Diamond Mind',     'Maintain a 30-day activity streak',                        'diamond',      '#00BCD4', ['#00BCD4', '#006064'], 'Streak',     maxStreak,        30),
-    badge('first_podcast',  'Broadcaster',      'Generate your first AI podcast episode',                   'radio',        '#EC407A', ['#EC407A', '#AD1457'], 'Content',    d.totalPodcasts,  1),
-    badge('first_debate',   'Debater',          'Run your first AI debate session',                         'people',       '#26A69A', ['#26A69A', '#00695C'], 'Content',    d.totalDebates,   1),
-    badge('all_formats',    'Creator',          'Use all 5 content formats',                                'apps',         '#AB47BC', ['#AB47BC', '#6A1B9A'], 'Content',    formatsUsed,      5),
-    badge('first_referral', 'Ambassador',       'Refer your first friend to DeepDive AI',                   'gift',         '#F06292', ['#F06292', '#C2185B'], 'Power User', d.referralsCount, 1),
+    badge('first_report',   'Spark',           'Complete your first research report',      'flash',        '#FFD700', ['#FFD700', '#FFA500'], 'Research', d.totalReports,  1),
+    badge('research_10',    'Analyst',          'Complete 10 research reports',             'analytics',    '#6C63FF', ['#6C63FF', '#8B5CF6'], 'Research', d.totalReports,  10),
+    badge('research_50',    'Research Master',  'Complete 50 research reports',             'ribbon',       '#A855F7', ['#A855F7', '#7C3AED'], 'Research', d.totalReports,  50),
+    badge('first_expert',   'Deep Diver',       'Run your first Expert-depth research',     'telescope',    '#29B6F6', ['#29B6F6', '#0288D1'], 'Depth',    d.expertReports, 1),
+    badge('expert_5',       'Expert Mind',      'Complete 5 Expert-depth research reports', 'school',       '#0288D1', ['#0288D1', '#01579B'], 'Depth',    d.expertReports, 5),
+    badge('streak_3',       'On Fire 🔥',       'Maintain a 3-day activity streak',        'flame',        '#FF6B35', ['#FF6B35', '#FFA500'], 'Streak',   maxStreak,       3),
+    badge('streak_7',       'Star Scholar',     'Maintain a 7-day activity streak',        'star-outline', '#FFC107', ['#FFC107', '#FF8F00'], 'Streak',   maxStreak,       7),
+    badge('streak_30',      'Diamond Mind',     'Maintain a 30-day activity streak',       'diamond',      '#00BCD4', ['#00BCD4', '#006064'], 'Streak',   maxStreak,       30),
+    badge('first_podcast',  'Broadcaster',      'Generate your first AI podcast episode',  'radio',        '#EC407A', ['#EC407A', '#AD1457'], 'Content',  d.totalPodcasts, 1),
+    badge('first_debate',   'Debater',          'Run your first AI debate session',        'people',       '#26A69A', ['#26A69A', '#00695C'], 'Content',  d.totalDebates,  1),
+    badge('all_formats',    'Creator',          'Use all 5 content formats',               'apps',         '#AB47BC', ['#AB47BC', '#6A1B9A'], 'Content',  formatsUsed,     5),
   ];
 }

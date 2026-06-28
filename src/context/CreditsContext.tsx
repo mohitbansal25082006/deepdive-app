@@ -1,28 +1,26 @@
 // src/context/CreditsContext.tsx
 // Part 43 CRASH FIX — handles missing user_credits row for new OAuth users.
-// Part 54A — Fires payment-result notifications (deep-linked to Transaction
-//   History) on both payment SUCCESS and FAILURE via notifyPaymentResult():
-//     • success  → fired inside pollCheckOrder when the order is confirmed paid
-//     • failure  → fired inside purchasePack when polling returns 'failed'
+// Part 54A — payment-result notifications (success + failure).
+// Part 55.12 — theme-integrated checkout.
 //
-// Part 55.12 — Theme-integrated checkout.
-//   Two changes only — everything else is identical to the pre-55.12 file:
+// Part 57 — SECURE CHECKOUT + FASTER FAIL/CANCEL.
+//   1. purchasePack() now mints a SIGNED token via createCheckoutToken() and
+//      opens buildSecureCheckoutUrl(token) — the URL carries no email/order id/
+//      key id/theme. Nothing sensitive leaks into browser history/referrers.
+//   2. The in-app browser result is INSPECTED: the checkout page sets the URL
+//      hash (#success / #failed / #cancelled / #processing). When the user
+//      closes the sheet, WebBrowser.openBrowserAsync resolves with the final
+//      URL; we read its hash to know the outcome INSTANTLY:
+//        • #cancelled  → resolve as failed immediately (no polling, ~0s)
+//        • #failed     → resolve as failed immediately (no polling, ~0s)
+//        • #success    → confirm with ONE fast poll, then add credits
+//        • anything else (dismissed mid-flow / unknown) → poll, but the FIRST
+//          poll passes cancelled=true so the Edge fn fast-cancels (~1s).
+//   3. pollCheckOrder() is faster: 500ms first delay, 6 fast polls at 1.2s,
+//      and it forwards the `cancelled` hint to the Edge Function so a back-out
+//      resolves on the first attempt instead of after ~30s.
 //
-//   1. getThemeCheckoutParams() — reads the live COLORS singleton (already
-//      mutated in-place by ThemeProvider) at the moment purchasePack() runs,
-//      producing a ThemeCheckoutParams snapshot. Safe to call at any time;
-//      no React subscription needed because COLORS is a plain mutable object.
-//
-//   2. buildCheckoutUrl() — now receives the theme snapshot as a 4th argument
-//      so the Vercel checkout page gets `t_*` color params and renders in the
-//      user's chosen theme.
-//
-//   3. WebBrowser.openBrowserAsync() toolbarColor / controlsColor now follow
-//      the active theme instead of being hardcoded dark values.
-//
-// All Part 42 faster payment detection logic preserved unchanged.
-// All Part 39 consumeTotal logic preserved unchanged.
-// All Part 32 Realtime subscription preserved unchanged.
+// All Part 32 Realtime + Part 39 consumeTotal logic preserved unchanged.
 
 import React, {
   createContext, useContext, useEffect, useState,
@@ -35,7 +33,8 @@ import {
   consumeCredits,
   fetchTransactions,
   createRazorpayOrder,
-  buildCheckoutUrl,
+  createCheckoutToken,
+  buildSecureCheckoutUrl,
   checkOrderAndAddCredits,
   InsufficientCreditsError,
   type ThemeCheckoutParams,
@@ -46,9 +45,7 @@ import {
   clearBalanceCache,
 } from '../lib/creditStorage';
 import { FEATURE_COSTS }  from '../constants/credits';
-// ── Part 54A: payment-result notification (→ Transaction History) ──
 import { notifyPaymentResult } from '../services/appNotificationService';
-// ── Part 55.12: read live theme colors ───────────────────────────────────────
 import { COLORS, isLightTheme } from '../constants/theme';
 import { supabase }       from '../lib/supabase';
 import type {
@@ -88,47 +85,29 @@ const CreditsContext = createContext<CreditsContextValue>({
 });
 
 // ── Helper: initialize credits row for new OAuth users ────────────────────────
-// Called when fetchUserCredits returns null/0 for a brand-new user.
-// The RPC creates the user_credits row with the signup bonus if it doesn't exist.
 async function ensureCreditsRow(userId: string): Promise<number> {
   try {
-    // Try to upsert the credits row via RPC (idempotent — safe to call multiple times)
-    const { data, error } = await supabase.rpc('initialize_user_credits', {
-      p_user_id: userId,
-    });
+    const { data, error } = await supabase.rpc('initialize_user_credits', { p_user_id: userId });
     if (!error && data) {
       const balance = typeof data === 'number' ? data : (data as any)?.balance ?? 20;
       return balance;
     }
-  } catch {
-    // RPC might not exist yet — fall back to direct upsert
-  }
-
+  } catch {}
   try {
-    // Direct upsert fallback — creates row with 20 credits if missing
     const { data: upsertData } = await supabase
       .from('user_credits')
       .upsert({ user_id: userId, balance: 20 }, { onConflict: 'user_id', ignoreDuplicates: true })
       .select('balance')
       .single();
-
     if (upsertData) return upsertData.balance ?? 20;
-  } catch {
-    // Even direct upsert failed — just return 0, don't crash
-  }
-
+  } catch {}
   return 0;
 }
 
-// ── Part 55.12: snapshot the live theme colors for the checkout URL ───────────
-// Reads the COLORS singleton directly — it is already mutated in-place by
-// ThemeProvider so it always reflects the current active palette. No React
-// subscription is needed; this is a plain synchronous read.
-
+// ── Part 55.12: snapshot the live theme colors for the checkout token ─────────
 function getThemeCheckoutParams(): ThemeCheckoutParams {
   const gPrimary = COLORS.gradientPrimary as readonly [string, string];
   const gCard    = COLORS.gradientCard    as readonly [string, string];
-
   return {
     primary:             COLORS.primary,
     primaryLight:        COLORS.primaryLight,
@@ -149,6 +128,26 @@ function getThemeCheckoutParams(): ThemeCheckoutParams {
   };
 }
 
+// ── Part 57: read the outcome the checkout page signalled via the URL hash ────
+// Returns 'success' | 'failed' | 'cancelled' | 'unknown'.
+function parseBrowserOutcome(result: WebBrowser.WebBrowserResult): 'success' | 'failed' | 'cancelled' | 'unknown' {
+  // openBrowserAsync resolves with { type } and sometimes a url on dismiss.
+  const anyResult = result as any;
+  const url: string | undefined = anyResult?.url;
+  if (url && typeof url === 'string') {
+    const hashIdx = url.indexOf('#');
+    if (hashIdx >= 0) {
+      const hash = url.slice(hashIdx + 1).toLowerCase();
+      if (hash.includes('success'))   return 'success';
+      if (hash.includes('failed'))    return 'failed';
+      if (hash.includes('cancelled')) return 'cancelled';
+    }
+  }
+  // On iOS, a user-initiated close yields type 'cancel'/'dismiss' with no url.
+  // We treat that as "unknown" so the first poll runs with cancelled=true.
+  return 'unknown';
+}
+
 export function CreditsProvider({ children }: { children: ReactNode }) {
   const { user, profile } = useAuth();
 
@@ -164,7 +163,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
 
   const loadedRef  = useRef(false);
   const loadingRef = useRef(false);
-
   const creditChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // ── Realtime subscription ─────────────────────────────────────────────────
@@ -173,17 +171,10 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       supabase.removeChannel(creditChannelRef.current);
       creditChannelRef.current = null;
     }
-
     const channel = supabase
       .channel(`user_credits_${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event:  'UPDATE',
-          schema: 'public',
-          table:  'user_credits',
-          filter: `user_id=eq.${userId}`,
-        },
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'user_credits', filter: `user_id=eq.${userId}` },
         (payload) => {
           if (payload.new && typeof payload.new === 'object') {
             const newBalance = (payload.new as any).balance;
@@ -195,7 +186,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
         },
       )
       .subscribe();
-
     creditChannelRef.current = channel;
   }, []);
 
@@ -206,16 +196,14 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // ── Load balance — CRASH FIX: never throws, always defaults to 0 ──────────
+  // ── Load balance ──────────────────────────────────────────────────────────
   const loadBalance = useCallback(async (showRefreshing = false) => {
     if (!user || loadingRef.current) return;
     loadingRef.current = true;
-
     if (showRefreshing)          setIsRefreshing(true);
     else if (!loadedRef.current) setIsLoading(true);
 
     try {
-      // Show cached balance immediately while fetching fresh
       const cached = await getCachedBalance(user.id).catch(() => null);
       if (cached !== null) setBalance(cached);
 
@@ -224,14 +212,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
         const credits = await fetchUserCredits(user.id);
         freshBalance = credits?.balance ?? 0;
       } catch (fetchErr: any) {
-        // ── CRASH FIX: Handle missing credits row for new OAuth users ─────────
         console.warn('[Credits] fetchUserCredits failed, initializing row:', fetchErr?.message);
-        try {
-          freshBalance = await ensureCreditsRow(user.id);
-        } catch (initErr) {
-          console.warn('[Credits] ensureCreditsRow also failed:', initErr);
-          freshBalance = cached ?? 0;
-        }
+        try { freshBalance = await ensureCreditsRow(user.id); }
+        catch { freshBalance = cached ?? 0; }
       }
 
       setBalance(freshBalance);
@@ -239,7 +222,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       setError(null);
       loadedRef.current = true;
     } catch (outerErr) {
-      // ── CRASH FIX: Absolute last resort — never crash the Provider ─────────
       console.warn('[Credits] loadBalance outer error:', outerErr);
       setError('Could not load credits');
     } finally {
@@ -266,7 +248,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       clearBalanceCache();
       teardownCreditRealtime();
     }
-
     return () => { teardownCreditRealtime(); };
   }, [user?.id]);
 
@@ -285,8 +266,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     } finally {
       setTxLoading(false);
     }
-
-    // Belt-and-suspenders balance refresh
     if (user) {
       try {
         const credits = await fetchUserCredits(user.id);
@@ -316,7 +295,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
 
     if (currentBalance < cost) return false;
-
     setBalance(prev => Math.max(0, prev - cost));
 
     try {
@@ -354,7 +332,6 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     }
 
     if (currentBalance < totalCost) return { ok: false, currentBalance };
-
     setBalance(prev => Math.max(0, prev - totalCost));
 
     try {
@@ -375,18 +352,21 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
   }, [user, balance]);
 
   // ── Poll for payment ──────────────────────────────────────────────────────
+  // Part 57: faster cadence + forwards a `cancelled` hint on the first attempt
+  // so a back-out resolves instantly via the Edge fast-cancel path.
   const pollCheckOrder = useCallback(async (
     razorpayOrderId: string,
     pack:            CreditPack,
     prevBalance:     number,
+    cancelledHint:   boolean,
   ): Promise<'paid' | 'failed' | 'timeout'> => {
     if (!user) return 'timeout';
 
-    const MAX_ATTEMPTS       = 15;
-    const INITIAL_DELAY_MS   = 500;
-    const FAST_INTERVAL_MS   = 1500;
+    const MAX_ATTEMPTS       = 12;
+    const INITIAL_DELAY_MS   = 400;
+    const FAST_INTERVAL_MS   = 1200;
     const NORMAL_INTERVAL_MS = 2000;
-    const FAST_POLL_COUNT    = 5;
+    const FAST_POLL_COUNT    = 6;
 
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
       let delayMs: number;
@@ -397,7 +377,10 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       await new Promise<void>(r => setTimeout(r, delayMs));
 
       try {
-        const result = await checkOrderAndAddCredits(user.id, razorpayOrderId);
+        // Only send the cancelled hint on the FIRST poll — after that we rely on
+        // Razorpay's own per-payment status (the user may have paid afterwards).
+        const sendCancelled = cancelledHint && i === 0;
+        const result = await checkOrderAndAddCredits(user.id, razorpayOrderId, sendCancelled);
 
         if (result.payment_failed) return 'failed';
 
@@ -408,20 +391,13 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
           setPurchaseState(prev => ({
             ...prev,
             phase:        'success',
-            creditsAdded: creditsAdded > 0
-              ? creditsAdded
-              : (pack.credits + (pack.bonusCredits ?? 0)),
+            creditsAdded: creditsAdded > 0 ? creditsAdded : (pack.credits + (pack.bonusCredits ?? 0)),
           }));
-
-          // ── Part 54A: fire a payment-success notification ──
           notifyPaymentResult({
             success:      true,
-            creditsAdded: creditsAdded > 0
-              ? creditsAdded
-              : (pack.credits + (pack.bonusCredits ?? 0)),
+            creditsAdded: creditsAdded > 0 ? creditsAdded : (pack.credits + (pack.bonusCredits ?? 0)),
             packName:     pack.name,
           }).catch(() => {});
-
           return 'paid';
         }
 
@@ -430,81 +406,103 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
         console.warn(`[Credits] Poll ${i + 1}/${MAX_ATTEMPTS} error:`, err);
       }
     }
-
     return 'timeout';
   }, [user]);
 
   // ── Purchase ──────────────────────────────────────────────────────────────
-  // Part 55.12: snapshot the live COLORS at purchase time and pass them into
-  // buildCheckoutUrl so the Vercel checkout page renders in the active theme.
   const purchasePack = useCallback(async (pack: CreditPack): Promise<void> => {
     if (!user) return;
 
     const prevBalance = balance;
     setPurchaseState({ phase: 'creating_order', selectedPack: pack });
 
+    // 1. Create the Razorpay order
     let orderData;
     try {
       orderData = await createRazorpayOrder(pack.id, user.id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not create order';
       setPurchaseState(prev => ({ ...prev, phase: 'failed', error: msg }));
-      // ── Part 54A: notify failure (order could not be created) ──
       notifyPaymentResult({
-        success:       false,
-        packName:      pack.name,
+        success: false, packName: pack.name,
         failureReason: 'We could not start your payment. No charges were made.',
       }).catch(() => {});
       return;
     }
 
+    // 2. Part 57: mint a secure token and build a zero-leak URL
     let checkoutUrl: string;
     try {
-      // ── Part 55.12: attach live theme snapshot ─────────────────────────────
       const themeParams = getThemeCheckoutParams();
-      checkoutUrl = buildCheckoutUrl(
+      const token = await createCheckoutToken(
         orderData,
+        user.id,
         user.email ?? '',
         profile?.full_name ?? 'Researcher',
         themeParams,
       );
+      checkoutUrl = buildSecureCheckoutUrl(token);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Checkout URL error';
+      const msg = err instanceof Error ? err.message : 'Checkout could not be secured';
       setPurchaseState(prev => ({ ...prev, phase: 'failed', error: msg }));
       notifyPaymentResult({
-        success:       false,
-        packName:      pack.name,
+        success: false, packName: pack.name,
         failureReason: 'We could not open the payment page. No charges were made.',
       }).catch(() => {});
       return;
     }
 
+    // 3. Open the in-app browser and INSPECT the result for the outcome hash
     setPurchaseState(prev => ({ ...prev, phase: 'opening_browser', orderId: orderData.order_id }));
+    let browserOutcome: 'success' | 'failed' | 'cancelled' | 'unknown' = 'unknown';
     try {
-      await WebBrowser.openBrowserAsync(checkoutUrl, {
+      const result = await WebBrowser.openBrowserAsync(checkoutUrl, {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
-        // Part 55.12: match the native browser chrome to the active theme
-        toolbarColor: COLORS.background,
+        toolbarColor:  COLORS.background,
         controlsColor: COLORS.primary,
       });
+      browserOutcome = parseBrowserOutcome(result);
     } catch (err) {
       console.warn('[Credits] Browser error:', err);
     }
 
+    // 4. Resolve based on the browser outcome — Part 57 instant paths
+    // Fast fail/cancel: the page told us the payment failed or was cancelled.
+    if (browserOutcome === 'failed' || browserOutcome === 'cancelled') {
+      // Fire one confirming check (cancelled hint) to mark the order failed in
+      // the DB, but don't wait on polling — resolve the UI immediately.
+      checkOrderAndAddCredits(user.id, orderData.order_id, true).catch(() => {});
+      setPurchaseState(prev => ({
+        ...prev,
+        phase: 'failed',
+        error: browserOutcome === 'cancelled'
+          ? 'Payment cancelled.\n\nNo charges were made. You can try again whenever you are ready.'
+          : 'Your payment was declined.\n\nNo charges were made. Please try again with a different payment method (UPI / Card / Netbanking).',
+      }));
+      notifyPaymentResult({
+        success: false, packName: pack.name,
+        failureReason: browserOutcome === 'cancelled'
+          ? 'Payment was cancelled. No charges were made.'
+          : 'Your payment was declined. No charges were made.',
+      }).catch(() => {});
+      await loadBalance(false);
+      return;
+    }
+
+    // Success path: confirm with the poller (it will add credits on the 1st poll).
     setPurchaseState(prev => ({ ...prev, phase: 'polling' }));
-    const pollResult = await pollCheckOrder(orderData.order_id, pack, prevBalance);
+    const cancelledHint = browserOutcome === 'unknown';   // dismissed with no hash → likely backed out
+    const pollResult = await pollCheckOrder(orderData.order_id, pack, prevBalance, cancelledHint);
 
     if (pollResult === 'failed') {
       setPurchaseState(prev => ({
         ...prev,
         phase: 'failed',
-        error: 'Your payment was declined.\n\nNo charges were made. Please try again with a different payment method (UPI / Card / Netbanking).',
+        error: 'Your payment was not completed.\n\nNo charges were made. Please try again with a different payment method (UPI / Card / Netbanking).',
       }));
-      // ── Part 54A: fire a payment-failure notification ──
       notifyPaymentResult({
-        success:       false,
-        packName:      pack.name,
-        failureReason: 'Your payment was declined. No charges were made.',
+        success: false, packName: pack.name,
+        failureReason: 'Your payment was not completed. No charges were made.',
       }).catch(() => {});
     } else if (pollResult === 'timeout') {
       setPurchaseState(prev => ({
@@ -515,10 +513,7 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
           'If your payment went through, credits will be added to your account automatically within 1–2 minutes. ' +
           'Pull down to refresh your balance here, or check back shortly.',
       }));
-      // NOTE: We deliberately do NOT fire a failure notification on timeout —
-      // the payment may still succeed via the webhook backup, and a "failed"
-      // banner would be misleading. The success notification fires from the
-      // webhook/poll path if/when the credits land.
+      // Do NOT fire a failure notification on timeout — webhook may still land.
       setTimeout(() => { if (user) loadBalance(false); }, 20_000);
       setTimeout(() => { if (user) loadBalance(false); }, 60_000);
     }

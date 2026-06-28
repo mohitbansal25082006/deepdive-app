@@ -90,7 +90,6 @@ import { LoadingOverlay }     from '../../../src/components/common/LoadingOverla
 import { StatsCard }          from '../../../src/components/profile/StatsCard';
 import { ThemeSettingsCard }  from '../../../src/components/profile/ThemeSettingsCard';
 import { CacheManagerModal }  from '../../../src/components/profile/CacheManagerModal';
-import { ReferralCard }       from '../../../src/components/profile/ReferralCard';
 import { ManageCollectionsSheet } from '../../../src/components/collections/ManageCollectionsSheet';
 // Part 45 FIX: SelectiveCacheSheet now owned by profile, not CacheManagerModal
 import { SelectiveCacheSheet } from '../../../src/components/offline/SelectiveCacheSheet';
@@ -870,12 +869,6 @@ export default function ProfileScreen() {
             <SectionHeader label="Your Collections" icon="folder-outline" accent={COLORS.primary} />
             <Animated.View entering={FadeInDown.duration(400).delay(80)}>
               <CollectionsPreviewCard onManage={() => setCollectionsVisible(true)} />
-            </Animated.View>
-
-            {/* Refer & Earn */}
-            <SectionHeader label="Refer & Earn" icon="gift-outline" accent={COLORS.warning} />
-            <Animated.View entering={FadeInDown.duration(400).delay(90)}>
-              <ReferralCard />
             </Animated.View>
 
             {/* Credits & Billing */}

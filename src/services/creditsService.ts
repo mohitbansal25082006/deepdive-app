@@ -1,23 +1,19 @@
 // src/services/creditsService.ts
 // Part 24 (Fix v7) — ROOT CAUSE FIX for balance always returning 0.
+//   (See previous header — direct table SELECT bypasses PostgREST array wrapping.)
 //
-// PROBLEM: get_user_credits RPC returns RETURNS public.user_credits (composite type).
-// PostgREST wraps ALL results in an array by default, so data comes back as:
-//   [{ id: ..., user_id: ..., balance: 170, ... }]
+// Part 55.12 — theme params (now passed INTO the secure token, not the URL).
 //
-// But mapCreditsRow(data) was calling row.balance on the ARRAY object,
-// getting undefined, and defaulting to 0.
-//
-// FIX: Replace fetchUserCredits() with a direct .from('user_credits').select()
-// query. Direct table queries return a single object when using .maybeSingle(),
-// bypassing the PostgREST array-wrapping issue entirely.
-// The ensure_user_credits RPC (which gives the signup bonus) is called separately
-// on first load only.
-//
-// Part 55.12 — buildCheckoutUrl gains an optional ThemeCheckoutParams argument.
-// When provided, 16 short `t_*` query params are appended so the Vercel-hosted
-// checkout/index.html can apply the user's active theme as CSS variables.
-// No other logic changed.
+// Part 57 — SECURE CHECKOUT (zero-leak URL) + FASTER FAIL/CANCEL.
+//   • createCheckoutToken(): calls the new `checkout-token` Edge Function, which
+//     mints a short-lived signed token embedding the order + email + name +
+//     theme. The app then opens the checkout with ONLY `?t=<token>&api=...&k=...`.
+//     No email, order id, key id, or theme is ever in the URL.
+//   • buildSecureCheckoutUrl(): assembles that minimal URL.
+//   • checkOrderAndAddCredits() now accepts a `cancelled` flag, forwarded to the
+//     Edge Function so a back-button cancel resolves instantly.
+//   • The legacy buildCheckoutUrl() is KEPT (deprecated) only as a fallback;
+//     CreditsContext now uses the secure token path.
 
 import { supabase }              from '../lib/supabase';
 import type {
@@ -59,13 +55,13 @@ export interface CheckOrderResponse {
   order_status?:      string;
   payment_count?:     number;
   payment_failed?:    boolean;
+  cancelled?:         boolean;
   fail_reason?:       string;
+  source?:            string;
   error?:             string;
 }
 
-// ─── Part 55.12: theme params shape ──────────────────────────────────────────
-// A lightweight snapshot of the active COLORS palette taken at purchase time.
-// Only the fields the checkout page needs are included to keep URLs short.
+// ─── Part 55.12 / 57: theme params shape (now carried inside the token) ───────
 
 export interface ThemeCheckoutParams {
   primary:             string;
@@ -79,34 +75,24 @@ export interface ThemeCheckoutParams {
   textSecondary:       string;
   textMuted:           string;
   border:              string;
-  /** first stop of COLORS.gradientPrimary  */
   gradP1:    string;
-  /** second stop of COLORS.gradientPrimary */
   gradP2:    string;
-  /** first stop of COLORS.gradientCard     */
   gradCard1: string;
-  /** second stop of COLORS.gradientCard    */
   gradCard2: string;
   isLight:   boolean;
 }
 
-// ─── Row mapper ───────────────────────────────────────────────────────────────
-// Handles both direct table rows and the rare case where data is an array.
+// ─── Row mappers ──────────────────────────────────────────────────────────────
 
 function mapCreditsRow(rawData: any): UserCredits {
-  // CRITICAL FIX: PostgREST wraps composite RPC returns in an array.
-  // Always unwrap if it's an array.
   const row = Array.isArray(rawData) ? rawData[0] : rawData;
-
   if (!row) {
     return {
       id: '', userId: '', balance: 0,
       totalPurchased: 0, totalConsumed: 0,
-      freeCreditsGiven: false,
-      createdAt: '', updatedAt: '',
+      freeCreditsGiven: false, createdAt: '', updatedAt: '',
     };
   }
-
   return {
     id:               row.id              ?? '',
     userId:           row.user_id         ?? '',
@@ -155,47 +141,31 @@ function getAnonKey(): string {
 }
 
 // ─── Fetch credits ────────────────────────────────────────────────────────────
-// FIX: Uses direct table SELECT with maybeSingle() instead of the composite-type
-// RPC. This bypasses PostgREST's array-wrapping of composite return types.
 
 export async function fetchUserCredits(userId: string): Promise<UserCredits> {
-  // Step 1: Call ensure_user_credits to create the row + signup bonus if needed.
-  // This RPC returns INTEGER (not composite) so it's safe to call via rpc().
-  // We ignore the return value — we just need the side effect.
   try {
     await supabase.rpc('ensure_user_credits', { p_user_id: userId });
-  } catch {
-    // Non-fatal — the row may already exist
-  }
+  } catch { /* non-fatal */ }
 
-  // Step 2: Read the balance via direct table query.
-  // .maybeSingle() returns a plain object or null — no array wrapping.
   const { data, error } = await supabase
     .from('user_credits')
     .select('*')
     .eq('user_id', userId)
     .maybeSingle();
 
-  if (error) {
-    throw new Error(`Credits fetch error: ${error.message}`);
-  }
+  if (error) throw new Error(`Credits fetch error: ${error.message}`);
 
   if (!data) {
-    // Row still doesn't exist — return zero balance
     return {
       id: '', userId, balance: 0,
-      totalPurchased: 0, totalConsumed: 0,
-      freeCreditsGiven: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      totalPurchased: 0, totalConsumed: 0, freeCreditsGiven: false,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
   }
-
   return mapCreditsRow(data);
 }
 
 // ─── Consume credits ─────────────────────────────────────────────────────────
-// consume_credits RPC returns INTEGER — no array wrapping issue.
 
 export async function consumeCredits(
   userId: string, feature: CreditFeature, cost: number, description = '',
@@ -216,8 +186,6 @@ export async function consumeCredits(
     }
     throw new Error(`Credit deduction failed: ${error.message}`);
   }
-
-  // consume_credits returns INTEGER — data is the new balance directly
   return typeof data === 'number' ? data : parseInt(String(data), 10);
 }
 
@@ -226,7 +194,6 @@ export async function consumeCredits(
 export async function fetchTransactions(
   userId: string, limit = 20, offset = 0,
 ): Promise<CreditTransaction[]> {
-  // Use direct table query to avoid composite-type array issues
   const { data, error } = await supabase
     .from('credit_transactions')
     .select('*')
@@ -261,27 +228,66 @@ export async function createRazorpayOrder(
   return (await response.json()) as CreateOrderResponse;
 }
 
-// ─── Build checkout URL ───────────────────────────────────────────────────────
-// Part 55.12: optional `theme` argument appends 16 short `t_*` params so the
-// Vercel checkout page renders in the user's active DeepDive theme.
-//
-// Param name map (kept short to avoid URL-length issues):
-//   t_primary   → primary accent
-//   t_primary_l → lighter shade
-//   t_primary_d → darker shade
-//   t_accent    → secondary accent (e.g. green)
-//   t_bg        → main background
-//   t_bg_card   → card surface
-//   t_bg_el     → elevated surface
-//   t_text      → primary text
-//   t_text_s    → secondary text
-//   t_text_m    → muted text
-//   t_border    → border
-//   t_g1        → gradientPrimary stop 1
-//   t_g2        → gradientPrimary stop 2
-//   t_gc1       → gradientCard stop 1
-//   t_gc2       → gradientCard stop 2
-//   t_light     → '1' when light mode (omitted for dark)
+// ─── Part 57: mint a secure checkout token ────────────────────────────────────
+// Calls the `checkout-token` Edge Function. Returns a short-lived signed token
+// that embeds the order details + email + name + theme server-side, so NONE of
+// that needs to go into the checkout URL.
+
+export async function createCheckoutToken(
+  order:     CreateOrderResponse,
+  userId:    string,
+  userEmail: string,
+  userName:  string,
+  theme?:    ThemeCheckoutParams,
+): Promise<string> {
+  const token = await getAccessToken();
+  const response = await fetch(`${getSupabaseUrl()}/functions/v1/checkout-token`, {
+    method:  'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${token}`,
+      'apikey':        getAnonKey(),
+    },
+    body: JSON.stringify({
+      razorpay_order_id: order.order_id,
+      user_id:           userId,
+      email:             userEmail,
+      contact_name:      userName || 'Researcher',
+      theme:             theme ?? null,
+    }),
+  });
+  if (!response.ok) {
+    let msg = 'Could not secure your checkout. Please try again.';
+    try { const e = await response.json(); msg = e.error ?? msg; } catch {}
+    throw new Error(msg);
+  }
+  const data = await response.json();
+  if (!data?.token) throw new Error('Checkout token missing from response');
+  return data.token as string;
+}
+
+// ─── Part 57: build the SECURE checkout URL (token only) ──────────────────────
+// The URL contains only:
+//   ?t=<token>          opaque, signed, short-lived
+//   &api=<supabase-url> public project URL (needed for the resolve fetch)
+//   &k=<anon-key>       public anon key (needed for the functions gateway)
+// No email, no order id, no Razorpay key id, no theme colours. Nothing sensitive.
+
+export function buildSecureCheckoutUrl(token: string): string {
+  const baseUrl = process.env.EXPO_PUBLIC_CHECKOUT_URL;
+  if (!baseUrl) throw new Error('EXPO_PUBLIC_CHECKOUT_URL not set in .env');
+
+  const params = new URLSearchParams({
+    t:   token,
+    api: getSupabaseUrl(),
+    k:   getAnonKey(),
+  });
+  return `${baseUrl}?${params.toString()}`;
+}
+
+// ─── DEPRECATED: legacy plaintext checkout URL (Part 55.12) ───────────────────
+// Kept only as an emergency fallback. NOT used by CreditsContext anymore because
+// it leaks email/order id/key id/theme in the URL. Do not call this for new code.
 
 export function buildCheckoutUrl(
   order:       CreateOrderResponse,
@@ -303,8 +309,6 @@ export function buildCheckoutUrl(
     email:        userEmail,
     contact_name: userName || 'Researcher',
   });
-
-  // ── Part 55.12: append theme color params ─────────────────────────────────
   if (theme) {
     params.set('t_primary',   theme.primary);
     params.set('t_primary_l', theme.primaryLight);
@@ -323,15 +327,16 @@ export function buildCheckoutUrl(
     params.set('t_gc2',       theme.gradCard2);
     if (theme.isLight) params.set('t_light', '1');
   }
-
   return `${baseUrl}?${params.toString()}`;
 }
 
 // ─── Check order & add credits ────────────────────────────────────────────────
+// Part 57: `cancelled` forwards a user-cancelled hint for instant fail resolution.
 
 export async function checkOrderAndAddCredits(
   userId:          string,
   razorpayOrderId: string,
+  cancelled = false,
 ): Promise<CheckOrderResponse> {
   const token = await getAccessToken();
   const response = await fetch(
@@ -343,7 +348,7 @@ export async function checkOrderAndAddCredits(
         'Authorization': `Bearer ${token}`,
         'apikey':        getAnonKey(),
       },
-      body: JSON.stringify({ razorpay_order_id: razorpayOrderId, user_id: userId }),
+      body: JSON.stringify({ razorpay_order_id: razorpayOrderId, user_id: userId, cancelled }),
     },
   );
   if (!response.ok) {
