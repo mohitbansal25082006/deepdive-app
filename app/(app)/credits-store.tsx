@@ -33,6 +33,15 @@
 //   Under SDK 54 edge-to-edge, content draws behind the system nav bar, so the
 //   bar now pads with the real safe-area inset (`insets.bottom`). The ScrollView
 //   bottom padding also accounts for the inset so the last content isn't hidden.
+//
+// ── Part 58 — Re-pricing reference table ──────────────────────────────────────
+//   The "What Credits Get You" table previously listed only a single
+//   `podcast_10min` row and omitted Voice Debate. It now surfaces the full new
+//   pricing — research tiers (Quick 10 / Deep 15 / Expert 20), all four podcast
+//   durations (25 / 35 / 45 / 55), Presentation, Academic Paper, AI Debate (20),
+//   and Voice Debate (70) — plus a podcast audio-quality add-on note
+//   (+5 High / +10 Lossless). Every cost reads from FEATURE_COSTS, so the table
+//   stays correct automatically if prices change again.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -418,14 +427,21 @@ export default function CreditsStoreScreen() {
     resetPurchase();
   }, [resetPurchase]);
 
+  // Part 58: full pricing reference (research tiers, all podcast durations,
+  // presentation, paper, debate, voice debate). Costs read from FEATURE_COSTS,
+  // so they stay correct automatically when prices change.
   const FEATURE_ROWS = [
-    { feature: 'research_quick',  label: 'Quick Research',   icon: 'flash-outline',     cost: FEATURE_COSTS.research_quick  },
-    { feature: 'research_deep',   label: 'Deep Research',    icon: 'analytics-outline', cost: FEATURE_COSTS.research_deep   },
+    { feature: 'research_quick',  label: 'Quick Scan',       icon: 'flash-outline',     cost: FEATURE_COSTS.research_quick  },
+    { feature: 'research_deep',   label: 'Deep Dive',        icon: 'analytics-outline', cost: FEATURE_COSTS.research_deep   },
     { feature: 'research_expert', label: 'Expert Research',  icon: 'trophy-outline',    cost: FEATURE_COSTS.research_expert },
+    { feature: 'podcast_5min',    label: 'Podcast (5 min)',  icon: 'radio-outline',     cost: FEATURE_COSTS.podcast_5min    },
     { feature: 'podcast_10min',   label: 'Podcast (10 min)', icon: 'radio-outline',     cost: FEATURE_COSTS.podcast_10min   },
-    { feature: 'academic_paper',  label: 'Academic Paper',   icon: 'school-outline',    cost: FEATURE_COSTS.academic_paper  },
+    { feature: 'podcast_15min',   label: 'Podcast (15 min)', icon: 'radio-outline',     cost: FEATURE_COSTS.podcast_15min   },
+    { feature: 'podcast_20min',   label: 'Podcast (20 min)', icon: 'radio-outline',     cost: FEATURE_COSTS.podcast_20min   },
     { feature: 'presentation',    label: 'AI Presentation',  icon: 'easel-outline',     cost: FEATURE_COSTS.presentation    },
+    { feature: 'academic_paper',  label: 'Academic Paper',   icon: 'school-outline',    cost: FEATURE_COSTS.academic_paper  },
     { feature: 'debate',          label: 'AI Debate',        icon: 'people-outline',    cost: FEATURE_COSTS.debate          },
+    { feature: 'voice_debate',    label: 'Voice Debate',     icon: 'mic-outline',       cost: FEATURE_COSTS.voice_debate    },
   ];
 
   const accentColor = isEmpty ? COLORS.error : isLow ? COLORS.warning : COLORS.primary;
@@ -798,7 +814,7 @@ export default function CreditsStoreScreen() {
                     alignItems:        'center',
                     paddingVertical:   SPACING.sm,
                     paddingHorizontal: SPACING.md,
-                    borderBottomWidth: i < FEATURE_ROWS.length - 1 ? 1 : 0,
+                    borderBottomWidth: 1,
                     borderBottomColor: COLORS.border,
                     gap:               SPACING.md,
                   }}
@@ -843,6 +859,28 @@ export default function CreditsStoreScreen() {
                   </View>
                 </View>
               ))}
+
+              {/* Part 58: podcast audio-quality add-on note */}
+              <View style={{
+                flexDirection:     'row',
+                alignItems:        'center',
+                gap:               8,
+                paddingVertical:   SPACING.sm,
+                paddingHorizontal: SPACING.md,
+                backgroundColor:   `${COLORS.primary}08`,
+              }}>
+                <Ionicons name="sparkles-outline" size={13} color={COLORS.textMuted} />
+                <Text style={{ flex: 1, color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
+                  Podcast audio quality add-on:{' '}
+                  <Text style={{ color: COLORS.textSecondary, fontWeight: '700' }}>
+                    +{FEATURE_COSTS.podcast_quality_high} cr High
+                  </Text>
+                  {' · '}
+                  <Text style={{ color: COLORS.textSecondary, fontWeight: '700' }}>
+                    +{FEATURE_COSTS.podcast_quality_lossless} cr Lossless
+                  </Text>
+                </Text>
+              </View>
             </View>
           </Animated.View>
 

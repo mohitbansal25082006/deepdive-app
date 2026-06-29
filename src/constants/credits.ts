@@ -4,8 +4,25 @@
 // Part 38b — Added paper_ai_* entries for Academic Paper Editor AI tools
 // Part 38e FIX — Added paper_ai_generate_citations (2 cr).
 // Part 39 FIX — Added podcast_quality_high (5 cr) and podcast_quality_lossless (10 cr).
-// Part 40 — Added voice_debate (25 cr) — full audio debate with 7 TTS voice personas.
+// Part 40 — Added voice_debate — full audio debate with 7 TTS voice personas.
 // Part 41.8 — Added paper_ai_generate_section (4 cr) — AI full section generation.
+//
+// ── Part 58 — PRICE UPDATE (content generation re-priced) ─────────────────────
+//   All UI (research-input depth cards, podcast duration/quality cards, debate
+//   tab, voice-debate card, credits-store reference table, profile Credits card,
+//   InsufficientCreditsModal) reads costs from FEATURE_COSTS below, so changing
+//   these numbers re-prices the entire app automatically. The only OTHER place a
+//   cost is hardcoded is VOICE_DEBATE_CREDIT_COST in src/constants/voiceDebate.ts,
+//   which is updated in lock-step (70 cr) in that file.
+//
+//   New prices (Part 58):
+//     research_quick   5 → 10      podcast_5min   10 → 25
+//     research_deep   10 → 15      podcast_10min  20 → 35
+//     research_expert 15 → 20      podcast_15min  30 → 45
+//     debate          15 → 20      podcast_20min  40 → 55
+//     voice_debate    50 → 70
+//   Podcast quality add-ons unchanged: high +5, lossless +10 (added on top of
+//   the new base via podcastTotalCost()).
 
 import type { CreditPack, CreditFeature } from '../types/credits';
 
@@ -16,24 +33,25 @@ export const SIGNUP_BONUS_CREDITS = 50;
 // ─── Feature Credit Costs ────────────────────────────────────────────────────
 
 export const FEATURE_COSTS: Record<CreditFeature, number> = {
-  // Research
-  research_quick:  5,
-  research_deep:   10,
-  research_expert: 15,
-  // Podcast — base duration costs
-  podcast_5min:    10,
-  podcast_10min:   20,
-  podcast_15min:   30,
-  podcast_20min:   40,
-  // Podcast quality add-ons
+  // Research — Part 58: 5/10/15 → 10/15/20
+  research_quick:  10,
+  research_deep:   15,
+  research_expert: 20,
+  // Podcast — base duration costs — Part 58: 10/20/30/40 → 25/35/45/55
+  podcast_5min:    25,
+  podcast_10min:   35,
+  podcast_15min:   45,
+  podcast_20min:   55,
+  // Podcast quality add-ons (unchanged — added on top of base)
   podcast_quality_high:     5,
   podcast_quality_lossless: 10,
   // Content
   academic_paper:  25,
   presentation:    10,
-  debate:          15,
-  // Part 40: Voice Debate
-  voice_debate:    50,
+  // Part 58: 15 → 20
+  debate:          20,
+  // Part 40 / Part 58: Voice Debate 50 → 70
+  voice_debate:    70,
   // Slide editor AI
   slide_ai_rewrite:  1,
   slide_ai_generate: 2,

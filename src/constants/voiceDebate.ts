@@ -28,6 +28,14 @@
 // We deliberately KEEP gpt-4o-mini-tts (not tts-1): tts-1 ignores `instructions`,
 // which would flatten every agent to the same generic delivery — a real quality
 // regression. The trims above cut ~15-20% off cost while keeping distinct voices.
+//
+// ── Part 58 — Voice Debate re-priced 50 → 70 credits ──────────────────────────
+// Voice debate is the most expensive feature to generate (multi-agent dialectic
+// LLM passes + per-turn persona-aware gpt-4o-mini-tts audio across ~40 turns).
+// VOICE_DEBATE_CREDIT_COST below is the single source the UI + credit gate read,
+// and it is kept in lock-step with FEATURE_COSTS.voice_debate (70) in
+// src/constants/credits.ts. (useVoiceDebate / VoiceDebateCard consume this
+// constant for the cost badge and the guarded deduction.)
 
 import type { VoicePersona, DebateSegmentType } from '../types/voiceDebate';
 import type { DebateAgentRole } from '../types';
@@ -171,8 +179,9 @@ export const PHASE_PERCENTS: Record<string, number> = {
 };
 
 // ─── Credit Cost ──────────────────────────────────────────────────────────────
+// Part 58: 50 → 70. Kept in lock-step with FEATURE_COSTS.voice_debate.
 
-export const VOICE_DEBATE_CREDIT_COST = 50;
+export const VOICE_DEBATE_CREDIT_COST = 70;
 
 // ─── TTS Config ───────────────────────────────────────────────────────────────
 
