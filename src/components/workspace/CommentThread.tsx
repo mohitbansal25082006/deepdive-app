@@ -1,17 +1,29 @@
 // src/components/workspace/CommentThread.tsx
-// Part 11 — Updated: CommentReactionBar wired below each root comment.
-//            Reactions require an editor or owner role to toggle.
-//            Reaction state is passed in from the parent (useCommentReactions).
-// Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
-//             COLORS from the theme system. No dark-only assumptions.
+// Part 58.1 — Advanced comment thread.
+//
+// Changes vs Part 11/55.2:
+//   • RESOLVE / UNRESOLVE SYSTEM REMOVED ENTIRELY — no resolved pill, no
+//     resolve button, no strike-through, no onResolve prop. Comments are now a
+//     pure discussion thread.
+//   • Reaction bar is always shown for editors (so a fresh comment can be
+//     reacted to immediately) and remains visible to everyone once reactions
+//     exist.
+//   • Optional `highlighted` flag pulses a comment when it's been deep-linked
+//     to from a member profile.
+//   • Cleaner header: author + relative time + a single overflow-free actions
+//     cluster (reply / delete) with larger tap targets.
+//   • Fully theme-integrated (live COLORS).
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput,
   Alert, StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  FadeIn, FadeInDown,
+  useSharedValue, useAnimatedStyle, withSequence, withTiming,
+} from 'react-native-reanimated';
 import { ReportComment, CommentReply, CommentReactionSummary, WorkspaceRole } from '../../types';
 import { Avatar } from '../common/Avatar';
 import { CommentReactionBar } from './CommentReactionBar';
@@ -21,12 +33,13 @@ interface Props {
   comment:            ReportComment;
   currentUserId:      string;
   userRole:           WorkspaceRole | null;
-  reactions:          CommentReactionSummary[];          // Part 11 — pass from hook
-  onToggleReaction:   (commentId: string, emoji: string) => void; // Part 11
+  reactions:          CommentReactionSummary[];
+  onToggleReaction:   (commentId: string, emoji: string) => void;
   onReply:            (commentId: string, text: string) => Promise<void>;
-  onResolve:          (commentId: string) => void;
   onDeleteComment:    (commentId: string) => void;
   onDeleteReply:      (commentId: string, replyId: string) => void;
+  /** Part 58.1 — pulse this comment (deep-link target). */
+  highlighted?:       boolean;
 }
 
 function timeAgo(dateStr: string): string {
@@ -40,9 +53,9 @@ function timeAgo(dateStr: string): string {
 
 export function CommentThread({
   comment, currentUserId, userRole,
-  reactions,
-  onToggleReaction,
-  onReply, onResolve, onDeleteComment, onDeleteReply,
+  reactions, onToggleReaction,
+  onReply, onDeleteComment, onDeleteReply,
+  highlighted = false,
 }: Props) {
   const [showReplyBox, setShowReplyBox] = useState(false);
   const [replyText,    setReplyText]    = useState('');
@@ -52,6 +65,24 @@ export function CommentThread({
   const isEditor        = userRole === 'owner' || userRole === 'editor';
   const canDeleteThread = comment.userId === currentUserId || userRole === 'owner';
   const replyCount      = comment.replies?.length ?? 0;
+
+  // ── Highlight pulse (deep-link) ──────────────────────────────────────────
+  const glow = useSharedValue(0);
+  useEffect(() => {
+    if (highlighted) {
+      glow.value = withSequence(
+        withTiming(1, { duration: 280 }),
+        withTiming(1, { duration: 1400 }),
+        withTiming(0, { duration: 600 }),
+      );
+    }
+  }, [highlighted]);
+  const glowStyle = useAnimatedStyle(() => ({
+    borderColor: glow.value > 0 ? COLORS.primary : COLORS.border,
+    backgroundColor: glow.value > 0
+      ? `${COLORS.primary}10`
+      : COLORS.backgroundElevated,
+  }));
 
   const handleSendReply = async () => {
     const trimmed = replyText.trim();
@@ -71,10 +102,7 @@ export function CommentThread({
         : 'This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete', style: 'destructive',
-          onPress: () => onDeleteComment(comment.id),
-        },
+        { text: 'Delete', style: 'destructive', onPress: () => onDeleteComment(comment.id) },
       ],
     );
   };
@@ -82,11 +110,7 @@ export function CommentThread({
   return (
     <Animated.View
       entering={FadeIn.duration(280)}
-      style={[
-        styles.thread,
-        { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border },
-        comment.isResolved && { borderColor: `${COLORS.success}25`, backgroundColor: `${COLORS.success}06` },
-      ]}
+      style={[styles.thread, glowStyle]}
     >
       {/* ── Root comment ── */}
       <View style={styles.commentRow}>
@@ -99,7 +123,7 @@ export function CommentThread({
         </View>
 
         <View style={styles.bubble}>
-          {/* Bubble header */}
+          {/* Header */}
           <View style={styles.bubbleHeader}>
             <Text style={[styles.authorName, { color: COLORS.textPrimary }]} numberOfLines={1}>
               {comment.author?.fullName ?? comment.author?.username ?? 'Unknown'}
@@ -107,25 +131,6 @@ export function CommentThread({
             <Text style={[styles.timestamp, { color: COLORS.textMuted }]}>{timeAgo(comment.createdAt)}</Text>
 
             <View style={styles.actions}>
-              {comment.isResolved && (
-                <View style={[styles.resolvedPill, { backgroundColor: `${COLORS.success}15` }]}>
-                  <Ionicons name="checkmark-circle-outline" size={11} color={COLORS.success} />
-                  <Text style={[styles.resolvedPillText, { color: COLORS.success }]}>Resolved</Text>
-                </View>
-              )}
-              {isEditor && (
-                <TouchableOpacity
-                  onPress={() => onResolve(comment.id)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={styles.actionIcon}
-                >
-                  <Ionicons
-                    name={comment.isResolved ? 'arrow-undo-outline' : 'checkmark-done-outline'}
-                    size={15}
-                    color={comment.isResolved ? COLORS.warning : COLORS.success}
-                  />
-                </TouchableOpacity>
-              )}
               {canDeleteThread && (
                 <TouchableOpacity
                   onPress={handleDeleteThread}
@@ -139,11 +144,7 @@ export function CommentThread({
           </View>
 
           {/* Content */}
-          <Text style={[
-            styles.content, 
-            { color: COLORS.textSecondary },
-            comment.isResolved && { textDecorationLine: 'line-through', color: COLORS.textMuted }
-          ]}>
+          <Text style={[styles.content, { color: COLORS.textSecondary }]}>
             {comment.content}
           </Text>
 
@@ -155,7 +156,7 @@ export function CommentThread({
             </View>
           )}
 
-          {/* ── Part 11: Reaction bar ── */}
+          {/* Reactions */}
           <CommentReactionBar
             summaries={reactions}
             onToggle={(emoji) => onToggleReaction(comment.id, emoji)}
@@ -165,19 +166,13 @@ export function CommentThread({
           {/* Footer */}
           <View style={styles.bubbleFooter}>
             {isEditor && (
-              <TouchableOpacity
-                onPress={() => setShowReplyBox((v) => !v)}
-                style={styles.footerBtn}
-              >
+              <TouchableOpacity onPress={() => setShowReplyBox((v) => !v)} style={styles.footerBtn}>
                 <Ionicons name="return-down-forward-outline" size={13} color={COLORS.primary} />
                 <Text style={[styles.footerBtnText, { color: COLORS.primary }]}>Reply</Text>
               </TouchableOpacity>
             )}
             {replyCount > 0 && (
-              <TouchableOpacity
-                onPress={() => setCollapsed((v) => !v)}
-                style={styles.footerBtn}
-              >
+              <TouchableOpacity onPress={() => setCollapsed((v) => !v)} style={styles.footerBtn}>
                 <Ionicons
                   name={collapsed ? 'chevron-down-outline' : 'chevron-up-outline'}
                   size={12}
@@ -205,21 +200,15 @@ export function CommentThread({
               placeholder="Write a reply…"
               placeholderTextColor={COLORS.textMuted}
               style={[
-                styles.replyInput, 
-                { 
-                  color: COLORS.textPrimary, 
-                  borderColor: `${COLORS.primary}35`,
-                  backgroundColor: COLORS.backgroundCard 
-                }
+                styles.replyInput,
+                { color: COLORS.textPrimary, borderColor: `${COLORS.primary}35`, backgroundColor: COLORS.backgroundCard },
               ]}
               multiline
               autoFocus
               maxLength={1000}
             />
             <View style={styles.replyInputFooter}>
-              <TouchableOpacity
-                onPress={() => { setShowReplyBox(false); setReplyText(''); }}
-              >
+              <TouchableOpacity onPress={() => { setShowReplyBox(false); setReplyText(''); }}>
                 <Text style={[styles.cancelText, { color: COLORS.textMuted }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -321,11 +310,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     padding: SPACING.md,
   },
-  threadResolved: {
-    opacity: 0.6,
-    borderColor: `${COLORS.success}25`,
-    backgroundColor: `${COLORS.success}06`,
-  },
   commentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   avatarWrapper: { flexShrink: 0, marginTop: 2 },
   bubble: { flex: 1 },
@@ -333,21 +317,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 6,
     marginBottom: 5, flexWrap: 'wrap',
   },
-  authorName: {
-    fontSize: FONTS.sizes.sm,
-    fontWeight: '700', flexShrink: 1,
-  },
+  authorName: { fontSize: FONTS.sizes.sm, fontWeight: '700', flexShrink: 1 },
   timestamp: { fontSize: FONTS.sizes.xs },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto' },
   actionIcon: { padding: 3 },
-  resolvedPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    borderRadius: RADIUS.full,
-    paddingHorizontal: 6, paddingVertical: 2,
-  },
-  resolvedPillText: { fontSize: 10, fontWeight: '700' },
   content: { fontSize: FONTS.sizes.sm, lineHeight: 20 },
-  contentResolved: { textDecorationLine: 'line-through', color: COLORS.textMuted },
   sectionTag: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     marginTop: 6, alignSelf: 'flex-start',
@@ -396,12 +370,6 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.lg, padding: SPACING.sm,
     borderWidth: 1,
   },
-  replyAuthor: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: '700', flexShrink: 1,
-  },
-  replyContent: {
-    fontSize: FONTS.sizes.xs,
-    lineHeight: 18, marginTop: 3,
-  },
+  replyAuthor: { fontSize: FONTS.sizes.xs, fontWeight: '700', flexShrink: 1 },
+  replyContent: { fontSize: FONTS.sizes.xs, lineHeight: 18, marginTop: 3 },
 });

@@ -178,10 +178,7 @@ export function WorkspaceReportCard({
             </View>
 
             {/* ── Title ────────────────────────────────────────────────────── */}
-            <Text
-              style={[styles.title, { color: COLORS.textPrimary }]}
-              numberOfLines={2}
-            >
+            <Text style={[styles.title, { color: COLORS.textPrimary }]}>
               {r?.title ?? r?.query ?? 'Research Report'}
             </Text>
 

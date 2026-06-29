@@ -3,29 +3,21 @@
 // Workspace Report — Detail Screen (FULL THEME COMPATIBILITY)
 //
 // Part 15  — Download Report (all members): PDF, Markdown, Plain Text.
-// Part 52  — REALTIME ROLE SYNC via useWorkspaceReportRole():
-//              seeds from nav param, subscribes to role_change broadcast,
-//              falls back to postgres_changes, refetches on mount,
-//              fires onKicked when removed / workspace deleted.
-// Part 55  — FULL THEME SYSTEM: all colors derive from the active theme via
-//              the live COLORS singleton. useTheme() provides isLight/version.
-//              Gradients, accents, surfaces, and badges adapt to any palette.
-// Part 60  — SOURCES TAB: the third tab now shows ranked, trust-scored
-//              citations (mirrors research-report.tsx) instead of duplicating
-//              the Comments tab. Comment discussion (bottom sheet + FAB) is
-//              unchanged and still reachable from the header / section taps.
-// Part 61  — THEME CONTRAST PASS: every surface that previously hardcoded a
-//              dark-mode-only color (icon chip backgrounds, banner fills,
-//              pill backgrounds) now derives from `isLight` so text and icons
-//              stay legible in both themes.
-// Part 62  — Comments action button no longer renders a numeric badge (the
-//              segmented tab label already shows the count).
-// Part 63  — Report Details sheet height is now clamped against available
-//              safe-area space so it can never overflow off-screen on short
-//              devices.
+// Part 52  — REALTIME ROLE SYNC via useWorkspaceReportRole().
+// Part 55  — FULL THEME SYSTEM.
+// Part 60  — SOURCES TAB.
+// Part 61  — THEME CONTRAST PASS.
+// Part 62  — Comments action button no longer renders a numeric badge.
+// Part 63  — Report Details sheet height clamped against safe-area space.
 //
-// TYPE FIX: CommentInput's onClearSection prop is `() => void` (not optional).
-//           Inline tab usage now passes `() => {}` instead of `undefined`.
+// Part 58.1 CHANGES:
+//   • RESOLVE/UNRESOLVE REMOVED — `toggleResolve` is no longer pulled from
+//     useReportComments and `onResolve` is no longer passed to <CommentThread>.
+//   • COMMENTS SHEET is now ~80% of screen height (was 65%) with a smooth
+//     spring-like slide (SlideInUp easing).
+//   • COMMENT DEEP-LINK — an optional `focusCommentId` route param auto-opens
+//     the comments sheet and pulses the matching thread (member-profile → comment
+//     navigation lands directly on the comment).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -52,6 +44,7 @@ import Animated, {
   FadeInDown,
   SlideInUp,
   SlideOutDown,
+  Easing,
 } from 'react-native-reanimated';
 import {
   SafeAreaView,
@@ -100,7 +93,8 @@ import { useTheme } from '../../src/context/ThemeContext';
 
 const SCREEN_W     = Dimensions.get('window').width;
 const SCREEN_H     = Dimensions.get('window').height;
-const SHEET_HEIGHT = SCREEN_H * 0.65;
+// Part 58.1 — comments sheet is now ~80% of the screen height.
+const SHEET_HEIGHT = SCREEN_H * 0.80;
 const SHEET_MAX_H  = SCREEN_H * 0.88;
 
 const DEPTH_LABELS: Record<string, string> = {
@@ -231,8 +225,6 @@ function SegmentedTabs({
 
   const onLayout = (e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width);
 
-  // Theme-aware track background — a flat translucent fill that reads
-  // correctly against both light and dark surfaces.
   const trackBg = isLight ? 'rgba(0,0,0,0.045)' : 'rgba(255,255,255,0.06)';
 
   return (
@@ -442,7 +434,6 @@ function ExportSheet({
         }}>
           <LinearGradient colors={sheetBg} style={{ padding: SPACING.xl, paddingBottom: SPACING.xl + 8 }}>
 
-            {/* Handle */}
             <View style={{
               width:           40,
               height:          4,
@@ -452,7 +443,6 @@ function ExportSheet({
               marginBottom:    SPACING.lg,
             }} />
 
-            {/* Title row */}
             <View style={{ marginBottom: SPACING.lg }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 }}>
                 <LinearGradient
@@ -479,7 +469,6 @@ function ExportSheet({
               </Text>
             </View>
 
-            {/* Options */}
             {options.map(opt => (
               <TouchableOpacity
                 key={opt.id}
@@ -527,7 +516,6 @@ function ExportSheet({
               </TouchableOpacity>
             ))}
 
-            {/* Cancel */}
             <TouchableOpacity
               onPress={onClose}
               style={{ alignItems: 'center', paddingVertical: 14, marginTop: 4 }}
@@ -550,12 +538,14 @@ export default function WorkspaceReportScreen() {
     reportId,
     workspaceId,
     userRole: roleParam,
-  } = useLocalSearchParams<{ reportId: string; workspaceId: string; userRole?: string }>();
+    focusCommentId,   // Part 58.1 — deep-link target comment
+  } = useLocalSearchParams<{
+    reportId: string; workspaceId: string; userRole?: string; focusCommentId?: string;
+  }>();
 
   const insets             = useSafeAreaInsets();
   const { isLight }        = useTheme();
 
-  // ── Part 52: realtime role (seeded from nav param, kept live) ──────────────
   const initialRole = (roleParam as WorkspaceRole) ?? 'viewer';
   const { role: liveRole } = useWorkspaceReportRole(
     workspaceId ?? null,
@@ -573,13 +563,11 @@ export default function WorkspaceReportScreen() {
   );
   const userRole = liveRole ?? initialRole;
 
-  // ── Report state ────────────────────────────────────────────────────────────
   const [report,          setReport]          = useState<ResearchReport | null>(null);
   const [isLoadingReport, setIsLoadingReport] = useState(true);
   const [loadError,       setLoadError]       = useState<string | null>(null);
   const [currentUserId,   setCurrentUserId]   = useState('');
 
-  // ── Navigation / UI ─────────────────────────────────────────────────────────
   const [activeTab,         setActiveTab]         = useState<TabKey>('report');
   const [activeSection,     setActiveSection]     = useState<{ id: string; title: string } | null>(null);
   const [showComments,      setShowComments]      = useState(false);
@@ -587,18 +575,18 @@ export default function WorkspaceReportScreen() {
   const [showRequestModal,  setShowRequestModal]  = useState(false);
   const [showReportDetails, setShowReportDetails] = useState(false);
 
-  // ── AI summary ──────────────────────────────────────────────────────────────
+  // Part 58.1 — which comment to pulse once the sheet opens
+  const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
+
   const [summary,          setSummary]          = useState<CommentSummaryResult | null>(null);
   const [isSummarizing,    setIsSummarizing]    = useState(false);
   const [summaryError,     setSummaryError]     = useState<string | null>(null);
   const [showSummaryPanel, setShowSummaryPanel] = useState(false);
 
-  // ── Report details scroll tracking ──────────────────────────────────────────
   const [contentH,  setContentH]  = useState(0);
   const [scrollerH, setScrollerH] = useState(0);
   const scrollY = useRef(new RNAnimated.Value(0)).current;
 
-  // ── Load report ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!reportId || !workspaceId) {
       setLoadError('Missing report or workspace ID.');
@@ -618,7 +606,7 @@ export default function WorkspaceReportScreen() {
     });
   }, []);
 
-  // ── Comments hooks ──────────────────────────────────────────────────────────
+  // Part 58.1 — resolve removed from destructure
   const {
     comments,
     sectionCounts,
@@ -626,7 +614,6 @@ export default function WorkspaceReportScreen() {
     isSending,
     postComment,
     postReply,
-    toggleResolve,
     removeComment,
     removeReply,
     getCommentsForSection,
@@ -644,7 +631,6 @@ export default function WorkspaceReportScreen() {
     retract: retractRequest,
   } = useMyAccessRequest(workspaceId ?? null, userRole);
 
-  // ── Derived ─────────────────────────────────────────────────────────────────
   const isEditor      = userRole === 'owner' || userRole === 'editor';
   const isViewer       = userRole === 'viewer';
   const totalComments  = comments.length;
@@ -652,6 +638,22 @@ export default function WorkspaceReportScreen() {
   const visibleComments = activeSection
     ? getCommentsForSection(activeSection.id)
     : comments;
+
+  // Part 58.1 — auto-open comments sheet + highlight when deep-linked.
+  const deepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    if (!focusCommentId) return;
+    if (commentsLoading) return;
+    if (!comments.some(c => c.id === focusCommentId)) return;
+
+    deepLinkHandledRef.current = true;
+    setActiveSection(null);
+    setShowComments(true);
+    setHighlightCommentId(focusCommentId);
+    // Let the pulse run, then clear so re-renders don't replay it.
+    setTimeout(() => setHighlightCommentId(null), 2800);
+  }, [focusCommentId, commentsLoading, comments]);
 
   const depthColor = (() => {
     const map: Record<string, string> = {
@@ -667,8 +669,6 @@ export default function WorkspaceReportScreen() {
     : (report?.reliabilityScore ?? 0) >= 6 ? COLORS.warning
     : COLORS.error;
 
-  // ── Sources: trust-score every citation, sort best-first (mirrors
-  //     research-report.tsx so both screens present sources identically) ──────
   const sortedCitations = (report?.citations ?? []).length
     ? [...(report!.citations as any[])]
         .map(c => ({ ...c, trustScore: c.trustScore ?? scoreSource(c.url ?? '', c.source) }))
@@ -686,12 +686,10 @@ export default function WorkspaceReportScreen() {
       ) / 10
     : null;
 
-  // ── Part 52: close section composer on demotion ─────────────────────────────
   useEffect(() => {
     if (!isEditor) setActiveSection(null);
   }, [isEditor]);
 
-  // ── AI summary ──────────────────────────────────────────────────────────────
   const handleGenerateSummary = async () => {
     if (!reportId || !workspaceId) return;
     setIsSummarizing(true);
@@ -703,7 +701,6 @@ export default function WorkspaceReportScreen() {
     setIsSummarizing(false);
   };
 
-  // ── Handlers ────────────────────────────────────────────────────────────────
   const handleSectionTap = (sectionId: string, sectionTitle: string) => {
     if (!isEditor) return;
     setActiveSection({ id: sectionId, title: sectionTitle });
@@ -736,10 +733,6 @@ export default function WorkspaceReportScreen() {
       year:  'numeric',
     });
 
-  // ── Theme-derived surfaces ───────────────────────────────────────────────────
-  // Every surface below now branches on `isLight` so text/icons drawn on top
-  // never lose contrast — no more dark-mode-only hex literals leaking into
-  // light theme (and vice versa).
   const bgGradient: readonly [string, string, string] = isLight
     ? ['#F5F6FB', '#FFFFFF', '#EEF0F8']
     : [COLORS.background, COLORS.backgroundCard, COLORS.backgroundElevated];
@@ -759,14 +752,8 @@ export default function WorkspaceReportScreen() {
   const elevatedBg = isLight ? 'rgba(0,0,0,0.03)' : COLORS.backgroundElevated;
   const subtleBg   = isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)';
 
-  // Viewer / editor role banners previously used a flat near-white card in
-  // light mode (fine) but leaned on COLORS.backgroundCard in dark mode, which
-  // in some palettes is nearly identical to the page background — replaced
-  // with a translucent tint of the banner's own accent color so it always
-  // separates from the surrounding surface in either theme.
   const viewerBannerBg = isLight ? '#FFFFFF' : 'rgba(255,255,255,0.04)';
 
-  // ── Stat tiles ───────────────────────────────────────────────────────────────
   const statTiles = report
     ? [
         { label: 'Sources',     value: String(report.sourcesCount),     icon: 'globe-outline' as const,            color: COLORS.info      },
@@ -775,8 +762,6 @@ export default function WorkspaceReportScreen() {
         { label: 'Comments',    value: String(totalComments),           icon: 'chatbubbles-outline' as const,      color: COLORS.secondary },
       ]
     : [];
-
-  // ─── Loading / error screens ─────────────────────────────────────────────────
 
   if (isLoadingReport) {
     return (
@@ -825,11 +810,6 @@ export default function WorkspaceReportScreen() {
     );
   }
 
-  // ─── Main render ─────────────────────────────────────────────────────────────
-
-  // Report Details sheet: clamp to whatever vertical space is actually
-  // available below the status bar / notch so it can never be pushed off
-  // the top of short devices. SHEET_MAX_H is a ceiling, not a fixed height.
   const detailsSheetHeight = Math.min(SHEET_MAX_H, SCREEN_H - insets.top - 24);
   const detailsScrollHeight = detailsSheetHeight - 90 - insets.bottom;
 
@@ -843,7 +823,6 @@ export default function WorkspaceReportScreen() {
             colors={headerGradient}
             style={{ borderBottomWidth: 1, borderBottomColor: COLORS.border }}
           >
-            {/* Row 1 — back button / tappable title */}
             <View style={{
               flexDirection:     'row',
               alignItems:        'flex-start',
@@ -871,7 +850,6 @@ export default function WorkspaceReportScreen() {
                 <Ionicons name="arrow-back" size={19} color={COLORS.textSecondary} />
               </Pressable>
 
-              {/* Title tap → report details sheet */}
               <Pressable
                 onPress={() => setShowReportDetails(true)}
                 style={{
@@ -883,7 +861,9 @@ export default function WorkspaceReportScreen() {
                 }}
                 hitSlop={{ top: 6, bottom: 6 }}
               >
+                {/* Part 58.1 — full title shown (no truncation) */}
                 <Text
+                  numberOfLines={1}
                   style={{
                     color:         COLORS.textPrimary,
                     fontSize:      FONTS.sizes.base,
@@ -891,8 +871,6 @@ export default function WorkspaceReportScreen() {
                     flex:          1,
                     letterSpacing: -0.2,
                   }}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
                 >
                   {report.title}
                 </Text>
@@ -910,7 +888,6 @@ export default function WorkspaceReportScreen() {
               </Pressable>
             </View>
 
-            {/* Row 2 — depth / date / action buttons */}
             <View style={{
               flexDirection:     'row',
               alignItems:        'center',
@@ -918,7 +895,6 @@ export default function WorkspaceReportScreen() {
               paddingBottom:     SPACING.sm,
               gap:               SPACING.sm,
             }}>
-              {/* Depth pill */}
               <View style={{
                 flexDirection:     'row',
                 alignItems:        'center',
@@ -956,7 +932,6 @@ export default function WorkspaceReportScreen() {
 
               <View style={{ flex: 1 }} />
 
-              {/* Scrollable action row */}
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -968,12 +943,10 @@ export default function WorkspaceReportScreen() {
                 }}
                 style={{ flexShrink: 0, maxWidth: SCREEN_W - 200 }}
               >
-                {/* Download — available to ALL members */}
                 <ActionBtn
                   icon="download-outline"
                   onPress={() => setShowExportSheet(true)}
                 />
-                {/* Comments toggle — count lives on the segmented tab, not here */}
                 <ActionBtn
                   icon={showComments ? 'chatbubbles' : 'chatbubbles-outline'}
                   onPress={showComments ? () => setShowComments(false) : handleOpenComments}
@@ -984,7 +957,6 @@ export default function WorkspaceReportScreen() {
           </LinearGradient>
         </View>
 
-        {/* ── Viewer banner (hides instantly on promotion) ── */}
         {isViewer && (
           <Animated.View
             entering={FadeIn.duration(300)}
@@ -1032,7 +1004,6 @@ export default function WorkspaceReportScreen() {
           </Animated.View>
         )}
 
-        {/* ── Editor confirmation banner (appears instantly on promotion) ── */}
         {isEditor && (
           <Animated.View
             entering={FadeIn.duration(300)}
@@ -1055,7 +1026,6 @@ export default function WorkspaceReportScreen() {
           </Animated.View>
         )}
 
-        {/* ── Presence bar ── */}
         {othersOnline.length > 0 && (
           <Animated.View
             entering={FadeIn.duration(400)}
@@ -1065,7 +1035,6 @@ export default function WorkspaceReportScreen() {
           </Animated.View>
         )}
 
-        {/* ── Segmented tabs ── */}
         <View style={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm }}>
           <SegmentedTabs
             tabs={[
@@ -1078,7 +1047,6 @@ export default function WorkspaceReportScreen() {
           />
         </View>
 
-        {/* ── Scrollable body ── */}
         <ScrollView
           style={{ flex: 1 }}
           contentContainerStyle={{
@@ -1089,7 +1057,6 @@ export default function WorkspaceReportScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* ── Stat tiles (shown on all tabs) ── */}
           {report.reliabilityScore > 0 && (
             <Animated.View
               entering={FadeInDown.duration(400)}
@@ -1141,12 +1108,8 @@ export default function WorkspaceReportScreen() {
             </Animated.View>
           )}
 
-          {/* ════════════════════════════════════════
-              REPORT TAB
-          ════════════════════════════════════════ */}
           {activeTab === 'report' && (
             <>
-              {/* Executive Summary */}
               <Animated.View entering={FadeInDown.duration(400).delay(50)}>
                 <View style={{
                   borderRadius: RADIUS.xl,
@@ -1181,7 +1144,6 @@ export default function WorkspaceReportScreen() {
                 </View>
               </Animated.View>
 
-              {/* Sections */}
               {report.sections.map((section, idx) => {
                 const cnt = sectionCounts[section.id] ?? 0;
                 return (
@@ -1197,7 +1159,6 @@ export default function WorkspaceReportScreen() {
                       borderColor:  cnt > 0 ? `${COLORS.primary}30` : COLORS.border,
                     }}>
                       <LinearGradient colors={cardBg} style={{ padding: SPACING.md }}>
-                        {/* Section header — tap to open section comments (editor only) */}
                         <TouchableOpacity
                           onPress={() => handleSectionTap(section.id, section.title)}
                           activeOpacity={isEditor ? 0.7 : 1}
@@ -1244,12 +1205,10 @@ export default function WorkspaceReportScreen() {
                           </View>
                         </TouchableOpacity>
 
-                        {/* Section body */}
                         <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22 }}>
                           {section.content}
                         </Text>
 
-                        {/* Bullets */}
                         {((section as any).bullets ?? []).length > 0 && (
                           <View style={{ marginTop: SPACING.sm, gap: 6 }}>
                             {((section as any).bullets as string[]).map((b: string, bi: number) => (
@@ -1280,7 +1239,6 @@ export default function WorkspaceReportScreen() {
                 );
               })}
 
-              {/* Editor CTA card */}
               {isEditor && (
                 <Animated.View entering={FadeInDown.duration(400)}>
                   <Pressable
@@ -1332,12 +1290,8 @@ export default function WorkspaceReportScreen() {
             </>
           )}
 
-          {/* ════════════════════════════════════════
-              FINDINGS TAB
-          ════════════════════════════════════════ */}
           {activeTab === 'findings' && (
             <>
-              {/* Key findings */}
               {report.keyFindings.length > 0 && (
                 <>
                   <Text style={sectionLabel()}>Key Findings</Text>
@@ -1394,7 +1348,6 @@ export default function WorkspaceReportScreen() {
                 </>
               )}
 
-              {/* Future predictions */}
               {report.futurePredictions.length > 0 && (
                 <>
                   <Text style={[sectionLabel(), { marginTop: SPACING.lg }]}>Future Predictions</Text>
@@ -1433,7 +1386,6 @@ export default function WorkspaceReportScreen() {
                 </>
               )}
 
-              {/* Key statistics */}
               {(report.statistics?.length ?? 0) > 0 && (
                 <>
                   <Text style={[sectionLabel(), { marginTop: SPACING.lg }]}>Key Statistics</Text>
@@ -1473,7 +1425,6 @@ export default function WorkspaceReportScreen() {
                 </>
               )}
 
-              {/* Empty state */}
               {report.keyFindings.length === 0 && report.futurePredictions.length === 0 && (
                 <View style={{ alignItems: 'center', paddingTop: 60, gap: 10 }}>
                   <Ionicons name="analytics-outline" size={40} color={COLORS.textMuted} />
@@ -1488,10 +1439,6 @@ export default function WorkspaceReportScreen() {
             </>
           )}
 
-          {/* ════════════════════════════════════════
-              SOURCES TAB — ranked, trust-scored citations
-              (mirrors research-report.tsx's Sources tab)
-          ════════════════════════════════════════ */}
           {activeTab === 'sources' && (
             <>
               {sortedCitations.length > 0 ? (
@@ -1658,7 +1605,6 @@ export default function WorkspaceReportScreen() {
           )}
         </ScrollView>
 
-        {/* ── FAB — editor only; appears / disappears live with role ── */}
         {isEditor && (
           <Animated.View
             entering={FadeIn.duration(300)}
@@ -1693,7 +1639,7 @@ export default function WorkspaceReportScreen() {
         )}
       </SafeAreaView>
 
-      {/* ══ Comments Bottom Sheet (section-specific composer) ══ */}
+      {/* ══ Comments Bottom Sheet — Part 58.1: 80% height, smooth easing ══ */}
       <Modal
         visible={showComments}
         transparent
@@ -1710,8 +1656,8 @@ export default function WorkspaceReportScreen() {
         />
 
         <Animated.View
-          entering={SlideInUp.duration(320)}
-          exiting={SlideOutDown.duration(260)}
+          entering={SlideInUp.duration(360).easing(Easing.out(Easing.cubic))}
+          exiting={SlideOutDown.duration(240).easing(Easing.in(Easing.quad))}
           style={{
             position:             'absolute',
             left:                 0,
@@ -1727,12 +1673,10 @@ export default function WorkspaceReportScreen() {
             ...SHADOWS.large,
           }}
         >
-          {/* Handle */}
           <View style={{ alignItems: 'center', paddingTop: 10, paddingBottom: 4 }}>
             <View style={{ width: 38, height: 4, borderRadius: 2, backgroundColor: COLORS.border }} />
           </View>
 
-          {/* Sheet header */}
           <View style={{
             flexDirection:     'row',
             alignItems:        'flex-start',
@@ -1818,7 +1762,6 @@ export default function WorkspaceReportScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Comments list */}
           <ScrollView
             style={{ flex: 1 }}
             contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 20 }}
@@ -1870,15 +1813,14 @@ export default function WorkspaceReportScreen() {
                   reactions={getReactions(comment.id)}
                   onToggleReaction={(cid, emoji) => toggleReaction(cid, emoji)}
                   onReply={postReply}
-                  onResolve={toggleResolve}
                   onDeleteComment={removeComment}
                   onDeleteReply={removeReply}
+                  highlighted={highlightCommentId === comment.id}
                 />
               ))
             )}
           </ScrollView>
 
-          {/* ─── FIX: onClearSection is () => void — pass a real function ─── */}
           {isEditor && (
             <CommentInput
               sectionTitle={activeSection?.title}
@@ -1890,7 +1832,6 @@ export default function WorkspaceReportScreen() {
         </Animated.View>
       </Modal>
 
-      {/* ══ Export Sheet ══ */}
       {report && (
         <ExportSheet
           visible={showExportSheet}
@@ -1901,7 +1842,6 @@ export default function WorkspaceReportScreen() {
         />
       )}
 
-      {/* ══ Report Details Sheet ══ */}
       <Modal
         visible={showReportDetails}
         transparent
@@ -1916,8 +1856,6 @@ export default function WorkspaceReportScreen() {
           }}
           onPress={() => setShowReportDetails(false)}
         >
-          {/* height is clamped (detailsSheetHeight) so the sheet can never
-              extend above the safe area / off the top of short screens */}
           <Pressable onPress={e => e.stopPropagation()} style={{ height: detailsSheetHeight }}>
             <View style={{
               flex:                 1,
@@ -1929,7 +1867,6 @@ export default function WorkspaceReportScreen() {
             }}>
               <LinearGradient colors={sheetBg} style={{ flex: 1, paddingTop: SPACING.sm }}>
 
-                {/* Drag handle */}
                 <View style={{
                   width:           42,
                   height:          4,
@@ -1939,7 +1876,6 @@ export default function WorkspaceReportScreen() {
                   marginBottom:    SPACING.sm,
                 }} />
 
-                {/* Sheet header */}
                 <View style={{
                   flexDirection:     'row',
                   alignItems:        'center',
@@ -1990,9 +1926,6 @@ export default function WorkspaceReportScreen() {
                   </Pressable>
                 </View>
 
-                {/* Scrollable detail content — height derived from the
-                    clamped sheet height so content + scrollbar never push
-                    past the bottom of the screen either */}
                 <View style={{ flex: 1, height: detailsScrollHeight }}>
                   <ScrollView
                     showsVerticalScrollIndicator={false}
@@ -2014,7 +1947,6 @@ export default function WorkspaceReportScreen() {
                     onContentSizeChange={(_, h) => setContentH(h)}
                     onLayout={e => setScrollerH(e.nativeEvent.layout.height)}
                   >
-                    {/* Full title */}
                     <View style={detailCard(`${COLORS.primary}30`, isLight)}>
                       <Text style={detailLabel()}>Full Title</Text>
                       <Text style={{
@@ -2027,7 +1959,6 @@ export default function WorkspaceReportScreen() {
                       </Text>
                     </View>
 
-                    {/* Original query */}
                     <View style={detailCard(COLORS.border, isLight)}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                         <Ionicons name="search-outline" size={13} color={COLORS.primary} />
@@ -2043,7 +1974,6 @@ export default function WorkspaceReportScreen() {
                       </Text>
                     </View>
 
-                    {/* 3-up stat row */}
                     <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
                       {[
                         {
@@ -2110,7 +2040,6 @@ export default function WorkspaceReportScreen() {
                       ))}
                     </View>
 
-                    {/* Role card */}
                     <View style={detailCard(COLORS.border, isLight)}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                         <Ionicons
@@ -2140,7 +2069,6 @@ export default function WorkspaceReportScreen() {
                       </Text>
                     </View>
 
-                    {/* Metadata list */}
                     <View style={{ ...detailCard(COLORS.border, isLight), gap: 8 }}>
                       {[
                         {
@@ -2191,7 +2119,6 @@ export default function WorkspaceReportScreen() {
                       ))}
                     </View>
 
-                    {/* 3-up status indicators */}
                     <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
                       {[
                         {
@@ -2250,7 +2177,6 @@ export default function WorkspaceReportScreen() {
                     </View>
                   </ScrollView>
 
-                  {/* Custom scrollbar thumb */}
                   {contentH > scrollerH && (
                     <View
                       pointerEvents="none"
@@ -2294,7 +2220,6 @@ export default function WorkspaceReportScreen() {
         </Pressable>
       </Modal>
 
-      {/* ══ Viewer access request modal ══ */}
       <EditAccessRequestModal
         mode="viewer"
         visible={showRequestModal}
@@ -2343,7 +2268,7 @@ function detailLabel() {
   };
 }
 
-// ─── Static styles (geometry only — no hardcoded colors) ─────────────────────
+// ─── Static styles (geometry only) ───────────────────────────────────────────
 
 const styles = StyleSheet.create({
   centered: {

@@ -1,24 +1,25 @@
 // app/(app)/workspace-detail.tsx
 // Part 46 / 50.5 / 50.9 / 51 — see prior history.
-// Part 51 REVISION — Shared content loads only when the Shared tab is opened.
-// Part 52 — Feature 1 (realtime delete + settings).
-// Part 52.2 — Activity Feed v2 wiring: the Activity tab passes navigation
-//   callbacks to ActivityItem so actor/target NAMES open member profiles and
-//   report / shared-content TITLES open the resource.
-// Part 52.3B — Activity tab refinements:
-//   • Removed the dead `logSharedContentAdded` import (share logging is owned
-//     by DB triggers since 52.2; the symbol was imported but never used).
-//   • `resourceRemoved` is now TYPE-AWARE: it keys the removed-set by
-//     `${kind}:${resourceId}` built from *_unshared entries, and a *_shared
-//     entry is considered removed only when ITS OWN kind+id matches.
+// Part 52 / 52.2 / 52.3B — activity feed wiring (see prior history).
+// Part 55 — full theme system.
 //
-// Part 55 THEME UPDATE — All COLORS.* references removed from StyleSheet.create
-//   and module-level objects and moved to inline styles so they read from the
-//   live mutated COLORS singleton on every render. useTheme() is consumed at the
-//   top of the screen and in every sub-component (StatChip) so the entire tree
-//   re-renders whenever the palette changes. Hardcoded '#6C63FF' gradient colors
-//   in ContentSectionHeader kept intentionally as brand accent decoupled from
-//   the theme (consistent with WorkspaceCard ACCENT_GRADIENTS).
+// Part 58.1 CHANGES:
+//   • TS PROP FIX — the Shared*Card components were simplified in Part 55.5–55.9
+//     and no longer accept the old export/copy/share props. Removed the now-invalid
+//     props that caused TS errors:
+//       SharedPodcastCard:      dropped onDownloadMP3 / onExportPDF / onCopyScript
+//       SharedDebateCard:       dropped onExportPDF / onCopyText / onShareText
+//       SharedVoiceDebateCard:  dropped onCopyText
+//     (Each card keeps only the props it actually declares.)
+//   • MEMBER PROFILE NAVIGATION — MemberProfileCard now receives
+//     onNavigateToSharedContent, which opens the tapped shared item directly in
+//     its viewer (presentation/paper → shared-viewer, podcast → podcast player,
+//     debate → debate viewer, voice debate → voice player). Comment deep-links
+//     pass focusCommentId so the report opens straight to the comment.
+//   • The unused podcast/debate/voice export handlers were removed along with
+//     their now-dead imports.
+//   • FIX: Voice debate navigation from member profile now properly loads the
+//     shared voice debate data before navigating, with robust fallback logic.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -55,15 +56,7 @@ import { SharedPodcastCard }         from '../../src/components/workspace/Shared
 import { SharedDebateCard }          from '../../src/components/workspace/SharedDebateCard';
 import { SharedVoiceDebateCard }     from '../../src/components/workspace/SharedVoiceDebateCard';
 import { logPinToggled, logMemberLeft, resolveActorName } from '../../src/services/activityService';
-import {
-  exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
-} from '../../src/services/podcastExport';
-import { sharedPodcastToPodcast }    from '../../src/services/podcastSharingService';
-import {
-  exportDebateAsPDF, copyDebateSummary, shareDebateText,
-} from '../../src/services/debateExport';
-import { sharedDebateToSession }     from '../../src/services/debateSharingService';
-import { VOICE_PERSONAS }            from '../../src/constants/voiceDebate';
+import type { MemberSharedContentItem } from '../../src/services/memberProfileService';
 import {
   WorkspaceReport, MiniProfile, SharedWorkspaceContent,
   SharedPodcast, SharedDebate, ActivityResourceKind, WorkspaceActivityAction,
@@ -85,7 +78,6 @@ const TABS: { id: TabId; label: string; icon: keyof typeof Ionicons.glyphMap }[]
 
 const SCROLL_REVEAL_THRESHOLD = 360;
 
-// Part 52.3B — map a share/unshare action to its content "kind"
 function shareKindOf(action: WorkspaceActivityAction): ActivityResourceKind | null {
   switch (action) {
     case 'presentation_shared':
@@ -109,20 +101,7 @@ function formatJoined(raw: string | undefined | null): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-async function copyVoiceDebateTranscript(item: SharedVoiceDebate): Promise<void> {
-  const turns = item.script?.turns ?? [];
-  const text = turns.map((t: any) => {
-    const key = (t.speaker ?? 'moderator') as keyof typeof VOICE_PERSONAS;
-    const persona = VOICE_PERSONAS[key] ?? VOICE_PERSONAS['moderator'];
-    return `[${persona.displayName}]\n${t.text}`;
-  }).join('\n\n');
-  const { setString } = await import('expo-clipboard');
-  await setString(`Voice Debate: ${item.topic}\n\n${text}`);
-}
-
 export default function WorkspaceDetailScreen() {
-  // Version token — re-renders this screen (and all inline COLORS.* reads)
-  // whenever the active theme changes.
   useTheme();
 
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -150,7 +129,6 @@ export default function WorkspaceDetailScreen() {
 
   const [activeTab,     setActiveTab]     = useState<TabId>('feed');
 
-  // One-way latch — Shared content fetches only after first open
   const [sharedTabActivated, setSharedTabActivated] = useState(false);
   useEffect(() => {
     if (activeTab === 'shared') setSharedTabActivated(true);
@@ -182,7 +160,6 @@ export default function WorkspaceDetailScreen() {
 
   const existingReportIds = reports.map(r => r.reportId);
 
-  // Part 52: exit on remove/block OR workspace deletion
   const exitedRef = useRef(false);
   useEffect(() => {
     if ((isSelfRemoved || isDeleted) && !exitedRef.current) {
@@ -219,7 +196,6 @@ export default function WorkspaceDetailScreen() {
     }
   };
 
-  // ── Feature 4: remove a shared report ──────────────────────────────────
   const handleRemoveReport = useCallback(async (reportId: string) => {
     const { error } = await removeReport(reportId);
     if (error) Alert.alert('Error', error);
@@ -228,6 +204,14 @@ export default function WorkspaceDetailScreen() {
   // ── Navigation ─────────────────────────────────────────────────────────
   const openReport = useCallback((reportId: string) => {
     router.push({ pathname: '/(app)/workspace-report' as any, params: { reportId, workspaceId: id, userRole: userRole ?? 'viewer' } });
+  }, [id, userRole]);
+
+  // Part 58.1 — open a report straight to a specific comment (deep-link).
+  const openReportComment = useCallback((reportId: string, commentId: string) => {
+    router.push({
+      pathname: '/(app)/workspace-report' as any,
+      params: { reportId, workspaceId: id, userRole: userRole ?? 'viewer', focusCommentId: commentId },
+    });
   }, [id, userRole]);
 
   const openChat = useCallback(() => {
@@ -241,7 +225,6 @@ export default function WorkspaceDetailScreen() {
     setShowProfile(true);
   }, []);
 
-  // Part 52.2: Activity feed navigation handlers
   const handleOpenActivityMember = useCallback((userId: string, fallback?: MiniProfile) => {
     const fromMembers = members.find(m => m.userId === userId)?.profile;
     const profile: MiniProfile =
@@ -298,6 +281,133 @@ export default function WorkspaceDetailScreen() {
     }
   }, [id, openReport, podcastSharing, debateSharing, voiceDebateSharing]);
 
+  // ── Part 58.1: Member profile shared content navigation ────────────────
+  // Opens a shared item from the member profile directly in its viewer.
+  // For podcast/debate/voice debate, the member item carries the canonical
+  // content id (podcast_id/debate_id/voice_debate_id); the viewers expect the
+  // shared-row id, so we resolve it (loading the list if needed).
+  // FIX: Voice debate navigation now properly awaits load and uses robust
+  // fallback logic to ensure the shared row is found before navigating.
+  const handleNavigateToSharedContent = useCallback(async (item: MemberSharedContentItem) => {
+    if (!id) return;
+    
+    switch (item.contentType) {
+      case 'presentation':
+      case 'academic_paper':
+        router.push({
+          pathname: '/(app)/workspace-shared-viewer' as any,
+          params: { 
+            contentType: item.contentType, 
+            contentId: item.contentId, 
+            workspaceId: id, 
+            sharerName: '', 
+            sharedAt: '' 
+          },
+        });
+        break;
+
+      case 'podcast': {
+        let row = podcastSharing.podcasts.find(p => p.podcastId === item.contentId);
+        if (!row) { 
+          await podcastSharing.load(); 
+          row = podcastSharing.podcasts.find(p => p.podcastId === item.contentId); 
+        }
+        if (row) {
+          router.push({ 
+            pathname: '/(app)/workspace-shared-podcast-player' as any, 
+            params: { 
+              workspaceId: id, 
+              sharedId: row.id, 
+              contentTitle: row.title ?? item.title 
+            } 
+          });
+        } else { 
+          setActiveTab('shared'); 
+          setActiveFilter('podcast'); 
+        }
+        break;
+      }
+
+      case 'debate': {
+        let row = debateSharing.debates.find(d => d.debateId === item.contentId);
+        if (!row) { 
+          await debateSharing.load(); 
+          row = debateSharing.debates.find(d => d.debateId === item.contentId); 
+        }
+        if (row) {
+          router.push({ 
+            pathname: '/(app)/workspace-shared-debate' as any, 
+            params: { 
+              workspaceId: id, 
+              sharedId: row.id, 
+              contentTitle: row.topic ?? item.title 
+            } 
+          });
+        } else { 
+          setActiveTab('shared'); 
+          setActiveFilter('debate'); 
+        }
+        break;
+      }
+
+      case 'voice_debate': {
+        // FIX: Ensure voice debate data is loaded before navigating
+        let row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === item.contentId);
+        
+        // If not found, load the data first
+        if (!row) { 
+          await voiceDebateSharing.load(); 
+          // Try to find the row again after loading
+          row = voiceDebateSharing.voiceDebates.find(vd => vd.voiceDebateId === item.contentId); 
+        }
+        
+        if (row) {
+          // Navigate to the voice debate player with the shared row ID
+          router.push({ 
+            pathname: '/(app)/workspace-shared-voice-debate-player' as any, 
+            params: { 
+              workspaceId: id, 
+              sharedId: row.id, 
+              contentTitle: row.topic ?? item.title 
+            } 
+          });
+        } else {
+          // Fallback: try to find by matching the content ID to any voice debate ID
+          // This handles cases where the item.contentId might be the voice_debate_id
+          // but the shared row hasn't been loaded yet
+          const fallbackRow = voiceDebateSharing.voiceDebates.find(
+            vd => vd.voiceDebateId === item.contentId || vd.id === item.contentId
+          );
+          
+          if (fallbackRow) {
+            router.push({ 
+              pathname: '/(app)/workspace-shared-voice-debate-player' as any, 
+              params: { 
+                workspaceId: id, 
+                sharedId: fallbackRow.id, 
+                contentTitle: fallbackRow.topic ?? item.title 
+              } 
+            });
+          } else {
+            // If still not found, switch to the Shared tab and filter by voice debates
+            setActiveTab('shared'); 
+            setActiveFilter('voice_debate');
+            // Show a brief message to the user
+            Alert.alert(
+              'Voice Debate Not Found',
+              'The voice debate may have been removed from this workspace.',
+              [{ text: 'OK', style: 'cancel' }]
+            );
+          }
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }, [id, podcastSharing, debateSharing, voiceDebateSharing]);
+
   const handleOpenSharedContent = useCallback((item: SharedWorkspaceContent) => {
     router.push({ pathname: '/(app)/workspace-shared-viewer' as any, params: { contentType: item.contentType, contentId: item.contentId, workspaceId: item.workspaceId, sharerName: item.sharerName ?? '', sharedAt: item.sharedAt ?? '' } });
   }, []);
@@ -351,17 +461,6 @@ export default function WorkspaceDetailScreen() {
     if (error) Alert.alert('Error', error);
   }, [voiceDebateSharing]);
 
-  // ── Podcast export ─────────────────────────────────────────────────────
-  const handleDownloadPodcastMP3  = useCallback(async (p: SharedPodcast) => { try { await exportPodcastAsMP3(sharedPodcastToPodcast(p)); } catch (e) { Alert.alert('Export Error', e instanceof Error ? e.message : 'Failed'); } }, []);
-  const handleExportPodcastPDF    = useCallback(async (p: SharedPodcast) => { try { await exportPodcastAsPDF(sharedPodcastToPodcast(p)); } catch (e) { Alert.alert('Export Error', e instanceof Error ? e.message : 'Failed'); } }, []);
-  const handleCopyPodcastScript   = useCallback(async (p: SharedPodcast) => { try { await copyPodcastScriptToClipboard(sharedPodcastToPodcast(p)); } catch { Alert.alert('Error', 'Failed to copy script'); } }, []);
-
-  // ── Debate export ──────────────────────────────────────────────────────
-  const handleExportDebatePDF     = useCallback(async (d: SharedDebate) => { try { await exportDebateAsPDF(sharedDebateToSession(d)); } catch (e) { Alert.alert('Export Error', e instanceof Error ? e.message : 'Failed'); } }, []);
-  const handleCopyDebateText      = useCallback(async (d: SharedDebate) => { try { await copyDebateSummary(sharedDebateToSession(d)); } catch { Alert.alert('Error', 'Failed to copy'); } }, []);
-  const handleShareDebateText     = useCallback(async (d: SharedDebate) => { try { await shareDebateText(sharedDebateToSession(d)); } catch {} }, []);
-  const handleCopyVoiceDebateText = useCallback(async (svd: SharedVoiceDebate) => { try { await copyVoiceDebateTranscript(svd); } catch { Alert.alert('Error', 'Failed to copy transcript'); } }, []);
-
   // ── Leave workspace ────────────────────────────────────────────────────
   const handleLeave = () => {
     Alert.alert('Leave Workspace', 'Are you sure you want to leave?', [
@@ -393,13 +492,11 @@ export default function WorkspaceDetailScreen() {
     if (error) Alert.alert('Error', error);
   };
 
-  // ── Sort feed: pinned first ────────────────────────────────────────────
   const sortedReports: WorkspaceReport[] = [
     ...reports.filter(r => pinnedIds.has(r.reportId)).map(r => ({ ...r, isPinned: true  })),
     ...reports.filter(r => !pinnedIds.has(r.reportId)).map(r => ({ ...r, isPinned: false })),
   ];
 
-  // ── Shared content counts ──────────────────────────────────────────────
   const presentationCount  = sharing.presentations.length;
   const paperCount         = sharing.papers.length;
   const podcastCount       = podcastSharing.podcasts.length;
@@ -417,7 +514,6 @@ export default function WorkspaceDetailScreen() {
   const showDebates       = activeFilter === 'all' || activeFilter === 'debate';
   const showVoiceDebates  = activeFilter === 'all' || activeFilter === 'voice_debate';
 
-  // ── Lazy-reveal windows ────────────────────────────────────────────────
   const feedReveal  = useLazyReveal(sortedReports.length,                  { initial: 6, step: 6 });
   const presReveal  = useLazyReveal(sharing.presentations.length,          { initial: 5, step: 5 });
   const paperReveal = useLazyReveal(sharing.papers.length,                 { initial: 5, step: 5 });
@@ -431,7 +527,6 @@ export default function WorkspaceDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, activeFilter]);
 
-  // ── Scroll-near-bottom handler ─────────────────────────────────────────
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
     const distanceToBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
@@ -889,7 +984,7 @@ export default function WorkspaceDetailScreen() {
                     <Animated.View entering={FadeInDown.duration(400).delay(180)}>
                       <ContentSectionHeader label="Podcast Episodes" count={podcastSharing.podcasts.length}        colors={['#FF6584','#FF8FA3']} badgeColor="#FF6584" />
                       {podcastSharing.podcasts.slice(0, podReveal.visible).map((podcast, i) => (
-                        <SharedPodcastCard key={podcast.id} item={podcast} index={i} userRole={userRole} onPlay={handleOpenSharedPodcast} onRemove={handleRemoveSharedPodcast} onDownloadMP3={handleDownloadPodcastMP3} onExportPDF={handleExportPodcastPDF} onCopyScript={handleCopyPodcastScript} />
+                        <SharedPodcastCard key={podcast.id} item={podcast} index={i} userRole={userRole} onPlay={handleOpenSharedPodcast} onRemove={handleRemoveSharedPodcast} />
                       ))}
                       {podReveal.hasMore && <SectionMoreHint />}
                     </Animated.View>
@@ -898,7 +993,7 @@ export default function WorkspaceDetailScreen() {
                     <Animated.View entering={FadeInDown.duration(400).delay(220)}>
                       <ContentSectionHeader label="AI Debates"       count={debateSharing.debates.length}          colors={['#6C63FF','#9B59FF']} badgeColor={COLORS.primary} />
                       {debateSharing.debates.slice(0, debReveal.visible).map((debate, i) => (
-                        <SharedDebateCard key={debate.id} item={debate} index={i} userRole={userRole} onView={handleOpenSharedDebate} onRemove={handleRemoveSharedDebate} onExportPDF={handleExportDebatePDF} onCopyText={handleCopyDebateText} onShareText={handleShareDebateText} />
+                        <SharedDebateCard key={debate.id} item={debate} index={i} userRole={userRole} onView={handleOpenSharedDebate} onRemove={handleRemoveSharedDebate} />
                       ))}
                       {debReveal.hasMore && <SectionMoreHint />}
                     </Animated.View>
@@ -907,7 +1002,7 @@ export default function WorkspaceDetailScreen() {
                     <Animated.View entering={FadeInDown.duration(400).delay(260)}>
                       <ContentSectionHeader label="Voice Debates"    count={voiceDebateSharing.voiceDebates.length} colors={['#8B5CF6','#A78BFA']} badgeColor="#8B5CF6" />
                       {voiceDebateSharing.voiceDebates.slice(0, vdReveal.visible).map((svd, i) => (
-                        <SharedVoiceDebateCard key={svd.id} item={svd} index={i} userRole={userRole} onPlay={handleOpenSharedVoiceDebate} onRemove={handleRemoveSharedVoiceDebate} onCopyText={handleCopyVoiceDebateText} />
+                        <SharedVoiceDebateCard key={svd.id} item={svd} index={i} userRole={userRole} onPlay={handleOpenSharedVoiceDebate} onRemove={handleRemoveSharedVoiceDebate} />
                       ))}
                       {vdReveal.hasMore && <SectionMoreHint />}
                     </Animated.View>
@@ -960,7 +1055,6 @@ export default function WorkspaceDetailScreen() {
             ) : (
               <View style={styles.activityList}>
                 {(() => {
-                  // Part 52.3B — TYPE-AWARE removed-set
                   const removedKeys = new Set<string>();
                   for (const a of activities) {
                     if (typeof a.action === 'string' && a.action.endsWith('_unshared') && a.resourceId) {
@@ -1150,7 +1244,8 @@ export default function WorkspaceDetailScreen() {
             workspaceId={id}
             onClose={() => { setShowProfile(false); setProfileMember(null); }}
             onNavigateToReport={openReport}
-            onNavigateToComment={(reportId) => openReport(reportId)}
+            onNavigateToComment={openReportComment}
+            onNavigateToSharedContent={handleNavigateToSharedContent}
           />
         )}
         <EditAccessRequestModal
@@ -1183,7 +1278,6 @@ function ContentSectionHeader({
 }: {
   label: string; count: number; colors: [string, string]; badgeColor?: string;
 }) {
-  // Read COLORS.primary fresh at render time (not frozen at module load).
   const bc = badgeColor ?? COLORS.primary;
   return (
     <View style={styles.contentSectionHeader}>
@@ -1207,8 +1301,6 @@ function StatChip({
 }: {
   icon: keyof typeof Ionicons.glyphMap; value: number; label: string;
 }) {
-  // useTheme() here ensures StatChip re-renders when the theme changes, so the
-  // inline COLORS.* reads below pick up the new palette.
   useTheme();
   return (
     <View style={[styles.statChip, { backgroundColor: `${COLORS.primary}12` }]}>
@@ -1220,8 +1312,6 @@ function StatChip({
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-// Only layout / geometry / theme-independent values live here.
-// Every COLORS.* read has been lifted to inline styles in each render function.
 
 const styles = StyleSheet.create({
   centered:    { flex: 1, alignItems: 'center', justifyContent: 'center', padding: SPACING.xl },

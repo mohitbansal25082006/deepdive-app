@@ -1,28 +1,15 @@
 // src/hooks/useReportComments.ts
-// Part 46 UPDATE — Two fixes:
-//
-// FIX 1 — "Unknown" author on the sender's own screen:
-//   Previously addComment / addReply returned the raw DB row without author,
-//   so the sender saw "Unknown" until they refreshed. Now commentService.ts
-//   fetches the current user's profile and attaches it. This hook just
-//   uses the returned data directly — no change needed in postComment/postReply.
-//
-// FIX 2 — "Unknown" author for other users receiving via realtime:
-//   subscribeToComments in commentService.ts (Part 46) now awaits fetchProfile()
-//   before calling onInsert/onReplyInsert. So incoming comments already have
-//   author attached. This hook no longer needs to skip self-comments because
-//   the profile is now correctly attached for all senders.
-//
-// FIX 3 — Reply activity logging:
-//   postReply now calls logCommentReplied so the Activity tab shows replies.
-//
-// All Part 11/12 comment state, section counts, and filtering is preserved.
+// Part 58.1 — Resolve/unresolve removed.
+//   • toggleResolve and all is_resolved handling stripped from the hook.
+//   • Realtime onUpdate now only reconciles content edits (no resolve state).
+//   • Everything else (optimistic post/reply/delete, dedupe, section counts,
+//     reply activity logging) preserved from Part 46.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ReportComment, CommentReply, CommentState } from '../types';
 import {
   fetchComments, fetchSectionCommentCounts,
-  addComment, addReply, toggleCommentResolved,
+  addComment, addReply,
   deleteComment, deleteReply, subscribeToComments,
 } from '../services/commentService';
 import { logCommentReplied } from '../services/activityService';
@@ -65,15 +52,8 @@ export function useReportComments(
     load();
 
     unsubRef.current = subscribeToComments(reportId, workspaceId, {
-      // Part 46 FIX: commentService now fetches the author profile before
-      // calling onInsert, so incoming.author is always populated.
-      // We no longer skip self-comments here — we rely on optimistic state
-      // from postComment for the sender's own view, and let the realtime
-      // event carry the correct author for everyone else.
-      // Deduplication: check by id to avoid double-adding own comment.
       onInsert: (incoming) => {
         setState(s => {
-          // Deduplicate: if we already have this comment (from optimistic insert), skip
           if (s.comments.some(c => c.id === incoming.id)) return s;
           return {
             ...s,
@@ -112,7 +92,6 @@ export function useReportComments(
 
       onReplyInsert: (reply) => {
         setState(s => {
-          // Deduplicate: skip if reply already exists (from optimistic insert)
           const parentComment = s.comments.find(c => c.id === reply.commentId);
           if (!parentComment) return s;
           if ((parentComment.replies ?? []).some(r => r.id === reply.id)) return s;
@@ -148,13 +127,10 @@ export function useReportComments(
 
     setState(s => {
       if (!data) return { ...s, isSending: false, error };
-
-      // Deduplicate: realtime may fire before this setState resolves
       const alreadyExists = s.comments.some(c => c.id === data.id);
       return {
         ...s,
         isSending: false,
-        // Part 46: data now includes author profile from commentService fix
         comments: alreadyExists ? s.comments : [...s.comments, data],
         sectionCounts: data.sectionId ? {
           ...s.sectionCounts,
@@ -178,15 +154,12 @@ export function useReportComments(
 
     setState(s => {
       if (!data) return { ...s, isReplying: false, error };
-
-      // Deduplicate: realtime may already have added this reply
       const parentComment = s.comments.find(c => c.id === commentId);
       const alreadyExists = (parentComment?.replies ?? []).some(r => r.id === data.id);
 
       return {
         ...s,
         isReplying: false,
-        // Part 46: data now includes author profile from commentService fix
         comments: alreadyExists
           ? s.comments
           : s.comments.map(c =>
@@ -198,7 +171,6 @@ export function useReportComments(
       };
     });
 
-    // Part 46: Log reply activity so it appears in the Activity tab
     if (data && workspaceId) {
       logCommentReplied({
         workspaceId,
@@ -207,18 +179,6 @@ export function useReportComments(
       }).catch(() => {});
     }
   }, [workspaceId, reportId]);
-
-  // ── Toggle resolve ────────────────────────────────────────────────────────
-  const toggleResolve = useCallback(async (commentId: string) => {
-    if (!workspaceId) return;
-    const { data } = await toggleCommentResolved(commentId, workspaceId);
-    if (data) {
-      setState(s => ({
-        ...s,
-        comments: s.comments.map(c => c.id === commentId ? { ...c, ...data } : c),
-      }));
-    }
-  }, [workspaceId]);
 
   // ── Remove comment (optimistic) ───────────────────────────────────────────
   const removeComment = useCallback(async (commentId: string) => {
@@ -231,7 +191,7 @@ export function useReportComments(
         : s.sectionCounts,
     }));
     const { error } = await deleteComment(commentId);
-    if (error) load(); // Revert on failure
+    if (error) load();
   }, [state.comments, load]);
 
   // ── Remove reply (optimistic) ─────────────────────────────────────────────
@@ -249,8 +209,9 @@ export function useReportComments(
   }, [load]);
 
   // ── Filtered helpers ──────────────────────────────────────────────────────
+  // Part 58.1: no longer filters out "resolved" comments (the concept is gone).
   const getCommentsForSection = useCallback((sectionId: string) =>
-    state.comments.filter(c => c.sectionId === sectionId && !c.isResolved),
+    state.comments.filter(c => c.sectionId === sectionId),
     [state.comments],
   );
 
@@ -263,7 +224,7 @@ export function useReportComments(
     ...state,
     refresh: load,
     postComment, postReply,
-    toggleResolve, removeComment, removeReply,
+    removeComment, removeReply,
     getCommentsForSection, getThreadCount,
   };
 }

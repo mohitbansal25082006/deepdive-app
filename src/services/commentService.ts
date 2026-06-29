@@ -1,16 +1,10 @@
 // src/services/commentService.ts
-// Part 46 UPDATE — Fixed "unknown author" bug on realtime comment inserts.
-//
-// Root cause: Supabase Realtime INSERT payload only contains raw DB columns —
-//   no JOINed data. So payload.new.author is always undefined for other users'
-//   comments. Previously we returned the partial comment with no author, so the
-//   sender showed as "Unknown" until the recipient refreshed.
-//
-// Fix: In subscribeToComments, after receiving an INSERT event, immediately
-//   fetch the author's profile from the profiles table and attach it to the
-//   comment before calling onInsert. Same fix for onReplyInsert.
-//
-// All other Part 11/12 functionality is preserved exactly.
+// Part 58.1 — Resolve/unresolve removed from the client surface.
+//   • toggleCommentResolved RPC wrapper deleted (DB function/column remain,
+//     simply unused — non-destructive).
+//   • Mappers still read is_resolved from the DB for type-compatibility with
+//     ReportComment, but the UI no longer uses it. Defaults are safe.
+//   • Part 46 realtime "unknown author" fix preserved.
 
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
@@ -29,7 +23,7 @@ function mapComment(row: Record<string, unknown>): ReportComment {
     sectionId:   (row.section_id as string) ?? null,
     userId:      row.user_id as string,
     content:     row.content as string,
-    isResolved:  row.is_resolved as boolean,
+    isResolved:  (row.is_resolved as boolean) ?? false,
     resolvedBy:  (row.resolved_by as string) ?? null,
     resolvedAt:  (row.resolved_at as string) ?? null,
     mentions:    (row.mentions as string[]) ?? [],
@@ -65,8 +59,7 @@ function mapReply(row: Record<string, unknown>): CommentReply {
   };
 }
 
-// ─── Part 46: Profile fetch helper ───────────────────────────────────────────
-// Used after realtime INSERT events to attach the author profile.
+// ─── Profile fetch helper (Part 46) ───────────────────────────────────────────
 
 async function fetchProfile(userId: string): Promise<{
   id: string;
@@ -93,7 +86,7 @@ async function fetchProfile(userId: string): Promise<{
   }
 }
 
-// ─── Fetch comments (with replies) for a report in a workspace ────────────────
+// ─── Fetch comments (with replies) ─────────────────────────────────────────────
 
 export async function fetchComments(
   reportId: string,
@@ -161,7 +154,6 @@ export async function addComment(
 
     if (error) throw error;
 
-    // Log activity
     await supabase.from('workspace_activity').insert({
       workspace_id:  workspaceId,
       user_id:       user.id,
@@ -171,7 +163,6 @@ export async function addComment(
       metadata:      { report_id: reportId, section_id: sectionId ?? null },
     });
 
-    // Fetch own profile so the comment shows correct author immediately
     const profile = await fetchProfile(user.id);
 
     const row = data as Record<string, unknown>;
@@ -183,13 +174,12 @@ export async function addComment(
         sectionId:   (row.section_id as string) ?? null,
         userId:      row.user_id as string,
         content:     row.content as string,
-        isResolved:  row.is_resolved as boolean,
+        isResolved:  false,
         resolvedBy:  null, resolvedAt: null,
         mentions:    (row.mentions as string[]) ?? [],
         createdAt:   row.created_at as string,
         updatedAt:   row.updated_at as string,
         replies:     [],
-        // Part 46: attach own profile so sender sees correct name immediately
         author:      profile,
       },
       error: null,
@@ -218,7 +208,6 @@ export async function addReply(
 
     if (error) throw error;
 
-    // Fetch own profile for immediate display
     const profile = await fetchProfile(user.id);
 
     const row = data as Record<string, unknown>;
@@ -231,46 +220,12 @@ export async function addReply(
         mentions:  (row.mentions as string[]) ?? [],
         createdAt: row.created_at as string,
         updatedAt: row.updated_at as string,
-        // Part 46: attach own profile
         author:    profile,
       },
       error: null,
     };
   } catch (err) {
     return { data: null, error: err instanceof Error ? err.message : 'Failed to add reply' };
-  }
-}
-
-// ─── Toggle resolve state ─────────────────────────────────────────────────────
-
-export async function toggleCommentResolved(
-  commentId: string,
-  workspaceId: string,
-): Promise<{ data: ReportComment | null; error: string | null }> {
-  try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('Not authenticated');
-
-    const { data, error } = await supabase
-      .rpc('toggle_comment_resolved', { p_comment_id: commentId });
-
-    if (error) throw error;
-
-    await supabase.from('workspace_activity').insert({
-      workspace_id:  workspaceId,
-      user_id:       user.id,
-      action:        'comment_resolved',
-      resource_type: 'comment',
-      resource_id:   commentId,
-    });
-
-    const row = data as Record<string, unknown>;
-    return {
-      data: mapComment({ ...row, author: undefined, replies: undefined }),
-      error: null,
-    };
-  } catch (err) {
-    return { data: null, error: err instanceof Error ? err.message : 'Failed to toggle comment' };
   }
 }
 
@@ -304,9 +259,7 @@ export async function deleteReply(replyId: string): Promise<{ error: string | nu
   }
 }
 
-// ─── Realtime subscription for comments ──────────────────────────────────────
-// Part 46 FIX: After receiving INSERT events from other users, we immediately
-// fetch their profile so they show the correct name/avatar without refresh.
+// ─── Realtime subscription ────────────────────────────────────────────────────
 
 export function subscribeToComments(
   reportId: string,
@@ -330,9 +283,6 @@ export function subscribeToComments(
       },
       async (payload) => {
         const row = payload.new as Record<string, unknown>;
-
-        // Part 46 FIX: Fetch the author profile immediately so the
-        // realtime comment shows the correct name/avatar on all devices.
         const author = await fetchProfile(row.user_id as string);
 
         callbacks.onInsert({
@@ -342,13 +292,13 @@ export function subscribeToComments(
           sectionId:   (row.section_id as string) ?? null,
           userId:      row.user_id as string,
           content:     row.content as string,
-          isResolved:  (row.is_resolved as boolean) ?? false,
+          isResolved:  false,
           resolvedBy:  null, resolvedAt: null,
           mentions:    (row.mentions as string[]) ?? [],
           createdAt:   row.created_at as string,
           updatedAt:   row.updated_at as string,
           replies:     [],
-          author,      // ← attached from DB fetch
+          author,
         });
       },
     )
@@ -362,13 +312,11 @@ export function subscribeToComments(
       },
       (payload) => {
         const row = payload.new as Record<string, unknown>;
+        // Part 58.1: only reconcile content edits (resolve state ignored).
         callbacks.onUpdate({
-          id:          row.id as string,
-          isResolved:  row.is_resolved as boolean,
-          resolvedBy:  (row.resolved_by as string) ?? null,
-          resolvedAt:  (row.resolved_at as string) ?? null,
-          content:     row.content as string,
-          updatedAt:   row.updated_at as string,
+          id:        row.id as string,
+          content:   row.content as string,
+          updatedAt: row.updated_at as string,
         });
       },
     )
@@ -384,8 +332,6 @@ export function subscribeToComments(
       { event: 'INSERT', schema: 'public', table: 'comment_replies' },
       async (payload) => {
         const row = payload.new as Record<string, unknown>;
-
-        // Part 46 FIX: Fetch the reply author's profile immediately.
         const author = await fetchProfile(row.user_id as string);
 
         callbacks.onReplyInsert({
@@ -396,7 +342,7 @@ export function subscribeToComments(
           mentions:  (row.mentions as string[]) ?? [],
           createdAt: row.created_at as string,
           updatedAt: row.updated_at as string,
-          author,    // ← attached from DB fetch
+          author,
         });
       },
     )
