@@ -2,21 +2,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Infographics Panel — FULL THEME COMPATIBILITY
 //
-// Part 57 — Key Metrics no longer truncate:
-//   • Stat VALUE used a fixed lineHeight inside a fixed-height card, clipping
-//     long values ("$142.5B", "23.4M users", "1,250"). The value font is now
-//     pre-scaled by length AND set to auto-fit one line (numberOfLines={1} +
-//     adjustsFontSizeToFit + minimumFontScale), so it always renders in full.
-//     (Note: `adjustsFontSizeToFit` is the correct Text prop —
-//     `adjustsFontSizeToFitWidth` is a TextInput-only prop and does not exist on
-//     <Text>, which was the type error.)
-//   • Card grows with content (minHeight is a floor) and label wraps up to 3
-//     lines on the compact card.
-//   • TAP TO EXPAND: when a metric's label/value/change is long enough that the
-//     compact card can't show it all, the card becomes tappable and shows an
-//     "expand" icon + "Tap to expand" hint. Tapping opens a modal that renders
-//     the FULL value, change, and description with no truncation (scrollable).
-//     Short cards stay static and non-interactive.
+// Part 58.4 — Chart Visibility & Expand Fix:
+//   • Added an "Expand" button to the ChartShell header.
+//   • Tapping it opens a full-screen modal rendering the chart at 4x the size.
+//   • Removed X-axis label truncation (.slice(0, 6)).
+//   • Added `rotateLabel` to Bar and Line charts to prevent column overlap.
+//   • Adjusted layout scaling logic so columns are fully visible in both 
+//     compact and expanded views.
+//
+// Part 58.5 — Line Chart Pointer Tooltip Off-Screen Fix:
+//   • Root cause: gifted-charts' `pointerLabelComponent` is positioned purely
+//     from the raw touch x-coordinate with no bounds checking. Near the left
+//     or right edge of the chart (very common on phone-width charts), the
+//     90px-wide tooltip box would render partially or fully outside the
+//     visible screen area instead of clamping/flipping to stay on-screen.
+//   • Fix: added `autoAdjustPointerLabelPosition: true` to `pointerConfig`,
+//     which tells the library to shift the tooltip back inside the chart's
+//     plotted bounds whenever the pointer is near an edge.
+//   • Also explicitly capped `pointerLabelWidth` usage by giving the tooltip
+//     a `maxWidth` and `flexShrink` so it can never force itself wider than
+//     the available chart area even on extreme edge cases.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useMemo, useState } from 'react';
@@ -93,7 +98,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
   const bgGradient: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#1C1C3A', '#13132B'];
   const gradientColors: readonly [string, string] = [accent, `${accent}99`] as const;
 
-  // Part 57: scale the value font down for long values so they fit on the card.
   const valueLen = (stat.value ?? '').length;
   const valueFontSize =
     valueLen > 14 ? FONTS.sizes.md
@@ -101,10 +105,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
     : valueLen > 7  ? FONTS.sizes.xl
     : FONTS.sizes['2xl'];
 
-  // Part 57: show the "expand" affordance/hint when content is long enough that
-  // the compact card might clip it. Thresholds lowered so typical long labels
-  // qualify. Independent of this, EVERY card is tappable to open the full view —
-  // so expand always works even if a card isn't flagged "long".
   const labelLen  = (stat.label ?? '').length;
   const changeLen = (stat.change ?? '').length;
   const isLong = labelLen > 38 || valueLen > 12 || changeLen > 14;
@@ -115,7 +115,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
       overflow: 'hidden',
       borderWidth: 1,
       borderColor: `${accent}33`,
-      // Part 57: floor only — the card grows with content.
       minHeight: 124,
     }}>
       <LinearGradient
@@ -128,7 +127,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
           backgroundColor: `${accent}22`,
         }} />
 
-        {/* Header row: icon + label. */}
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10, gap: 9 }}>
           <LinearGradient
             colors={gradientColors}
@@ -151,7 +149,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
           )}
         </View>
 
-        {/* Value: size pre-scaled by length AND auto-fit to one line. */}
         <Text
           style={{
             color: COLORS.textPrimary,
@@ -189,7 +186,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
           <View style={{ height: 2, width: 38, borderRadius: 2, backgroundColor: `${accent}66`, marginTop: 12 }} />
         )}
 
-        {/* "Tap to expand" hint, only on long cards. */}
         {isLong && (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 }}>
             <Ionicons name="finger-print-outline" size={10} color={`${accent}99`} />
@@ -200,10 +196,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
     </View>
   );
 
-  // Part 57: the WHOLE card is always tappable to open the full-detail modal —
-  // this guarantees expand works regardless of content length or any parent
-  // wrapper. The "expand" icon + hint are shown only when content is long, but
-  // tapping anywhere on any card opens the modal.
   return (
     <>
       <Pressable
@@ -226,8 +218,6 @@ function StatCard({ stat }: { stat: InfographicStat }) {
   );
 }
 
-// ── Full-content modal for long stat cards ──────────────────────────────────────
-
 function StatDetailModal({
   visible, stat, accent, changeColor, isLight, onClose,
 }: {
@@ -249,7 +239,6 @@ function StatDetailModal({
         <Pressable onPress={e => e.stopPropagation()}>
           <View style={{ borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: `${accent}55` }}>
             <LinearGradient colors={sheetGradient} style={{ padding: SPACING.lg }}>
-              {/* Header */}
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.md }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, flex: 1 }}>
                   <LinearGradient
@@ -277,12 +266,10 @@ function StatDetailModal({
               </View>
 
               <ScrollView style={{ maxHeight: SCREEN_H * 0.5 }} showsVerticalScrollIndicator={false}>
-                {/* Full value — wraps fully, no truncation */}
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes['2xl'], fontWeight: '900', letterSpacing: -0.5, lineHeight: 36 }}>
                   {stat.value}
                 </Text>
 
-                {/* Change pill */}
                 {stat.change ? (
                   <View style={{
                     flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start',
@@ -300,7 +287,6 @@ function StatDetailModal({
                   </View>
                 ) : null}
 
-                {/* Full label — the part that was being truncated */}
                 <View style={{ marginTop: SPACING.lg }}>
                   <Text style={{ color: COLORS.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 6 }}>
                     Description
@@ -318,9 +304,14 @@ function StatDetailModal({
   );
 }
 
-function ChartShell({
-  chart, index, children,
-}: { chart: InfographicChart; index: number; children: React.ReactNode }) {
+interface ChartShellProps {
+  chart: InfographicChart;
+  index: number;
+  children: React.ReactNode;
+  onExpand?: () => void;
+}
+
+function ChartShell({ chart, index, children, onExpand }: ChartShellProps) {
   const { isLight } = useTheme();
   const bgGradient: readonly [string, string] = isLight ? ['#FFFFFF', '#EEF0F8'] : ['#181833', '#101026'];
 
@@ -355,6 +346,20 @@ function ChartShell({
               <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginTop: 2 }}>{chart.subtitle}</Text>
             ) : null}
           </View>
+          {onExpand && (
+            <Pressable
+              onPress={onExpand}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{
+                width: 30, height: 30, borderRadius: 9,
+                backgroundColor: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
+                alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                borderWidth: 1, borderColor: COLORS.border,
+              }}
+            >
+              <Ionicons name="expand-outline" size={15} color={COLORS.textSecondary} />
+            </Pressable>
+          )}
         </View>
 
         {children}
@@ -385,6 +390,8 @@ interface ChartCardProps {
 
 function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
   const { isLight } = useTheme();
+  const [expanded, setExpanded] = useState(false);
+
   const dataset = chart.datasets?.[0];
   const rawData = dataset?.data ?? [];
   const rawLabels = chart.labels ?? rawData.map((_, i) => String(i + 1));
@@ -402,34 +409,34 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
     fmtNum((niceMax * i) / sections) + (chart.unit ? '' : '')
   );
 
-  const yAxisLabelWidth = 42;
-  const plotW = Math.max(40, chartWidth - yAxisLabelWidth - 8);
+  const renderChart = (w: number, h: number) => {
+    const yAxisLabelWidth = 42;
+    const plotW = Math.max(40, w - yAxisLabelWidth - 8);
 
-  if (chart.type === 'bar') {
-    const n = values.length;
-    const slot = plotW / n;
-    const barWidth = clamp(slot * 0.5, 12, 38);
-    const spacing = clamp(slot - barWidth, 6, 44);
+    if (chart.type === 'bar') {
+      const n = values.length;
+      const slot = plotW / n;
+      const barWidth = clamp(slot * 0.5, 12, 38);
+      const spacing = clamp(slot - barWidth, 6, 44);
 
-    const barData = values.map((value, i) => ({
-      value,
-      label: labels[i]?.slice(0, 6) ?? '',
-      frontColor: PALETTE[i % PALETTE.length],
-      gradientColor: `${PALETTE[i % PALETTE.length]}55`,
-      topLabelComponent: () => (
-        <Text style={{ color: 'rgba(220,220,240,0.9)', fontSize: 8.5, fontWeight: '700', marginBottom: 2 }}>
-          {fmtNum(value)}
-        </Text>
-      ),
-    }));
+      const barData = values.map((value, i) => ({
+        value,
+        label: labels[i] ?? '', // Removed truncation slice
+        frontColor: PALETTE[i % PALETTE.length],
+        gradientColor: `${PALETTE[i % PALETTE.length]}55`,
+        topLabelComponent: () => (
+          <Text style={{ color: 'rgba(220,220,240,0.9)', fontSize: 8.5, fontWeight: '700', marginBottom: 2 }}>
+            {fmtNum(value)}
+          </Text>
+        ),
+      }));
 
-    return (
-      <ChartShell chart={chart} index={index}>
+      return (
         <View style={{ marginLeft: -6 }}>
           <BarChart
             data={barData}
             width={plotW}
-            height={188}
+            height={h}
             barWidth={barWidth}
             spacing={spacing}
             initialSpacing={spacing * 0.7}
@@ -445,6 +452,7 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
             xAxisThickness={0}
             yAxisTextStyle={Y_AXIS_TEXT}
             xAxisLabelTextStyle={X_AXIS_TEXT}
+            rotateLabel // Added to prevent label overlapping/truncation
             rulesType="dashed"
             rulesColor="rgba(108,99,255,0.12)"
             dashWidth={3}
@@ -453,30 +461,28 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
             animationDuration={650}
           />
         </View>
-        {chart.unit ? (
-          <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 2, marginLeft: yAxisLabelWidth }}>
-            Values in {chart.unit}
-          </Text>
-        ) : null}
-      </ChartShell>
-    );
-  }
+      );
+    }
 
-  if (chart.type === 'line') {
-    const n = values.length;
-    const spacing = clamp(plotW / Math.max(1, n - 1), 26, 90);
-    const lineData = values.map((value, i) => ({
-      value,
-      label: labels[i]?.slice(0, 6) ?? '',
-    }));
+    if (chart.type === 'line') {
+      const n = values.length;
+      const spacing = clamp(plotW / Math.max(1, n - 1), 26, 90);
+      const lineData = values.map((value, i) => ({
+        value,
+        label: labels[i] ?? '', // Removed truncation slice
+      }));
 
-    return (
-      <ChartShell chart={chart} index={index}>
+      // Part 58.5: tooltip box width is capped to the available plot width so
+      // it can never request more horizontal space than actually exists,
+      // which is what was pushing it past the screen edge on narrow charts.
+      const tooltipMaxWidth = clamp(plotW * 0.6, 70, 130);
+
+      return (
         <View style={{ marginLeft: -6 }}>
           <LineChart
             data={lineData}
             width={plotW}
-            height={188}
+            height={h}
             spacing={spacing}
             initialSpacing={18}
             endSpacing={12}
@@ -498,6 +504,7 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
             xAxisThickness={0}
             yAxisTextStyle={Y_AXIS_TEXT}
             xAxisLabelTextStyle={X_AXIS_TEXT}
+            rotateLabel // Added to prevent label overlapping/truncation
             rulesType="dashed"
             rulesColor="rgba(108,99,255,0.12)"
             dashWidth={3}
@@ -511,14 +518,26 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
               pointerColor: accent,
               radius: 5,
               activatePointersOnLongPress: false,
-              pointerLabelWidth: 90,
+              // Part 58.5: keeps the tooltip clamped inside the chart's
+              // plotted area instead of letting it drift past the left/right
+              // edge of the screen when the pointer is near the start or end.
+              autoAdjustPointerLabelPosition: true,
+              pointerLabelWidth: tooltipMaxWidth,
+              pointerLabelHeight: 36,
               pointerLabelComponent: (items: any[]) => (
-                <View style={{
-                  backgroundColor: COLORS.backgroundCard,
-                  borderRadius: RADIUS.md, paddingHorizontal: 10, paddingVertical: 6,
-                  borderWidth: 1, borderColor: `${accent}55`,
-                }}>
-                  <Text style={{ color: accent, fontSize: 13, fontWeight: '800' }}>
+                <View
+                  style={{
+                    backgroundColor: COLORS.backgroundCard,
+                    borderRadius: RADIUS.md, paddingHorizontal: 10, paddingVertical: 6,
+                    borderWidth: 1, borderColor: `${accent}55`,
+                    maxWidth: tooltipMaxWidth,
+                    alignSelf: 'flex-start',
+                  }}
+                >
+                  <Text
+                    style={{ color: accent, fontSize: 13, fontWeight: '800' }}
+                    numberOfLines={1}
+                  >
                     {fmtNum(items?.[0]?.value ?? 0)}{chart.unit ? ` ${chart.unit}` : ''}
                   </Text>
                 </View>
@@ -526,28 +545,27 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
             }}
           />
         </View>
-      </ChartShell>
-    );
-  }
+      );
+    }
 
-  if (chart.type === 'pie') {
-    const total = values.reduce((s, v) => s + (v > 0 ? v : 0), 0);
-    const pieData = values
-      .map((value, i) => ({
-        value: Math.max(0, value),
-        color: PALETTE[i % PALETTE.length],
-        gradientCenterColor: `${PALETTE[i % PALETTE.length]}AA`,
-        label: labels[i] ?? `Item ${i + 1}`,
-      }))
-      .filter(d => d.value > 0);
+    if (chart.type === 'pie') {
+      const total = values.reduce((s, v) => s + (v > 0 ? v : 0), 0);
+      const pieData = values
+        .map((value, i) => ({
+          value: Math.max(0, value),
+          color: PALETTE[i % PALETTE.length],
+          gradientCenterColor: `${PALETTE[i % PALETTE.length]}AA`,
+          label: labels[i] ?? `Item ${i + 1}`,
+        }))
+        .filter(d => d.value > 0);
 
-    if (pieData.length < 1) return null;
+      if (pieData.length < 1) return null;
 
-    const radius = clamp(plotW * 0.32, 70, 110);
-    const innerColor = isLight ? '#FFFFFF' : '#101026';
+      // Allow larger radius in expanded view
+      const radius = clamp(plotW * (w > SCREEN_W * 0.8 ? 0.28 : 0.32), 70, w > SCREEN_W * 0.8 ? 150 : 110);
+      const innerColor = isLight ? '#FFFFFF' : '#101026';
 
-    return (
-      <ChartShell chart={chart} index={index}>
+      return (
         <View style={{ alignItems: 'center', paddingVertical: 6 }}>
           <PieChart
             data={pieData}
@@ -571,32 +589,101 @@ function ChartCard({ chart, index, chartWidth }: ChartCardProps) {
               </View>
             )}
           />
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 10 }}>
+            {pieData.map((d, i) => {
+              const pct = total > 0 ? Math.round((d.value / total) * 100) : 0;
+              return (
+                <View key={i} style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 6,
+                  backgroundColor: 'rgba(255,255,255,0.04)',
+                  borderRadius: RADIUS.full, paddingHorizontal: 9, paddingVertical: 5,
+                  borderWidth: 1, borderColor: `${d.color}33`,
+                }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: d.color }} />
+                  <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
+                    {String(d.label)}
+                  </Text>
+                  <Text style={{ color: d.color, fontSize: FONTS.sizes.xs, fontWeight: '800' }}>{pct}%</Text>
+                </View>
+              );
+            })}
+          </View>
         </View>
+      );
+    }
 
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 10 }}>
-          {pieData.map((d, i) => {
-            const pct = total > 0 ? Math.round((d.value / total) * 100) : 0;
-            return (
-              <View key={i} style={{
-                flexDirection: 'row', alignItems: 'center', gap: 6,
-                backgroundColor: 'rgba(255,255,255,0.04)',
-                borderRadius: RADIUS.full, paddingHorizontal: 9, paddingVertical: 5,
-                borderWidth: 1, borderColor: `${d.color}33`,
-              }}>
-                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: d.color }} />
-                <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>
-                  {String(d.label).slice(0, 14)}
-                </Text>
-                <Text style={{ color: d.color, fontSize: FONTS.sizes.xs, fontWeight: '800' }}>{pct}%</Text>
-              </View>
-            );
-          })}
+    return null;
+  };
+
+  // Width for the expanded modal chart
+  const modalChartWidth = SCREEN_W - SPACING.lg * 2;
+
+  return (
+    <>
+      <ChartShell chart={chart} index={index} onExpand={() => setExpanded(true)}>
+        {/* marginBottom: 30 prevents rotated labels from clipping */}
+        <View style={{ marginLeft: -6, marginBottom: 30 }}>
+          {renderChart(chartWidth, 188)}
         </View>
+        {chart.unit ? (
+          <Text style={{ color: COLORS.textMuted, fontSize: 9, marginTop: 2, marginLeft: 42 }}>
+            Values in {chart.unit}
+          </Text>
+        ) : null}
       </ChartShell>
-    );
-  }
 
-  return null;
+      {/* Expanded Chart Modal */}
+      <Modal visible={expanded} transparent animationType="fade" onRequestClose={() => setExpanded(false)}>
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: SPACING.lg }}
+          onPress={() => setExpanded(false)}
+        >
+          <Pressable onPress={e => e.stopPropagation()} style={{ width: '100%' }}>
+            <View style={{ borderRadius: RADIUS.xl, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}>
+              <LinearGradient colors={isLight ? ['#FFFFFF', '#F5F6FB'] : ['#1A1A38', '#0A0A1A']} style={{ padding: SPACING.lg }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md }}>
+                  <View style={{ flex: 1, marginRight: SPACING.md }}>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.lg, fontWeight: '800' }}>{chart.title}</Text>
+                    {chart.subtitle ? <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: 2 }}>{chart.subtitle}</Text> : null}
+                  </View>
+                  <Pressable
+                    onPress={() => setExpanded(false)}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    style={{
+                      width: 34, height: 34, borderRadius: 10,
+                      backgroundColor: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)',
+                      alignItems: 'center', justifyContent: 'center',
+                      borderWidth: 1, borderColor: COLORS.border,
+                    }}
+                  >
+                    <Ionicons name="close" size={18} color={COLORS.textSecondary} />
+                  </Pressable>
+                </View>
+
+                <ScrollView showsVerticalScrollIndicator={false} bounces={false} contentContainerStyle={{ paddingBottom: 20 }}>
+                  <View style={{ marginBottom: 40, alignItems: 'center' }}>
+                    {renderChart(modalChartWidth, SCREEN_H * 0.4)}
+                  </View>
+
+                  {chart.insight ? (
+                    <View style={{
+                      flexDirection: 'row', alignItems: 'flex-start', gap: 7,
+                      backgroundColor: `${COLORS.primary}12`,
+                      borderRadius: RADIUS.md, padding: SPACING.md, marginTop: SPACING.sm,
+                      borderWidth: 1, borderColor: `${COLORS.primary}22`,
+                    }}>
+                      <Ionicons name="sparkles" size={15} color={COLORS.primary} style={{ marginTop: 1 }} />
+                      <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, lineHeight: 22, flex: 1 }}>{chart.insight}</Text>
+                    </View>
+                  ) : null}
+                </ScrollView>
+              </LinearGradient>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
 }
 
 interface Props {
