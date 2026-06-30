@@ -1,12 +1,10 @@
 // src/services/agents/voiceDebateScriptAgent.ts
-// Part 40 — Voice Debate Engine (two-phase dialectic script agent).
-// Part 56 — Cost routing:
-//   • generatePhase1 / generatePhase2 → STANDARD (gpt-4.1-mini) — these are the
-//     argued, spoken opening/rebuttal/closing turns (quality-sensitive).
-//   • generateModeratorLines → NANO — short transition/intro/question lines.
+// Part 58.2 — SERPAPI → TAVILY MIGRATION
+// Voice debate script agent uses Tavily for web search grounding
 
 import { chatCompletionJSON } from '../openaiClient';
-import { modelFor }           from '../../constants/aiModels';
+import { tavilySearchBatch } from '../tavilyClient';
+import { modelFor } from '../../constants/aiModels';
 import {
   VOICE_PERSONAS,
   SEGMENT_LABELS,
@@ -22,7 +20,7 @@ import type {
   AgentPhase2Raw,
   DebateSegmentType,
 } from '../../types/voiceDebate';
-import type { DebateAgentRole, DebatePerspective, DebateModerator } from '../../types';
+import type { DebateAgentRole, DebatePerspective, DebateModerator, SearchBatch } from '../../types';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,12 +65,34 @@ function buildPerspectiveDigest(p: DebatePerspective): string {
   ].filter(Boolean).join('\n');
 }
 
-// ─── PHASE 1: Generate opening arguments for one agent (STANDARD) ─────────────
+// ─── Tavily Search ─────────────────────────────────────────────────────────────
+
+function buildDebateSearchQueries(topic: string, role: DebateAgentRole): string[] {
+  const roleQueries: Record<DebateAgentRole, string[]> = {
+    optimist: [`${topic} benefits positive impact success`, `${topic} case studies success stories`, `${topic} technological optimism forecast`],
+    skeptic: [`${topic} risks failures criticism`, `${topic} overhyped limitations problems`, `${topic} unintended consequences`],
+    economist: [`${topic} market size economic impact`, `${topic} job market labor statistics`, `${topic} investment ROI analysis`],
+    technologist: [`${topic} technical capabilities benchmarks`, `${topic} AI architecture state of the art`, `${topic} engineering challenges`],
+    ethicist: [`${topic} ethics bias fairness`, `${topic} regulation policy governance`, `${topic} social impact inequality`],
+    futurist: [`${topic} future predictions 2030`, `${topic} long-term societal impact`, `${topic} transformative scenarios`],
+  };
+  return (roleQueries[role] || roleQueries.optimist).map(q => `${q} 2025`);
+}
+
+function formatSearchContext(batches: SearchBatch[]): string {
+  const allResults = batches.flatMap(b => b.results);
+  return allResults.slice(0, 10)
+    .map((r, i) => `[${i + 1}] ${r.title}\n  ${r.snippet}\n  Source: ${r.source ?? r.url}`)
+    .join('\n\n');
+}
+
+// ─── PHASE 1: Generate opening arguments ─────────────────────────────────────
 
 async function generatePhase1(
-  topic:       string,
-  question:    string,
+  topic: string,
+  question: string,
   perspective: DebatePerspective,
+  searchContext: string,
 ): Promise<AgentPhase1Raw> {
   const persona = VOICE_PERSONAS[perspective.agentRole];
 
@@ -89,17 +109,20 @@ ${(perspective.summary ?? '').slice(0, 400)}
 YOUR KEY ARGUMENTS (reference):
 ${(perspective.arguments ?? []).slice(0, 3).map(a => `• ${a.point}: ${a.evidence.slice(0, 120)}`).join('\n')}
 
+REAL-TIME WEB SEARCH EVIDENCE (latest facts to incorporate):
+${searchContext || '(No web search available — use existing knowledge)'}
+
 TASK: Write your OPENING STATEMENT as if you are SPEAKING it aloud in a live debate.
 - Must sound natural when spoken (no bullet points, no markdown, no brackets)
-- 100–150 words maximum (will be read aloud by TTS)
-- Reference one specific statistic or finding from your research
+- 100-150 words maximum (will be read aloud by TTS)
+- Reference one specific statistic or finding from your research or web search
 - End with a clear, confident statement of your position
 - Match your role's personality: ${persona.instructions.slice(0, 80)}
 
 Also provide:
-- 2–3 short "key argument lines" (each under 20 words) — punchy soundbites
+- 2-3 short "key argument lines" (each under 20 words) — punchy soundbites
 - Your single most memorable quote (1 sentence)
-- Confidence score 1–10 based on your evidence quality
+- Confidence score 1-10 based on your evidence quality
 
 Return ONLY valid JSON, no markdown fences:
 {
@@ -111,47 +134,48 @@ Return ONLY valid JSON, no markdown fences:
 
   try {
     const raw = await chatCompletionJSON<{
-      openingText:  string;
+      openingText: string;
       keyArguments: string[];
-      keyQuote:     string;
-      confidence:   number;
+      keyQuote: string;
+      confidence: number;
     }>(
       [
         { role: 'system', content: `You are ${persona.displayName} in a structured academic debate. Speak naturally, as if live. Return only valid JSON.` },
-        { role: 'user',   content: prompt },
+        { role: 'user', content: prompt },
       ],
-      { temperature: 0.72, maxTokens: 600, model: modelFor('voiceDebatePhase') }, // ← Part 56 STANDARD
+      { temperature: 0.72, maxTokens: 600, model: modelFor('voiceDebatePhase') },
     );
 
     return {
-      agentRole:    perspective.agentRole,
-      openingText:  truncateToLimit(cleanForTTS(raw.openingText ?? ''), MAX_TURN_TEXT_CHARS),
+      agentRole: perspective.agentRole,
+      openingText: truncateToLimit(cleanForTTS(raw.openingText ?? ''), MAX_TURN_TEXT_CHARS),
       keyArguments: (raw.keyArguments ?? []).slice(0, 3).map(a => cleanForTTS(a)),
-      keyQuote:     cleanForTTS(raw.keyQuote ?? perspective.keyQuote ?? ''),
-      confidence:   Math.min(10, Math.max(1, Math.round(raw.confidence ?? perspective.confidence ?? 5))),
+      keyQuote: cleanForTTS(raw.keyQuote ?? perspective.keyQuote ?? ''),
+      confidence: Math.min(10, Math.max(1, Math.round(raw.confidence ?? perspective.confidence ?? 5))),
     };
   } catch {
     return {
-      agentRole:    perspective.agentRole,
-      openingText:  truncateToLimit(cleanForTTS(perspective.summary?.slice(0, 400) ?? 'I stand by my position on this debate topic.'), MAX_TURN_TEXT_CHARS),
+      agentRole: perspective.agentRole,
+      openingText: truncateToLimit(cleanForTTS(perspective.summary?.slice(0, 400) ?? 'I stand by my position on this debate topic.'), MAX_TURN_TEXT_CHARS),
       keyArguments: (perspective.arguments ?? []).slice(0, 2).map(a => a.point),
-      keyQuote:     cleanForTTS(perspective.keyQuote ?? 'The evidence speaks for itself.'),
-      confidence:   perspective.confidence ?? 6,
+      keyQuote: cleanForTTS(perspective.keyQuote ?? 'The evidence speaks for itself.'),
+      confidence: perspective.confidence ?? 6,
     };
   }
 }
 
-// ─── PHASE 2: Rebuttals after seeing all Phase 1 outputs (STANDARD) ───────────
+// ─── PHASE 2: Rebuttals after seeing all Phase 1 outputs ─────────────────────
 
 async function generatePhase2(
-  topic:          string,
-  question:       string,
-  perspective:    DebatePerspective,
-  phase1Results:  AgentPhase1Raw[],
+  topic: string,
+  question: string,
+  perspective: DebatePerspective,
+  phase1Results: AgentPhase1Raw[],
   allPerspectives: DebatePerspective[],
+  searchContext: string,
 ): Promise<AgentPhase2Raw> {
-  const persona    = VOICE_PERSONAS[perspective.agentRole];
-  const myPhase1   = phase1Results.find(r => r.agentRole === perspective.agentRole);
+  const persona = VOICE_PERSONAS[perspective.agentRole];
+  const myPhase1 = phase1Results.find(r => r.agentRole === perspective.agentRole);
   const othersDigest = phase1Results
     .filter(r => r.agentRole !== perspective.agentRole)
     .map(r => {
@@ -176,21 +200,24 @@ YOUR CURRENT CONFIDENCE: ${myPhase1?.confidence ?? perspective.confidence}/10
 OTHER AGENTS' PHASE 1 OPENINGS:
 ${othersDigest}
 
+REAL-TIME WEB SEARCH EVIDENCE (latest data to support your rebuttals):
+${searchContext || '(No additional web search available)'}
+
 TASK: Generate your Phase 2 responses. All text must be NATURAL SPOKEN DIALOGUE (no bullets, no markdown).
 
 1. CROSS-EXAMINATION: Pick 2 other agents whose arguments you most want to challenge.
-   Write a SHORT challenge to each (50–80 words each, spoken directly to them).
+   Write a SHORT challenge to each (50-80 words each, spoken directly to them).
    Reference their specific words or claims.
 
-2. REBUTTAL: Write your defense against the strongest likely counter to your position (80–120 words).
+2. REBUTTAL: Write your defense against the strongest likely counter to your position (80-120 words).
    Be specific — address the evidence, not just the rhetoric.
 
-3. CONCESSION (optional): If any opponent made a genuinely valid point, honestly acknowledge it (30–50 words).
+3. CONCESSION (optional): If any opponent made a genuinely valid point, honestly acknowledge it (30-50 words).
    This makes you credible. Leave empty string if you have no concession.
 
-4. CLOSING: Write your final 60–90 word closing argument. Make it memorable and conclusive.
+4. CLOSING: Write your final 60-90 word closing argument. Make it memorable and conclusive.
 
-5. UPDATED CONFIDENCE: Re-score yourself 1–10 after seeing the other perspectives.
+5. UPDATED CONFIDENCE: Re-score yourself 1-10 after seeing the other perspectives.
    If opponents made strong points, your score may drop. Be honest.
 
 Return ONLY valid JSON:
@@ -207,17 +234,17 @@ Return ONLY valid JSON:
 
   try {
     const raw = await chatCompletionJSON<{
-      crossExamTargets:  { targetRole: string; challengeText: string }[];
-      rebuttalText:      string;
-      concessionText?:   string;
-      closingText:       string;
+      crossExamTargets: { targetRole: string; challengeText: string }[];
+      rebuttalText: string;
+      concessionText?: string;
+      closingText: string;
       updatedConfidence: number;
     }>(
       [
         { role: 'system', content: `You are ${persona.displayName} in a live structured debate. All text is SPOKEN. Return only valid JSON.` },
-        { role: 'user',   content: prompt },
+        { role: 'user', content: prompt },
       ],
-      { temperature: 0.70, maxTokens: 900, model: modelFor('voiceDebatePhase') }, // ← Part 56 STANDARD
+      { temperature: 0.70, maxTokens: 900, model: modelFor('voiceDebatePhase') },
     );
 
     const validRoles: DebateAgentRole[] = [
@@ -225,47 +252,47 @@ Return ONLY valid JSON:
     ];
 
     return {
-      agentRole:        perspective.agentRole,
+      agentRole: perspective.agentRole,
       crossExamTargets: (raw.crossExamTargets ?? [])
         .filter(t => validRoles.includes(t.targetRole as DebateAgentRole) && t.targetRole !== perspective.agentRole)
         .slice(0, 2)
         .map(t => ({
-          targetRole:    t.targetRole as DebateAgentRole,
+          targetRole: t.targetRole as DebateAgentRole,
           challengeText: truncateToLimit(cleanForTTS(t.challengeText ?? ''), 350),
         })),
-      rebuttalText:       truncateToLimit(cleanForTTS(raw.rebuttalText ?? ''), MAX_TURN_TEXT_CHARS),
-      concessionText:     raw.concessionText ? truncateToLimit(cleanForTTS(raw.concessionText), 250) : undefined,
-      closingText:        truncateToLimit(cleanForTTS(raw.closingText ?? ''), MAX_TURN_TEXT_CHARS),
-      updatedConfidence:  Math.min(10, Math.max(1, Math.round(raw.updatedConfidence ?? (myPhase1?.confidence ?? 5)))),
+      rebuttalText: truncateToLimit(cleanForTTS(raw.rebuttalText ?? ''), MAX_TURN_TEXT_CHARS),
+      concessionText: raw.concessionText ? truncateToLimit(cleanForTTS(raw.concessionText), 250) : undefined,
+      closingText: truncateToLimit(cleanForTTS(raw.closingText ?? ''), MAX_TURN_TEXT_CHARS),
+      updatedConfidence: Math.min(10, Math.max(1, Math.round(raw.updatedConfidence ?? (myPhase1?.confidence ?? 5)))),
     };
   } catch {
     return {
-      agentRole:       perspective.agentRole,
+      agentRole: perspective.agentRole,
       crossExamTargets: [],
-      rebuttalText:    truncateToLimit('I stand by my analysis. The evidence I presented remains valid despite the challenges raised.', MAX_TURN_TEXT_CHARS),
-      concessionText:  undefined,
-      closingText:     truncateToLimit(myPhase1?.keyQuote ?? 'The evidence is clear. My position stands.', MAX_TURN_TEXT_CHARS),
+      rebuttalText: truncateToLimit('I stand by my analysis. The evidence I presented remains valid despite the challenges raised.', MAX_TURN_TEXT_CHARS),
+      concessionText: undefined,
+      closingText: truncateToLimit(myPhase1?.keyQuote ?? 'The evidence is clear. My position stands.', MAX_TURN_TEXT_CHARS),
       updatedConfidence: myPhase1?.confidence ?? perspective.confidence ?? 5,
     };
   }
 }
 
-// ─── MODERATOR: intro/transition/question lines (NANO) ────────────────────────
+// ─── MODERATOR: intro/transition/question lines ──────────────────────────────
 
 interface ModeratorLines {
-  intro:             string;
-  beforeCrossExam:   string;
-  beforeRebuttals:   string;
+  intro: string;
+  beforeCrossExam: string;
+  beforeRebuttals: string;
   audienceQuestions: string[];
-  beforeClosing:     string;
-  verdict:           string;
+  beforeClosing: string;
+  verdict: string;
 }
 
 async function generateModeratorLines(
-  topic:      string,
-  question:   string,
-  moderator:  DebateModerator | null,
-  tensions:   string[],
+  topic: string,
+  question: string,
+  moderator: DebateModerator | null,
+  tensions: string[],
 ): Promise<ModeratorLines> {
   const prompt = `You are the Moderator for a structured AI voice debate.
 
@@ -277,12 +304,12 @@ MODERATOR VERDICT: "${(moderator?.balancedVerdict ?? '').slice(0, 300)}"
 Generate SHORT spoken moderator lines for each debate segment transition.
 All text must sound natural when spoken aloud. No bullets, no markdown.
 
-- intro: 40–60 words welcoming audience and introducing the debate (set the stage)
-- beforeCrossExam: 20–30 words transitioning from openings to cross-examination
-- beforeRebuttals: 20–30 words transitioning to rebuttals
-- audienceQuestions: Exactly ${AUDIENCE_QUESTIONS_COUNT} short spoken questions (each 15–25 words) drawn from the key tensions. Each starts with "I'd like to ask..." or "For our agents..."
-- beforeClosing: 20–30 words transitioning to closing arguments
-- verdict: 80–120 words — the balanced moderator verdict synthesising all perspectives. This is the final word.
+- intro: 40-60 words welcoming audience and introducing the debate (set the stage)
+- beforeCrossExam: 20-30 words transitioning from openings to cross-examination
+- beforeRebuttals: 20-30 words transitioning to rebuttals
+- audienceQuestions: Exactly ${AUDIENCE_QUESTIONS_COUNT} short spoken questions (each 15-25 words) drawn from the key tensions. Each starts with "I'd like to ask..." or "For our agents..."
+- beforeClosing: 20-30 words transitioning to closing arguments
+- verdict: 80-120 words — the balanced moderator verdict synthesising all perspectives. This is the final word.
 
 Return ONLY valid JSON:
 {
@@ -298,31 +325,31 @@ Return ONLY valid JSON:
     const raw = await chatCompletionJSON<ModeratorLines>(
       [
         { role: 'system', content: 'You are a professional debate moderator. All output is spoken text. Return only valid JSON.' },
-        { role: 'user',   content: prompt },
+        { role: 'user', content: prompt },
       ],
-      { temperature: 0.60, maxTokens: 800, model: modelFor('voiceDebateModLines') }, // ← Part 56 NANO
+      { temperature: 0.60, maxTokens: 800, model: modelFor('voiceDebateModLines') },
     );
 
     return {
-      intro:             truncateToLimit(cleanForTTS(raw.intro ?? `Welcome to this AI debate on "${topic}".`), MAX_TURN_TEXT_CHARS),
-      beforeCrossExam:   truncateToLimit(cleanForTTS(raw.beforeCrossExam ?? 'Now let us move to cross-examination.'), 250),
-      beforeRebuttals:   truncateToLimit(cleanForTTS(raw.beforeRebuttals ?? 'Time now for rebuttals.'), 250),
+      intro: truncateToLimit(cleanForTTS(raw.intro ?? `Welcome to this AI debate on "${topic}".`), MAX_TURN_TEXT_CHARS),
+      beforeCrossExam: truncateToLimit(cleanForTTS(raw.beforeCrossExam ?? 'Now let us move to cross-examination.'), 250),
+      beforeRebuttals: truncateToLimit(cleanForTTS(raw.beforeRebuttals ?? 'Time now for rebuttals.'), 250),
       audienceQuestions: (raw.audienceQuestions ?? [])
         .slice(0, AUDIENCE_QUESTIONS_COUNT)
         .map(q => truncateToLimit(cleanForTTS(q), 250)),
       beforeClosing: truncateToLimit(cleanForTTS(raw.beforeClosing ?? 'We now move to closing arguments.'), 250),
-      verdict:       truncateToLimit(cleanForTTS(raw.verdict ?? (moderator?.balancedVerdict ?? 'Both sides have made compelling points.')), MAX_TURN_TEXT_CHARS),
+      verdict: truncateToLimit(cleanForTTS(raw.verdict ?? (moderator?.balancedVerdict ?? 'Both sides have made compelling points.')), MAX_TURN_TEXT_CHARS),
     };
   } catch {
     return {
-      intro:             `Welcome to this debate on "${topic}". Six AI agents will now present their perspectives on the central question: ${question}`,
-      beforeCrossExam:   'We now move into cross-examination. Agents, please address each other directly.',
-      beforeRebuttals:   'Time for rebuttals. Each agent will now respond to the challenges raised.',
+      intro: `Welcome to this debate on "${topic}". Six AI agents will now present their perspectives on the central question: ${question}`,
+      beforeCrossExam: 'We now move into cross-examination. Agents, please address each other directly.',
+      beforeRebuttals: 'Time for rebuttals. Each agent will now respond to the challenges raised.',
       audienceQuestions: Array.from({ length: AUDIENCE_QUESTIONS_COUNT }, (_, i) =>
         tensions[i] ? `For our agents: ${tensions[i]}` : 'How do you respond to the strongest counterargument against your position?'
       ),
       beforeClosing: 'We now hear closing arguments. Make your final case.',
-      verdict:       moderator?.balancedVerdict ?? 'After hearing all perspectives, the truth as always lies in the evidence.',
+      verdict: moderator?.balancedVerdict ?? 'After hearing all perspectives, the truth as always lies in the evidence.',
     };
   }
 }
@@ -330,10 +357,10 @@ Return ONLY valid JSON:
 // ─── ASSEMBLY: Build ordered VoiceDebateTurn array ────────────────────────────
 
 function assembleScript(
-  agentRoles:      DebateAgentRole[],
-  phase1Results:   AgentPhase1Raw[],
-  phase2Results:   AgentPhase2Raw[],
-  modLines:        ModeratorLines,
+  agentRoles: DebateAgentRole[],
+  phase1Results: AgentPhase1Raw[],
+  phase2Results: AgentPhase2Raw[],
+  modLines: ModeratorLines,
 ): { turns: VoiceDebateTurn[]; segments: DebateSegment[] } {
   const turns: VoiceDebateTurn[] = [];
   const segments: DebateSegment[] = [];
@@ -343,35 +370,35 @@ function assembleScript(
     if (!text?.trim()) return;
     const persona = VOICE_PERSONAS['moderator'];
     turns.push({
-      id:          nextId(),
-      turnIndex:   idx++,
+      id: nextId(),
+      turnIndex: idx++,
       segmentType: segType,
-      speaker:     'moderator',
+      speaker: 'moderator',
       speakerName: persona.displayName,
-      voice:       persona.voice,
-      text:        text.trim(),
-      durationMs:  estimateDurationMs(text),
+      voice: persona.voice,
+      text: text.trim(),
+      durationMs: estimateDurationMs(text),
     });
   }
 
   function addAgentTurn(
-    role:       DebateAgentRole,
-    text:       string,
-    segType:    DebateSegmentType,
+    role: DebateAgentRole,
+    text: string,
+    segType: DebateSegmentType,
     confidence?: number,
-    argRef?:    VoiceDebateTurn['argRef'],
+    argRef?: VoiceDebateTurn['argRef'],
   ): void {
     if (!text?.trim()) return;
     const persona = VOICE_PERSONAS[role];
     turns.push({
-      id:          nextId(),
-      turnIndex:   idx++,
+      id: nextId(),
+      turnIndex: idx++,
       segmentType: segType,
-      speaker:     role,
+      speaker: role,
       speakerName: persona.displayName,
-      voice:       persona.voice,
-      text:        text.trim(),
-      durationMs:  estimateDurationMs(text),
+      voice: persona.voice,
+      text: text.trim(),
+      durationMs: estimateDurationMs(text),
       confidence,
       argRef,
     });
@@ -379,11 +406,11 @@ function assembleScript(
 
   function markSegmentStart(type: DebateSegmentType, startIdx: number): void {
     segments.push({
-      id:           `seg-${type}`,
+      id: `seg-${type}`,
       type,
-      label:        SEGMENT_LABELS[type],
+      label: SEGMENT_LABELS[type],
       startTurnIdx: startIdx,
-      endTurnIdx:   startIdx,
+      endTurnIdx: startIdx,
     });
   }
 
@@ -467,12 +494,12 @@ function assembleScript(
     for (const question of modLines.audienceQuestions) {
       addModeratorTurn(question, 'qa');
 
-      const qIdx    = modLines.audienceQuestions.indexOf(question);
+      const qIdx = modLines.audienceQuestions.indexOf(question);
       const responder = agentRoles[qIdx % agentRoles.length];
-      const p2      = phase2Results.find(r => r.agentRole === responder);
-      const p1      = phase1Results.find(r => r.agentRole === responder);
+      const p2 = phase2Results.find(r => r.agentRole === responder);
+      const p1 = phase1Results.find(r => r.agentRole === responder);
 
-      const keyArg  = p1?.keyArguments?.[qIdx % (p1?.keyArguments?.length ?? 1)] ?? '';
+      const keyArg = p1?.keyArguments?.[qIdx % (p1?.keyArguments?.length ?? 1)] ?? '';
       if (keyArg) {
         const qaText = `${keyArg}. ${(p2?.rebuttalText ?? '').split('.')[0] ?? ''}`.trim();
         if (qaText.length > 20) {
@@ -507,11 +534,11 @@ function assembleScript(
 // ─── Main Export ──────────────────────────────────────────────────────────────
 
 export interface VoiceDebateScriptInput {
-  topic:          string;
-  question:       string;
-  perspectives:   DebatePerspective[];
-  moderator:      DebateModerator | null;
-  agentRoles:     DebateAgentRole[];
+  topic: string;
+  question: string;
+  perspectives: DebatePerspective[];
+  moderator: DebateModerator | null;
+  agentRoles: DebateAgentRole[];
   onPhaseProgress?: (label: string, agentName?: string) => void;
 }
 
@@ -521,6 +548,27 @@ export async function generateVoiceDebateScript(
   const { topic, question, perspectives, moderator, agentRoles, onPhaseProgress } = input;
 
   _turnId = 0;
+
+  // ── Gather web search context for each agent ─────────────────────────────
+
+  const searchContexts: Record<DebateAgentRole, string> = {} as Record<DebateAgentRole, string>;
+
+  for (const role of agentRoles) {
+    try {
+      const queries = buildDebateSearchQueries(topic, role);
+      // ── Part 58.2: Tavily replaces SerpAPI ──
+      const batches = await tavilySearchBatch(
+        queries,
+        undefined,
+        8,
+        'advanced',
+      );
+      searchContexts[role] = formatSearchContext(batches);
+    } catch (err) {
+      console.warn(`[VoiceDebateScriptAgent] Tavily search failed for ${role}:`, err);
+      searchContexts[role] = '';
+    }
+  }
 
   // ── PHASE 1 ──────────────────────────────────────────────────────────────
 
@@ -533,7 +581,7 @@ export async function generateVoiceDebateScript(
     if (!perspective) return;
 
     onPhaseProgress?.('Phase 1: Agents forming opening arguments...', VOICE_PERSONAS[role].displayName);
-    const result = await generatePhase1(topic, question, perspective);
+    const result = await generatePhase1(topic, question, perspective, searchContexts[role] || '');
     phase1Results.push(result);
   });
 
@@ -561,17 +609,21 @@ export async function generateVoiceDebateScript(
     onPhaseProgress?.('Phase 2: Generating rebuttals & cross-examination...', VOICE_PERSONAS[role].displayName);
 
     try {
-      const result = await generatePhase2(topic, question, perspective, phase1Results, perspectives);
+      const result = await generatePhase2(
+        topic, question, perspective,
+        phase1Results, perspectives,
+        searchContexts[role] || '',
+      );
       phase2Results.push(result);
     } catch (err) {
       console.warn(`[VoiceDebateScriptAgent] Phase 2 failed for ${role}:`, err);
       const p1 = phase1Results.find(r => r.agentRole === role);
       phase2Results.push({
-        agentRole:        role,
+        agentRole: role,
         crossExamTargets: [],
-        rebuttalText:     'I maintain my original position. The evidence I presented is clear and compelling.',
-        concessionText:   undefined,
-        closingText:      p1?.keyQuote ?? 'The evidence speaks for itself. My position stands.',
+        rebuttalText: 'I maintain my original position. The evidence I presented is clear and compelling.',
+        concessionText: undefined,
+        closingText: p1?.keyQuote ?? 'The evidence speaks for itself. My position stands.',
         updatedConfidence: p1?.confidence ?? perspectives.find(p => p.agentRole === role)?.confidence ?? 5,
       });
     }

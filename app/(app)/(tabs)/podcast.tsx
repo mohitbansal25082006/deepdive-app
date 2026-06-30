@@ -1,79 +1,63 @@
 // app/(app)/(tabs)/podcast.tsx
-// Part 39 FIXES applied to podcast tab:
-//
-// FIX 3 (series shows 0 episodes):
-//   - useFocusEffect now also calls refreshSeries() so series episode counts
-//     are re-fetched from DB every time the tab is focused.
-//
-// FIX 5 (save creation-screen suggestions):
-//   - After createSeries() succeeds, if suggestions were generated in the
-//     SeriesCreatorModal, generate() is called with the new seriesId to
-//     save those suggestions to the global cache. The series screen picks
-//     them up instantly without a second API call.
-//
-// FIX 6 (redirect to series after creation):
-//   - After createSeries() returns the new series, router.push navigates to
-//     the podcast-series screen for the new series immediately.
-//
-// SCROLL FIX: When Generate is tapped, ScrollView scrolls to top so the
-//   PodcastGenerationProgress card is immediately visible.
+// Part 58.2 — TAVILY API MIGRATION
+// Web search detection now uses EXPO_PUBLIC_TAVILY_API_KEY
 
 import React, {
   useState, useEffect, useCallback, useRef, useMemo,
-}                                           from 'react';
+} from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput,
   RefreshControl, KeyboardAvoidingView, Platform, Alert,
   Modal, ActivityIndicator, FlatList,
-}                                           from 'react-native';
-import { LinearGradient }                   from 'expo-linear-gradient';
-import { Ionicons }                         from '@expo/vector-icons';
-import { BlurView }                         from 'expo-blur';
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import Animated, {
   FadeIn, FadeInDown,
   useSharedValue, useAnimatedStyle,
   withRepeat, withSequence, withTiming, cancelAnimation,
-}                                           from 'react-native-reanimated';
-import { SafeAreaView }                     from 'react-native-safe-area-context';
-import { router, useFocusEffect }           from 'expo-router';
+} from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { router, useFocusEffect } from 'expo-router';
 
-import { COLORS, FONTS, SPACING, RADIUS }   from '../../../src/constants/theme';
-import { usePodcast }                       from '../../../src/hooks/usePodcast';
-import { usePodcastHistory }               from '../../../src/hooks/usePodcastHistory';
-import { usePodcastSeries }                from '../../../src/hooks/usePodcastSeries';
-import { useSeriesTopicSuggestions }        from '../../../src/hooks/usePodcastSeries';
-import { PodcastGenerationProgress }        from '../../../src/components/podcast/PodcastGenerationProgress';
-import { PodcastCard }                      from '../../../src/components/podcast/PodcastCard';
-import { WaveformVisualizer }               from '../../../src/components/podcast/WaveformVisualizer';
-import { VoiceStyleSelector }               from '../../../src/components/podcast/VoiceStyleSelector';
-import { ReportImportSheet }                from '../../../src/components/podcast/ReportImportSheet';
-import { SeriesCard }                       from '../../../src/components/podcast/SeriesCard';
-import { SeriesCreatorModal }               from '../../../src/components/podcast/SeriesCreatorModal';
-import { EpisodeArtwork }                  from '../../../src/components/podcast/EpisodeArtwork';
-import { AddToCollectionSheet }             from '../../../src/components/collections/AddToCollectionSheet';
-import { CreditBalance }                    from '../../../src/components/credits/CreditBalance';
-import { InsufficientCreditsModal }         from '../../../src/components/credits/InsufficientCreditsModal';
-import { useCreditGate }                    from '../../../src/hooks/useCreditGate';
+import { COLORS, FONTS, SPACING, RADIUS } from '../../../src/constants/theme';
+import { usePodcast } from '../../../src/hooks/usePodcast';
+import { usePodcastHistory } from '../../../src/hooks/usePodcastHistory';
+import { usePodcastSeries } from '../../../src/hooks/usePodcastSeries';
+import { useSeriesTopicSuggestions } from '../../../src/hooks/usePodcastSeries';
+import { PodcastGenerationProgress } from '../../../src/components/podcast/PodcastGenerationProgress';
+import { PodcastCard } from '../../../src/components/podcast/PodcastCard';
+import { WaveformVisualizer } from '../../../src/components/podcast/WaveformVisualizer';
+import { VoiceStyleSelector } from '../../../src/components/podcast/VoiceStyleSelector';
+import { ReportImportSheet } from '../../../src/components/podcast/ReportImportSheet';
+import { SeriesCard } from '../../../src/components/podcast/SeriesCard';
+import { SeriesCreatorModal } from '../../../src/components/podcast/SeriesCreatorModal';
+import { EpisodeArtwork } from '../../../src/components/podcast/EpisodeArtwork';
+import { AddToCollectionSheet } from '../../../src/components/collections/AddToCollectionSheet';
+import { CreditBalance } from '../../../src/components/credits/CreditBalance';
+import { InsufficientCreditsModal } from '../../../src/components/credits/InsufficientCreditsModal';
+import { useCreditGate } from '../../../src/hooks/useCreditGate';
 import {
   podcastDurationToFeature,
   podcastTotalCost,
   FEATURE_COSTS,
-}                                           from '../../../src/constants/credits';
+} from '../../../src/constants/credits';
 import {
   exportPodcastAsMP3, exportPodcastAsPDF, copyPodcastScriptToClipboard,
-}                                           from '../../../src/services/podcastExport';
+} from '../../../src/services/podcastExport';
 import {
   startRecording, stopRecording,
   transcribeAudio, requestMicrophonePermission, formatDuration as formatRecDuration,
-}                                           from '../../../src/services/voiceResearch';
-import { PODCAST_VOICE_PRESETS_V2 }         from '../../../src/constants/podcastV2';
-import { AUDIO_QUALITY_OPTIONS }            from '../../../src/constants/podcastV2';
-import type { Podcast, ResearchReport }     from '../../../src/types';
+} from '../../../src/services/voiceResearch';
+import { PODCAST_VOICE_PRESETS_V2 } from '../../../src/constants/podcastV2';
+import { AUDIO_QUALITY_OPTIONS } from '../../../src/constants/podcastV2';
+import type { Podcast, ResearchReport } from '../../../src/types';
 import type {
   PodcastVoicePresetV2Def,
   AudioQuality,
   CreateSeriesInput,
-}                                           from '../../../src/types/podcast_v2';
+} from '../../../src/types/podcast_v2';
 
 // ─── Duration options ──────────────────────────────────────────────────────────
 
@@ -146,7 +130,7 @@ function ShareSheet({
   );
 }
 
-// ─── Voice Input Button ────────────────────────────────────────────────────────
+// ─── Voice Input Button ───────────────────────────────────────────────────────
 
 function VoiceInputButton({
   onTranscribed, disabled,
@@ -336,21 +320,17 @@ export default function PodcastScreen() {
     refresh: refreshSeries,
   } = usePodcastSeries();
 
-  // FIX 5: Access the suggestion hook to save suggestions after series creation
   const { suggestions: pendingSuggestions, generate: saveSuggestionsToCache } = useSeriesTopicSuggestions();
 
-  // SCROLL FIX: ref for the main ScrollView so we can scroll to top on generate
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // FIX 3: Refresh both episodes and series when tab is focused
   useFocusEffect(
     useCallback(() => {
       refresh();
-      refreshSeries(); // FIX 3: ensures series episode counts are up-to-date
+      refreshSeries();
     }, [])
   );
 
-  // Form state
   const [topic,              setTopic]              = useState('');
   const [selectedPresetId,   setSelectedPresetId]   = useState('casual');
   const [selectedDuration,   setSelectedDuration]   = useState(10);
@@ -366,7 +346,11 @@ export default function PodcastScreen() {
 
   const { balance, guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  const hasSerpKey = !!(process.env.EXPO_PUBLIC_SERPAPI_KEY?.trim() && process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here');
+  // Part 58.2: Check Tavily API key availability
+  const hasTavilyKey = !!(
+    process.env.EXPO_PUBLIC_TAVILY_API_KEY?.trim() &&
+    process.env.EXPO_PUBLIC_TAVILY_API_KEY !== 'your_tavily_api_key_here'
+  );
 
   const openShareSheet  = useCallback((podcast: Podcast) => { setShareTarget(podcast); setShareSheetOpen(true); }, []);
   const closeShareSheet = useCallback(() => { setShareSheetOpen(false); setTimeout(() => setShareTarget(null), 400); }, []);
@@ -375,7 +359,7 @@ export default function PodcastScreen() {
     if (progressPhase === 'done' && genState.podcast) {
       upsertPodcast(genState.podcast);
       refresh();
-      refreshSeries(); // FIX 3: update episode counts after generation
+      refreshSeries();
     }
   }, [progressPhase]);
 
@@ -411,7 +395,6 @@ export default function PodcastScreen() {
     );
     if (!ok) return;
 
-    // SCROLL FIX: scroll to top so the progress card is visible immediately
     scrollViewRef.current?.scrollTo({ y: 0, animated: true });
 
     const config = {
@@ -454,8 +437,6 @@ export default function PodcastScreen() {
   const showBanner   = progressPhase === 'done' && genState.podcast !== null;
   const hasLibrary   = completedPodcasts.length > 0 || series.length > 0;
 
-  // ─── Series Picker Modal ────────────────────────────────────────────────────
-
   const SeriesPickerModal = () => (
     <Modal visible={showSeriesPicker} animationType="slide" transparent onRequestClose={() => setShowSeriesPicker(false)}>
       <BlurView intensity={20} style={{ flex: 1, backgroundColor: 'rgba(10,10,26,0.7)', justifyContent: 'flex-end' }}>
@@ -476,7 +457,6 @@ export default function PodcastScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={{ color: selectedSeriesId === s.id ? s.accentColor : COLORS.textPrimary, fontSize: FONTS.sizes.sm, fontWeight: '600' }}>{s.name}</Text>
-                {/* FIX 3: shows live episodeCount from DB */}
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{s.episodeCount} episodes</Text>
               </View>
               {selectedSeriesId === s.id && <Ionicons name="checkmark-circle" size={20} color={s.accentColor} />}
@@ -496,7 +476,6 @@ export default function PodcastScreen() {
     <LinearGradient colors={[COLORS.background, COLORS.backgroundCard]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-          {/* SCROLL FIX: ref attached here */}
           <ScrollView
             ref={scrollViewRef}
             contentContainerStyle={{ padding: SPACING.xl, paddingBottom: 140 }}
@@ -505,7 +484,6 @@ export default function PodcastScreen() {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { refresh(); refreshSeries(); }} tintColor={COLORS.primary} />}
           >
 
-            {/* Header */}
             <Animated.View entering={FadeIn.duration(600)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.xl }}>
               <View>
                 <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.xl, fontWeight: '800' }}>Podcast Studio</Text>
@@ -515,10 +493,11 @@ export default function PodcastScreen() {
                       ? `${completedPodcasts.length} episode${completedPodcasts.length !== 1 ? 's' : ''} · ${totalMinutes} min total`
                       : 'Turn research into audio episodes'}
                   </Text>
-                  {hasSerpKey && (
+                  {/* Part 58.2: Tavily badge */}
+                  {hasTavilyKey && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.success}12`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}25` }}>
                       <Ionicons name="globe-outline" size={10} color={COLORS.success} />
-                      <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>WEB</Text>
+                      <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>TAVILY</Text>
                     </View>
                   )}
                 </View>
@@ -531,7 +510,6 @@ export default function PodcastScreen() {
               </View>
             </Animated.View>
 
-            {/* Episode Ready Banner */}
             {showBanner && genState.podcast && (
               <EpisodeReadyBanner
                 title={genState.podcast.title} duration={genState.podcast.durationSeconds}
@@ -541,17 +519,15 @@ export default function PodcastScreen() {
               />
             )}
 
-            {/* Generation Progress */}
             {showProgress && (
               <PodcastGenerationProgress
                 isGeneratingScript={genState.isGeneratingScript} isGeneratingAudio={genState.isGeneratingAudio}
                 scriptGenerated={genState.scriptGenerated} audioProgress={genState.audioProgress}
                 progressMessage={genState.progressMessage} targetDurationMins={selectedDuration}
-                webSearchActive={hasSerpKey && !importedReport} onCancel={handleCancel}
+                webSearchActive={hasTavilyKey && !importedReport} onCancel={handleCancel}
               />
             )}
 
-            {/* Error */}
             {progressPhase === 'error' && genState.error && (
               <Animated.View entering={FadeIn.duration(400)} style={{ backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md, borderWidth: 1, borderColor: `${COLORS.error}30`, flexDirection: 'row', gap: 10 }}>
                 <Ionicons name="alert-circle-outline" size={18} color={COLORS.error} />
@@ -562,7 +538,6 @@ export default function PodcastScreen() {
               </Animated.View>
             )}
 
-            {/* Library Section */}
             {hasLibrary && (
               <Animated.View entering={FadeInDown.duration(400)}>
                 {(statsV2 || totalMinutes > 0) && (
@@ -578,7 +553,6 @@ export default function PodcastScreen() {
                         <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.xs, fontWeight: '600' }}>New Series</Text>
                       </TouchableOpacity>
                     </View>
-                    {/* FIX 3: SeriesCard shows live episodeCount from series state */}
                     {series.map((s, i) => (
                       <SeriesCard key={s.id} series={s} index={i}
                         onPress={() => router.push({ pathname: '/(app)/podcast-series' as any, params: { seriesId: s.id } })}
@@ -590,7 +564,6 @@ export default function PodcastScreen() {
               </Animated.View>
             )}
 
-            {/* Create Form */}
             {showForm && (
               <Animated.View entering={FadeInDown.duration(400).delay(hasLibrary ? 100 : 0)}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.sm }}>
@@ -619,7 +592,6 @@ export default function PodcastScreen() {
                   );
                 })()}
 
-                {/* Topic input */}
                 <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg, borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.md, overflow: 'hidden' }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', padding: SPACING.md, gap: 10 }}>
                     <Ionicons name="mic-outline" size={20} color={COLORS.primary} style={{ marginTop: 2 }} />
@@ -656,7 +628,6 @@ export default function PodcastScreen() {
                   </View>
                 </View>
 
-                {/* Voice Style */}
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Voice Style</Text>
                 <View style={{ marginBottom: SPACING.md }}>
                   <VoiceStyleSelector selectedPresetId={selectedPresetId} onSelectPreset={(p: PodcastVoicePresetV2Def) => setSelectedPresetId(p.id)} variant="grid" />
@@ -671,7 +642,6 @@ export default function PodcastScreen() {
                   </View>
                 )}
 
-                {/* Duration */}
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Episode Length</Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
                   {DURATION_OPTIONS.map(opt => {
@@ -691,7 +661,6 @@ export default function PodcastScreen() {
                   })}
                 </View>
 
-                {/* Audio Quality */}
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', marginBottom: SPACING.sm }}>Audio Quality</Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.xl }}>
                   {AUDIO_QUALITY_OPTIONS.map(opt => {
@@ -721,7 +690,6 @@ export default function PodcastScreen() {
                   </View>
                 )}
 
-                {/* Generate Button */}
                 <TouchableOpacity onPress={handleGenerate} disabled={isConsuming} activeOpacity={0.85}>
                   <LinearGradient colors={importedReport ? [COLORS.primary, '#4A42CC'] : COLORS.gradientPrimary}
                     style={{ borderRadius: RADIUS.lg, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
@@ -740,7 +708,6 @@ export default function PodcastScreen() {
               </Animated.View>
             )}
 
-            {/* Past Episodes */}
             {(podcasts.length > 0 || loading) && (
               <View style={{ marginTop: SPACING.xl }}>
                 <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: SPACING.sm }}>All Episodes</Text>
@@ -782,7 +749,6 @@ export default function PodcastScreen() {
 
       <InsufficientCreditsModal visible={!!insufficientInfo} info={insufficientInfo} onClose={clearInsufficient} />
 
-      {/* FIX 5 + FIX 6: onCreate saves suggestions to cache and redirects to series */}
       <SeriesCreatorModal
         visible={showSeriesCreator}
         onClose={() => setShowSeriesCreator(false)}
@@ -792,14 +758,9 @@ export default function PodcastScreen() {
           if (newSeries) {
             setSelectedSeriesId(newSeries.id);
             setShowSeriesCreator(false);
-
-            // FIX 5: Save any suggestions from the creation screen to the global
-            // cache so the series screen displays them instantly without re-calling API
             if (input.name.trim()) {
               saveSuggestionsToCache(input.name, input.description, newSeries.id);
             }
-
-            // FIX 6: Navigate to the new series immediately
             router.push({
               pathname: '/(app)/podcast-series' as any,
               params:   { seriesId: newSeries.id },

@@ -1,34 +1,6 @@
 // app/(app)/podcast-series.tsx
-// Part 39 FIXES applied:
-//
-// FIX 1 (voice quality in series generator):
-//   InlineEpisodeGenerator now includes the Audio Quality selector, matching
-//   the main podcast tab. The quality add-on credit cost is shown in the
-//   generate button.
-//
-// FIX 3 (series episode count):
-//   refresh() now calls usePodcastSeries().refresh() in addition to
-//   useSeriesDetail().refresh() so the podcast tab's series list also updates.
-//
-// FIX 4 (deleted series not removed from tab):
-//   handleDeleteSeries() now calls refreshSeriesList() from usePodcastSeries()
-//   BEFORE router.back() so the tab's series list is already updated when
-//   the user arrives back on the podcast tab.
-//
-// FIX 5 (AI starter ideas persist + regenerate button):
-//   - InitialSuggestionsPanel receives an onRegenerate prop and shows a
-//     "↻ Regenerate" button after the first load.
-//   - loadInitialSuggestions(force=true) is wired to the regenerate button.
-//   - Suggestions are cached globally in usePodcastSeries so navigating away
-//     and back does NOT re-generate — they appear instantly from cache.
-//   - SeriesCreatorModal suggestions are now saved to the cache via seriesId
-//     so they appear on the series screen immediately after creation.
-//
-// GENERATION FIXES:
-//   - InlineEpisodeGenerator now passes webSearchActive correctly (reads
-//     EXPO_PUBLIC_SERPAPI_KEY just like the main podcast tab).
-//   - Cancel button in InlineEpisodeGenerator now shows a confirmation Alert
-//     ("Keep Going" / "Stop") before calling reset, matching the main tab UX.
+// Part 58.2 — TAVILY API MIGRATION
+// Web search detection now uses EXPO_PUBLIC_TAVILY_API_KEY
 
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import {
@@ -173,7 +145,6 @@ function EpisodeRow({
 }
 
 // ─── Initial Suggestions Panel ─────────────────────────────────────────────────
-// FIX 5: Added onRegenerate prop and Regenerate button
 
 function InitialSuggestionsPanel({
   suggestions, loadingInitial, accentColor, onSelectTopic, onRegenerate,
@@ -199,7 +170,6 @@ function InitialSuggestionsPanel({
 
   return (
     <Animated.View entering={FadeIn.duration(500)} style={{ marginBottom: SPACING.lg }}>
-      {/* Header row with Regenerate button */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.sm }}>
         <Ionicons name="sparkles" size={14} color={accentColor} />
         <Text style={{ color: accentColor, fontSize: FONTS.sizes.sm, fontWeight: '700', flex: 1 }}>
@@ -208,7 +178,6 @@ function InitialSuggestionsPanel({
         <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, marginRight: 4 }}>
           Tap to use
         </Text>
-        {/* FIX 5: Regenerate button */}
         <TouchableOpacity
           onPress={onRegenerate}
           disabled={loadingInitial}
@@ -313,7 +282,6 @@ function AdvancedRecommendationPanel({
           borderWidth: 1, borderColor: `${accentColor}30`,
         }}
       >
-        {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: SPACING.sm }}>
           <View style={{
             width: 34, height: 34, borderRadius: 10,
@@ -473,9 +441,7 @@ function AdvancedRecommendationPanel({
 }
 
 // ─── Inline Episode Generator ──────────────────────────────────────────────────
-// FIX 1:   Added Audio Quality selector with credit cost display.
-// GEN FIX: webSearchActive now reads EXPO_PUBLIC_SERPAPI_KEY (same as podcast tab).
-// GEN FIX: Cancel button shows Alert confirmation before stopping.
+// Part 58.2: webSearchActive now reads EXPO_PUBLIC_TAVILY_API_KEY
 
 interface InlineGeneratorProps {
   seriesId:      string;
@@ -492,25 +458,22 @@ function InlineEpisodeGenerator({
   const [topic,            setTopic]            = useState(prefillTopic ?? '');
   const [selectedPresetId, setSelectedPresetId] = useState('casual');
   const [selectedDuration, setSelectedDuration] = useState(10);
-  // FIX 1: Audio quality state
   const [audioQuality,     setAudioQuality]     = useState<AudioQuality>('standard');
 
   const { state: genState, isGenerating, progressPhase, generateFromTopic, reset } = usePodcast();
   const { upsertPodcast, refresh: refreshHistory } = usePodcastHistory();
   const { guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  // GEN FIX: detect SerpAPI availability exactly as the main podcast tab does
-  const hasSerpKey = !!(
-    process.env.EXPO_PUBLIC_SERPAPI_KEY?.trim() &&
-    process.env.EXPO_PUBLIC_SERPAPI_KEY !== 'your_serpapi_key_here'
+  // Part 58.2: Check Tavily API key availability
+  const hasTavilyKey = !!(
+    process.env.EXPO_PUBLIC_TAVILY_API_KEY?.trim() &&
+    process.env.EXPO_PUBLIC_TAVILY_API_KEY !== 'your_tavily_api_key_here'
   );
 
-  // Update topic if a suggestion is selected
   useEffect(() => {
     if (prefillTopic) setTopic(prefillTopic);
   }, [prefillTopic]);
 
-  // On completion, refresh series + history
   useEffect(() => {
     if (progressPhase === 'done' && genState.podcast) {
       upsertPodcast(genState.podcast);
@@ -521,7 +484,6 @@ function InlineEpisodeGenerator({
 
   const selectedPreset = PODCAST_VOICE_PRESETS_V2.find(p => p.id === selectedPresetId) ?? PODCAST_VOICE_PRESETS_V2[0];
 
-  // FIX 1: Total cost includes duration + quality add-on
   const totalCreditCost = podcastTotalCost(selectedDuration, audioQuality);
   const baseCreditCost  = FEATURE_COSTS[podcastDurationToFeature(selectedDuration)];
   const qualityAddOn    = totalCreditCost - baseCreditCost;
@@ -533,7 +495,6 @@ function InlineEpisodeGenerator({
       return;
     }
 
-    // FIX 1: Use guardedConsumeTotal to handle quality add-on correctly
     const qualityLabel =
       audioQuality === 'high'     ? ' · High Quality'     :
       audioQuality === 'lossless' ? ' · Lossless Quality' : '';
@@ -562,14 +523,13 @@ function InlineEpisodeGenerator({
         speakers:      selectedPreset.speakers,
         speakerCount:  selectedPreset.speakerCount,
         presetStyleV2: selectedPreset.presetStyleV2,
-        audioQuality,         // FIX 1: pass quality
+        audioQuality,
         seriesId,
         episodeNumber: episodeNum,
       }
     );
   };
 
-  // GEN FIX: Confirmation alert before cancelling — same UX as main podcast tab
   const handleCancel = useCallback(() => {
     Alert.alert('Cancel Generation', 'Stop generating this podcast?', [
       { text: 'Keep Going', style: 'cancel' },
@@ -588,7 +548,6 @@ function InlineEpisodeGenerator({
           borderWidth: 1, borderColor: `${accentColor}30`,
         }}
       >
-        {/* Header */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: SPACING.md }}>
           <View style={{
             width: 36, height: 36, borderRadius: 11,
@@ -607,7 +566,6 @@ function InlineEpisodeGenerator({
               {seriesName} · Episode {episodeNum}
             </Text>
           </View>
-          {/* GEN FIX: cancel button now calls handleCancel (shows confirmation) */}
           {isGenerating && (
             <TouchableOpacity onPress={handleCancel} style={{ padding: 6 }}>
               <Ionicons name="stop-circle-outline" size={20} color={COLORS.error} />
@@ -615,7 +573,6 @@ function InlineEpisodeGenerator({
           )}
         </View>
 
-        {/* Progress overlay — GEN FIX: webSearchActive reads real SerpAPI key */}
         {showProgress && (
           <View style={{ marginBottom: SPACING.md }}>
             <PodcastGenerationProgress
@@ -625,13 +582,12 @@ function InlineEpisodeGenerator({
               audioProgress={genState.audioProgress}
               progressMessage={genState.progressMessage}
               targetDurationMins={selectedDuration}
-              webSearchActive={hasSerpKey}
+              webSearchActive={hasTavilyKey}
               onCancel={handleCancel}
             />
           </View>
         )}
 
-        {/* Error */}
         {progressPhase === 'error' && genState.error && (
           <View style={{
             backgroundColor: `${COLORS.error}10`, borderRadius: RADIUS.lg,
@@ -644,7 +600,6 @@ function InlineEpisodeGenerator({
 
         {!isGenerating && (
           <>
-            {/* Topic input */}
             <View style={{
               backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.lg,
               borderWidth: 1, borderColor: COLORS.border, marginBottom: SPACING.sm,
@@ -664,7 +619,6 @@ function InlineEpisodeGenerator({
               />
             </View>
 
-            {/* Voice style */}
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 }}>
               Voice Style
             </Text>
@@ -676,7 +630,6 @@ function InlineEpisodeGenerator({
               />
             </View>
 
-            {/* Duration */}
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 }}>
               Episode Length
             </Text>
@@ -716,7 +669,6 @@ function InlineEpisodeGenerator({
               })}
             </View>
 
-            {/* FIX 1: Audio Quality selector */}
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', marginBottom: 6 }}>
               Audio Quality
             </Text>
@@ -763,7 +715,6 @@ function InlineEpisodeGenerator({
               })}
             </View>
 
-            {/* FIX 1: Cost breakdown when quality add-on applies */}
             {audioQuality !== 'standard' && (
               <View style={{
                 flexDirection: 'row', alignItems: 'center', gap: 8,
@@ -779,7 +730,6 @@ function InlineEpisodeGenerator({
               </View>
             )}
 
-            {/* Generate button */}
             <TouchableOpacity
               onPress={handleGenerate}
               disabled={isConsuming || !topic.trim()}
@@ -833,7 +783,6 @@ export default function PodcastSeriesScreen() {
     loadInitialSuggestions,
   } = useSeriesDetail(seriesId ?? null);
 
-  // FIX 3 & 4: Get remove and refresh from usePodcastSeries so tab updates too
   const { removeEpisode, update, remove, refresh: refreshSeriesList } = usePodcastSeries();
 
   const [removingId,    setRemovingId]    = useState<string | null>(null);
@@ -864,7 +813,6 @@ export default function PodcastSeriesScreen() {
           onPress: async () => {
             setRemovingId(episode.podcastId);
             await removeEpisode(episode.podcastId, seriesId ?? '');
-            // FIX 3: refresh both detail and the main series list
             refresh();
             setRemovingId(null);
           },
@@ -892,8 +840,6 @@ export default function PodcastSeriesScreen() {
     }
   }, [seriesId, update, refresh]);
 
-  // FIX 4: Delete calls refreshSeriesList() before navigating back so the
-  // podcast tab's series section is already updated when the user lands there
   const handleDeleteSeries = useCallback(() => {
     if (!detail) return;
     const episodeCount = detail.episodes.length;
@@ -910,8 +856,6 @@ export default function PodcastSeriesScreen() {
           text: 'Delete Series', style: 'destructive',
           onPress: async () => {
             await remove(seriesId ?? '');
-            // FIX 4: refreshSeriesList() filters the deleted series from
-            // local state immediately so the tab updates without re-fetch
             await refreshSeriesList();
             router.back();
           },
@@ -930,7 +874,6 @@ export default function PodcastSeriesScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={{ flex: 1 }}
         >
-          {/* Header */}
           <View style={{
             flexDirection: 'row', alignItems: 'center',
             paddingHorizontal: SPACING.xl, paddingVertical: SPACING.md, gap: SPACING.sm,
@@ -1005,7 +948,6 @@ export default function PodcastSeriesScreen() {
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              {/* Series header card */}
               <Animated.View entering={FadeIn.duration(400)}>
                 <LinearGradient
                   colors={[`${accentColor}20`, `${accentColor}08`]}
@@ -1039,14 +981,12 @@ export default function PodcastSeriesScreen() {
                     </View>
                   </View>
 
-                  {/* Stats strip */}
                   <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
                     <View style={{
                       backgroundColor: `${accentColor}15`, borderRadius: RADIUS.lg,
                       paddingHorizontal: 12, paddingVertical: 7,
                       alignItems: 'center', flex: 1,
                     }}>
-                      {/* FIX 3: show live episodeCount from DB */}
                       <Text style={{ color: accentColor, fontSize: FONTS.sizes.md, fontWeight: '800' }}>
                         {detail.series.episodeCount}
                       </Text>
@@ -1084,19 +1024,16 @@ export default function PodcastSeriesScreen() {
                 </LinearGradient>
               </Animated.View>
 
-              {/* Initial suggestions (0 episodes) */}
               {detail.episodes.length === 0 && (
                 <InitialSuggestionsPanel
                   suggestions={initialSuggestions}
                   loadingInitial={loadingInitial}
                   accentColor={accentColor}
                   onSelectTopic={handleSelectTopic}
-                  // FIX 5: regenerate calls loadInitialSuggestions with force=true
                   onRegenerate={() => loadInitialSuggestions(true)}
                 />
               )}
 
-              {/* Advanced recommendations (1+ episodes) */}
               {detail.episodes.length >= 1 && (
                 <AdvancedRecommendationPanel
                   recommendations={recommendations}
@@ -1107,7 +1044,6 @@ export default function PodcastSeriesScreen() {
                 />
               )}
 
-              {/* Episodes list */}
               {detail.episodes.length > 0 && (
                 <>
                   <Text style={{
@@ -1139,7 +1075,6 @@ export default function PodcastSeriesScreen() {
                 </>
               )}
 
-              {/* Empty state */}
               {detail.episodes.length === 0 && !showGenerator && initialSuggestions.length === 0 && !loadingInitial && (
                 <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
                   <View style={{
@@ -1172,7 +1107,6 @@ export default function PodcastSeriesScreen() {
                 </View>
               )}
 
-              {/* Inline generator */}
               {showGenerator && seriesId && detail && (
                 <View style={{ marginTop: SPACING.md }}>
                   <InlineEpisodeGenerator
@@ -1184,7 +1118,6 @@ export default function PodcastSeriesScreen() {
                     onComplete={() => {
                       setShowGenerator(false);
                       setSelectedTopic('');
-                      // FIX 3: refresh both detail and the main series list
                       refresh();
                       refreshSeriesList();
                     }}
@@ -1196,7 +1129,6 @@ export default function PodcastSeriesScreen() {
         </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* Edit Modal */}
       {detail && (
         <SeriesCreatorModal
           visible={showEditModal}

@@ -1,6 +1,6 @@
 // src/components/podcast/PodcastGenerationProgress.tsx
-// Part 19 — Updated with full theme integration
-// All colors now use the dynamic COLORS singleton
+// Part 58.2 — TAVILY API MIGRATION
+// Updated badge text from "SerpAPI" to "Tavily" for web search indication
 
 import React, { useEffect } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
@@ -299,7 +299,7 @@ export function PodcastGenerationProgress({
           <PhaseStep
             icon="search"
             label="Searching the web"
-            sublabel="Pulling latest facts & data via SerpAPI"
+            sublabel="Pulling latest facts & data via Tavily"
             state={searchState}
           />
         )}
@@ -401,7 +401,7 @@ export function PodcastGenerationProgress({
             fontSize:   FONTS.sizes.xs,
             fontWeight: '600',
           }}>
-            Script grounded with live web research
+            Script grounded with Tavily web research
           </Text>
         </View>
       )}

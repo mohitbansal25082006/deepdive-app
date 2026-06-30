@@ -1,40 +1,11 @@
 // src/hooks/useCitationManager.ts
-// Part 38 — Citation Manager
-// Part 38 UPDATE:
-//   UPDATE #1 — generateCitations(): new function that uses SerpAPI to find
-//               real sources then OpenAI to format them as proper citations.
-//               Credit-gated (2 credits: paper_ai_generate_citations — single call).
-//   REMOVED    — detectUsageIssues() removed (replaced by generateCitations).
-//   FIX #1    — importFromUrl uses OpenAI-powered fetchCitationFromUrl.
-//   FIX #2    — onCitationsChange(citations, style) rebuilds references section.
-//   FIX #3    — All mutations persist citations to DB via savePaperCitations.
-// Part 38d FIXES:
-//   FIX #STALE — syncUpstream now uses functional setCitations updater so that
-//                addCitation / deleteCitation / move never operate on a stale
-//                citations snapshot. This fixes AI-generated citations not
-//                appearing in the References section when added one-by-one or
-//                via "Add All".
-//   FIX #CALLBACK — onCitationsChange and scheduleSave are called with the
-//                   authoritative next array computed inside the updater,
-//                   guaranteeing the references section rebuild always sees
-//                   the full, up-to-date list.
-// Part 38e CREDIT FIX:
-//   ROOT CAUSE — generateCitations() was calling guardedConsume('paper_ai_fix_citations')
-//                TWICE (2 × 1 cr = 2 cr). Each call fetches a fresh DB balance,
-//                but because the Supabase consume_credits RPC is async, the second
-//                call sometimes executes before the first deduction is committed,
-//                reading a stale balance and creating a DUPLICATE transaction in
-//                the credit ledger. Users saw 1 credit deducted instead of 2
-//                (one call blocked by the race) OR 2 separate 1-cr transactions
-//                (both succeeded) OR 4 transactions (retry scenario).
-//   FIX — Use a single guardedConsume('paper_ai_generate_citations') call which
-//          deducts exactly 2 credits in ONE atomic RPC call. No race, no duplicates,
-//          correct amount every time, single clean transaction in the ledger.
+// Part 58.2 — TAVILY API MIGRATION
+// Updated to use tavilySearchBatch instead of serpSearchBatch
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { fetchCitationFromUrl, savePaperCitations }          from '../services/paperEditorService';
-import { serpSearchBatch }                                   from '../services/serpApiClient';
+import { tavilySearchBatch }                                 from '../services/tavilyClient';
 import { openaiClient }                                      from '../services/openaiClient';
 import { useCreditGate }                                     from './useCreditGate';
 import type { Citation, AcademicCitationStyle, AcademicSection } from '../types';
@@ -184,28 +155,23 @@ export function useCitationManager(
   }, [paperId, userId]);
 
   // ── syncUpstream ──────────────────────────────────────────────────────────
-  // KEY FIX: This is called with the already-computed `next` array (never
-  // derived from the `citations` state variable), so it is safe to call from
-  // inside a functional setCitations updater where the closure would otherwise
-  // be stale. The function only touches refs and the debounce timer.
   const syncUpstream = useCallback((next: ManagedCitation[]) => {
     const style = citationStyleRef.current;
     const plain: Citation[] = next.map(({ ...c }) => c as Citation);
     onCitationsChangeRef.current(plain, style);
     scheduleSave(plain);
-  }, [scheduleSave]); // stable — only depends on scheduleSave which is also stable
+  }, [scheduleSave]);
 
   // ── Style switch ─────────────────────────────────────────────────────────
   const setCitationStyle = useCallback((style: AcademicCitationStyle) => {
     setCitationStyleState(style);
     citationStyleRef.current = style;
     onStyleChange(style);
-    // Re-notify upstream with current citations under the new style
     setCitations(prev => {
       const plain: Citation[] = prev.map(c => c as Citation);
       onCitationsChangeRef.current(plain, style);
       scheduleSave(plain);
-      return prev; // no structural change to citations array
+      return prev;
     });
   }, [onStyleChange, scheduleSave]);
 
@@ -294,28 +260,8 @@ export function useCitationManager(
 
   // ── AI Citation Generator ─────────────────────────────────────────────
   //
-  // CREDIT FIX (Part 38e):
-  // Previously this called guardedConsume('paper_ai_fix_citations') TWICE to
-  // achieve a 2-credit cost. This was broken because:
-  //
-  //   1. guardedConsume() calls consume() in CreditsContext, which calls
-  //      fetchUserCredits() (async DB fetch) THEN consumeCredits() RPC.
-  //   2. When called twice in rapid succession, the second fetch may complete
-  //      BEFORE the first consumeCredits() RPC commits to the DB, so the second
-  //      call sees the pre-deduction balance and either:
-  //        a. Succeeds → two separate 1-cr transactions logged (correct total,
-  //           but two ledger entries instead of one)
-  //        b. Incorrectly passes the balance check but the RPC then deducts
-  //           correctly → still two transactions
-  //        c. On retry/re-render → up to 4 transactions total
-  //   3. Users reported seeing only 1 credit deducted sometimes (when the second
-  //      guardedConsume saw insufficient balance due to optimistic UI update).
-  //
-  // FIX: Single guardedConsume('paper_ai_generate_citations') call.
-  //   - FEATURE_COSTS['paper_ai_generate_citations'] = 2
-  //   - consume_credits RPC deducts 2 in ONE atomic DB transaction
-  //   - ONE transaction in the credit ledger, always exactly 2 credits
-  //   - No race conditions possible
+  // Part 58.2: Updated to use tavilySearchBatch instead of serpSearchBatch
+  // Tavily provides better quality results with built-in relevance scoring
   //
   const generateCitations = useCallback(async (
     query: string,
@@ -325,26 +271,29 @@ export function useCitationManager(
 
     try {
       // ── Single atomic 2-credit deduction ─────────────────────────────
-      // Uses paper_ai_generate_citations (cost = 2) via one guardedConsume call.
-      // This guarantees exactly one DB transaction for exactly 2 credits.
-      // No race conditions, no duplicate transactions, correct amount always.
       const creditOk = await guardedConsume('paper_ai_generate_citations');
       if (!creditOk) {
         setGenerateCitationsError('Insufficient credits. You need 2 credits to generate citations.');
         return [];
       }
 
-      // ── SerpAPI search (2 varied queries for broader coverage) ────────
+      // ── Part 58.2: Tavily search (2 varied queries for broader coverage) ──
       const queries = [
         query,
         `${query} research study academic`,
       ];
 
-      let searchBatches: Awaited<ReturnType<typeof serpSearchBatch>> = [];
+      let searchBatches: Awaited<ReturnType<typeof tavilySearchBatch>> = [];
       try {
-        searchBatches = await serpSearchBatch(queries, undefined, 5);
+        // Use Tavily with advanced depth for better quality results
+        searchBatches = await tavilySearchBatch(
+          queries,
+          undefined, // no progress callback
+          5,         // max results per query
+          'advanced' // use advanced depth for better quality citations
+        );
       } catch (searchErr) {
-        console.warn('[useCitationManager] SerpAPI error, falling back to OpenAI-only:', searchErr);
+        console.warn('[useCitationManager] Tavily error, falling back to OpenAI-only:', searchErr);
       }
 
       // Flatten + deduplicate by URL
@@ -379,7 +328,7 @@ export function useCitationManager(
       const prompt = serpContext
         ? `I am researching: "${query}"
 
-Here are ${Math.min(allResults.length, 10)} search results:
+Here are ${Math.min(allResults.length, 10)} search results from Tavily:
 
 ${serpContext}
 

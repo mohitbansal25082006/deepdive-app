@@ -1,6 +1,14 @@
 // src/services/imageExtractor.ts
-// Extracts and curates image URLs from SerpAPI search results.
+// Part 58.2 — TAVILY API MIGRATION
+// Updated comments to reflect Tavily instead of SerpAPI.
+// No functional changes needed — Tavily returns images in the same format
+// (thumbnail, imageUrl, title, sourceUrl) as SerpAPI did.
+//
+// Extracts and curates image URLs from Tavily search results.
 // Filters out low-quality, broken, or irrelevant thumbnails.
+//
+// Tavily's includeImages flag returns image URLs directly in the search response,
+// so the extraction logic works identically to SerpAPI.
 
 import { SearchBatch, SourceImage } from '../types';
 
@@ -23,6 +31,15 @@ function isValidImageUrl(url: string): boolean {
   }
 }
 
+/**
+ * Extract source images from Tavily search results.
+ * 
+ * Part 58.2: Tavily's search results include image URLs via the includeImages
+ * flag. These are available as either thumbnail or imageUrl fields on the
+ * SearchResult type, which is shared between SerpAPI and Tavily implementations.
+ * 
+ * The extraction logic is identical regardless of which search API was used.
+ */
 export function extractSourceImages(
   searchBatches: SearchBatch[],
   maxImages = 12

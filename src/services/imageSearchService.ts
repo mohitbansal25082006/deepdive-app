@@ -1,26 +1,13 @@
 // src/services/imageSearchService.ts
-// Part 30 — Online Image Search via SerpAPI (Google Images)
-// ─────────────────────────────────────────────────────────────────────────────
-// Uses the existing EXPO_PUBLIC_SERPAPI_KEY from .env (already used by
-// researchOrchestrator for web search).
-//
-// Endpoint: https://serpapi.com/search.json
-//   engine:    google_images
-//   q:         search query
-//   num:       number of results (max 100)
-//   safe:      active (safe search)
-//   ijn:       page offset
-//
-// Returns OnlineImageResult[] sorted by estimated quality (prefers larger images).
-// Results are cached per-query to avoid burning API quota on repeated searches.
-// ─────────────────────────────────────────────────────────────────────────────
+// Part 58.2 — SERPAPI → TAVILY MIGRATION
+// Google Images search now uses Tavily's search API with includeImages: true
 
 import type { OnlineImageResult } from '../types/editor';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SERPAPI_BASE  = 'https://serpapi.com/search.json';
-const SERPAPI_KEY   = process.env.EXPO_PUBLIC_SERPAPI_KEY ?? '';
+const TAVILY_API_KEY = process.env.EXPO_PUBLIC_TAVILY_API_KEY ?? '';
+const TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search';
 
 /** Max results to request per search */
 const MAX_RESULTS = 40;
@@ -28,39 +15,40 @@ const MAX_RESULTS = 40;
 /** In-memory cache: query → results */
 const searchCache = new Map<string, OnlineImageResult[]>();
 
-// ─── Types (SerpAPI response) ─────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-interface SerpAPIImageResult {
-  original:           string;
-  original_width?:    number;
-  original_height?:   number;
-  thumbnail:          string;
-  title?:             string;
-  source?:            string;
-  link?:              string;
+interface TavilyImageResult {
+  url: string;
+  description?: string;
 }
 
-interface SerpAPIResponse {
-  images_results?: SerpAPIImageResult[];
-  error?:          string;
+interface TavilySearchResponse {
+  query: string;
+  answer?: string;
+  results: Array<{
+    title: string;
+    url: string;
+    content: string;
+    score: number;
+    publishedDate?: string;
+  }>;
+  images?: TavilyImageResult[];
+  responseTime?: number;
 }
 
 // ─── Main search function ─────────────────────────────────────────────────────
 
 /**
- * Search for images online via SerpAPI Google Images.
- *
- * @param query        Search term, e.g. "quantum computing concept"
- * @param maxResults   How many results to return (default 20, max 40)
- * @returns            Array of OnlineImageResult sorted by quality
+ * Search for images online via Tavily API.
+ * Tavily returns images alongside search results when includeImages: true.
  */
 export async function searchOnlineImages(
-  query:      string,
+  query: string,
   maxResults: number = 20,
 ): Promise<OnlineImageResult[]> {
   if (!query.trim()) return [];
-  if (!SERPAPI_KEY) {
-    console.warn('[imageSearchService] EXPO_PUBLIC_SERPAPI_KEY not set');
+  if (!TAVILY_API_KEY) {
+    console.warn('[imageSearchService] EXPO_PUBLIC_TAVILY_API_KEY not set');
     return [];
   }
 
@@ -70,54 +58,44 @@ export async function searchOnlineImages(
   }
 
   try {
-    const params = new URLSearchParams({
-      engine:  'google_images',
-      q:       query.trim(),
-      num:     String(Math.min(maxResults * 2, MAX_RESULTS)), // fetch extra, filter
-      safe:    'active',
-      api_key: SERPAPI_KEY,
+    const response = await fetch(TAVILY_SEARCH_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${TAVILY_API_KEY}`,
+      },
+      body: JSON.stringify({
+        query: query.trim(),
+        searchDepth: 'basic',
+        maxResults: Math.min(maxResults, 20),
+        includeImages: true,
+        includeAnswer: false,
+        includeRawContent: false,
+        topic: 'general',
+      }),
     });
 
-    const url = `${SERPAPI_BASE}?${params.toString()}`;
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      console.warn('[imageSearchService] HTTP error:', res.status, text.slice(0, 200));
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.warn('[imageSearchService] HTTP error:', response.status, text.slice(0, 200));
       return [];
     }
 
-    const data: SerpAPIResponse = await res.json();
+    const data: TavilySearchResponse = await response.json();
 
-    if (data.error) {
-      console.warn('[imageSearchService] API error:', data.error);
+    if (!data.images || data.images.length === 0) {
       return [];
     }
 
-    const raw = data.images_results ?? [];
-
-    // Filter out results without usable URLs
-    const filtered = raw.filter(
-      r => r.original && r.thumbnail && isValidImageUrl(r.original),
-    );
-
-    // Sort by estimated quality: prefer images that have width/height info
-    // and larger dimensions (better for slide embeds)
-    const sorted = [...filtered].sort((a, b) => {
-      const aScore = qualityScore(a);
-      const bScore = qualityScore(b);
-      return bScore - aScore;
-    });
-
-    const results: OnlineImageResult[] = sorted
+    // Filter and map images
+    const results: OnlineImageResult[] = data.images
+      .filter(img => img.url && isValidImageUrl(img.url))
       .slice(0, maxResults)
-      .map(r => ({
-        url:          r.original,
-        thumbnailUrl: r.thumbnail,
-        title:        r.title ?? query,
-        width:        r.original_width,
-        height:       r.original_height,
-        sourceUrl:    r.link,
+      .map(img => ({
+        url: img.url,
+        thumbnailUrl: img.url, // Tavily doesn't provide separate thumbnails
+        title: img.description || query,
+        sourceUrl: img.url,
       }));
 
     searchCache.set(cacheKey, results);
@@ -131,10 +109,6 @@ export async function searchOnlineImages(
 
 // ─── Suggested queries for the image picker ───────────────────────────────────
 
-/**
- * Returns suggested search queries based on the current slide's content.
- * These are shown as chips in the online image search UI.
- */
 export function getImageSuggestions(
   slideTitle?: string,
   slideLayout?: string,
@@ -150,7 +124,6 @@ export function getImageSuggestions(
     'strategy planning',
   ];
 
-  // Add context-aware suggestions from slide title
   if (slideTitle && slideTitle.length > 3) {
     const words = slideTitle.toLowerCase().split(/\s+/).filter(w => w.length > 3);
     const topWords = words.slice(0, 3);
@@ -160,7 +133,6 @@ export function getImageSuggestions(
     }
   }
 
-  // Layout-specific suggestions
   if (slideLayout === 'stats' || slideLayout === 'data_driven') {
     base.unshift('data analytics dashboard', 'business metrics chart');
   } else if (slideLayout === 'quote') {
@@ -171,7 +143,6 @@ export function getImageSuggestions(
     base.unshift('office workspace flat lay', 'business concept overhead');
   }
 
-  // Return unique suggestions, max 8
   return [...new Set(base)].slice(0, 8);
 }
 
@@ -180,35 +151,11 @@ export function getImageSuggestions(
 function isValidImageUrl(url: string): boolean {
   if (!url) return false;
   if (!url.startsWith('http')) return false;
-  // Filter out tiny icons, tracking pixels, etc.
   const lower = url.toLowerCase();
   if (lower.includes('favicon')) return false;
   if (lower.includes('pixel')) return false;
-  if (lower.endsWith('.gif')) return false; // GIFs don't embed well
+  if (lower.endsWith('.gif')) return false;
   return true;
-}
-
-function qualityScore(r: SerpAPIImageResult): number {
-  let score = 0;
-  const w = r.original_width  ?? 0;
-  const h = r.original_height ?? 0;
-
-  // Prefer landscape images (16:9 or similar) for slides
-  if (w > 0 && h > 0) {
-    const ratio = w / h;
-    if (ratio >= 1.2 && ratio <= 2.0) score += 30; // landscape
-    if (w >= 800 && h >= 400)          score += 20; // reasonable size
-    if (w >= 1200)                     score += 10; // high res bonus
-  }
-
-  // HTTPS preferred
-  if (r.original.startsWith('https')) score += 5;
-
-  // Known good image hosts
-  const goodHosts = ['unsplash', 'shutterstock', 'pexels', 'istockphoto', 'getty', 'pixabay'];
-  if (goodHosts.some(h => r.original.includes(h))) score += 15;
-
-  return score;
 }
 
 // ─── Clear cache ──────────────────────────────────────────────────────────────

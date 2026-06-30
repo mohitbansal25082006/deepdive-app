@@ -1,10 +1,6 @@
 // src/components/paperEditor/CitationManagerModal.tsx
-// Part 38 — Full citation manager modal.
-// Part 38 UPDATE:
-//   FIX #1  — Import from URL tab now renders correctly (removed flex:1 on
-//             KeyboardAvoidingView inside bottom sheet, added explicit height).
-//   UPDATE  — "Detect Unused" replaced with "AI Citation Generator" that uses
-//             SerpAPI to find real sources and adds them as citations (credit-gated).
+// Part 58.2 — TAVILY API MIGRATION
+// AI Citation Generator now uses Tavily API for web search
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useCallback, memo } from 'react';
@@ -73,7 +69,6 @@ const CitationCard = memo(function CitationCard({
         borderColor:     COLORS.border,
         overflow:        'hidden',
       }}>
-        {/* Index + title row */}
         <View style={{
           flexDirection: 'row', alignItems: 'center',
           paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, gap: SPACING.sm,
@@ -98,7 +93,6 @@ const CitationCard = memo(function CitationCard({
           </View>
         </View>
 
-        {/* Formatted citation preview */}
         <View style={{
           marginHorizontal: SPACING.md, marginVertical: SPACING.sm,
           backgroundColor: `${accentColor}06`,
@@ -110,7 +104,6 @@ const CitationCard = memo(function CitationCard({
           </Text>
         </View>
 
-        {/* Action row */}
         <View style={{
           flexDirection: 'row', alignItems: 'center',
           paddingHorizontal: SPACING.md, paddingBottom: SPACING.sm,
@@ -147,7 +140,7 @@ const CitationCard = memo(function CitationCard({
   );
 });
 
-// ─── AI Generated Citation Card (preview before adding) ───────────────────────
+// ─── AI Generated Citation Card ───────────────────────────────────────────────
 
 interface AICitationPreviewProps {
   citation:    Omit<Citation, 'id'>;
@@ -351,7 +344,7 @@ interface CitationManagerModalProps {
   citationStyle:        AcademicCitationStyle;
   isImporting:          boolean;
   importError:          string | null;
-  paperTopic?:          string;   // used to pre-fill AI generator query
+  paperTopic?:          string;
   onClose:              () => void;
   onStyleChange:        (style: AcademicCitationStyle) => void;
   onAdd:                (citation: Omit<Citation, 'id'>) => void;
@@ -383,21 +376,18 @@ export const CitationManagerModal = memo(function CitationManagerModal({
   const [showAddForm,      setShowAddForm]      = useState(false);
   const [editingCit,       setEditingCit]       = useState<ManagedCitation | null>(null);
 
-  // AI Generator state
   const [generateQuery,    setGenerateQuery]    = useState(paperTopic ?? '');
   const [generatedResults, setGeneratedResults] = useState<Array<Omit<Citation, 'id'>>>([]);
   const [addedIndices,     setAddedIndices]     = useState<Set<number>>(new Set());
 
   const accentColor = STYLE_COLORS[citationStyle];
 
-  // Reset generate query when modal opens with a new topic
   React.useEffect(() => {
     if (visible && paperTopic && !generateQuery) {
       setGenerateQuery(paperTopic);
     }
   }, [visible, paperTopic]);
 
-  // ── Import handler ────────────────────────────────────────────────────────
   const handleImport = async () => {
     if (!importUrl.trim()) return;
     const ok = await onImportFromUrl(importUrl.trim());
@@ -407,7 +397,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
     }
   };
 
-  // ── AI Generator handler ──────────────────────────────────────────────────
   const handleGenerate = async () => {
     if (!generateQuery.trim() || isGeneratingCitations) return;
     setGeneratedResults([]);
@@ -430,7 +419,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
     setAddedIndices(new Set(generatedResults.map((_, i) => i)));
   }, [generatedResults, addedIndices, onAdd]);
 
-  // ── Delete handler ────────────────────────────────────────────────────────
   const handleDelete = (id: string, title: string) => {
     Alert.alert(
       'Delete Citation',
@@ -442,7 +430,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
     );
   };
 
-  // ── Tab labels ────────────────────────────────────────────────────────────
   const tabs: { key: TabType; label: string }[] = [
     { key: 'list',     label: `References (${citations.length})` },
     { key: 'import',   label: 'Import URL' },
@@ -467,10 +454,8 @@ export const CitationManagerModal = memo(function CitationManagerModal({
             borderTopColor:       COLORS.border,
           }}
         >
-          {/* Handle */}
           <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: SPACING.sm, marginBottom: SPACING.md }} />
 
-          {/* ── Header ─────────────────────────────────────────────────────── */}
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
             <LinearGradient colors={[COLORS.warning, '#FF8F00']} style={{ width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
               <Ionicons name="link" size={18} color="#FFF" />
@@ -488,7 +473,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
             </Pressable>
           </View>
 
-          {/* ── Citation Style Selector ─────────────────────────────────────── */}
           <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
             <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
               Citation Style
@@ -519,7 +503,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
             </ScrollView>
           </View>
 
-          {/* ── Tab strip ──────────────────────────────────────────────────── */}
           <View style={{
             flexDirection: 'row',
             backgroundColor: COLORS.backgroundElevated,
@@ -554,15 +537,11 @@ export const CitationManagerModal = memo(function CitationManagerModal({
             ))}
           </View>
 
-          {/* ══════════════════════════════════════════════════════════════════
-              TAB: LIST
-          ══════════════════════════════════════════════════════════════════ */}
           {tab === 'list' && (
             <ScrollView
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg }}
             >
-              {/* Add manually button */}
               <TouchableOpacity
                 onPress={() => setShowAddForm(true)}
                 style={{
@@ -602,12 +581,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
             </ScrollView>
           )}
 
-          {/* ══════════════════════════════════════════════════════════════════
-              TAB: IMPORT FROM URL
-              FIX: Removed flex:1 on the inner wrapper — bottom-sheet children
-              must NOT use flex:1 (collapses to 0 when parent has no fixed height).
-              Use a static minHeight instead and let the ScrollView fill it.
-          ══════════════════════════════════════════════════════════════════ */}
           {tab === 'import' && (
             <KeyboardAvoidingView
               behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -623,7 +596,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                   minHeight:         320,
                 }}
               >
-                {/* Label */}
                 <Text style={{
                   color: COLORS.textMuted, fontSize: FONTS.sizes.xs,
                   fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1,
@@ -631,7 +603,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                   Paste article or website URL
                 </Text>
 
-                {/* URL input */}
                 <TextInput
                   value={importUrl}
                   onChangeText={setImportUrl}
@@ -655,7 +626,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                   }}
                 />
 
-                {/* Error */}
                 {importError ? (
                   <View style={{
                     backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg,
@@ -669,7 +639,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                   </View>
                 ) : null}
 
-                {/* Feature list */}
                 <View style={{
                   backgroundColor: `${COLORS.info}10`, borderRadius: RADIUS.lg,
                   padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.info}25`, gap: 6,
@@ -687,7 +656,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                   ))}
                 </View>
 
-                {/* Import button */}
                 <TouchableOpacity
                   onPress={handleImport}
                   disabled={!importUrl.trim() || isImporting}
@@ -720,11 +688,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
             </KeyboardAvoidingView>
           )}
 
-          {/* ══════════════════════════════════════════════════════════════════
-              TAB: AI CITATION GENERATOR
-              Uses SerpAPI to find real sources and generates formatted citations.
-              Costs 2 credits per generation run.
-          ══════════════════════════════════════════════════════════════════ */}
           {tab === 'generate' && (
             <ScrollView
               showsVerticalScrollIndicator={false}
@@ -736,7 +699,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                 minHeight:         320,
               }}
             >
-              {/* Credit notice */}
               <View style={{
                 flexDirection: 'row', alignItems: 'center', gap: 8,
                 backgroundColor: `${COLORS.warning}12`,
@@ -749,7 +711,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                 </Text>
               </View>
 
-              {/* Query input */}
               <View>
                 <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
                   Research Topic or Query
@@ -775,7 +736,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                 />
               </View>
 
-              {/* Generate button */}
               <TouchableOpacity
                 onPress={handleGenerate}
                 disabled={!generateQuery.trim() || isGeneratingCitations}
@@ -801,7 +761,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* Generation error */}
               {generateCitationsError ? (
                 <View style={{
                   backgroundColor: `${COLORS.error}12`, borderRadius: RADIUS.lg,
@@ -815,10 +774,8 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                 </View>
               ) : null}
 
-              {/* Results */}
               {generatedResults.length > 0 && (
                 <>
-                  {/* Add All button */}
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
                       {generatedResults.length} sources found
@@ -853,7 +810,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
                 </>
               )}
 
-              {/* Empty state before generation */}
               {!isGeneratingCitations && generatedResults.length === 0 && !generateCitationsError && (
                 <View style={{ alignItems: 'center', paddingVertical: SPACING.lg, gap: SPACING.md }}>
                   <View style={{
@@ -873,7 +829,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
         </Pressable>
       </Pressable>
 
-      {/* Add form modal */}
       <CitationForm
         visible={showAddForm}
         initial={EMPTY_FORM}
@@ -883,7 +838,6 @@ export const CitationManagerModal = memo(function CitationManagerModal({
         onClose={() => setShowAddForm(false)}
       />
 
-      {/* Edit form modal */}
       <CitationForm
         visible={!!editingCit}
         initial={editingCit ?? EMPTY_FORM}

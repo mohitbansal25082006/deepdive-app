@@ -1,10 +1,12 @@
 // src/lib/presentationAssetCache.ts
-// Part 41.7 — Downloads and caches all remote image/SVG assets for a
-// presentation so that offline PPTX/PDF/HTML export works without any network.
+// Part 58.2 — TAVILY API MIGRATION
+// Updated comments to reflect Tavily instead of SerpAPI for image search
+// No functional changes needed — the asset cache works identically regardless
+// of which search API was used to find the images.
 //
 // WHAT THIS SOLVES:
 //   In offline mode, SlideExportRenderer renders SlideCard components that
-//   reference remote URLs (onlineUrl from SerpAPI image search, Iconify SVG
+//   reference remote URLs (onlineUrl from Tavily image search, Iconify SVG
 //   URLs). Those fetch calls fail offline, producing blank/broken captures.
 //   The vector fallback (pptxExport.ts) also fetches those URLs and silently
 //   skips them. Result: exported files are missing all images and icons.
@@ -85,7 +87,7 @@ function collectAssets(presentation: GeneratedPresentation): AssetItem[] {
 
     for (const block of blocks) {
       if (block.type === 'image') {
-        // onlineUrl takes priority (SerpAPI images); uri may be local already
+        // onlineUrl takes priority (Tavily images); uri may be local already
         const url = (block as any).onlineUrl as string | undefined;
         if (url && url.startsWith('http') && !seen.has(url)) {
           seen.add(url);
@@ -172,6 +174,10 @@ async function downloadAsset(
  *
  * Called from autoCachePresentation() after the main JSON is stored.
  * Fire-and-forget safe — failures are silently logged.
+ *
+ * Part 58.2: Images come from Tavily's search API (via imageSearchService.ts)
+ * which uses Tavily's includeImages flag. The asset cache works identically
+ * regardless of which search API provided the URLs.
  */
 export async function cachePresentationAssets(
   presentation: GeneratedPresentation,
@@ -279,6 +285,9 @@ export async function evictPresentationAssets(
  *
  * Returns a new GeneratedPresentation object with patched slides.
  * The original is not mutated.
+ *
+ * Part 58.2: Tavily image URLs are patched exactly the same way as SerpAPI
+ * URLs were — the manifest lookup is URL-based, not API-specific.
  */
 export async function resolveLocalAssets(
   presentation: GeneratedPresentation,

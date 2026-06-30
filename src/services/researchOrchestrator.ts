@@ -1,24 +1,10 @@
 // src/services/researchOrchestrator.ts
-// Part 25 — Updated
-// Part 53 — UPDATED notification firing:
-//   • The final report-complete notification now uses the unified
-//     notifyContentReady('report', …) instead of notifyReportComplete().
-//   • When academic mode generates & saves an academic paper inside the
-//     orchestrator, it ALSO fires notifyContentReady('paper', …) so the paper
-//     shows up in the bell with a deep-link to the academic-paper viewer.
-//
-// CHANGES FROM PART 24:
-//   1. Step 2 (Web Search) now calls serpSearchDeep() instead of serpSearchBatch()
-//      for deep/expert modes — runs multi-round research with follow-up & news queries
-//   2. sourcesCount now reflects true unique URL count from deduplication
-//   3. Trust summary persisted to research_reports via save_report_trust_scores RPC
-//   4. Orchestrator logs show round progress during search step
-//   5. All other steps (planner, analysis, factcheck, reporter, visualizer, academic) unchanged
-//
-// PRESERVED: All Part 21 streaming callbacks, Part 24 credit system,
-//            academic paper agent, knowledge graph, infographics — nothing removed.
+// Part 58.2 — SERPAPI → TAVILY MIGRATION
+// All web search calls now use tavilySearchDeep / tavilySearchBatch
+// The external API is identical — the orchestrator doesn't need changes
+// beyond replacing the import and function calls.
 
-import { supabase }                 from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 import {
   ResearchInput,
   ResearchReport,
@@ -30,67 +16,70 @@ import {
   AcademicSection,
   ReportSection,
   DEPTH_SEARCH_CONFIG,
-}                                    from '../types';
-import { runPlannerAgent }           from './agents/plannerAgent';
-import { runAnalysisAgent }          from './agents/analysisAgent';
-import { runFactCheckerAgent }       from './agents/factCheckAgent';
-import { runKnowledgeGraphAgent }    from './agents/knowledgeGraphAgent';
-import { runInfographicAgent }       from './agents/infographicAgent';
-import { runAcademicPaperAgent }     from './agents/academicPaperAgent';
+} from '../types';
+import { runPlannerAgent } from './agents/plannerAgent';
+import { runAnalysisAgent } from './agents/analysisAgent';
+import { runFactCheckerAgent } from './agents/factCheckAgent';
+import { runKnowledgeGraphAgent } from './agents/knowledgeGraphAgent';
+import { runInfographicAgent } from './agents/infographicAgent';
+import { runAcademicPaperAgent } from './agents/academicPaperAgent';
 import { runStreamingReportAgent, StreamingReportOutput } from './agents/streamingReportAgent';
-import { serpSearchDeep, serpSearchBatch, DeepSearchCallbacks } from './serpApiClient';
-import { extractSourceImages }       from './imageExtractor';
-// ── Part 53: unified notification service (replaces direct notifyReportComplete) ──
-// (Part 53F) notifyContentReady is no longer called here — the hook fires it.
-import { recordResearchCompletion }  from './homePersonalizationService';
-import { computeBatchTrustSummary }  from './sourceTrustScorer';
+import { extractSourceImages } from './imageExtractor';
+// ── Part 58.2: Tavily replaces SerpAPI ──
+import {
+  tavilySearchDeep,
+  tavilySearchBatch,
+  DeepSearchCallbacks,
+} from './tavilyClient';
+import { recordResearchCompletion } from './homePersonalizationService';
+import { computeBatchTrustSummary } from './sourceTrustScorer';
 
 // ─── Agent step templates ──────────────────────────────────────────────────────
 
 const BASE_STEPS: AgentStep[] = [
   {
-    agent:       'planner',
-    label:       'Research Planner',
+    agent: 'planner',
+    label: 'Research Planner',
     description: 'Analyzing query and creating research strategy',
-    status:      'pending',
+    status: 'pending',
   },
   {
-    agent:       'searcher',
-    label:       'Web Search Agent',
-    description: 'Multi-round web research with source trust scoring',
-    status:      'pending',
+    agent: 'searcher',
+    label: 'Web Search Agent',
+    description: 'Multi-round web research with source trust scoring (Tavily)',
+    status: 'pending',
   },
   {
-    agent:       'analyst',
-    label:       'Analysis Agent',
+    agent: 'analyst',
+    label: 'Analysis Agent',
     description: 'Extracting insights from search data',
-    status:      'pending',
+    status: 'pending',
   },
   {
-    agent:       'factchecker',
-    label:       'Fact Checker Agent',
+    agent: 'factchecker',
+    label: 'Fact Checker Agent',
     description: 'Verifying claims and scoring source reliability',
-    status:      'pending',
+    status: 'pending',
   },
   {
-    agent:       'reporter',
-    label:       'Report Generator',
+    agent: 'reporter',
+    label: 'Report Generator',
     description: 'Writing comprehensive research report — sections stream live',
-    status:      'pending',
+    status: 'pending',
   },
   {
-    agent:       'visualizer',
-    label:       'Visual Intelligence',
+    agent: 'visualizer',
+    label: 'Visual Intelligence',
     description: 'Generating knowledge graph & infographics',
-    status:      'pending',
+    status: 'pending',
   },
 ];
 
 const ACADEMIC_STEP: AgentStep = {
-  agent:       'academic',
-  label:       'Academic Paper Agent',
+  agent: 'academic',
+  label: 'Academic Paper Agent',
   description: 'Writing structured academic research paper',
-  status:      'pending',
+  status: 'pending',
 };
 
 function buildSteps(mode: ResearchMode = 'standard'): AgentStep[] {
@@ -106,20 +95,15 @@ function cloneSteps(steps: AgentStep[]): AgentStep[] {
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 
 export async function runResearchPipeline(
-  userId:    string,
-  input:     ResearchInput,
+  userId: string,
+  input: ResearchInput,
   callbacks: OrchestratorCallbacks,
-  signal?:   AbortSignal,   // ── Part 53G: cancel support ──
+  signal?: AbortSignal,
 ): Promise<void> {
 
-  // Part 53G: helper — true once the user cancels. Checked between steps so we
-  // stop spending tokens and abort in-flight OpenAI calls immediately.
   const aborted = () => signal?.aborted === true;
-
-  const mode  = input.mode ?? 'standard';
+  const mode = input.mode ?? 'standard';
   const steps = buildSteps(mode);
-
-  // ── Step state helpers ────────────────────────────────────────────────────
 
   const setStepRunning = (agent: AgentName) => {
     const s = steps.find(s => s.agent === agent);
@@ -149,6 +133,15 @@ export async function runResearchPipeline(
     return;
   }
 
+  // ── Check Tavily API key ──────────────────────────────────────────────────
+  const tavilyKey = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
+  if (!tavilyKey?.trim()) {
+    callbacks.onError(
+      'Tavily API key is missing.\n\nAdd EXPO_PUBLIC_TAVILY_API_KEY to your .env file and restart with: npx expo start --clear',
+    );
+    return;
+  }
+
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   if (sessionError || !sessionData?.session) {
     callbacks.onError('Your session has expired. Please sign out and sign back in.');
@@ -165,11 +158,11 @@ export async function runResearchPipeline(
   const { data: reportRow, error: insertError } = await supabase
     .from('research_reports')
     .insert({
-      user_id:       userId,
-      query:         input.query,
-      depth:         input.depth,
-      focus_areas:   input.focusAreas,
-      status:        'planning',
+      user_id: userId,
+      query: input.query,
+      depth: input.depth,
+      focus_areas: input.focusAreas,
+      status: 'planning',
       research_mode: mode,
     })
     .select()
@@ -210,49 +203,46 @@ export async function runResearchPipeline(
     const totalExpectedQueries =
       config.maxQueries +
       config.followUpQueries +
-      config.newsQueries +
-      (input.depth === 'expert' ? 4 : 0);  // entity deep-dives
+      (input.depth === 'expert' ? 4 : 0);
 
     callbacks.onStepDetail(
       'planner',
-      `${plan.searchQueries.length} primary + up to ${config.followUpQueries} follow-up + ${config.newsQueries} news = ~${totalExpectedQueries} total queries planned`,
+      `${plan.searchQueries.length} primary + up to ${config.followUpQueries} follow-up = ~${totalExpectedQueries} total queries planned`,
     );
     setStepDone('planner');
     await updateStatus('searching', { search_queries: plan.searchQueries });
 
-    // ── STEP 2 — WEB SEARCH (Multi-round) ──────────────────────────────────
+    // ── STEP 2 — WEB SEARCH (Tavily) ──────────────────────────────────────
 
     if (aborted()) return;
     setStepRunning('searcher');
 
-    // Deep/Expert: use multi-round serpSearchDeep
-    // Quick: use standard serpSearchBatch (faster, fewer queries)
     let searchBatches: import('../types').SearchBatch[];
     let totalUnique = 0;
     let trustSummary: ReturnType<typeof computeBatchTrustSummary> | null = null;
 
     if (input.depth === 'quick') {
-      // Quick mode — single round, original logic
-      callbacks.onStepDetail('searcher', `[Quick] Running ${plan.searchQueries.length} searches…`);
+      callbacks.onStepDetail('searcher', `[Quick] Running ${plan.searchQueries.length} Tavily searches…`);
 
-      searchBatches = await serpSearchBatch(
+      searchBatches = await tavilySearchBatch(
         plan.searchQueries,
         (query, index) => {
           callbacks.onStepDetail('searcher', `[${index + 1}/${plan.searchQueries.length}] "${query}"`);
         },
         config.resultsPerQuery,
+        'basic', // Tavily search depth
       );
 
-      totalUnique  = new Set(searchBatches.flatMap(b => b.results.map(r => r.url))).size;
+      totalUnique = new Set(searchBatches.flatMap(b => b.results.map(r => r.url))).size;
       trustSummary = computeBatchTrustSummary(searchBatches.flatMap(b => b.results));
 
     } else {
-      // Deep / Expert — multi-round
+      // Deep / Expert — multi-round with Tavily
       const deepCallbacks: Partial<DeepSearchCallbacks> = {
         onRoundStart: (round, totalRounds, label) => {
           callbacks.onStepDetail(
             'searcher',
-            `Round ${round}/${totalRounds}: ${label}`,
+            `Round ${round}/${totalRounds}: ${label} (Tavily)`,
           );
         },
         onQueryProgress: (query, qi, total) => {
@@ -269,17 +259,17 @@ export async function runResearchPipeline(
         },
       };
 
-      const deepResult = await serpSearchDeep(
+      const deepResult = await tavilySearchDeep(
         plan.searchQueries,
         input.depth,
         deepCallbacks,
       );
 
       searchBatches = deepResult.batches;
-      totalUnique   = deepResult.totalUnique;
-      trustSummary  = {
-        avgScore:           deepResult.trustSummary.avgScore,
-        tierBreakdown:      {
+      totalUnique = deepResult.totalUnique;
+      trustSummary = {
+        avgScore: deepResult.trustSummary.avgScore,
+        tierBreakdown: {
           1: deepResult.trustSummary.tier1Count,
           2: deepResult.trustSummary.tier2Count,
           3: deepResult.trustSummary.tier3Count,
@@ -376,7 +366,7 @@ export async function runResearchPipeline(
           onError: (err) => {
             reject(err);
           },
-          signal,   // ── Part 53G: cancel streaming + all section calls ──
+          signal,
         },
       ).catch(reject);
     });
@@ -403,26 +393,26 @@ export async function runResearchPipeline(
     );
 
     const partialReport: ResearchReport = {
-      id:                reportId,
+      id: reportId,
       userId,
-      query:             input.query,
-      depth:             input.depth,
-      focusAreas:        input.focusAreas,
-      title:             reportOutput.title,
-      executiveSummary:  reportOutput.executiveSummary,
-      sections:          reportOutput.sections,
-      keyFindings:       reportOutput.keyFindings,
+      query: input.query,
+      depth: input.depth,
+      focusAreas: input.focusAreas,
+      title: reportOutput.title,
+      executiveSummary: reportOutput.executiveSummary,
+      sections: reportOutput.sections,
+      keyFindings: reportOutput.keyFindings,
       futurePredictions: reportOutput.futurePredictions,
-      citations:         reportOutput.citations,
-      statistics:        reportOutput.statistics,
-      searchQueries:     plan.searchQueries,
-      sourcesCount:      totalUnique,  // ← now reflects real unique count
-      reliabilityScore:  factCheck.reliabilityScore,
-      status:            'visualizing',
-      agentLogs:         steps,
+      citations: reportOutput.citations,
+      statistics: reportOutput.statistics,
+      searchQueries: plan.searchQueries,
+      sourcesCount: totalUnique,
+      reliabilityScore: factCheck.reliabilityScore,
+      status: 'visualizing',
+      agentLogs: steps,
       sourceImages,
-      researchMode:      mode,
-      createdAt:         reportRow.created_at,
+      researchMode: mode,
+      createdAt: reportRow.created_at,
     };
 
     const [knowledgeGraph, infographicData] = await Promise.allSettled([
@@ -430,7 +420,7 @@ export async function runResearchPipeline(
       runInfographicAgent(partialReport),
     ]);
 
-    const kgResult = knowledgeGraph.status  === 'fulfilled' ? knowledgeGraph.value  : undefined;
+    const kgResult = knowledgeGraph.status === 'fulfilled' ? knowledgeGraph.value : undefined;
     const igResult = infographicData.status === 'fulfilled' ? infographicData.value : undefined;
 
     callbacks.onStepDetail(
@@ -454,7 +444,7 @@ export async function runResearchPipeline(
       try {
         const reportForAcademic: ResearchReport = {
           ...partialReport,
-          knowledgeGraph:  kgResult,
+          knowledgeGraph: kgResult,
           infographicData: igResult,
           sourceImages,
         };
@@ -468,7 +458,7 @@ export async function runResearchPipeline(
           pageEstimate,
         } = await runAcademicPaperAgent(
           input, plan, analysis, factCheck, searchBatches,
-          reportForAcademic, 'apa', signal,   // ── Part 53G ──
+          reportForAcademic, 'apa', signal,
         );
 
         callbacks.onStepDetail(
@@ -481,18 +471,18 @@ export async function runResearchPipeline(
         const { data: paperRow, error: paperInsertError } = await supabase
           .from('academic_papers')
           .insert({
-            report_id:      reportId,
-            user_id:        userId,
-            title:          paperOutput.title,
-            running_head:   paperOutput.runningHead,
-            abstract:       paperOutput.abstract,
-            keywords:       paperOutput.keywords,
-            sections:       sectionsWithIds,
-            citations:      paperCitations,
+            report_id: reportId,
+            user_id: userId,
+            title: paperOutput.title,
+            running_head: paperOutput.runningHead,
+            abstract: paperOutput.abstract,
+            keywords: paperOutput.keywords,
+            sections: sectionsWithIds,
+            citations: paperCitations,
             citation_style: 'apa',
-            word_count:     wordCount,
-            page_estimate:  pageEstimate,
-            generated_at:   new Date().toISOString(),
+            word_count: wordCount,
+            page_estimate: pageEstimate,
+            generated_at: new Date().toISOString(),
           })
           .select()
           .single();
@@ -502,29 +492,25 @@ export async function runResearchPipeline(
           callbacks.onStepDetail('academic', '⚠ Paper generated but could not be saved');
         } else {
           academicPaper = {
-            id:            paperRow.id,
+            id: paperRow.id,
             reportId,
             userId,
-            title:         paperOutput.title,
-            runningHead:   paperOutput.runningHead,
-            abstract:      paperOutput.abstract,
-            keywords:      paperOutput.keywords,
-            sections:      sectionsWithIds,
-            citations:     paperCitations,
+            title: paperOutput.title,
+            runningHead: paperOutput.runningHead,
+            abstract: paperOutput.abstract,
+            keywords: paperOutput.keywords,
+            sections: sectionsWithIds,
+            citations: paperCitations,
             citationStyle: 'apa',
             wordCount,
             pageEstimate,
-            generatedAt:   paperRow.generated_at,
-            exportCount:   0,
+            generatedAt: paperRow.generated_at,
+            exportCount: 0,
           };
           callbacks.onStepDetail(
             'academic',
             `✓ Academic paper saved · ${wordCount.toLocaleString()} words · ${pageEstimate} pages`,
           );
-
-          // ── Part 53F: paper notification is now fired by the HOOK
-          //    (useResearch onComplete) so a CANCELLED research run does NOT
-          //    notify. The orchestrator no longer fires it here.
         }
         setStepDone('academic');
       } catch (academicError) {
@@ -539,32 +525,31 @@ export async function runResearchPipeline(
 
     // ── SAVE COMPLETE REPORT ──────────────────────────────────────────────
 
-    // Build trust score payload for citations
     const citationTrustPayload = reportOutput.citations.map(c => ({
       citation_id: c.id,
       trust_score: c.trustScore ?? null,
     }));
 
     const savePayload: Record<string, unknown> = {
-      title:                   reportOutput.title,
-      executive_summary:       reportOutput.executiveSummary,
-      sections:                reportOutput.sections,
-      key_findings:            reportOutput.keyFindings,
-      future_predictions:      reportOutput.futurePredictions,
-      citations:               reportOutput.citations,
-      statistics:              reportOutput.statistics,
-      reliability_score:       factCheck.reliabilityScore,
-      sources_count:           totalUnique,
-      agent_logs:              steps,
-      knowledge_graph:         kgResult  ?? null,
-      infographic_data:        igResult  ?? null,
-      source_images:           sourceImages,
-      research_mode:           mode,
-      source_trust_scores:     citationTrustPayload,
-      avg_source_quality:      trustSummary?.avgScore ?? factCheck.reliabilityScore,
+      title: reportOutput.title,
+      executive_summary: reportOutput.executiveSummary,
+      sections: reportOutput.sections,
+      key_findings: reportOutput.keyFindings,
+      future_predictions: reportOutput.futurePredictions,
+      citations: reportOutput.citations,
+      statistics: reportOutput.statistics,
+      reliability_score: factCheck.reliabilityScore,
+      sources_count: totalUnique,
+      agent_logs: steps,
+      knowledge_graph: kgResult ?? null,
+      infographic_data: igResult ?? null,
+      source_images: sourceImages,
+      research_mode: mode,
+      source_trust_scores: citationTrustPayload,
+      avg_source_quality: trustSummary?.avgScore ?? factCheck.reliabilityScore,
       high_quality_source_pct: trustSummary?.highQualityPercent ?? 0,
-      status:                  'completed',
-      completed_at:            new Date().toISOString(),
+      status: 'completed',
+      completed_at: new Date().toISOString(),
     };
 
     if (academicPaper) {
@@ -582,29 +567,24 @@ export async function runResearchPipeline(
 
     const finalReport: ResearchReport = {
       ...partialReport,
-      sourcesCount:    totalUnique,
-      status:          'completed',
-      agentLogs:       steps,
-      knowledgeGraph:  kgResult,
+      sourcesCount: totalUnique,
+      status: 'completed',
+      agentLogs: steps,
+      knowledgeGraph: kgResult,
       infographicData: igResult,
       sourceImages,
-      researchMode:    mode,
+      researchMode: mode,
       academicPaperId: academicPaper?.id,
-      completedAt:     new Date().toISOString(),
+      completedAt: new Date().toISOString(),
     };
 
-    // Part 21: Update home-screen personalization (non-fatal, background)
     recordResearchCompletion(userId, finalReport).catch(err => {
       console.warn('[Orchestrator] Personalization update error:', err);
     });
 
-    // ── Part 53F: report/paper notifications are now fired by the HOOK
-    //    (useResearch onComplete), AFTER the abort check, so a CANCELLED run
-    //    does not notify. The orchestrator just hands back the final report.
     callbacks.onComplete(finalReport);
 
   } catch (error) {
-    // Part 53G: a user-cancel surfaces as an AbortError — treat as silent stop.
     if ((error as { name?: string })?.name === 'AbortError' || aborted()) {
       await updateStatus('cancelled').catch(() => {});
       return;

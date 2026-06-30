@@ -2,29 +2,7 @@
 // DeepDive AI — Complete Type Definitions
 // Parts 1–52.2B
 //
-// Part 52.2B changes (follow-up patch on top of 52.2A):
-//   • WorkspaceActivityAction union extended with:
-//       member_unblocked                                      (Fix 2 — unblock entry)
-//       presentation_unshared, academic_paper_unshared,
-//       podcast_unshared, debate_unshared, voice_debate_unshared
-//                                                             (Fix 6 — content removed entries)
-//   • ActivityMetadata extended with:
-//       left_name, unblocked_name, unblocked_by_name, unblocked_user_id
-//       (remover_name was already present from 52.2A)
-//
-// Part 52.2A changes:
-//   • WorkspaceActivityAction union extended with:
-//       workspace_renamed, workspace_description_changed, workspace_logo_changed,
-//       voice_debate_shared  (workspace_updated & debate_shared kept for legacy)
-//   • ActivityResourceKind type added
-//   • ActivityMetadata interface added
-//
-// Part 41.8 change: AcademicSection.type widened from AcademicSectionType to string
-// so that custom sections added in the editor (e.g. 'discussion', 'limitations',
-// 'custom') are accepted by the type system without needing to extend the
-// AcademicSectionType union. AcademicSectionType is kept as the canonical enum
-// for the 7 standard section types used by the academic paper agent.
-// All other types are identical to Part 39.
+// Part 58.2 additions: Tavily-specific types integrated directly into SearchResult
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Auth & Profile ───────────────────────────────────────────────────────────
@@ -137,6 +115,20 @@ export const DEPTH_SEARCH_CONFIG: Record<ResearchDepth, DepthSearchConfig> = {
   expert: { resultsPerQuery: 15, maxQueries: 12, followUpQueries: 5, newsQueries: 4, minSources: 120, maxSources: 260 },
 };
 
+// ─── Part 58.2: Tavily-specific types ────────────────────────────────────────
+
+/**
+ * Tavily search result with additional metadata
+ */
+export interface TavilyResultMetadata {
+  /** Tavily's relevance score (0-1) */
+  score: number;
+  /** Source domain */
+  source?: string;
+  /** Published date if available */
+  publishedDate?: string;
+}
+
 // ─── Web Search Results ───────────────────────────────────────────────────────
 
 export interface SearchResult {
@@ -149,6 +141,12 @@ export interface SearchResult {
   thumbnail?:  string;
   imageUrl?:   string;
   trustScore?: SourceTrustScore;
+  /** Tavily's relevance score (0-1) */
+  tavilyScore?: number;
+  /** Raw content from Tavily if available */
+  rawContent?: string;
+  /** Tavily-specific metadata */
+  _tavilyMetadata?: TavilyResultMetadata;
 }
 
 export interface SearchBatch {
