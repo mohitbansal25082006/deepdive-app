@@ -1,4 +1,13 @@
 // src/components/editor/OnlineImageSearchPanel.tsx
+// Part 58.3 — PEXELS MIGRATION
+//   Image search backend switched from Tavily (general web search) to
+//   Pexels (curated, royalty-free stock photos). Header copy updated to
+//   credit Pexels, and the selected-image preview now shows photographer
+//   attribution (Pexels' usage guidelines ask for credit where possible).
+//   The old "ensure you have rights to use this image" warning is removed
+//   since Pexels photos are free for commercial use with no attribution
+//   required — replaced with a lightweight "Photo by X on Pexels" credit
+//   line instead.
 // Part 30 — FIXED
 // Bug fixes:
 //   1. FlatList inside ScrollView caused gesture conflicts — replaced with
@@ -12,7 +21,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, Modal, Pressable, ScrollView, TextInput,
-  ActivityIndicator, Image, Dimensions, TouchableOpacity,
+  ActivityIndicator, Image, Dimensions, TouchableOpacity, Linking,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
@@ -126,6 +135,9 @@ export function OnlineImageSearchPanel({
       caption:      caption.trim() || undefined,
       aspectRatio:  ar,
       position:     { ...position },   // copy to avoid mutation
+      // Part 58.3 — carry Pexels attribution through to export
+      photographer:    selected.photographer,
+      photographerUrl: selected.photographerUrl,
     };
 
     // FIX: call onInsert FIRST so the editor state is updated before the
@@ -176,11 +188,11 @@ export function OnlineImageSearchPanel({
               colors={['#4FACFE', '#00F2FE']}
               style={{ width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}
             >
-              <Ionicons name="search" size={17} color="#FFF" />
+              <Ionicons name="image" size={17} color="#FFF" />
             </LinearGradient>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Search Online Images</Text>
-              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Powered by Google Images · tap image to select</Text>
+              <Text style={{ color: COLORS.textPrimary, fontSize: FONTS.sizes.base, fontWeight: '800' }}>Search Stock Photos</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Powered by Pexels · free to use · tap image to select</Text>
             </View>
             <Pressable onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
               <Ionicons name="close" size={22} color={COLORS.textMuted} />
@@ -273,7 +285,7 @@ export function OnlineImageSearchPanel({
             {isLoading && (
               <View style={{ alignItems: 'center', paddingVertical: SPACING.xl }}>
                 <ActivityIndicator size="large" color={COLORS.primary} />
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: SPACING.sm }}>Searching…</Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm, marginTop: SPACING.sm }}>Searching Pexels…</Text>
               </View>
             )}
 
@@ -325,6 +337,18 @@ export function OnlineImageSearchPanel({
                               <Ionicons name="checkmark" size={14} color="#FFF" />
                             </View>
                           )}
+                          {/* Part 58.3 — small photographer credit overlay */}
+                          {item.photographer && (
+                            <View style={{
+                              position: 'absolute', bottom: 0, left: 0, right: 0,
+                              backgroundColor: 'rgba(0,0,0,0.45)',
+                              paddingHorizontal: 4, paddingVertical: 2,
+                            }}>
+                              <Text numberOfLines={1} style={{ color: '#FFF', fontSize: 8, fontWeight: '600' }}>
+                                {item.photographer}
+                              </Text>
+                            </View>
+                          )}
                         </TouchableOpacity>
                       );
                     })}
@@ -374,13 +398,25 @@ export function OnlineImageSearchPanel({
                   accentColor="#4FACFE"
                 />
 
-                {/* Attribution notice */}
-                <View style={{ backgroundColor: `${COLORS.warning}10`, borderRadius: RADIUS.lg, padding: SPACING.sm, flexDirection: 'row', gap: 6, borderWidth: 1, borderColor: `${COLORS.warning}20` }}>
-                  <Ionicons name="information-circle-outline" size={13} color={COLORS.warning} />
-                  <Text style={{ color: COLORS.textMuted, fontSize: 9, flex: 1, lineHeight: 13 }}>
-                    Ensure you have rights to use this image. Consider using royalty-free sources.
-                  </Text>
-                </View>
+                {/* Part 58.3 — Pexels attribution (free to use, credit encouraged) */}
+                {selected.photographer && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (selected.photographerUrl) Linking.openURL(selected.photographerUrl).catch(() => {});
+                    }}
+                    activeOpacity={0.7}
+                    style={{
+                      backgroundColor: `${COLORS.primary}0C`, borderRadius: RADIUS.lg,
+                      padding: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: 6,
+                      borderWidth: 1, borderColor: `${COLORS.primary}20`,
+                    }}
+                  >
+                    <Ionicons name="camera-outline" size={13} color={COLORS.primary} />
+                    <Text style={{ color: COLORS.textMuted, fontSize: 10, flex: 1 }}>
+                      Photo by <Text style={{ color: COLORS.primary, fontWeight: '600' }}>{selected.photographer}</Text> on Pexels · free for commercial use
+                    </Text>
+                  </TouchableOpacity>
+                )}
 
                 {/* Insert button */}
                 <TouchableOpacity onPress={handleInsert} activeOpacity={0.8}>

@@ -1,54 +1,57 @@
 // src/services/imageSearchService.ts
-// Part 58.2 — SERPAPI → TAVILY MIGRATION
-// Google Images search now uses Tavily's search API with includeImages: true
+// Part 58.3 — TAVILY → PEXELS MIGRATION
+// Online image search for the presentation editor now uses Pexels' curated,
+// royalty-free stock photo library instead of Tavily's general web search
+// (which returned arbitrary, often low-quality or licensing-uncertain web
+// images). Pexels photos are free for commercial use, high resolution, and
+// come with proper pre-sized URLs (thumbnail → full-res) so the picker no
+// longer has to fall back to a single re-used URL for both thumbnail and
+// full image as it did with Tavily.
 
+import { pexelsSearchPhotos, pexelsCuratedPhotos, hasPexelsApiKey } from './pexelsClient';
+import type { PexelsPhoto } from './pexelsClient';
 import type { OnlineImageResult } from '../types/editor';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TAVILY_API_KEY = process.env.EXPO_PUBLIC_TAVILY_API_KEY ?? '';
-const TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search';
-
-/** Max results to request per search */
-const MAX_RESULTS = 40;
-
 /** In-memory cache: query → results */
 const searchCache = new Map<string, OnlineImageResult[]>();
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Mapping helper ───────────────────────────────────────────────────────────
 
-interface TavilyImageResult {
-  url: string;
-  description?: string;
-}
-
-interface TavilySearchResponse {
-  query: string;
-  answer?: string;
-  results: Array<{
-    title: string;
-    url: string;
-    content: string;
-    score: number;
-    publishedDate?: string;
-  }>;
-  images?: TavilyImageResult[];
-  responseTime?: number;
+function mapPexelsPhoto(photo: PexelsPhoto, query: string): OnlineImageResult {
+  return {
+    // Full-resolution image used when the image is actually inserted/exported.
+    // 'large2x' caps at 1880×1300 — sharp on slides without being excessive.
+    url:          photo.src.large2x,
+    // Small, fast-loading thumbnail for the picker grid.
+    thumbnailUrl: photo.src.medium,
+    title:        photo.alt?.trim() || query,
+    width:        photo.width,
+    height:       photo.height,
+    sourceUrl:    photo.url,
+    // Pexels requires attribution where possible — surfaced in the picker UI.
+    photographer:    photo.photographer,
+    photographerUrl: photo.photographer_url,
+  };
 }
 
 // ─── Main search function ─────────────────────────────────────────────────────
 
 /**
- * Search for images online via Tavily API.
- * Tavily returns images alongside search results when includeImages: true.
+ * Search for presentation-ready images via the Pexels API.
+ * Falls back to Pexels' curated feed if the query returns zero results,
+ * so the picker is never empty for an API key that's valid but a query
+ * that's too narrow/unusual.
  */
 export async function searchOnlineImages(
   query: string,
-  maxResults: number = 20,
+  maxResults: number = 24,
 ): Promise<OnlineImageResult[]> {
   if (!query.trim()) return [];
-  if (!TAVILY_API_KEY) {
-    console.warn('[imageSearchService] EXPO_PUBLIC_TAVILY_API_KEY not set');
+
+  if (!hasPexelsApiKey()) {
+    console.warn('[imageSearchService] EXPO_PUBLIC_PEXELS_API_KEY not set');
     return [];
   }
 
@@ -58,45 +61,18 @@ export async function searchOnlineImages(
   }
 
   try {
-    const response = await fetch(TAVILY_SEARCH_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${TAVILY_API_KEY}`,
-      },
-      body: JSON.stringify({
-        query: query.trim(),
-        searchDepth: 'basic',
-        maxResults: Math.min(maxResults, 20),
-        includeImages: true,
-        includeAnswer: false,
-        includeRawContent: false,
-        topic: 'general',
-      }),
+    const photos = await pexelsSearchPhotos({
+      query:   query.trim(),
+      perPage: Math.min(maxResults, 80),
     });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.warn('[imageSearchService] HTTP error:', response.status, text.slice(0, 200));
-      return [];
+    let results: OnlineImageResult[] = photos.map(p => mapPexelsPhoto(p, query));
+
+    // Fallback to curated feed if the specific query had no matches
+    if (results.length === 0) {
+      const curated = await pexelsCuratedPhotos(1, Math.min(maxResults, 24));
+      results = curated.map(p => mapPexelsPhoto(p, query));
     }
-
-    const data: TavilySearchResponse = await response.json();
-
-    if (!data.images || data.images.length === 0) {
-      return [];
-    }
-
-    // Filter and map images
-    const results: OnlineImageResult[] = data.images
-      .filter(img => img.url && isValidImageUrl(img.url))
-      .slice(0, maxResults)
-      .map(img => ({
-        url: img.url,
-        thumbnailUrl: img.url, // Tavily doesn't provide separate thumbnails
-        title: img.description || query,
-        sourceUrl: img.url,
-      }));
 
     searchCache.set(cacheKey, results);
     return results;
@@ -108,6 +84,8 @@ export async function searchOnlineImages(
 }
 
 // ─── Suggested queries for the image picker ───────────────────────────────────
+// Unchanged from Part 30/58.2 — these are general-purpose stock-photo search
+// terms that work equally well against Pexels' library.
 
 export function getImageSuggestions(
   slideTitle?: string,
@@ -144,18 +122,6 @@ export function getImageSuggestions(
   }
 
   return [...new Set(base)].slice(0, 8);
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function isValidImageUrl(url: string): boolean {
-  if (!url) return false;
-  if (!url.startsWith('http')) return false;
-  const lower = url.toLowerCase();
-  if (lower.includes('favicon')) return false;
-  if (lower.includes('pixel')) return false;
-  if (lower.endsWith('.gif')) return false;
-  return true;
 }
 
 // ─── Clear cache ──────────────────────────────────────────────────────────────

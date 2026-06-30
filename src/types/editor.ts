@@ -1,4 +1,6 @@
 // src/types/editor.ts
+// Part 58.3 — Added photographer / photographerUrl to OnlineImageResult
+//             (Pexels requires/encourages attribution; surfaced in the picker)
 // Part 41.9 — Added globalFontScale and globalTextColor to SlideEditorData
 //             Added { scope: 'global_text_color' } to ColorPickerTarget
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +77,9 @@ export interface ImageBlock {
   caption?:     string;
   aspectRatio?: number;
   position?:    InlineBlockPosition;
+  /** Part 58.3 — Pexels attribution, carried through to PPTX/PDF export */
+  photographer?:    string;
+  photographerUrl?: string;
 }
 
 export interface ChartBlock {
@@ -329,6 +334,9 @@ export interface TemplateHistoryState {
 }
 
 // ─── Part 30: Online Image Search ────────────────────────────────────────────
+// Part 58.3: now backed by Pexels rather than Tavily — width/height are
+// always populated (Pexels always returns real photo dimensions), and
+// photographer/photographerUrl carry attribution data.
 
 export interface OnlineImageResult {
   url:          string;
@@ -337,6 +345,9 @@ export interface OnlineImageResult {
   width?:       number;
   height?:      number;
   sourceUrl?:   string;
+  /** Part 58.3 — Pexels attribution */
+  photographer?:    string;
+  photographerUrl?: string;
 }
 
 export interface OnlineImageSearchState {
