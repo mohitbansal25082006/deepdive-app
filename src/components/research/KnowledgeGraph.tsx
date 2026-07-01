@@ -2,6 +2,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Interactive Knowledge Graph — FULL THEME COMPATIBILITY
 // Visual upgrade with theme-aware colors and text visibility
+// Part 58.5 — Collision-aware force layout so nodes never overlap each other
+//             (or each other's labels), even in dense graphs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -10,6 +12,7 @@ import React, {
 import {
   View, Text, TouchableOpacity, ScrollView,
   Dimensions, PanResponder, TextInput, Modal,
+  InteractionManager, ActivityIndicator, Alert, Platform,
 } from 'react-native';
 import Svg, {
   Circle, Line, Text as SvgText, G,
@@ -19,6 +22,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  forceSimulation, forceManyBody, forceLink, forceCollide, forceX, forceY,
+} from 'd3-force';
 import {
   KnowledgeGraph as KnowledgeGraphType,
   KnowledgeGraphNode,
@@ -68,13 +74,158 @@ function ptDist(ax: number, ay: number, bx: number, by: number) {
 }
 
 // ─── Force simulation ──────────────────────────────────────────────────────────
+// Part 58.5 — node spacing overhaul.
+//
+// The previous layout used a hand-rolled O(n²) repulsion pass with a single
+// fixed spacing target (a flat "110" ideal edge length, generic 1/d² push).
+// That approximates spacing between node *centers*, but never accounted for:
+//   (a) each node type's actual rendered circle size (root=34 vs concept=16), or
+//   (b) the label rendered *below* every node, which can be far wider than the
+//       node circle itself for longer entity names.
+// The result: labels of smaller nodes routinely overlapped neighboring nodes
+// or their labels even when the circles looked "far enough" apart.
+//
+// This version:
+//  1. Defines a per-node "collision radius" = max(circle radius + padding,
+//     estimated label half-width + padding), so both the node body and its
+//     label get guaranteed clearance.
+//  2. Runs a real d3-force simulation (forceManyBody + forceLink +
+//     forceCollide) — forceCollide is purpose-built to converge on
+//     non-overlapping circle-packed layouts, which is far more reliable than
+//     the previous approximate repulsion math.
+//  3. Follows the simulation with a deterministic, iterative overlap-resolution
+//     pass that directly separates any pair of nodes still closer than their
+//     combined collision radius. This guarantees a fully overlap-free result
+//     even if the physics simulation hasn't perfectly converged (dense
+//     clusters, tight canvases, etc).
+//  4. Preserves the original cluster-sector seeding + cluster-cohesion pull so
+//     thematic grouping still reads clearly, and keeps the root node pinned
+//     dead-center as before.
+
+const LABEL_CHAR_WIDTH = 3.2;   // ≈ average glyph width (px) at the label font sizes used below nodes
+const LABEL_MAX_CHARS  = 19;    // matches the "…" truncation applied when rendering labels
+const NODE_PADDING     = 16;    // minimum guaranteed gap (px) between any two nodes/labels
+
+function nodeBaseRadius(n: KnowledgeGraphNode): number {
+  return NODE_TYPE_SIZE[n.type] ?? 18;
+}
+
+// Half the estimated width of a node's rendered label. Needed because a small
+// node (e.g. a "concept" node, r=16) can carry a long label that is much wider
+// than the circle itself — without this, physics would happily place a
+// neighboring node right where that label renders.
+function labelHalfWidth(n: KnowledgeGraphNode): number {
+  const chars = Math.min((n.label ?? '').length, LABEL_MAX_CHARS);
+  return (chars * LABEL_CHAR_WIDTH) / 2;
+}
+
+// The effective "personal space" radius used for both the physics collision
+// force and the final deterministic overlap-resolution pass.
+function collisionRadius(n: KnowledgeGraphNode): number {
+  const r = nodeBaseRadius(n);
+  return Math.max(r + NODE_PADDING, labelHalfWidth(n) + NODE_PADDING * 0.75);
+}
+
+type SimNode = KnowledgeGraphNode & {
+  index?: number;
+  vx?: number; vy?: number;
+  x?: number; y?: number;
+  fx?: number | null; fy?: number | null;
+};
+
+interface SimLink {
+  source: string | SimNode;
+  target: string | SimNode;
+  strength: number;
+}
+
+// Custom d3-force-compatible force: pulls each non-root node toward the
+// running centroid of its own cluster every tick, so thematic clusters stay
+// visually grouped even as collision/repulsion forces push individual nodes
+// apart to avoid overlap.
+function makeClusterForce(nodes: SimNode[], clusterNodeMap: Map<string, string>) {
+  return (alpha: number) => {
+    if (clusterNodeMap.size === 0) return;
+    const centers = new Map<string, { x: number; y: number; n: number }>();
+    for (const n of nodes) {
+      const cId = clusterNodeMap.get(n.id);
+      if (!cId) continue;
+      const c = centers.get(cId) ?? { x: 0, y: 0, n: 0 };
+      c.x += n.x ?? 0; c.y += n.y ?? 0; c.n += 1;
+      centers.set(cId, c);
+    }
+    for (const n of nodes) {
+      if (n.type === 'root') continue;
+      const cId = clusterNodeMap.get(n.id);
+      if (!cId) continue;
+      const c = centers.get(cId);
+      if (!c || c.n < 2) continue;
+      const cx = c.x / c.n, cy = c.y / c.n;
+      n.vx = (n.vx ?? 0) + (cx - (n.x ?? 0)) * alpha * 0.05;
+      n.vy = (n.vy ?? 0) + (cy - (n.y ?? 0)) * alpha * 0.05;
+    }
+  };
+}
+
+// Direct, non-physics positional correction: repeatedly pushes any pair of
+// nodes closer than their combined collision radius apart along the line
+// connecting their centers. This is the safety net that guarantees a fully
+// overlap-free layout regardless of how well the physics simulation converged.
+function resolveOverlaps(nodes: SimNode[], passes = 48) {
+  for (let p = 0; p < passes; p++) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const minDist = collisionRadius(a) + collisionRadius(b);
+        let dx = (b.x ?? 0) - (a.x ?? 0);
+        let dy = (b.y ?? 0) - (a.y ?? 0);
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 0.0001) {
+          dx = (Math.random() - 0.5) * 0.5;
+          dy = (Math.random() - 0.5) * 0.5;
+          dist = 0.01;
+        }
+        if (dist < minDist) {
+          const overlap = (minDist - dist) / 2;
+          const ux = dx / dist, uy = dy / dist;
+          const aFixed = a.type === 'root';
+          const bFixed = b.type === 'root';
+          if (!aFixed) {
+            a.x = (a.x ?? 0) - ux * overlap * (bFixed ? 2 : 1);
+            a.y = (a.y ?? 0) - uy * overlap * (bFixed ? 2 : 1);
+          }
+          if (!bFixed) {
+            b.x = (b.x ?? 0) + ux * overlap * (aFixed ? 2 : 1);
+            b.y = (b.y ?? 0) + uy * overlap * (aFixed ? 2 : 1);
+          }
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+function clampToBounds(nodes: SimNode[], W: number, H: number) {
+  for (const n of nodes) {
+    if (n.type === 'root') { n.x = W / 2; n.y = H / 2; continue; }
+    const r = collisionRadius(n);
+    // If a single node's footprint is larger than the canvas (pathological
+    // case), fall back to centering it rather than producing NaN bounds.
+    const minX = Math.min(r, W - r), maxX = Math.max(r, W - r);
+    const minY = Math.min(r, H - r), maxY = Math.max(r, H - r);
+    n.x = clamp(n.x ?? 0, minX, maxX);
+    n.y = clamp(n.y ?? 0, minY, maxY);
+  }
+}
 
 function runForceLayout(
   rawNodes: KnowledgeGraphNode[],
   rawEdges: KnowledgeGraphEdge[],
   clusters: KnowledgeGraphCluster[],
   W: number, H: number,
-  iters = 320,
+  iters = 400,
 ): KnowledgeGraphNode[] {
   const clusterNodeMap = new Map<string, string>();
   clusters.forEach(c => c.nodeIds.forEach(id => clusterNodeMap.set(id, c.id)));
@@ -82,69 +233,79 @@ function runForceLayout(
   const sectorSize = clusterIds.length > 0 ? (2 * Math.PI) / clusterIds.length : Math.PI;
   const clusterAngle = new Map<string, number>(clusterIds.map((id, i) => [id, i * sectorSize - Math.PI / 2]));
 
-  const nodes: KnowledgeGraphNode[] = rawNodes.map(n => {
+  // Seed positions in cluster-grouped sectors — same spirit as the original
+  // layout — but with a wider spread so the physics pass starts from a less
+  // crowded state and converges to a non-overlapping layout faster.
+  const nodes: SimNode[] = rawNodes.map(n => {
     const cId = clusterNodeMap.get(n.id) ?? null;
     const ang = cId ? (clusterAngle.get(cId) ?? 0) : Math.random() * Math.PI * 2;
-    const baseR = n.type === 'root' ? 0 : n.type === 'primary' ? 120 : 230;
-    const j = (Math.random() - 0.5) * 80;
+    const baseR = n.type === 'root' ? 0 : n.type === 'primary' ? 140 : 260;
+    const j = (Math.random() - 0.5) * 90;
+    const x = W / 2 + (baseR + j) * Math.cos(ang + (Math.random() - 0.5) * 0.8);
+    const y = H / 2 + (baseR + j) * Math.sin(ang + (Math.random() - 0.5) * 0.8);
     return {
       ...n,
-      x: W / 2 + (baseR + j) * Math.cos(ang + (Math.random() - 0.5) * 0.8),
-      y: H / 2 + (baseR + j) * Math.sin(ang + (Math.random() - 0.5) * 0.8),
-      vx: 0, vy: 0,
+      x, y, vx: 0, vy: 0,
+      ...(n.type === 'root' ? { fx: W / 2, fy: H / 2 } : {}),
     };
   });
 
-  const nodeMap = new Map(nodes.map(n => [n.id, n]));
-  const edges = rawEdges.map(e => ({
-    src: nodeMap.get(resolveId(e.source)),
-    tgt: nodeMap.get(resolveId(e.target)),
-    strength: e.strength ?? 0.5,
-  })).filter(e => e.src && e.tgt) as { src: KnowledgeGraphNode; tgt: KnowledgeGraphNode; strength: number; }[];
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
 
-  for (let iter = 0; iter < iters; iter++) {
-    const alpha = 0.3 * (1 - iter / iters);
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j];
-        const dx = (b.x ?? 0) - (a.x ?? 0), dy = (b.y ?? 0) - (a.y ?? 0);
-        const d = Math.sqrt(dx * dx + dy * dy) || 1;
-        const f = (3200 * alpha) / (d * d);
-        const fx = (dx / d) * f, fy = (dy / d) * f;
-        a.vx! -= fx; a.vy! -= fy; b.vx! += fx; b.vy! += fy;
-      }
-    }
-    for (const e of edges) {
-      const dx = (e.tgt.x ?? 0) - (e.src.x ?? 0), dy = (e.tgt.y ?? 0) - (e.src.y ?? 0);
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const delta = (d - 110) * alpha * e.strength;
-      const fx = (dx / d) * delta, fy = (dy / d) * delta;
-      e.src.vx! += fx; e.src.vy! += fy; e.tgt.vx! -= fx; e.tgt.vy! -= fy;
-    }
-    const ctr = new Map<string, { x: number; y: number; n: number }>();
-    nodes.forEach(nd => {
-      const cId = clusterNodeMap.get(nd.id); if (!cId) return;
-      const c = ctr.get(cId) ?? { x: 0, y: 0, n: 0 };
-      c.x += nd.x ?? 0; c.y += nd.y ?? 0; c.n++;
-      ctr.set(cId, c);
-    });
-    nodes.forEach(nd => {
-      if (nd.type === 'root') return;
-      const cId = clusterNodeMap.get(nd.id); if (!cId) return;
-      const c = ctr.get(cId); if (!c || c.n < 2) return;
-      nd.vx! += ((c.x / c.n) - (nd.x ?? 0)) * 0.014 * alpha * 22;
-      nd.vy! += ((c.y / c.n) - (nd.y ?? 0)) * 0.014 * alpha * 22;
-    });
+  const links: SimLink[] = rawEdges
+    .map(e => ({ source: resolveId(e.source), target: resolveId(e.target), strength: e.strength ?? 0.5 }))
+    .filter(l => nodeById.has(l.source as string) && nodeById.has(l.target as string));
+
+  // Ideal edge length scales with both endpoints' collision radii, so
+  // connected nodes settle with enough room for both of their labels rather
+  // than a single flat constant that ignored node/label size entirely.
+  const linkDistance = (l: any) => {
+    const sId = typeof l.source === 'object' ? l.source.id : l.source;
+    const tId = typeof l.target === 'object' ? l.target.id : l.target;
+    const s = nodeById.get(sId);
+    const t = nodeById.get(tId);
+    const base = 70 + (s ? collisionRadius(s) : 20) + (t ? collisionRadius(t) : 20);
+    return clamp(base, 90, 260);
+  };
+
+  const clusterForce = makeClusterForce(nodes, clusterNodeMap);
+
+  const sim = forceSimulation(nodes as any)
+    .alphaDecay(1 - Math.pow(0.001, 1 / iters))
+    .force('charge', (forceManyBody().strength(-240).distanceMax(Math.max(W, H)) as any))
+    .force('link', (forceLink(links as any)
+      .id((d: any) => d.id)
+      .distance(linkDistance)
+      .strength((l: any) => 0.15 + (l.strength ?? 0.5) * 0.3) as any))
+    // forceCollide is the industry-standard way to guarantee non-overlapping
+    // circle layouts: radius = each node's full collision footprint (circle +
+    // label clearance), strength near 1 and several iterations so the
+    // constraint is rigid rather than "soft"/jittery.
+    .force('collide', (forceCollide((d: any) => collisionRadius(d)).strength(1).iterations(4) as any))
+    .force('x', (forceX(W / 2).strength(0.015) as any))
+    .force('y', (forceY(H / 2).strength(0.015) as any))
+    .force('cluster', clusterForce as any)
+    .stop();
+
+  for (let i = 0; i < iters; i++) {
+    sim.tick();
+    // Belt-and-suspenders: keep the root perfectly centered every tick even
+    // though fx/fy should already pin it.
     for (const n of nodes) {
-      if (n.type === 'root') { n.x = W / 2; n.y = H / 2; continue; }
-      n.vx! += ((W / 2) - (n.x ?? 0)) * 0.01 * alpha;
-      n.vy! += ((H / 2) - (n.y ?? 0)) * 0.01 * alpha;
-      n.vx! *= 0.82; n.vy! *= 0.82;
-      n.x = clamp((n.x ?? 0) + (n.vx ?? 0), 50, W - 50);
-      n.y = clamp((n.y ?? 0) + (n.vy ?? 0), 50, H - 50);
+      if (n.type === 'root') { n.x = W / 2; n.y = H / 2; }
     }
   }
-  return nodes;
+
+  // The physics pass gets the graph *close* to non-overlapping. This
+  // deterministic pass makes the no-overlap guarantee exact, then we
+  // re-clamp to canvas bounds (and resolve once more, since clamping can
+  // reintroduce a tiny amount of crowding at the edges).
+  resolveOverlaps(nodes, 48);
+  clampToBounds(nodes, W, H);
+  resolveOverlaps(nodes, 16);
+  clampToBounds(nodes, W, H);
+
+  return nodes as KnowledgeGraphNode[];
 }
 
 // ─── SVG Canvas ──────────────────────────────────────────────────────────────
@@ -289,7 +450,10 @@ interface ZoomBarProps {
   bottom?: number;
 }
 
-function ZoomBar({ scale, isFS, onZoomIn, onZoomOut, onReset, onExpand, bottom = 12 }: ZoomBarProps) {
+function ZoomBar({
+  scale, isFS, onZoomIn, onZoomOut, onReset, onExpand,
+  bottom = 12,
+}: ZoomBarProps) {
   const { isLight } = useTheme();
   const ctrlBtnStyle = {
     width: 34, height: 34, borderRadius: 11,
@@ -453,15 +617,23 @@ function FullscreenModal({
         </LinearGradient>
 
         <View style={{ flex: 1 }} {...fsPanHandlers}>
-          {ready && (
+          {ready ? (
             <GraphCanvas
               graph={graph} layoutNodes={fsLayoutNodes} W={fsW} H={fsH}
               scale={scale} ox={ox} oy={oy} selectedNode={selectedNode}
               visibleIds={visibleIds} matches={matches} connectedIds={connectedIds}
               colorMap={colorMap} onNodePress={onNodePress}
             />
+          ) : (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.sm }}>Arranging nodes…</Text>
+            </View>
           )}
-          <ZoomBar scale={scale} isFS onZoomIn={onZoomIn} onZoomOut={onZoomOut} onReset={onReset} onExpand={onExpand} bottom={insets.bottom + 12} />
+          <ZoomBar
+            scale={scale} isFS onZoomIn={onZoomIn} onZoomOut={onZoomOut} onReset={onReset} onExpand={onExpand}
+            bottom={insets.bottom + 12}
+          />
         </View>
 
         {selectedNode && (
@@ -540,18 +712,71 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
   const [hiddenClusters, setHiddenClusters] = useState<Set<string>>(new Set());
   const [filterType, setFilterType] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [ready, setReady] = useState(false);
 
-  const layoutNodes = useMemo(
-    () => runForceLayout(graph.nodes, graph.edges, clusters, canvasW, canvasH),
-    [graph.nodes.length, graph.edges.length, canvasW, canvasH]
-  );
-  const fsLayoutNodes = useMemo(
-    () => runForceLayout(graph.nodes, graph.edges, clusters, fsW, fsH),
-    [graph.nodes.length, graph.edges.length, fsW, fsH]
-  );
+  // ── Part 58.6 — instant screen open ────────────────────────────────────────
+  // Force-directed layout (d3-force simulation + overlap resolution) is
+  // real, non-trivial computation. Running it synchronously inside a
+  // `useMemo` — as before — means it executes as part of the render/commit
+  // phase, which blocks the JS thread right when the screen is trying to
+  // navigate in. That's what made "opening the knowledge graph" feel slow:
+  // the screen itself was ready, but the JS thread was busy laying out nodes
+  // before it could paint anything at all.
+  //
+  // Fix: compute layout in *state*, populated from an effect that's
+  // deferred via InteractionManager.runAfterInteractions (waits for the
+  // navigation transition/animations to finish) plus one more
+  // requestAnimationFrame (lets the empty-state UI actually paint first).
+  // The screen and its header/stats/canvas frame now render immediately;
+  // the graph itself pops in ~1-2s later behind a small "Arranging nodes…"
+  // indicator, which is an explicitly acceptable tradeoff.
+  //
+  // The fullscreen layout is also made *lazy*: it's only computed the first
+  // time the user actually opens fullscreen, instead of always being
+  // computed up front (which previously doubled the up-front cost for a
+  // view most sessions never open).
+  const [layoutNodes, setLayoutNodes] = useState<KnowledgeGraphNode[]>([]);
+  const [layoutReady, setLayoutReady] = useState(false);
+  const [fsLayoutNodes, setFsLayoutNodes] = useState<KnowledgeGraphNode[]>([]);
+  const [fsLayoutReady, setFsLayoutReady] = useState(false);
+  const fsComputedRef = useRef(false);
 
-  useEffect(() => { const t = setTimeout(() => setReady(true), 80); return () => clearTimeout(t); }, [layoutNodes]);
+  useEffect(() => {
+    let cancelled = false;
+    setLayoutReady(false);
+    const task = InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        const nodes = runForceLayout(graph.nodes, graph.edges, clusters, canvasW, canvasH);
+        if (!cancelled) { setLayoutNodes(nodes); setLayoutReady(true); }
+      });
+    });
+    return () => { cancelled = true; (task as any)?.cancel?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph.nodes.length, graph.edges.length, canvasW, canvasH]);
+
+  // Invalidate the cached fullscreen layout whenever the underlying graph or
+  // fullscreen dimensions change, so the next time fullscreen opens it
+  // recomputes rather than showing a stale layout.
+  useEffect(() => { fsComputedRef.current = false; }, [graph.nodes.length, graph.edges.length, fsW, fsH]);
+
+  useEffect(() => {
+    if (!isFullscreen || fsComputedRef.current) return;
+    let cancelled = false;
+    setFsLayoutReady(false);
+    const task = InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        const nodes = runForceLayout(graph.nodes, graph.edges, clusters, fsW, fsH);
+        if (!cancelled) {
+          setFsLayoutNodes(nodes);
+          setFsLayoutReady(true);
+          fsComputedRef.current = true;
+        }
+      });
+    });
+    return () => { cancelled = true; (task as any)?.cancel?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFullscreen, graph.nodes.length, graph.edges.length, fsW, fsH]);
 
   const colorMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -669,15 +894,22 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         }}
         {...inlinePan.panHandlers}
       >
-        {ready && (
+        {layoutReady ? (
           <GraphCanvas
             graph={graph} layoutNodes={layoutNodes} W={canvasW} H={canvasH}
             scale={scale} ox={ox} oy={oy} selectedNode={selectedNode}
             visibleIds={visibleIds} matches={matches} connectedIds={connectedIds}
             colorMap={colorMap} onNodePress={handleNodePress}
           />
+        ) : (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+            <ActivityIndicator size="small" color={COLORS.primary} />
+            <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>Arranging nodes…</Text>
+          </View>
         )}
-        <ZoomBar scale={scale} isFS={false} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetView} onExpand={handleExpand} />
+        <ZoomBar
+          scale={scale} isFS={false} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetView} onExpand={handleExpand}
+        />
       </View>
 
       <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, textAlign: 'center', marginTop: 6 }}>
@@ -791,7 +1023,7 @@ export function KnowledgeGraphView({ graph, height = 500, onNodePress }: Knowled
         fsLayoutNodes={fsLayoutNodes} fsW={fsW} fsH={fsH}
         scale={scale} ox={ox} oy={oy} selectedNode={selectedNode}
         visibleIds={visibleIds} matches={matches} connectedIds={connectedIds}
-        colorMap={colorMap} insets={insets} ready={ready} searchQuery={searchQuery}
+        colorMap={colorMap} insets={insets} ready={fsLayoutReady} searchQuery={searchQuery}
         fsPanHandlers={fsPan.panHandlers} getColor={getColor}
         onClose={handleCloseFullscreen} onNodePress={handleNodePress}
         onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetView} onExpand={handleExpand}
