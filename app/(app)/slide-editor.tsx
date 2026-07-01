@@ -1,7 +1,8 @@
 // app/(app)/slide-editor.tsx
-// Part 41.9 — Full patch applied:
-//   • onMoveBlockUp / onMoveBlockDown wired to SlideEditorCanvas
-//   • onRewriteStat={editor.aiRewriteStat} passed to AIEditPanel
+// Part 58.5 — Use liveMirror={true}, showActions={true}, thumbScale={0.28}
+//   • Editor thumbnails use live mirror rendering (full scale + transform)
+//   • Shows add/delete/copy buttons for slide management
+//   • Compact thumbnails (0.28 scale, ~90px wide) to save space
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useCallback, useState, useRef } from 'react';
@@ -405,6 +406,13 @@ export default function SlideEditorScreen() {
             accentColor={accentColor}
           />
 
+          {/*
+            ── Thumbnail strip ──
+            Part 58.5: Use liveMirror={true}, showActions={true}, thumbScale={0.28}
+            • Editor thumbnails use live mirror rendering (full scale + transform)
+            • Shows add/delete/copy buttons for slide management
+            • Compact thumbnails (0.28 scale, ~90px wide) to save space
+          */}
           <SlideThumbnailStrip
             slides={state.slides}
             activeIndex={state.activeSlideIndex}
@@ -416,6 +424,9 @@ export default function SlideEditorScreen() {
             onDeleteSlide={editor.deleteSlide}
             onReorderSlide={editor.reorderSlides}
             onDuplicateSlide={editor.duplicateSlide}
+            liveMirror={true}
+            showActions={true}
+            thumbScale={0.28}
           />
 
         </KeyboardAvoidingView>
@@ -528,6 +539,11 @@ export default function SlideEditorScreen() {
         onClose={() => setShowIconifyPicker(false)}
       />
 
+      <InsufficientCreditsModal
+        visible={false}
+        info={null}
+        onClose={() => {}}
+      />
     </LinearGradient>
   );
 }

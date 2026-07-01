@@ -1,41 +1,9 @@
 // src/components/research/SlidePreviewPanel.tsx
-// Part 5 — Full slide deck browser:
-//   • Horizontal full-width carousel (one slide at a time, swipe-nav)
-//   • Thumbnail strip below with tap-to-jump
-//   • Slide counter + layout label
-//   • Speaker notes toggle
-//
-// Part 54 UPDATE — The header close control is now a BACK ARROW (was a
-//   chevron-down "drop" icon). The parent screen (slide-preview.tsx) wires its
-//   onClose to navigate STRAIGHT back to the research-report screen, so pressing
-//   it moves directly from the presentation preview to the report — instead of
-//   dropping back to the slide-generator/setup screen.
-//
-// ─── FIXES APPLIED ────────────────────────────────────────────────────────────
-//
-//  FIX 1 — All TouchableOpacity → Pressable
-//    TouchableOpacity uses the JS responder system. Reanimated's Animated.View
-//    intercepts that responder chain and swallows press events silently.
-//    Pressable uses the native touch path and is immune.
-//    Ref: github.com/software-mansion/react-native-reanimated/issues/6070
-//
-//  FIX 2 — Removed `entering=` from Animated.View wrappers containing buttons
-//    After an entering animation completes, Reanimated leaves a ghost layout
-//    layer that permanently absorbs pointer events. All three interactive bars
-//    (header, navigation row, thumbnail strip) were wrapped in Animated.View
-//    with entering=, making every button inside permanently unreachable after
-//    the animation finished. Fixed by using plain View for all bars that
-//    contain interactive children.
-//    Ref: github.com/software-mansion/react-native-reanimated/issues/3388
-//
-//  FIX 3 — FlatList wrapped in Animated.View entering=
-//    The main carousel FlatList was wrapped in Animated.View entering=.
-//    The ghost layer was absorbing horizontal swipe gestures, disabling the
-//    carousel scroll entirely after the animation. Moved to plain View.
-//
-//  SAFE: Animated.View entering= is still used on the slide counter label and
-//  speaker notes panel — both are pure display content with no interactive
-//  children, so the ghost layer cannot block any touches.
+// Part 58.5 — Use liveMirror={true}, showActions={false}, thumbScale={0.42}
+//   • Thumbnails render at full scale with transform scale
+//   • Exactly matches the main slides content, layout, and styling
+//   • No add/delete/copy buttons (view-only)
+//   • Larger thumbnails (0.42 scale, ~134px wide) for better visibility
 // ──────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useRef, useCallback } from 'react';
@@ -49,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { SlideCard } from './SlideCard';
+import { SlideThumbnailStrip } from '../editor/SlideThumbnailStrip';
 import { GeneratedPresentation, PresentationSlide } from '../../types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../constants/theme';
 
@@ -65,10 +34,6 @@ const SCREEN_W     = Dimensions.get('window').width;
 const MAIN_SLIDE_W = SCREEN_W - SPACING.lg * 2;
 const MAIN_SLIDE_H = Math.round(MAIN_SLIDE_W * (9 / 16));
 const MAIN_SCALE   = MAIN_SLIDE_W / 320;
-
-const THUMB_W     = 90;
-const THUMB_H     = Math.round(THUMB_W * (9 / 16));
-const THUMB_SCALE = THUMB_W / 320;
 
 const LAYOUT_LABELS: Record<string, string> = {
   title:       'Title Slide',
@@ -93,7 +58,6 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
   const [showNotes, setShowNotes] = useState(false);
 
   const mainRef  = useRef<FlatList>(null);
-  const thumbRef = useRef<ScrollView>(null);
 
   const activeSlide = slides[activeIdx];
   const accentColor = activeSlide?.accentColor ?? tokens.primary;
@@ -105,10 +69,6 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
       if (viewableItems.length > 0) {
         const newIdx = viewableItems[0].index ?? 0;
         setActiveIdx(newIdx);
-        thumbRef.current?.scrollTo({
-          x: Math.max(0, newIdx * (THUMB_W + 8) - SCREEN_W / 2 + THUMB_W / 2),
-          animated: true,
-        });
       }
     }
   ).current;
@@ -156,12 +116,7 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
 
-      {/*
-        ── Header bar ──
-        FIX 2: Plain View — was Animated.View entering={FadeIn.duration(350)}.
-        The ghost layer was blocking onClose Pressable and Notes toggle.
-        FIX 1: All TouchableOpacity → Pressable.
-      */}
+      {/* ── Header bar ── */}
       <View
         style={{
           flexDirection: 'row', alignItems: 'center',
@@ -182,9 +137,6 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            {/* Part 54 update: back arrow (was chevron-down "drop"). The parent
-                wires onClose to navigate straight back to the research-report
-                screen, so this moves directly from preview → report. */}
             <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
           </Pressable>
         )}
@@ -198,7 +150,6 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
           </Text>
         </View>
 
-        {/* Notes toggle — FIX 1: Pressable */}
         <Pressable
           onPress={() => setShowNotes(n => !n)}
           style={{
@@ -219,11 +170,7 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
         </Pressable>
       </View>
 
-      {/*
-        ── Slide counter + layout label ──
-        SAFE: Pure display content, no interactive children.
-        Animated.View entering= is fine here.
-      */}
+      {/* ── Slide counter + layout label ── */}
       <Animated.View
         entering={FadeInDown.duration(300).delay(60)}
         style={{
@@ -248,12 +195,7 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
         </Text>
       </Animated.View>
 
-      {/*
-        ── Main carousel ──
-        FIX 3: Plain View — was Animated.View entering={FadeInDown.duration(400).delay(80)}.
-        The ghost layer was absorbing horizontal swipe gestures, disabling carousel
-        scroll entirely after the entrance animation finished.
-      */}
+      {/* ── Main carousel ── */}
       <View style={{ flex: 1 }}>
         <FlatList
           ref={mainRef}
@@ -275,11 +217,7 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
         />
       </View>
 
-      {/*
-        ── Speaker notes ──
-        SAFE: Pure display content, no interactive children.
-        Animated.View entering= is fine here.
-      */}
+      {/* ── Speaker notes ── */}
       {showNotes && activeSlide?.speakerNotes && (
         <Animated.View
           entering={FadeInDown.duration(260)}
@@ -303,12 +241,7 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
         </Animated.View>
       )}
 
-      {/*
-        ── Navigation row ──
-        FIX 2: Plain View — was Animated.View entering={FadeInDown.duration(300).delay(100)}.
-        The ghost layer made prev/next Pressables and all dot/First/Last buttons unreachable.
-        FIX 1: All TouchableOpacity → Pressable.
-      */}
+      {/* ── Navigation row ── */}
       <View
         style={{
           flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -330,11 +263,10 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
           <Ionicons name="chevron-back" size={20} color={COLORS.textSecondary} />
         </Pressable>
 
-        {/* Progress dots — show up to 9 before switching to fraction */}
+        {/* Progress dots */}
         {slides.length <= 9 ? (
           <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center' }}>
             {slides.map((_, i) => (
-              // FIX 1: Pressable
               <Pressable key={i} onPress={() => goTo(i)} hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
                 <View style={{
                   width: i === activeIdx ? 18 : 6,
@@ -347,7 +279,6 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
           </View>
         ) : (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            {/* FIX 1: Pressable */}
             <Pressable
               onPress={() => goTo(0)}
               style={{
@@ -368,7 +299,6 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
               </Text>
             </View>
 
-            {/* FIX 1: Pressable */}
             <Pressable
               onPress={() => goTo(slides.length - 1)}
               style={{
@@ -399,9 +329,10 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
 
       {/*
         ── Thumbnail strip ──
-        FIX 2: Plain View — was Animated.View entering={FadeInDown.duration(350).delay(120)}.
-        The ghost layer was blocking all thumbnail Pressables after the animation.
-        FIX 1: All TouchableOpacity inside → Pressable.
+        Part 58.5: Use liveMirror={true}, showActions={false}, thumbScale={0.42}
+        • Thumbnails match main slides exactly
+        • No add/delete/copy buttons (view-only)
+        • Larger thumbnails (~134px wide) for better visibility
       */}
       <View
         style={{
@@ -410,44 +341,16 @@ export function SlidePreviewPanel({ presentation, onClose }: SlidePreviewPanelPr
           backgroundColor: COLORS.backgroundCard,
         }}
       >
-        <ScrollView
-          ref={thumbRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: 8 }}
-        >
-          {slides.map((slide, i) => (
-            // FIX 1: Pressable — thumb was TouchableOpacity, ghost layer ate its taps
-            <Pressable
-              key={slide.id}
-              onPress={() => goTo(i)}
-            >
-              <View style={{
-                borderRadius: 6,
-                borderWidth: 2,
-                borderColor: i === activeIdx ? accentColor : 'transparent',
-                overflow: 'hidden',
-                shadowColor: i === activeIdx ? accentColor : '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: i === activeIdx ? 0.4 : 0.1,
-                shadowRadius: 6,
-                elevation: i === activeIdx ? 6 : 2,
-              }}>
-                <SlideCard
-                  slide={slide}
-                  tokens={tokens}
-                  scale={THUMB_SCALE}
-                />
-              </View>
-              <Text style={{
-                color: i === activeIdx ? accentColor : COLORS.textMuted,
-                fontSize: 9, textAlign: 'center', marginTop: 3, fontWeight: '600',
-              }}>
-                {i + 1}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        <SlideThumbnailStrip
+          slides={slides}
+          activeIndex={activeIdx}
+          tokens={tokens}
+          accentColor={accentColor}
+          onSelectSlide={goTo}
+          liveMirror={true}
+          showActions={false}
+          thumbScale={0.42}
+        />
       </View>
 
     </View>
