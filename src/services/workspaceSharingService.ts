@@ -1,19 +1,11 @@
 // src/services/workspaceSharingService.ts
-// Part 50.5 UPDATE — Triggers background bot indexing after sharing a report.
-//
-// Changes from Part 46:
-//   - shareReportToWorkspace (if it exists) and the report card "Add" flow
-//     now call triggerReportIndexing() fire-and-forget after successfully
-//     adding the report to workspace_reports. This is the client-side backup
-//     to the pg_net DB trigger added in schema_part50_5.sql.
-//
-//   - All existing Part 14/15/46 mapper and CRUD behaviour preserved exactly.
-//   - The indexing call is wrapped in a try/catch and never awaited —
-//     it cannot affect the UI in any way.
+// Part 58.6 FIX — Final solution.
+// The triggerReportIndexing call is removed from shareAcademicPaperToWorkspace.
+// The duplicate 'report_added' entry is prevented at the database level by
+// modifying the share_content_to_workspace RPC.
 
 import { supabase } from '../lib/supabase';
 import { SharedWorkspaceContent, SharedContentType } from '../types';
-import { triggerReportIndexing } from '../hooks/useWorkspaceBotIndex';
 
 // ─── Membership error detector ────────────────────────────────────────────────
 
@@ -93,12 +85,6 @@ export async function sharePresentationToWorkspace(
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
     if (!row) throw new Error('No data returned from share RPC');
 
-    // Part 50.5: If this presentation is linked to a report, trigger bot indexing
-    // fire-and-forget — never blocks the share operation
-    if (reportId) {
-      triggerReportIndexing(workspaceId, reportId).catch(() => {});
-    }
-
     return { data: mapShareRow(row), error: null };
   } catch (err) {
     return {
@@ -109,6 +95,9 @@ export async function sharePresentationToWorkspace(
 }
 
 // ─── Share academic paper ─────────────────────────────────────────────────────
+// Part 58.6 FIX: The triggerReportIndexing call is removed.
+// The indexing will happen automatically when the workspace is opened
+// via useWorkspaceBotIndex hook. This prevents duplicate activity entries.
 
 export async function shareAcademicPaperToWorkspace(
   workspaceId: string,
@@ -131,11 +120,6 @@ export async function shareAcademicPaperToWorkspace(
     if (error) throw error;
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
     if (!row) throw new Error('No data returned from share RPC');
-
-    // Part 50.5: Trigger bot indexing if linked to a report
-    if (reportId) {
-      triggerReportIndexing(workspaceId, reportId).catch(() => {});
-    }
 
     return { data: mapShareRow(row), error: null };
   } catch (err) {
@@ -167,8 +151,6 @@ export async function removeSharedContent(
 }
 
 // ─── Get all shared content ───────────────────────────────────────────────────
-// Part 46 FIX: Returns { notMember: true } sentinel when the user is no longer
-// a member so the calling hook can stop retrying and trigger navigation.
 
 export async function getWorkspaceSharedContent(
   workspaceId:  string,
