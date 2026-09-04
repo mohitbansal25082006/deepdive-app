@@ -7,11 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "deepdiveai",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0A0A1A"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.deepdive.ai",
@@ -127,12 +122,6 @@
       ],
       "expo-document-picker",
       [
-        "expo-av",
-        {
-          "microphonePermission": "DeepDive AI uses your microphone for voice research queries, voice messages, and video meetings."
-        }
-      ],
-      [
         "expo-audio",
         {
           "microphonePermission": "DeepDive AI uses your microphone for voice messages in team chat.",
@@ -158,12 +147,22 @@
             "targetSdkVersion": 35
           },
           "ios": {
-            "deploymentTarget": "15.1"
+            "deploymentTarget": "16.4"
           }
         }
       ],
       "expo-web-browser",
-      "expo-video"
+      "expo-video",
+      "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0A0A1A"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

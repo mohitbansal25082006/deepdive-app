@@ -1,5 +1,8 @@
 // src/hooks/useDebateVoice.ts
-// Part 20 — Voice input hook for the Debate tab.
+// Part 21 — Voice input hook for the Debate tab.
+// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
+// expo-av native module entirely — see GlobalAudioEngine.ts header for the
+// full rationale).
 //
 // Mirrors the pattern in voiceResearch.ts but as a self-contained hook so
 // the Debate screen doesn't need to manage recording state manually.
@@ -10,9 +13,15 @@
 //   });
 
 import { useState, useCallback, useRef } from 'react';
-import { Audio }                          from 'expo-av';
+import { AudioModule, RecordingPresets, setAudioModeAsync, type AudioRecorder } from 'expo-audio';
 import * as FileSystem                    from 'expo-file-system/legacy';
 import type { DebateVoiceState }          from '../types';
+
+// NOTE: `AudioRecorder` is exported as a TYPE only from 'expo-audio' — there
+// is no public top-level constructor. The real constructible class lives on
+// the `AudioModule` namespace object (AudioModule.AudioRecorder), which is
+// the pattern expo-audio itself uses internally for imperative (non-hook)
+// recording. We use the type import purely for annotating the ref below.
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,7 +50,7 @@ export function useDebateVoice({
 }: UseDebateVoiceOptions) {
   const [voiceState, setVoiceState] = useState<DebateVoiceState>(INITIAL);
 
-  const recordingRef    = useRef<Audio.Recording | null>(null);
+  const recorderRef     = useRef<AudioRecorder | null>(null);
   const durationRef     = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCancelledRef  = useRef(false);
@@ -60,8 +69,7 @@ export function useDebateVoice({
   // ── Permission check ───────────────────────────────────────────────────────
 
   const ensurePermission = useCallback(async (): Promise<boolean> => {
-    const { status } = await Audio.requestPermissionsAsync();
-    const granted = status === 'granted';
+    const { granted } = await AudioModule.requestRecordingPermissionsAsync();
     patch({ permissionGranted: granted });
     if (!granted) {
       patch({ error: 'Microphone permission is required to use voice input.' });
@@ -78,15 +86,15 @@ export function useDebateVoice({
     if (!granted) return;
 
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS:   true,
-        playsInSilentModeIOS: true,
+      await setAudioModeAsync({
+        allowsRecording:   true,
+        playsInSilentMode: true,
       });
 
-      const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      await rec.startAsync();
-      recordingRef.current = rec;
+      const rec = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
+      await rec.prepareToRecordAsync();
+      rec.record();
+      recorderRef.current = rec;
 
       // Reset duration counter
       let ms = 0;
@@ -116,23 +124,23 @@ export function useDebateVoice({
   const stopVoice = useCallback(async () => {
     clearTimers();
 
-    if (!recordingRef.current) return;
+    if (!recorderRef.current) return;
 
-    const rec = recordingRef.current;
-    recordingRef.current = null;
+    const rec = recorderRef.current;
+    recorderRef.current = null;
 
     patch({ isRecording: false, isTranscribing: true });
 
     try {
-      await rec.stopAndUnloadAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      await rec.stop();
+      await setAudioModeAsync({ allowsRecording: false });
 
       if (isCancelledRef.current) {
         patch({ isTranscribing: false });
         return;
       }
 
-      const uri = rec.getURI();
+      const uri = rec.uri;
       if (!uri) throw new Error('No audio URI returned from recording.');
 
       const text = await transcribeWithWhisper(uri);
@@ -156,14 +164,14 @@ export function useDebateVoice({
     isCancelledRef.current = true;
     clearTimers();
 
-    if (recordingRef.current) {
+    if (recorderRef.current) {
       try {
-        await recordingRef.current.stopAndUnloadAsync();
+        await recorderRef.current.stop();
       } catch { /* ignore */ }
-      recordingRef.current = null;
+      recorderRef.current = null;
     }
 
-    await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+    await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
     setVoiceState(INITIAL);
   }, [clearTimers]);
 

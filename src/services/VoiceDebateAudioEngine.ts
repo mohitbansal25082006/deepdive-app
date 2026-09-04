@@ -1,23 +1,18 @@
 // src/services/VoiceDebateAudioEngine.ts
-// Part 41.2 UPDATE — Cross-device audio resolution + offline pause/resume.
+// Part 42 UPDATE — Migrated from deprecated `expo-av` to `expo-audio`.
 //
-// CHANGES:
-//   1. resolveAudioUri() now uses a 3-tier priority:
-//        Local file (generating device)  → fastest
-//        Local cache (downloaded copy)   → second fastest
-//        Cloud storage URL               → streams on any device
-//      This means the same VoiceDebate object works on any device that
-//      has either the original local files, a downloaded cache copy, or
-//      access to the cloud-uploaded URLs.
+// Same migration rationale as GlobalAudioEngine.ts (see that file's header
+// for the full explanation of why expo-av broke on SDK 57 and the API
+// mapping). This file keeps the 3-tier local/cache/cloud URI resolution
+// from Part 41.2 unchanged — only the underlying playback primitive
+// (Audio.Sound → AudioPlayer) and its status-time units (ms → s) changed.
 //
-//   2. pauseForOffline() / clearOfflinePause() — same as Part 41, unchanged.
-//
-//   3. start() now accepts optional `fromCloudOnly` flag for when called
-//      on a foreign device (audio segment paths are all https://).
-//
-// Everything else is identical to the Part 41 version.
+// NOTE: createAudioPlayer's second argument is an `AudioPlayerOptions`
+// object (`{ updateInterval }`), not a bare number — passing a number
+// breaks TS overload resolution and silently drops `addListener` from
+// the inferred AudioPlayer type.
 
-import { Audio }                             from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer, type AudioStatus } from 'expo-audio';
 import { audioFileExists }                   from './voiceDebateTTSService';
 import { getLocalVoiceDebateAudioPaths }     from '../lib/voiceDebateAudioCache';
 import type {
@@ -70,12 +65,15 @@ const INITIAL_STATE: VoiceDebateEngineState = {
 // ─── Singletons ───────────────────────────────────────────────────────────────
 
 let engineState: VoiceDebateEngineState = { ...INITIAL_STATE };
-let globalSound:       Audio.Sound | null = null;
+let globalPlayer:      AudioPlayer | null = null;
+let statusUnsubscribe: (() => void) | null = null;
 let loadTurnLock                          = false;
 let audioSessionReady                     = false;
 let currentRate                           = 1.0;
 let keepAlive                             = false;
 let cumulativeMs                          = 0;
+
+const STATUS_UPDATE_INTERVAL_MS = 250;
 
 // Cache of resolved local paths for the current debate (avoids repeated
 // filesystem checks on every turn advance)
@@ -84,7 +82,7 @@ let resolvedForId:      string | null     = null;
 
 let loadTurnRef: (index: number, autoPlay: boolean) => Promise<void> = async () => {};
 
-// ─── Subscribers ──────────────────────────────────────────────────────────────
+// ─── Subscribers ────────────────────────────────────────────────────────────
 
 type Subscriber = (state: VoiceDebateEngineState) => void;
 const subscribers = new Set<Subscriber>();
@@ -109,12 +107,11 @@ function broadcast(partial: Partial<VoiceDebateEngineState>): void {
 async function ensureAudioSession(): Promise<void> {
   if (audioSessionReady) return;
   try {
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS:         false,
-      playsInSilentModeIOS:       true,
-      staysActiveInBackground:    false,
-      shouldDuckAndroid:          true,
-      playThroughEarpieceAndroid: false,
+    await setAudioModeAsync({
+      allowsRecording:        false,
+      playsInSilentMode:      true,
+      shouldPlayInBackground: false,
+      interruptionMode:       'duckOthers',
     });
     audioSessionReady = true;
   } catch {}
@@ -180,6 +177,8 @@ function getSegmentType(vd: VoiceDebate, idx: number): DebateSegmentType {
 }
 
 // ─── Status Handler ───────────────────────────────────────────────────────────
+// NOTE: expo-audio reports currentTime/duration in SECONDS — converted to ms
+// here so downstream state/consumers are unaffected by the migration.
 
 function makeStatusHandler(
   vd:         VoiceDebate,
@@ -187,18 +186,18 @@ function makeStatusHandler(
   turnCumMs:  number,
   totalDurMs: number,
 ) {
-  return (status: any) => {
+  return (status: AudioStatus) => {
     if (!status?.isLoaded) return;
 
-    const posMs    = status.positionMillis ?? 0;
-    const durMs    = status.durationMillis ?? 0;
+    const posMs    = Math.round((status.currentTime ?? 0) * 1000);
+    const durMs    = Math.round((status.duration ?? 0) * 1000);
     const totalPos = turnCumMs + posMs;
     const progress = totalDurMs > 0 ? totalPos / totalDurMs : 0;
 
     broadcast({
       isLoading:          false,
-      isBuffering:        status.isBuffering ?? false,
-      isPlaying:          status.isPlaying   ?? false,
+      isBuffering:        status.playbackState === 'buffering',
+      isPlaying:          status.playing ?? false,
       positionMs:         posMs,
       segmentDurationMs:  durMs,
       totalPositionMs:    totalPos,
@@ -238,9 +237,9 @@ async function loadTurn(index: number, autoPlay: boolean): Promise<void> {
   loadTurnLock = true;
 
   try {
-    if (globalSound) {
-      try { globalSound.setOnPlaybackStatusUpdate(null); await globalSound.unloadAsync(); } catch {}
-      globalSound = null;
+    if (statusUnsubscribe) {
+      try { statusUnsubscribe(); } catch {}
+      statusUnsubscribe = null;
     }
 
     cumulativeMs     = getCumMs(turns, index);
@@ -276,20 +275,22 @@ async function loadTurn(index: number, autoPlay: boolean): Promise<void> {
       console.log(`[VDEngine] 💾  Turn ${index}: playing from local cache`);
     }
 
-    const { sound } = await Audio.Sound.createAsync(
-      { uri: resolved.uri },
-      {
-        shouldPlay:                   autoPlay,
-        rate:                         currentRate,
-        progressUpdateIntervalMillis: 250,
-        shouldCorrectPitch:           true,
-      },
-    );
-
-    globalSound = sound;
-
     const handler = makeStatusHandler(vd, index, cumulativeMs, totalDurMs);
-    sound.setOnPlaybackStatusUpdate(handler);
+
+    if (!globalPlayer) {
+      globalPlayer = createAudioPlayer({ uri: resolved.uri }, { updateInterval: STATUS_UPDATE_INTERVAL_MS });
+    } else {
+      globalPlayer.replace({ uri: resolved.uri });
+    }
+
+    globalPlayer.setPlaybackRate(currentRate);
+
+    const subscription = globalPlayer.addListener('playbackStatusUpdate', handler);
+    statusUnsubscribe = () => subscription.remove();
+
+    if (autoPlay) {
+      globalPlayer.play();
+    }
 
     broadcast({
       isLoading:       false,
@@ -318,16 +319,16 @@ loadTurnRef = loadTurn;
 export const VoiceDebateEngine = {
 
   isActiveFor(voiceDebateId: string): boolean {
-    return engineState.voiceDebateId === voiceDebateId && globalSound !== null;
+    return engineState.voiceDebateId === voiceDebateId && globalPlayer !== null;
   },
 
   // ── Part 41.2: Offline pause ──────────────────────────────────────────────
 
   async pauseForOffline(): Promise<void> {
-    if (!globalSound) return;
+    if (!globalPlayer) return;
     if (!engineState.isPlaying) return;
     try {
-      await globalSound.pauseAsync();
+      globalPlayer.pause();
       broadcast({ isPlaying: false, pausedByOffline: true });
     } catch (err) {
       console.warn('[VDEngine] pauseForOffline error:', err);
@@ -367,64 +368,64 @@ export const VoiceDebateEngine = {
   },
 
   async reattach(vd: VoiceDebate): Promise<void> {
-    if (!globalSound) return;
+    if (!globalPlayer) return;
     broadcast({ voiceDebate: vd, voiceDebateId: vd.id });
 
     const turns      = vd.script?.turns ?? [];
     const totalDurMs = getTotalMs(turns);
     const idx        = engineState.currentTurnIndex;
 
+    if (statusUnsubscribe) {
+      try { statusUnsubscribe(); } catch {}
+      statusUnsubscribe = null;
+    }
     const handler = makeStatusHandler(vd, idx, cumulativeMs, totalDurMs);
-    globalSound.setOnPlaybackStatusUpdate(handler);
+    const subscription = globalPlayer.addListener('playbackStatusUpdate', handler);
+    statusUnsubscribe = () => subscription.remove();
 
     try {
-      const status = await globalSound.getStatusAsync();
-      if (status.isLoaded) {
-        const posMs    = status.positionMillis ?? 0;
-        const durMs    = status.durationMillis ?? 0;
-        const totalPos = cumulativeMs + posMs;
-        broadcast({
-          isPlaying:          status.isPlaying,
-          isLoading:          false,
-          isBuffering:        false,
-          positionMs:         posMs,
-          segmentDurationMs:  durMs,
-          totalPositionMs:    totalPos,
-          totalDurationMs:    totalDurMs > 0 ? totalDurMs : engineState.totalDurationMs,
-          progressPercent:    totalDurMs > 0 ? totalPos / totalDurMs : engineState.progressPercent,
-          currentTurnIndex:   idx,
-          isVisible:          true,
-        });
-      }
+      const posMs    = Math.round((globalPlayer.currentTime ?? 0) * 1000);
+      const durMs    = Math.round((globalPlayer.duration ?? 0) * 1000);
+      const totalPos = cumulativeMs + posMs;
+      broadcast({
+        isPlaying:          globalPlayer.playing ?? false,
+        isLoading:          false,
+        isBuffering:        false,
+        positionMs:         posMs,
+        segmentDurationMs:  durMs,
+        totalPositionMs:    totalPos,
+        totalDurationMs:    totalDurMs > 0 ? totalDurMs : engineState.totalDurationMs,
+        progressPercent:    totalDurMs > 0 ? totalPos / totalDurMs : engineState.progressPercent,
+        currentTurnIndex:   idx,
+        isVisible:          true,
+      });
     } catch {}
   },
 
   async play(): Promise<void> {
-    if (!globalSound) return;
+    if (!globalPlayer) return;
     try {
-      await globalSound.playAsync();
+      globalPlayer.play();
       broadcast({ isPlaying: true, pausedByOffline: false });
     } catch {}
   },
 
   async pause(): Promise<void> {
-    if (!globalSound) return;
+    if (!globalPlayer) return;
     try {
-      await globalSound.pauseAsync();
+      globalPlayer.pause();
       broadcast({ isPlaying: false, pausedByOffline: false });
     } catch {}
   },
 
   async toggle(): Promise<void> {
-    if (!globalSound) return;
+    if (!globalPlayer) return;
     try {
-      const status = await globalSound.getStatusAsync();
-      if (!status.isLoaded) return;
-      if (status.isPlaying) {
-        await globalSound.pauseAsync();
+      if (globalPlayer.playing) {
+        globalPlayer.pause();
         broadcast({ isPlaying: false, pausedByOffline: false });
       } else {
-        await globalSound.playAsync();
+        globalPlayer.play();
         broadcast({ isPlaying: true, pausedByOffline: false });
       }
     } catch {}
@@ -442,11 +443,11 @@ export const VoiceDebateEngine = {
   },
 
   async skipPrevious(): Promise<void> {
-    if (globalSound) {
+    if (globalPlayer) {
       try {
-        const status = await globalSound.getStatusAsync();
-        if (status.isLoaded && (status.positionMillis ?? 0) > 2500) {
-          await globalSound.setPositionAsync(0);
+        const posMs = Math.round((globalPlayer.currentTime ?? 0) * 1000);
+        if (posMs > 2500) {
+          globalPlayer.seekTo(0);
           broadcast({ positionMs: 0, totalPositionMs: cumulativeMs });
           return;
         }
@@ -459,8 +460,8 @@ export const VoiceDebateEngine = {
   async setRate(rate: number): Promise<void> {
     currentRate = rate;
     broadcast({ playbackRate: rate });
-    if (globalSound) {
-      try { await globalSound.setRateAsync(rate, true); } catch {}
+    if (globalPlayer) {
+      try { globalPlayer.setPlaybackRate(rate); } catch {}
     }
   },
 
@@ -487,13 +488,17 @@ export const VoiceDebateEngine = {
     keepAlive    = false;
     loadTurnLock = false;
 
-    if (globalSound) {
+    if (statusUnsubscribe) {
+      try { statusUnsubscribe(); } catch {}
+      statusUnsubscribe = null;
+    }
+
+    if (globalPlayer) {
       try {
-        globalSound.setOnPlaybackStatusUpdate(null);
-        await globalSound.stopAsync();
-        await globalSound.unloadAsync();
+        globalPlayer.pause();
+        globalPlayer.remove();
       } catch {}
-      globalSound = null;
+      globalPlayer = null;
     }
 
     resolvedLocalPaths = null;

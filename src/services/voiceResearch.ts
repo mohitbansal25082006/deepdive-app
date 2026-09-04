@@ -1,9 +1,18 @@
 // src/services/voiceResearch.ts
-// Voice-to-text for research queries using expo-av recording
+// Voice-to-text for research queries using expo-audio recording
 // and OpenAI Whisper transcription.
+//
+// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
+// expo-av native module entirely — see GlobalAudioEngine.ts header for the
+// full rationale).
 
-import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
+import { AudioModule, RecordingPresets, setAudioModeAsync, type AudioRecorder } from 'expo-audio';
+
+// NOTE: `AudioRecorder` is exported as a TYPE only from 'expo-audio' — there
+// is no public top-level constructor. The real constructible class lives on
+// the `AudioModule` namespace object (AudioModule.AudioRecorder). The type
+// import above is used purely for annotating the module-level singleton
+// below.
 
 export interface VoiceRecordingState {
   isRecording: boolean;
@@ -12,14 +21,14 @@ export interface VoiceRecordingState {
   uri: string | null;
 }
 
-let recording: Audio.Recording | null = null;
+let recorder: AudioRecorder | null = null;
 let durationInterval: ReturnType<typeof setInterval> | null = null;
 
 // ─── Permission ───────────────────────────────────────────────────────────────
 
 export async function requestMicrophonePermission(): Promise<boolean> {
-  const { status } = await Audio.requestPermissionsAsync();
-  return status === 'granted';
+  const { granted } = await AudioModule.requestRecordingPermissionsAsync();
+  return granted;
 }
 
 // ─── Recording ────────────────────────────────────────────────────────────────
@@ -31,16 +40,14 @@ export async function startRecording(
     const granted = await requestMicrophonePermission();
     if (!granted) return false;
 
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
+    await setAudioModeAsync({
+      allowsRecording:   true,
+      playsInSilentMode: true,
     });
 
-    recording = new Audio.Recording();
-    await recording.prepareToRecordAsync(
-      Audio.RecordingOptionsPresets.HIGH_QUALITY
-    );
-    await recording.startAsync();
+    recorder = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
+    await recorder.prepareToRecordAsync();
+    recorder.record();
 
     // Track duration
     let ms = 0;
@@ -57,7 +64,7 @@ export async function startRecording(
 }
 
 export async function stopRecording(): Promise<string | null> {
-  if (!recording) return null;
+  if (!recorder) return null;
 
   try {
     if (durationInterval) {
@@ -65,15 +72,15 @@ export async function stopRecording(): Promise<string | null> {
       durationInterval = null;
     }
 
-    await recording.stopAndUnloadAsync();
-    await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+    await recorder.stop();
+    await setAudioModeAsync({ allowsRecording: false });
 
-    const uri = recording.getURI();
-    recording = null;
+    const uri = recorder.uri;
+    recorder = null;
     return uri ?? null;
   } catch (err) {
     console.error('[Voice] Stop recording error:', err);
-    recording = null;
+    recorder = null;
     return null;
   }
 }
@@ -83,9 +90,9 @@ export function cancelRecording(): void {
     clearInterval(durationInterval);
     durationInterval = null;
   }
-  if (recording) {
-    recording.stopAndUnloadAsync().catch(() => {});
-    recording = null;
+  if (recorder) {
+    recorder.stop().catch(() => {});
+    recorder = null;
   }
 }
 

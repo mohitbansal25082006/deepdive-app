@@ -1,34 +1,59 @@
 // src/services/GlobalAudioEngine.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Part 41.2 UPDATE — Offline-aware audio pause/resume.
+// Part 42 UPDATE — Migrated from deprecated `expo-av` to `expo-audio`.
 //
-// NEW BEHAVIOUR:
-//   When the device goes offline, AudioEngine.pauseForOffline() is called
-//   from _layout.tsx. This pauses the audio AND sets a `pausedByOffline`
-//   flag so we know it was not a user-initiated pause.
+// WHY THIS CHANGED:
+//   expo-av is deprecated as of SDK 55 and its native module is no longer
+//   registered starting SDK 55+ (this project is on SDK 57). Any import of
+//   `expo-av` now throws `Cannot find native module 'ExponentAV'` at module
+//   evaluation time — which crashes the entire route tree, since this file
+//   is imported (transitively) from the root layout via AuthContext.
 //
-//   When the device comes back online, the engine does NOT auto-resume.
-//   Instead the MiniPlayer continues to show in "paused" state and the user
-//   can manually tap Play to resume. This is the correct UX — we never
-//   auto-resume media the user didn't ask us to resume.
+// KEY API DIFFERENCES vs expo-av (Audio.Sound):
+//   • expo-audio uses a single long-lived player object created via
+//     `createAudioPlayer(source, { updateInterval: ms })` instead of
+//     `Audio.Sound.createAsync()` returning a new sound per load. Note the
+//     second argument is an `AudioPlayerOptions` object, NOT a bare number
+//     — passing a number there silently breaks TS's overload resolution
+//     and makes `addListener` disappear from the inferred type.
+//   • Status times are in SECONDS (`currentTime`, `duration`), not
+//     milliseconds like expo-av's `positionMillis` / `durationMillis`.
+//     All internal state below still tracks milliseconds (to avoid
+//     touching every consumer of EngineState), so we convert at the
+//     boundary.
+//   • Status updates come via `player.addListener('playbackStatusUpdate', cb)`
+//     instead of `sound.setOnPlaybackStatusUpdate(cb)`.
+//   • To load a new track we call `player.replace(source)` rather than
+//     creating a brand new Sound object; there is one player per engine
+//     lifetime, replaced/reused as turns advance.
+//   • Global audio mode is set via `setAudioModeAsync()` (same shape as
+//     before, but field names differ slightly — see ensureAudioSession).
 //
-//   `pausedByOffline` is exposed in EngineState so MiniPlayer (and any
-//   player screen) can optionally show a "Paused — offline" label.
+// PART 42.1 FIX — TS2339 "Property 'addListener' does not exist on type
+// 'AudioPlayer'":
+//   `AudioPlayer` extends `SharedObject<AudioEvents>`, and `addListener` is
+//   inherited from that generic base (expo-modules-core's EventEmitter).
+//   The method is real and present at runtime on every AudioPlayer — this
+//   was purely a TypeScript narrowing problem, not a missing API. The
+//   module-level `globalPlayer` variable is typed `AudioPlayer | null`;
+//   once other statements (broadcast(), setPlaybackRate(), property reads)
+//   sit between the `if (!globalPlayer)` guard / assignment and the
+//   `.addListener(...)` call, TS can re-widen `globalPlayer`'s narrowed
+//   type back to `AudioPlayer | null` before the call, and the intersection
+//   it falls back to for a bare `SharedObject` doesn't carry the
+//   `AudioEvents` generic's methods. The fix is to bind the player to a
+//   `const` (`player: AudioPlayer`) immediately once known-non-null, and
+//   perform every subsequent operation (setPlaybackRate, addListener, play)
+//   through that local binding instead of re-reading the mutable module
+//   variable. This is a type-only change — runtime behavior is identical.
 //
-// NEW API:
-//   AudioEngine.pauseForOffline()
-//     Call when network goes offline. Pauses if playing, sets flag.
-//
-//   AudioEngine.clearOfflinePause()
-//     Call when network comes back online. Clears the flag (audio stays
-//     paused — user must tap play).
-//
-//   EngineState.pausedByOffline: boolean
-//
-// Everything else is unchanged from Part 41.
+// Everything else (turn-advance logic, offline pause/resume, progress
+// save callback, public AudioEngine API) is functionally unchanged from
+// Part 41.2 so existing callers (MiniPlayer, podcast screens) do not need
+// to change.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer, type AudioStatus } from 'expo-audio';
 import type { Podcast, PodcastTurn } from '../types';
 import type { MiniPlayerState } from '../types/podcast_v2';
 import { audioFileExists } from '../services/podcastTTSService';
@@ -81,7 +106,8 @@ const INITIAL_ENGINE_STATE: EngineState = {
 // ─── Module-level singletons ──────────────────────────────────────────────────
 
 let engineState: EngineState = { ...INITIAL_ENGINE_STATE };
-let globalSound: Audio.Sound | null = null;
+let globalPlayer: AudioPlayer | null = null;
+let statusUnsubscribe: (() => void) | null = null;
 let loadTurnLock = false;
 let audioSessionReady = false;
 let currentRate = 1.0;
@@ -89,7 +115,9 @@ let keepAlive = false;
 let cumulativeMs = 0;
 let loadTurnRef: (index: number, autoPlay: boolean) => Promise<void> = async () => {};
 
-// ─── Subscribers ──────────────────────────────────────────────────────────────
+const STATUS_UPDATE_INTERVAL_MS = 250;
+
+// ─── Subscribers ────────────────────────────────────────────────────────────
 
 type EngineSubscriber = (state: EngineState) => void;
 const subscribers = new Set<EngineSubscriber>();
@@ -141,12 +169,11 @@ function maybeSaveProgress(turnIdx: number, totalPosMs: number, totalDurMs: numb
 async function ensureAudioSession(): Promise<void> {
   if (audioSessionReady) return;
   try {
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS:         false,
-      playsInSilentModeIOS:       true,
-      staysActiveInBackground:    false,
-      shouldDuckAndroid:          true,
-      playThroughEarpieceAndroid: false,
+    await setAudioModeAsync({
+      allowsRecording:        false,
+      playsInSilentMode:      true,
+      shouldPlayInBackground:  false,
+      interruptionMode:       'duckOthers',
     });
     audioSessionReady = true;
   } catch (err) {
@@ -168,6 +195,9 @@ async function resolveAudioUri(podcast: Podcast, segmentIndex: number): Promise<
 }
 
 // ─── Status Update Handler ────────────────────────────────────────────────────
+// NOTE: expo-audio reports currentTime/duration in SECONDS. We convert to ms
+// here at the single boundary point so the rest of the engine (and all
+// external consumers of EngineState) keep working in milliseconds unchanged.
 
 function makeStatusHandler(
   podcast: Podcast,
@@ -175,18 +205,18 @@ function makeStatusHandler(
   turnCumulativeMs: number,
   totalDurMs: number,
 ) {
-  return (status: any) => {
+  return (status: AudioStatus) => {
     if (!status?.isLoaded) return;
 
-    const posMs    = status.positionMillis ?? 0;
-    const durMs    = status.durationMillis ?? 0;
+    const posMs    = Math.round((status.currentTime ?? 0) * 1000);
+    const durMs    = Math.round((status.duration ?? 0) * 1000);
     const totalPos = turnCumulativeMs + posMs;
     const progress = totalDurMs > 0 ? totalPos / totalDurMs : 0;
 
     broadcast({
       isLoading:         false,
-      isBuffering:       status.isBuffering ?? false,
-      isPlaying:         status.isPlaying   ?? false,
+      isBuffering:       status.playbackState === 'buffering',
+      isPlaying:         status.playing ?? false,
       positionMs:        posMs,
       segmentDurationMs: durMs,
       totalPositionMs:   totalPos,
@@ -196,7 +226,7 @@ function makeStatusHandler(
       isVisible:         true,
     });
 
-    if (status.isPlaying) {
+    if (status.playing) {
       maybeSaveProgress(turnIndex, totalPos, totalDurMs);
     }
 
@@ -233,12 +263,10 @@ async function loadTurn(index: number, autoPlay: boolean): Promise<void> {
   loadTurnLock = true;
 
   try {
-    if (globalSound) {
-      try {
-        globalSound.setOnPlaybackStatusUpdate(null);
-        await globalSound.unloadAsync();
-      } catch {}
-      globalSound = null;
+    // Tear down any previous status listener before we replace/create.
+    if (statusUnsubscribe) {
+      try { statusUnsubscribe(); } catch {}
+      statusUnsubscribe = null;
     }
 
     cumulativeMs = turns.slice(0, index).reduce((s, t) => s + (t.durationMs ?? 0), 0);
@@ -267,20 +295,30 @@ async function loadTurn(index: number, autoPlay: boolean): Promise<void> {
       return;
     }
 
-    const { sound } = await Audio.Sound.createAsync(
-      { uri: audioUri },
-      {
-        shouldPlay:                   autoPlay,
-        rate:                         currentRate,
-        progressUpdateIntervalMillis: 250,
-        shouldCorrectPitch:           true,
-      }
-    );
-
-    globalSound = sound;
-
     const handler = makeStatusHandler(podcast, index, cumulativeMs, totalDurMs);
-    sound.setOnPlaybackStatusUpdate(handler);
+
+    // ── Bind to a local, definitely-typed `const` right away. ────────────
+    // This is the actual fix for TS2339: performing every subsequent
+    // operation through `player` (instead of re-reading the mutable
+    // `globalPlayer` module variable) keeps TypeScript's narrowing intact
+    // all the way down to the `.addListener(...)` call below.
+    let player: AudioPlayer;
+    if (!globalPlayer) {
+      player = createAudioPlayer({ uri: audioUri }, { updateInterval: STATUS_UPDATE_INTERVAL_MS });
+      globalPlayer = player;
+    } else {
+      player = globalPlayer;
+      player.replace({ uri: audioUri });
+    }
+
+    player.setPlaybackRate(currentRate);
+
+    const subscription = player.addListener('playbackStatusUpdate', handler);
+    statusUnsubscribe = () => subscription.remove();
+
+    if (autoPlay) {
+      player.play();
+    }
 
     broadcast({
       isLoading:        false,
@@ -309,7 +347,7 @@ loadTurnRef = loadTurn;
 export const AudioEngine = {
 
   isActiveFor(podcastId: string): boolean {
-    return engineState.podcastId === podcastId && globalSound !== null;
+    return engineState.podcastId === podcastId && globalPlayer !== null;
   },
 
   /**
@@ -330,10 +368,11 @@ export const AudioEngine = {
    * The MiniPlayer remains visible so the user can resume when ready.
    */
   async pauseForOffline(): Promise<void> {
-    if (!globalSound) return;
+    const player = globalPlayer;
+    if (!player) return;
     if (!engineState.isPlaying) return; // already paused — nothing to do
     try {
-      await globalSound.pauseAsync();
+      player.pause();
       broadcast({ isPlaying: false, pausedByOffline: true });
     } catch (err) {
       console.warn('[AudioEngine] pauseForOffline error:', err);
@@ -373,7 +412,8 @@ export const AudioEngine = {
   },
 
   async reattach(podcast: Podcast): Promise<void> {
-    if (!globalSound) return;
+    const player = globalPlayer;
+    if (!player) return;
 
     broadcast({ podcast, podcastId: podcast.id });
 
@@ -381,35 +421,38 @@ export const AudioEngine = {
     const totalDurMs = turns.reduce((s, t) => s + (t.durationMs ?? 0), 0);
     const idx        = engineState.currentTurnIndex;
 
+    if (statusUnsubscribe) {
+      try { statusUnsubscribe(); } catch {}
+      statusUnsubscribe = null;
+    }
     const handler = makeStatusHandler(podcast, idx, cumulativeMs, totalDurMs);
-    globalSound.setOnPlaybackStatusUpdate(handler);
+    const subscription = player.addListener('playbackStatusUpdate', handler);
+    statusUnsubscribe = () => subscription.remove();
 
     try {
-      const status = await globalSound.getStatusAsync();
-      if (status.isLoaded) {
-        const posMs    = status.positionMillis ?? 0;
-        const durMs    = status.durationMillis ?? 0;
-        const totalPos = cumulativeMs + posMs;
-        broadcast({
-          isPlaying:         status.isPlaying,
-          isLoading:         false,
-          isBuffering:       false,
-          positionMs:        posMs,
-          segmentDurationMs: durMs,
-          totalPositionMs:   totalPos,
-          totalDurationMs:   totalDurMs > 0 ? totalDurMs : engineState.totalDurationMs,
-          progressPercent:   totalDurMs > 0 ? totalPos / totalDurMs : engineState.progressPercent,
-          currentTurnIndex:  idx,
-          isVisible:         true,
-        });
-      }
+      const posMs    = Math.round((player.currentTime ?? 0) * 1000);
+      const durMs    = Math.round((player.duration ?? 0) * 1000);
+      const totalPos = cumulativeMs + posMs;
+      broadcast({
+        isPlaying:         player.playing ?? false,
+        isLoading:         false,
+        isBuffering:       false,
+        positionMs:        posMs,
+        segmentDurationMs: durMs,
+        totalPositionMs:   totalPos,
+        totalDurationMs:   totalDurMs > 0 ? totalDurMs : engineState.totalDurationMs,
+        progressPercent:   totalDurMs > 0 ? totalPos / totalDurMs : engineState.progressPercent,
+        currentTurnIndex:  idx,
+        isVisible:         true,
+      });
     } catch {}
   },
 
   async play(): Promise<void> {
-    if (!globalSound) return;
+    const player = globalPlayer;
+    if (!player) return;
     try {
-      await globalSound.playAsync();
+      player.play();
       // User explicitly resumed — clear the offline-pause flag
       broadcast({ isPlaying: true, pausedByOffline: false });
     } catch (err) {
@@ -418,9 +461,10 @@ export const AudioEngine = {
   },
 
   async pause(): Promise<void> {
-    if (!globalSound) return;
+    const player = globalPlayer;
+    if (!player) return;
     try {
-      await globalSound.pauseAsync();
+      player.pause();
       // User-initiated pause — not an offline pause
       broadcast({ isPlaying: false, pausedByOffline: false });
     } catch (err) {
@@ -429,15 +473,14 @@ export const AudioEngine = {
   },
 
   async toggle(): Promise<void> {
-    if (!globalSound) return;
+    const player = globalPlayer;
+    if (!player) return;
     try {
-      const status = await globalSound.getStatusAsync();
-      if (!status.isLoaded) return;
-      if (status.isPlaying) {
-        await globalSound.pauseAsync();
+      if (player.playing) {
+        player.pause();
         broadcast({ isPlaying: false, pausedByOffline: false });
       } else {
-        await globalSound.playAsync();
+        player.play();
         // User manually resumed — clear offline flag regardless of connectivity
         broadcast({ isPlaying: true, pausedByOffline: false });
       }
@@ -458,11 +501,12 @@ export const AudioEngine = {
   },
 
   async skipPrevious(): Promise<void> {
-    if (globalSound) {
+    const player = globalPlayer;
+    if (player) {
       try {
-        const status = await globalSound.getStatusAsync();
-        if (status.isLoaded && (status.positionMillis ?? 0) > 2000) {
-          await globalSound.setPositionAsync(0);
+        const posMs = Math.round((player.currentTime ?? 0) * 1000);
+        if (posMs > 2000) {
+          player.seekTo(0);
           broadcast({
             positionMs:      0,
             totalPositionMs: cumulativeMs,
@@ -480,8 +524,9 @@ export const AudioEngine = {
   async setRate(rate: number): Promise<void> {
     currentRate = rate;
     broadcast({ playbackRate: rate });
-    if (globalSound) {
-      try { await globalSound.setRateAsync(rate, true); } catch {}
+    const player = globalPlayer;
+    if (player) {
+      try { player.setPlaybackRate(rate); } catch {}
     }
   },
 
@@ -511,13 +556,17 @@ export const AudioEngine = {
     progressSaveCb = null;
     loadTurnLock   = false;
 
-    if (globalSound) {
+    if (statusUnsubscribe) {
+      try { statusUnsubscribe(); } catch {}
+      statusUnsubscribe = null;
+    }
+
+    if (globalPlayer) {
       try {
-        globalSound.setOnPlaybackStatusUpdate(null);
-        await globalSound.stopAsync();
-        await globalSound.unloadAsync();
+        globalPlayer.pause();
+        globalPlayer.remove();
       } catch {}
-      globalSound = null;
+      globalPlayer = null;
     }
 
     cumulativeMs = 0;

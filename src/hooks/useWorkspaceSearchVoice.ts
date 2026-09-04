@@ -1,18 +1,27 @@
 // src/hooks/useWorkspaceSearchVoice.ts
-// Part 52 — Feature 3: Voice input for workspace search.
+// Part 53 — Feature 3: Voice input for workspace search.
+// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
+// expo-av native module entirely — see GlobalAudioEngine.ts header for the
+// full rationale).
 //
 //   A self-contained voice-to-text hook for the WorkspaceSearchModal search
-//   bar. It mirrors useDebateVoice.ts (Part 20) exactly — record via expo-av,
-//   transcribe via OpenAI Whisper, hand the text back to the caller — but is
-//   tuned for short search queries (20s max) rather than long debate topics.
+//   bar. It mirrors useDebateVoice.ts (Part 21) exactly — record via
+//   expo-audio, transcribe via OpenAI Whisper, hand the text back to the
+//   caller — but is tuned for short search queries (20s max) rather than
+//   long debate topics.
 //
 //   Usage:
 //     const { voiceState, startVoice, stopVoice, cancelVoice, clearError } =
 //       useWorkspaceSearchVoice({ onTranscribed: (text) => search(text) });
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Audio }                          from 'expo-av';
+import { AudioModule, RecordingPresets, setAudioModeAsync, type AudioRecorder } from 'expo-audio';
 import * as FileSystem                    from 'expo-file-system/legacy';
+
+// NOTE: `AudioRecorder` is exported as a TYPE only from 'expo-audio' — there
+// is no public top-level constructor. The real constructible class lives on
+// the `AudioModule` namespace object (AudioModule.AudioRecorder). The type
+// import above is used purely for annotating the ref below.
 
 // ─── State shape ──────────────────────────────────────────────────────────────
 
@@ -47,7 +56,7 @@ export function useWorkspaceSearchVoice({
 }: UseWorkspaceSearchVoiceOptions) {
   const [voiceState, setVoiceState] = useState<WorkspaceSearchVoiceState>(INITIAL);
 
-  const recordingRef   = useRef<Audio.Recording | null>(null);
+  const recorderRef    = useRef<AudioRecorder | null>(null);
   const durationRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isCancelledRef = useRef(false);
@@ -60,9 +69,9 @@ export function useWorkspaceSearchVoice({
       // Best-effort cleanup if unmounted mid-record
       if (durationRef.current) clearInterval(durationRef.current);
       if (autoStopRef.current) clearTimeout(autoStopRef.current);
-      if (recordingRef.current) {
-        recordingRef.current.stopAndUnloadAsync().catch(() => {});
-        recordingRef.current = null;
+      if (recorderRef.current) {
+        recorderRef.current.stop().catch(() => {});
+        recorderRef.current = null;
       }
     };
   }, []);
@@ -78,8 +87,7 @@ export function useWorkspaceSearchVoice({
 
   // ── Permission ───────────────────────────────────────────────────────────
   const ensurePermission = useCallback(async (): Promise<boolean> => {
-    const { status } = await Audio.requestPermissionsAsync();
-    const granted = status === 'granted';
+    const { granted } = await AudioModule.requestRecordingPermissionsAsync();
     patch({ permissionGranted: granted });
     if (!granted) patch({ error: 'Microphone permission is required for voice search.' });
     return granted;
@@ -93,15 +101,15 @@ export function useWorkspaceSearchVoice({
     if (!granted) return;
 
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS:   true,
-        playsInSilentModeIOS: true,
+      await setAudioModeAsync({
+        allowsRecording:   true,
+        playsInSilentMode: true,
       });
 
-      const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      await rec.startAsync();
-      recordingRef.current = rec;
+      const rec = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
+      await rec.prepareToRecordAsync();
+      rec.record();
+      recorderRef.current = rec;
 
       let ms = 0;
       patch({ isRecording: true, isTranscribing: false, durationMs: 0, error: null });
@@ -121,23 +129,23 @@ export function useWorkspaceSearchVoice({
   // ── Stop + transcribe ──────────────────────────────────────────────────────
   const stopVoice = useCallback(async () => {
     clearTimers();
-    if (!recordingRef.current) return;
+    if (!recorderRef.current) return;
 
-    const rec = recordingRef.current;
-    recordingRef.current = null;
+    const rec = recorderRef.current;
+    recorderRef.current = null;
 
     patch({ isRecording: false, isTranscribing: true });
 
     try {
-      await rec.stopAndUnloadAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      await rec.stop();
+      await setAudioModeAsync({ allowsRecording: false });
 
       if (isCancelledRef.current) {
         patch({ isTranscribing: false });
         return;
       }
 
-      const uri = rec.getURI();
+      const uri = rec.uri;
       if (!uri) throw new Error('No audio URI returned from recording.');
 
       const text = await transcribeWithWhisper(uri);
@@ -157,11 +165,11 @@ export function useWorkspaceSearchVoice({
   const cancelVoice = useCallback(async () => {
     isCancelledRef.current = true;
     clearTimers();
-    if (recordingRef.current) {
-      try { await recordingRef.current.stopAndUnloadAsync(); } catch { /* ignore */ }
-      recordingRef.current = null;
+    if (recorderRef.current) {
+      try { await recorderRef.current.stop(); } catch { /* ignore */ }
+      recorderRef.current = null;
     }
-    await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+    await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
     if (mountedRef.current) setVoiceState(INITIAL);
   }, [clearTimers]);
 
