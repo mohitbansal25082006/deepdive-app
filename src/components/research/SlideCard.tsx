@@ -1,17 +1,28 @@
 // src/components/research/SlideCard.tsx
-// Part 41.9 — Two fixes:
-//   Fix 1: noTruncate now defaults to TRUE so the viewer never clips content.
-//           Only the thumbnail strip passes noTruncate={false} explicitly.
-//   Fix 2: Overlay blocks now support a zIndex field for stacking order.
-//           OverlayBlockCard in the editor exposes Move Up / Move Down controls.
+// Part 58.5.1 — LOCAL IMAGE RESOLUTION + QUIETER LOGGING
+//   1. Device-picked images are resolved through a rebuilt path first:
+//      documentDirectory/slide_images/<localFileName>. The `uri` stored in the
+//      DB points into Library/Caches/ExponentExperienceData/<container-uuid>/,
+//      which iOS purges and which changes UUID on reinstall — so an image
+//      added last week resolves to nothing today. Rebuilding against the
+//      current container fixes both cases.
+//   2. Warnings are deduped module-wide. SlideCard is mounted many times at
+//      once (canvas + every thumbnail + the off-screen export renderer), so a
+//      single dead URI produced a dozen identical warnings per render pass.
+//   3. When every source fails the block draws a labelled placeholder instead
+//      of nothing, so a broken image is never mistaken for a missing one.
+// Part 58.5 — Image fallback chain, clamped overlay height, typed zIndex.
+// Part 41.9 — noTruncate defaults to TRUE; overlay blocks honour zIndex.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { memo } from 'react';
+import React, { memo, useState, useEffect, useMemo } from 'react';
 import { View, Text, Image, StyleSheet, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { SvgXml }   from 'react-native-svg';
+import { Ionicons }     from '@expo/vector-icons';
+import { SvgXml }       from 'react-native-svg';
+import * as FileSystem  from 'expo-file-system';
 import type { PresentationSlide, PresentationThemeTokens } from '../../types';
 import type { AdditionalBlock, SlideEditorData, FieldFormatting, EditableFieldKey } from '../../types/editor';
+import { SLIDE_IMAGE_DIR_NAME } from '../../types/editor';
 
 // ─── The managed chart placeholder block ID ───────────────────────────────────
 const CHART_REF_PLACEHOLDER_ID = '__chart_ref_placeholder__';
@@ -25,10 +36,8 @@ interface SlideCardProps {
   showNotes?:  boolean;
   fontFamily?: string;
   /**
-   * FIX 1: Default changed to TRUE.
    * Pass noTruncate={false} only for thumbnails where space is very limited.
-   * The editor canvas passes noTruncate (= true) — no change needed there.
-   * The preview panel and all viewers get the default = true = no clipping.
+   * The editor canvas, preview panel and all viewers get the default = true.
    */
   noTruncate?: boolean;
 }
@@ -37,6 +46,33 @@ interface SlideCardProps {
 
 const SLIDE_W = 320;
 const SLIDE_H = 180;
+
+// ─── Part 58.5.1: local image path rebuilding ────────────────────────────────
+
+/**
+ * Rebuild the on-device path for a copied slide image against the CURRENT app
+ * container. Returns undefined when the filename is absent or expo-file-system
+ * exposes no documentDirectory (web).
+ */
+function buildLocalImagePath(fileName: string | undefined): string | undefined {
+  if (!fileName) return undefined;
+  const dir = (FileSystem as any)?.documentDirectory as string | undefined;
+  if (!dir) return undefined;
+  return `${dir}${SLIDE_IMAGE_DIR_NAME}/${fileName}`;
+}
+
+/**
+ * SlideCard renders concurrently in the canvas, in every thumbnail, and in the
+ * off-screen export renderer. Without deduping, one dead URI logs on every
+ * instance on every render pass and buries everything else in the console.
+ */
+const warnedSources = new Set<string>();
+
+function warnOnce(uri: string) {
+  if (!__DEV__ || warnedSources.has(uri)) return;
+  warnedSources.add(uri);
+  console.warn('[SlideCard] image source unavailable, falling back:', uri);
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,10 +109,7 @@ function accent(slide: PresentationSlide, tokens: PresentationThemeTokens): stri
   return slide.accentColor ?? tokens.primary;
 }
 
-/**
- * FIX 1: trunc() only truncates when noTruncate === false.
- * Since noTruncate defaults to true, viewers see full text by default.
- */
+/** trunc() only truncates when noTruncate === false. */
 function trunc(s: string | undefined, maxLen: number, noTruncate: boolean): string {
   if (!s) return '';
   if (noTruncate) return s;
@@ -125,14 +158,72 @@ function fstyle(fmt: FieldFormatting): 'italic' | 'normal' {
 // ─── Layout context ───────────────────────────────────────────────────────────
 
 interface LayoutCtx {
-  slide: PresentationSlide;
+  slide:  PresentationSlide;
   tokens: PresentationThemeTokens;
-  sc: number;
-  sm: number;
-  ff: string | undefined;
-  nt: boolean;
-  gfs: number;
-  gtc: string | undefined;
+  sc:     number;
+  sm:     number;
+  ff:     string | undefined;
+  nt:     boolean;
+  gfs:    number;
+  gtc:    string | undefined;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESILIENT IMAGE RENDERER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Renders an image block, falling forward through every source the block
+ * carries: the stored `uri`, the rebuilt local path, then the remote URLs.
+ * Once all sources are exhausted a labelled placeholder is drawn so the state
+ * is legible rather than silent.
+ */
+function SlideImage({
+  sources, caption, sc, tokens, ff,
+}: {
+  sources: string[];
+  caption: string | undefined;
+  sc:      number;
+  tokens:  PresentationThemeTokens;
+  ff:      string | undefined;
+}) {
+  const [srcIndex, setSrcIndex] = useState(0);
+
+  // Reset when the block's sources change (an edit, a restore, a re-cache)
+  const key = sources.join('|');
+  useEffect(() => { setSrcIndex(0); }, [key]);
+
+  const current = sources[srcIndex];
+
+  if (!current) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: tokens.surface, gap: 2 * sc, paddingHorizontal: 3 * sc }}>
+        <Ionicons name="image-outline" size={13 * sc} color={tokens.textMuted} />
+        <Text style={{ color: tokens.textMuted, fontSize: 3.6 * sc, textAlign: 'center', fontFamily: ff }} numberOfLines={2}>
+          Image unavailable
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <Image
+        source={{ uri: current }}
+        style={{ width: '100%', height: '100%' }}
+        resizeMode="cover"
+        onError={() => {
+          warnOnce(current);
+          setSrcIndex(i => i + 1);
+        }}
+      />
+      {caption ? (
+        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 2 * sc, paddingHorizontal: 4 * sc }}>
+          <Text style={{ color: '#FFF', fontSize: 4 * sc, fontFamily: ff }} numberOfLines={1}>{caption}</Text>
+        </View>
+      ) : null}
+    </>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +244,17 @@ function InlineBlockOverlay({
   ff:          string | undefined;
 }) {
   const pos = block.position;
+
+  // Hooks must run unconditionally — compute image sources before any return.
+  const imageSources = useMemo(() => {
+    if (block.type !== 'image') return [];
+    const rebuilt = buildLocalImagePath(block.localFileName);
+    // Order matters: stored uri, then the container-corrected local path, then
+    // the remote rungs (full-res → mid → thumbnail).
+    const raw = [block.uri, rebuilt, block.onlineUrl, block.thumbnailUrl];
+    return Array.from(new Set(raw.filter((u): u is string => !!u && u.length > 0)));
+  }, [block]);
+
   if (!pos || pos.type !== 'overlay') return null;
 
   const xFrac = pos.xFrac ?? 0.05;
@@ -164,26 +266,31 @@ function InlineBlockOverlay({
   const top   = SLIDE_H * yFrac * sc;
   const width = SLIDE_W * wFrac * sc;
 
-  const col = (block as any).color ?? accentColor;
-
-  // FIX 2: Read zIndex from block for stacking order control
-  const zIndex = (block as any).zIndex ?? 1;
+  const col    = (block as any).color ?? accentColor;
+  const zIndex = block.zIndex ?? 1;
 
   switch (block.type) {
 
     case 'image': {
-      const imageUri = block.uri || (block as any).onlineUrl || null;
-      if (!imageUri) return null;
-      const ar   = block.aspectRatio ?? 16 / 9;
-      const imgH = hFrac !== undefined ? SLIDE_H * hFrac * sc : (width / ar);
+      if (imageSources.length === 0) return null;
+
+      const rawAr = block.aspectRatio;
+      const ar    = Number.isFinite(rawAr) && (rawAr as number) > 0 ? (rawAr as number) : 16 / 9;
+
+      // Never let the image extend past the bottom of the canvas
+      const naturalH = hFrac !== undefined ? SLIDE_H * hFrac * sc : width / ar;
+      const maxH     = SLIDE_H * Math.max(0.05, 1 - yFrac) * sc;
+      const imgH     = Math.max(6 * sc, Math.min(naturalH, maxH));
+
       return (
-        <View style={{ position: 'absolute', left, top, width, height: imgH, borderRadius: 3 * sc, overflow: 'hidden', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.15)', zIndex }}>
-          <Image source={{ uri: imageUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-          {block.caption ? (
-            <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)', paddingVertical: 2 * sc, paddingHorizontal: 4 * sc }}>
-              <Text style={{ color: '#FFF', fontSize: 4 * sc, fontFamily: ff }} numberOfLines={1}>{block.caption}</Text>
-            </View>
-          ) : null}
+        <View style={{ position: 'absolute', left, top, width, height: imgH, borderRadius: 3 * sc, overflow: 'hidden', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.15)', backgroundColor: tokens.surface, zIndex }}>
+          <SlideImage
+            sources={imageSources}
+            caption={block.caption}
+            sc={sc}
+            tokens={tokens}
+            ff={ff}
+          />
         </View>
       );
     }
@@ -208,10 +315,10 @@ function InlineBlockOverlay({
     }
 
     case 'chart': {
-      const isPH  = block.id === CHART_REF_PLACEHOLDER_ID;
-      const cd    = block.chart;
+      const isPH   = block.id === CHART_REF_PLACEHOLDER_ID;
+      const cd     = block.chart;
       const chartH = hFrac !== undefined ? SLIDE_H * hFrac * sc : 50 * sc;
-      const CCOLS = [accentColor, '#43E97B', '#FFA726', '#FF6584', '#29B6F6', '#AB47BC'];
+      const CCOLS  = [accentColor, '#43E97B', '#FFA726', '#FF6584', '#29B6F6', '#AB47BC'];
 
       if (isPH) {
         return (
@@ -276,7 +383,7 @@ function InlineBlockOverlay({
       const sz      = (block.size ?? 40) * sc * 0.5;
       const ic      = block.color ?? accentColor;
       const bSz     = sz + 8 * sc;
-      const svgData = (block as any).svgData as string | undefined;
+      const svgData = block.svgData;
       return (
         <View style={{ position: 'absolute', left, top, width: bSz, height: bSz, borderRadius: bSz / 2, backgroundColor: `${ic}18`, borderWidth: 0.5, borderColor: `${ic}35`, alignItems: 'center', justifyContent: 'center', zIndex }}>
           {svgData ? (
@@ -413,8 +520,8 @@ function ContentLayout({ ctx }: { ctx: LayoutCtx }) {
 
 function BulletsLayout({ ctx }: { ctx: LayoutCtx }) {
   const { slide, tokens, sc, sm, ff, nt, gfs, gtc } = ctx;
-  const ac      = accent(slide, tokens);
-  const p       = sm;
+  const ac = accent(slide, tokens);
+  const p  = sm;
 
   const titleFmt = getFmt(slide, 'title');
 
@@ -438,14 +545,14 @@ function BulletsLayout({ ctx }: { ctx: LayoutCtx }) {
 
 function StatsLayout({ ctx }: { ctx: LayoutCtx }) {
   const { slide, tokens, sc, sm, ff, nt, gfs, gtc } = ctx;
-  const ac    = accent(slide, tokens);
-  const p     = sm;
+  const ac = accent(slide, tokens);
+  const p  = sm;
 
   const titleFmt = getFmt(slide, 'title');
 
-  const stats = (slide.stats ?? []).slice(0, 4);
-  const cardW = stats.length === 4 ? 68 * sc : 80 * sc;
-  const cardH = 88 * sc * p;
+  const stats  = (slide.stats ?? []).slice(0, 4);
+  const cardW  = stats.length === 4 ? 68 * sc : 80 * sc;
+  const cardH  = 88 * sc * p;
   const totalW = stats.length * cardW + (stats.length - 1) * 6 * sc;
   const startX = (SLIDE_W - totalW / sc) / 2 * sc;
 
@@ -565,8 +672,8 @@ function ChartRefLayout({ ctx }: { ctx: LayoutCtx }) {
 
 function PredictionsLayout({ ctx }: { ctx: LayoutCtx }) {
   const { slide, tokens, sc, sm, ff, nt, gfs, gtc } = ctx;
-  const ac    = accent(slide, tokens);
-  const p     = sm;
+  const ac = accent(slide, tokens);
+  const p  = sm;
 
   const titleFmt = getFmt(slide, 'title');
 
@@ -595,8 +702,8 @@ function PredictionsLayout({ ctx }: { ctx: LayoutCtx }) {
 
 function ReferencesLayout({ ctx }: { ctx: LayoutCtx }) {
   const { slide, tokens, sc, sm, ff, nt, gfs, gtc } = ctx;
-  const ac   = accent(slide, tokens);
-  const p    = sm;
+  const ac = accent(slide, tokens);
+  const p  = sm;
 
   const titleFmt = getFmt(slide, 'title');
 
@@ -649,7 +756,7 @@ export const SlideCard = memo(function SlideCard({
   scale      = 1,
   showNotes  = false,
   fontFamily,
-  noTruncate = true,   // FIX 1: DEFAULT IS NOW TRUE — viewers show full text
+  noTruncate = true,
 }: SlideCardProps) {
   const sc  = scale;
   const sm  = getSpacingMultiplier(slide);
@@ -666,12 +773,11 @@ export const SlideCard = memo(function SlideCard({
   const isQuote    = slide.layout === 'quote';
   const bgColor    = bgOverride ?? (isSection || isQuote ? ac : tokens.background);
 
-  const allBlocks     = getAdditionalBlocks(slide);
-  // FIX 2: Sort overlay blocks by zIndex (ascending) before rendering
-  // so higher zIndex blocks appear on top as expected
+  const allBlocks = getAdditionalBlocks(slide);
+  // Overlay blocks render in ascending zIndex so higher values sit on top.
   const overlayBlocks = allBlocks
     .filter(b => b.position?.type === 'overlay')
-    .sort((a, b) => ((a as any).zIndex ?? 1) - ((b as any).zIndex ?? 1));
+    .sort((a, b) => (a.zIndex ?? 1) - (b.zIndex ?? 1));
 
   function renderLayout() {
     switch (slide.layout) {

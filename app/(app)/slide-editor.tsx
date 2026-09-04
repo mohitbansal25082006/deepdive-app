@@ -1,25 +1,34 @@
 // app/(app)/slide-editor.tsx
-// Part 58.5 — Use liveMirror={true}, showActions={true}, thumbScale={0.28}
-//   • Editor thumbnails use live mirror rendering (full scale + transform)
-//   • Shows add/delete/copy buttons for slide management
-//   • Compact thumbnails (0.28 scale, ~90px wide) to save space
+// Part 58.5.1 — PICKERS MOVED INTO THE SHEET
+//   The photo search and the Iconify picker used to live here as sibling
+//   Modals at the screen root, opened by closing the "Add Element" sheet and
+//   presenting them a moment later. iOS refuses to present a modal from a view
+//   controller that is still dismissing, which is why the photo search
+//   appeared and vanished instantly. Both pickers are now nested inside the
+//   sheet's own tree (see SlideEditorCanvas), so this screen no longer needs
+//   the modals, the pending-placement state, or the addBlock ref/timeout
+//   plumbing that existed to work around the race.
+//
+//   What stays here: a short confirmation banner, now driven by a wrapped
+//   `onAddBlock` so it fires for every element type, not just images.
+// Part 58.5 (thumbnails) — liveMirror, showActions, thumbScale 0.28.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useCallback, useState, useRef } from 'react';
 import {
   View, Text, Pressable, ActivityIndicator, Alert,
-  Dimensions, Platform, KeyboardAvoidingView,
+  Platform, KeyboardAvoidingView,
 } from 'react-native';
 import { LinearGradient }                  from 'expo-linear-gradient';
 import { Ionicons }                        from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams }    from 'expo-router';
-import Animated, { FadeIn }               from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut }       from 'react-native-reanimated';
 
 import { useAuth }                         from '../../src/context/AuthContext';
 import { useCredits }                      from '../../src/context/CreditsContext';
 import { useSlideEditor }                  from '../../src/hooks/useSlideEditor';
-import { generatePPTX, exportAsSlidePDF } from '../../src/services/pptxExport';
+import { generatePPTX, exportAsSlidePDF }  from '../../src/services/pptxExport';
 import {
   generatePPTXFromImages,
   exportAsSlidePDFFromImages,
@@ -39,16 +48,26 @@ import { AIEditPanel }              from '../../src/components/editor/AIEditPane
 import { DesignPanel }              from '../../src/components/editor/DesignPanel';
 import { TemplateLibrary }          from '../../src/components/editor/TemplateLibrary';
 import { TemplateHistoryPanel }     from '../../src/components/editor/TemplateHistoryPanel';
-import { OnlineImageSearchPanel }   from '../../src/components/editor/OnlineImageSearchPanel';
-import { IconifyIconPicker }        from '../../src/components/editor/IconifyIconPicker';
 import { LoadingOverlay }           from '../../src/components/common/LoadingOverlay';
 import { InsufficientCreditsModal } from '../../src/components/credits/InsufficientCreditsModal';
 
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
 import { EDITOR_TOOL_TABS }               from '../../src/constants/editor';
 import type { ResearchReport, InfographicData } from '../../src/types';
-import type { EditorTool, ImageBlock, IconBlock, AdditionalBlock } from '../../src/types/editor';
+import type { EditorTool, AdditionalBlock }     from '../../src/types/editor';
 import { supabase }                       from '../../src/lib/supabase';
+
+// ─── Labels for the insert confirmation ───────────────────────────────────────
+
+const BLOCK_ADDED_LABEL: Record<string, string> = {
+  image:       'Photo added to slide',
+  stat:        'Stat added to slide',
+  chart:       'Chart added to slide',
+  quote_block: 'Quote added to slide',
+  divider:     'Divider added to slide',
+  spacer:      'Spacer added to slide',
+  icon:        'Icon added to slide',
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -61,17 +80,16 @@ export default function SlideEditorScreen() {
   const { user }    = useAuth();
   const { balance } = useCredits();
 
-  const [report,                setReport]                = useState<ResearchReport | null>(null);
-  const [infographicData,       setInfographicData]       = useState<InfographicData | null>(null);
-  const [activeToolTab,         setActiveToolTab]         = useState<EditorTool>('select');
-  const [isExporting,           setIsExporting]           = useState(false);
-  const [exportLabel,           setExportLabel]           = useState('');
-  const [showOnlineImageSearch, setShowOnlineImageSearch] = useState(false);
-  const [showIconifyPicker,     setShowIconifyPicker]     = useState(false);
-  const [showTemplateHistory,   setShowTemplateHistory]   = useState(false);
+  const [report,              setReport]              = useState<ResearchReport | null>(null);
+  const [infographicData,     setInfographicData]     = useState<InfographicData | null>(null);
+  const [activeToolTab,       setActiveToolTab]       = useState<EditorTool>('select');
+  const [isExporting,         setIsExporting]         = useState(false);
+  const [exportLabel,         setExportLabel]         = useState('');
+  const [showTemplateHistory, setShowTemplateHistory] = useState(false);
+  const [insertNotice,        setInsertNotice]        = useState<string | null>(null);
 
-  const addBlockRef = useRef<((block: AdditionalBlock) => void) | null>(null);
   const rendererRef = useRef<SlideExportRendererRef>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load report
   useEffect(() => {
@@ -95,11 +113,14 @@ export default function SlideEditorScreen() {
   }, [reportId]);
 
   const editor = useSlideEditor(report);
-  addBlockRef.current = editor.addBlock;
 
   useEffect(() => {
     if (presentationId) editor.loadEditor(presentationId);
   }, [presentationId]);
+
+  useEffect(() => () => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+  }, []);
 
   const { state, presentation, isLoading, loadError, activeSlide } = editor;
 
@@ -147,6 +168,23 @@ export default function SlideEditorScreen() {
       case 'select':   editor.closePanel();                  break;
     }
   }, [editor]);
+
+  // ─── Insert confirmation ──────────────────────────────────────────────────
+
+  const flashNotice = useCallback((message: string) => {
+    setInsertNotice(message);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setInsertNotice(null), 2200);
+  }, []);
+
+  /**
+   * Wraps editor.addBlock so every successful insert is visible — a silent
+   * success and a silent failure looked identical before.
+   */
+  const handleAddBlock = useCallback((block: AdditionalBlock) => {
+    editor.addBlock(block);
+    flashNotice(BLOCK_ADDED_LABEL[block.type] ?? 'Element added to slide');
+  }, [editor, flashNotice]);
 
   // ─── Screenshot-based export ──────────────────────────────────────────────
 
@@ -228,16 +266,6 @@ export default function SlideEditorScreen() {
       router.back();
     }
   }, [state.isDirty, editor]);
-
-  const handleOnlineImageInsert = useCallback((block: ImageBlock) => {
-    addBlockRef.current?.(block as any);
-    setShowOnlineImageSearch(false);
-  }, []);
-
-  const handleIconifyInsert = useCallback((block: IconBlock) => {
-    addBlockRef.current?.(block as any);
-    setShowIconifyPicker(false);
-  }, []);
 
   if (isLoading) return <LoadingOverlay visible message="Loading editor…" />;
 
@@ -321,6 +349,18 @@ export default function SlideEditorScreen() {
             </Animated.View>
           ) : null}
 
+          {/* Insert confirmation */}
+          {insertNotice ? (
+            <Animated.View
+              entering={FadeIn.duration(180)}
+              exiting={FadeOut.duration(220)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, paddingHorizontal: SPACING.lg, paddingVertical: 8, backgroundColor: `${COLORS.success}15`, borderBottomWidth: 1, borderBottomColor: `${COLORS.success}25` }}
+            >
+              <Ionicons name="checkmark-circle" size={15} color={COLORS.success} />
+              <Text style={{ color: COLORS.success, fontSize: FONTS.sizes.sm, fontWeight: '600', flex: 1 }}>{insertNotice}</Text>
+            </Animated.View>
+          ) : null}
+
           {/* ── TOOL TABS ── */}
           <View style={{ flexDirection: 'row', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1, borderBottomColor: COLORS.border, gap: SPACING.xs }}>
             {EDITOR_TOOL_TABS.map(tab => {
@@ -375,12 +415,10 @@ export default function SlideEditorScreen() {
                 onRemoveBullet={editor.removeBullet}
                 onDeleteBlock={editor.deleteBlock}
                 onUpdateBlock={editor.updateBlock}
-                onAddBlock={editor.addBlock}
+                onAddBlock={handleAddBlock}
                 onUpdateStat={editor.updateStat}
                 onDeleteStat={editor.deleteStat}
                 onAddStatToSlide={editor.addStatToSlide}
-                onOpenOnlineImageSearch={() => setShowOnlineImageSearch(true)}
-                onOpenIconifyPicker={() => setShowIconifyPicker(true)}
                 onMoveBlockUp={editor.moveBlockUp}
                 onMoveBlockDown={editor.moveBlockDown}
               />
@@ -406,13 +444,7 @@ export default function SlideEditorScreen() {
             accentColor={accentColor}
           />
 
-          {/*
-            ── Thumbnail strip ──
-            Part 58.5: Use liveMirror={true}, showActions={true}, thumbScale={0.28}
-            • Editor thumbnails use live mirror rendering (full scale + transform)
-            • Shows add/delete/copy buttons for slide management
-            • Compact thumbnails (0.28 scale, ~90px wide) to save space
-          */}
+          {/* Thumbnail strip — live mirror, actions, compact scale */}
           <SlideThumbnailStrip
             slides={state.slides}
             activeIndex={state.activeSlideIndex}
@@ -522,21 +554,6 @@ export default function SlideEditorScreen() {
         onDelete={editor.deleteHistoryEntry}
         onClearAll={() => editor.clearTemplateHistory()}
         onClose={() => setShowTemplateHistory(false)}
-      />
-
-      <OnlineImageSearchPanel
-        visible={showOnlineImageSearch}
-        slideTitle={activeSlide?.title}
-        slideLayout={activeSlide?.layout}
-        onInsert={handleOnlineImageInsert}
-        onClose={() => setShowOnlineImageSearch(false)}
-      />
-
-      <IconifyIconPicker
-        visible={showIconifyPicker}
-        iconColor={accentColor}
-        onInsert={handleIconifyInsert}
-        onClose={() => setShowIconifyPicker(false)}
       />
 
       <InsufficientCreditsModal

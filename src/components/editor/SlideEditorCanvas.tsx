@@ -1,22 +1,37 @@
 // src/components/editor/SlideEditorCanvas.tsx
-// Part 41.9 — Two fixes:
-//   Fix 1 (truncation): Editor canvas preview uses noTruncate prop correctly.
-//          The SlideCard default is now noTruncate=true, so the editor canvas
-//          still passes noTruncate (inherited true) — no change needed there.
-//   Fix 2 (z-order): OverlayBlockCard now shows Move Up / Move Down buttons.
-//          onMoveBlockUp / onMoveBlockDown props added to SlideEditorCanvasProps.
-//          The parent (slide-editor.tsx) wires these to editor.moveBlockUp/Down.
+// Part 58.5.2 — FREEZE AFTER INSERT
+//
+//   58.5.1 nested the pickers inside this sheet's Modal to fix the iOS
+//   presentation race. That worked, but created a dismissal race: on insert we
+//   hid the child Modal and unmounted this parent Modal in the same tick, so
+//   iOS never completed the child's dismissal. Its view controller stayed on
+//   the window as an invisible, touch-absorbing layer — the app looked frozen
+//   when it was simply covered.
+//
+//   Two changes enforce a single-native-modal invariant:
+//     • OnlineImageSearchPanel is no longer a Modal. It renders as an absolute
+//       overlay inside this sheet's modal, so there is no second view
+//       controller to dismiss and nothing to race.
+//     • IconifyIconPicker still owns its own Modal (external component), so its
+//       dismissal is SEQUENCED: hide the child, let it finish, then insert and
+//       close this sheet.
+//
+// Part 58.5.1 — device images copied out of the volatile cache directory;
+//               backdrop as a sibling; fixed sheet height; scrolls anywhere.
+// Part 58.5   — real placement callback, fitOverlayPosition, no sentinel block.
+// Part 41.9   — Truncation + z-order controls.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useRef, useEffect } from 'react';
 import {
-  View, Text, ScrollView, Pressable, TextInput,
+  View, Text, ScrollView, Pressable, TextInput, StyleSheet,
   Modal, Alert, Dimensions, KeyboardAvoidingView,
-  Platform, Image, TouchableOpacity,
+  Platform, Image, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import { LinearGradient }    from 'expo-linear-gradient';
 import { Ionicons }          from '@expo/vector-icons';
 import * as ImagePicker      from 'expo-image-picker';
+import * as FileSystem       from 'expo-file-system';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { SlideCard }                    from '../research/SlideCard';
@@ -31,6 +46,7 @@ import {
   DEFAULT_SPACER_HEIGHT,
   THEME_ACCENT_COLORS,
 } from '../../constants/editor';
+import { fitOverlayPosition, SLIDE_IMAGE_DIR_NAME } from '../../types/editor';
 import type {
   EditableSlide, EditableFieldKey, AdditionalBlock, FieldFormatting,
   ImageBlock, ChartBlock, StatBlock, QuoteBlock,
@@ -46,6 +62,14 @@ const SCREEN_W  = Dimensions.get('window').width;
 const SCREEN_H  = Dimensions.get('window').height;
 const CANVAS_W  = SCREEN_W - SPACING.lg * 2;
 const CANVAS_SC = CANVAS_W / 320;
+
+const SHEET_H = Math.round(SCREEN_H * 0.9);
+
+/**
+ * Time to let a child Modal finish its dismissal animation before this sheet
+ * unmounts. Only needed for pickers we don't control (IconifyIconPicker).
+ */
+const CHILD_MODAL_DISMISS_MS = 340;
 
 const FIELD_LABELS: Partial<Record<EditableFieldKey, string>> = {
   title: 'Title', subtitle: 'Subtitle', body: 'Body', badgeText: 'Badge',
@@ -73,7 +97,6 @@ const SPACING_LABELS: Record<string, string> = {
   default:  '',
 };
 
-// Deduplicated color palette for StatEditModal
 const EXTRA_STAT_COLORS = ['#43E97B', '#FFA726', '#29B6F6', '#FF4757', '#FFD700'];
 const STAT_EDIT_COLORS: string[] = Array.from(
   new Set([...THEME_ACCENT_COLORS, ...EXTRA_STAT_COLORS])
@@ -81,6 +104,46 @@ const STAT_EDIT_COLORS: string[] = Array.from(
 
 function uid() {
   return `block_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// ─── Persist a picked image out of the cache directory ───────────────────────
+
+interface PersistedImage {
+  uri:            string;
+  localFileName?: string;
+}
+
+/**
+ * Copy a freshly picked asset into documentDirectory/slide_images/.
+ *
+ * The picker's own URI lives in Library/Caches, which iOS is free to delete,
+ * and whose container UUID changes on reinstall — an image added today would
+ * quietly vanish from the slide next week. On any failure we fall back to the
+ * original URI, so the pick still works even if the copy can't be made.
+ */
+async function persistPickedImage(sourceUri: string): Promise<PersistedImage> {
+  try {
+    const FS: any = FileSystem as any;
+    const docDir  = FS?.documentDirectory as string | undefined;
+    if (!docDir) return { uri: sourceUri };
+
+    const dir  = `${docDir}${SLIDE_IMAGE_DIR_NAME}/`;
+    const info = await FS.getInfoAsync(dir);
+    if (!info?.exists) {
+      await FS.makeDirectoryAsync(dir, { intermediates: true });
+    }
+
+    const rawExt   = sourceUri.split('?')[0].split('.').pop() ?? 'jpg';
+    const ext      = /^[a-zA-Z0-9]{2,5}$/.test(rawExt) ? rawExt.toLowerCase() : 'jpg';
+    const fileName = `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
+
+    await FS.copyAsync({ from: sourceUri, to: `${dir}${fileName}` });
+
+    return { uri: `${dir}${fileName}`, localFileName: fileName };
+  } catch (err) {
+    if (__DEV__) console.warn('[SlideEditorCanvas] could not persist picked image:', err);
+    return { uri: sourceUri };
+  }
 }
 
 // ─── Text Edit Modal ──────────────────────────────────────────────────────────
@@ -144,11 +207,11 @@ function TextEditModal({
 // ─── Bullet Editor ────────────────────────────────────────────────────────────
 
 function BulletEditor({ bullets, accentColor, onUpdate, onAdd, onRemove }: {
-  bullets:    string[];
+  bullets:     string[];
   accentColor: string;
-  onUpdate:   (i: number, v: string) => void;
-  onAdd:      () => void;
-  onRemove:   (i: number) => void;
+  onUpdate:    (i: number, v: string) => void;
+  onAdd:       () => void;
+  onRemove:    (i: number) => void;
 }) {
   return (
     <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, padding: SPACING.md, borderWidth: 1, borderColor: `${accentColor}25`, gap: SPACING.sm }}>
@@ -465,46 +528,97 @@ const BLOCK_TABS: BlockTabMeta[] = [
 
 // ─── ImagePanel ───────────────────────────────────────────────────────────────
 
-function ImagePanel({ position, slideTitle, slideLayout, onInsert }: { position: InlineBlockPosition; slideTitle?: string; slideLayout?: string; onInsert: (b: ImageBlock) => void }) {
-  const [showOnlineSearch, setShowOnlineSearch] = useState(false);
+function ImagePanel({
+  position, onInsert, onOpenOnlineSearch,
+}: {
+  position:           InlineBlockPosition;
+  onInsert:           (b: ImageBlock) => void;
+  onOpenOnlineSearch: (position: InlineBlockPosition) => void;
+}) {
+  const [useOnlineSearch, setUseOnlineSearch] = useState(false);
+  const [isPicking,       setIsPicking]       = useState(false);
+
   const handlePickLocal = useCallback(async () => {
+    if (isPicking) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo library access.'); return; }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.85 });
-    if (!result.canceled && result.assets[0]) {
-      const asset = result.assets[0];
-      onInsert({ type: 'image', id: uid(), uri: asset.uri, caption: '', aspectRatio: asset.width && asset.height ? asset.width / asset.height : 16 / 9, position });
+    if (status !== 'granted') {
+      Alert.alert('Photo access needed', 'Allow photo library access to add an image from this device.');
+      return;
     }
-  }, [position, onInsert]);
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes:    ['images'],
+      allowsEditing: true,
+      quality:       0.85,
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    const ar    = asset.width && asset.height ? asset.width / asset.height : 16 / 9;
+
+    setIsPicking(true);
+    try {
+      const persisted = await persistPickedImage(asset.uri);
+      onInsert({
+        type:          'image',
+        id:            uid(),
+        uri:           persisted.uri,
+        localFileName: persisted.localFileName,
+        caption:       '',
+        aspectRatio:   ar,
+        position:      fitOverlayPosition(position, ar),
+      });
+    } finally {
+      setIsPicking(false);
+    }
+  }, [position, onInsert, isPicking]);
+
   return (
     <View style={{ gap: SPACING.md }}>
       <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.xl, padding: 3, borderWidth: 1, borderColor: COLORS.border }}>
-        {[{ id: false, label: '📱 From Device', desc: 'Pick from your photo library' }, { id: true, label: '🌐 Search Online', desc: 'Search via Google Images' }].map(opt => (
-          <Pressable key={String(opt.id)} onPress={() => setShowOnlineSearch(opt.id)} style={{ flex: 1, alignItems: 'center', paddingVertical: 9, paddingHorizontal: SPACING.sm, borderRadius: RADIUS.lg, backgroundColor: showOnlineSearch === opt.id ? COLORS.primary : 'transparent' }}>
-            <Text style={{ color: showOnlineSearch === opt.id ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
-            <Text style={{ color: showOnlineSearch === opt.id ? 'rgba(255,255,255,0.7)' : COLORS.textMuted, fontSize: 9, marginTop: 2 }}>{opt.desc}</Text>
+        {[
+          { id: false, label: '📱 From device',  desc: 'Pick from your photo library' },
+          { id: true,  label: '🌐 Stock photos', desc: 'Free photos from Pexels' },
+        ].map(opt => (
+          <Pressable
+            key={String(opt.id)}
+            onPress={() => setUseOnlineSearch(opt.id)}
+            style={{ flex: 1, alignItems: 'center', paddingVertical: 9, paddingHorizontal: SPACING.sm, borderRadius: RADIUS.lg, backgroundColor: useOnlineSearch === opt.id ? COLORS.primary : 'transparent' }}
+          >
+            <Text style={{ color: useOnlineSearch === opt.id ? '#FFF' : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
+            <Text style={{ color: useOnlineSearch === opt.id ? 'rgba(255,255,255,0.7)' : COLORS.textMuted, fontSize: 9, marginTop: 2 }}>{opt.desc}</Text>
           </Pressable>
         ))}
       </View>
-      {!showOnlineSearch && (
-        <Pressable onPress={handlePickLocal}>
-          <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, alignItems: 'center', gap: SPACING.sm }}>
-            <Ionicons name="image" size={36} color="#FFF" />
-            <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Choose from Photos</Text>
-            <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: FONTS.sizes.xs }}>Pick an image from your device library</Text>
+
+      {!useOnlineSearch && (
+        <Pressable onPress={handlePickLocal} disabled={isPicking}>
+          <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.xl, padding: SPACING.lg, alignItems: 'center', gap: SPACING.sm, opacity: isPicking ? 0.7 : 1 }}>
+            {isPicking
+              ? <ActivityIndicator size="large" color="#FFF" />
+              : <Ionicons name="image" size={36} color="#FFF" />}
+            <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>
+              {isPicking ? 'Saving photo…' : 'Choose from photos'}
+            </Text>
+            <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: FONTS.sizes.xs }}>
+              {isPicking ? 'Copying it into the app so it stays available' : 'Pick an image from your device library'}
+            </Text>
           </LinearGradient>
         </Pressable>
       )}
-      {showOnlineSearch && (
-        <View style={{ backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.info}20` }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm }}>
+
+      {useOnlineSearch && (
+        <View style={{ backgroundColor: `${COLORS.info}08`, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: `${COLORS.info}20`, gap: SPACING.sm }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Ionicons name="information-circle-outline" size={14} color={COLORS.info} />
-            <Text style={{ color: COLORS.info, fontSize: FONTS.sizes.xs, flex: 1 }}>Tapping "Search" below will open the full image search screen.</Text>
+            <Text style={{ color: COLORS.info, fontSize: FONTS.sizes.xs, flex: 1 }}>
+              Search opens full screen. The placement you set above comes with you.
+            </Text>
           </View>
-          <Pressable onPress={() => { onInsert({ type: 'image', id: '__OPEN_ONLINE_SEARCH__', uri: '', position } as any); }}>
+          <Pressable onPress={() => onOpenOnlineSearch(position)}>
             <LinearGradient colors={['#4FACFE', '#00F2FE']} style={{ borderRadius: RADIUS.full, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <Ionicons name="search" size={18} color="#FFF" />
-              <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Open Image Search</Text>
+              <Text style={{ color: '#FFF', fontSize: FONTS.sizes.base, fontWeight: '800' }}>Search stock photos</Text>
             </LinearGradient>
           </Pressable>
         </View>
@@ -690,8 +804,6 @@ function SpacerPanel({ position, onInsert }: { position: InlineBlockPosition; on
 }
 
 // ─── OverlayBlockCard ─────────────────────────────────────────────────────────
-// FIX 2: Added Move Up / Move Down buttons for z-order control.
-// The card shows the current z-index and two arrow buttons to change it.
 
 function OverlayBlockCard({
   block, accentColor, blockIndex, totalBlocks,
@@ -713,23 +825,21 @@ function OverlayBlockCard({
     quote_block: 'chatbubble-outline', divider: 'remove-outline',
     spacer: 'resize-outline', icon: 'shapes-outline',
   };
-  const pos       = block.position ?? { type: 'inline' };
+  const pos       = block.position ?? { type: 'inline' as const };
   const isOverlay = pos.type === 'overlay';
   const supportsH = block.type === 'image' || block.type === 'stat';
-  const zIndex    = (block as any).zIndex ?? 1;
+  const zIndex    = block.zIndex ?? 1;
   const isFirst   = blockIndex === 0;
   const isLast    = blockIndex === totalBlocks - 1;
 
   return (
     <View style={{ backgroundColor: COLORS.backgroundCard, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: isOverlay ? `${COLORS.primary}40` : COLORS.border, overflow: 'hidden' }}>
-      {/* Header row */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: SPACING.md, paddingVertical: 10, backgroundColor: isOverlay ? `${COLORS.primary}12` : `${col}12`, borderBottomWidth: 1, borderBottomColor: isOverlay ? `${COLORS.primary}20` : `${col}20` }}>
         <Ionicons name={blockIcon[block.type] as any} size={13} color={isOverlay ? COLORS.primary : col} />
         <Text style={{ color: isOverlay ? COLORS.primary : col, fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1, flex: 1 }}>
           {block.type.replace('_', ' ')} · {isOverlay ? '🎯 On Slide' : '⬇ Below Slide'}
         </Text>
 
-        {/* FIX 2: Z-order controls — only shown for overlay blocks */}
         {isOverlay && (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.md, padding: 2, borderWidth: 1, borderColor: COLORS.border }}>
             <Pressable
@@ -781,12 +891,29 @@ function OverlayBlockCard({
       {!editPos && (
         <View style={{ paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm }}>
           {block.type === 'stat'        && <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}><Text style={{ color: col, fontSize: 20, fontWeight: '900' }}>{block.value}</Text><Text style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.sm }}>{block.label}</Text></View>}
-          {block.type === 'image'       && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{(block as any).onlineUrl ? '🌐 Online image' : block.uri ? '📷 Device image' : 'No image'}</Text>}
+          {block.type === 'image'       && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACING.sm }}>
+              <View style={{ width: 44, height: 30, borderRadius: 4, overflow: 'hidden', backgroundColor: COLORS.backgroundElevated, borderWidth: 1, borderColor: COLORS.border }}>
+                {(block.thumbnailUrl || block.uri || block.onlineUrl) ? (
+                  <Image
+                    source={{ uri: (block.thumbnailUrl || block.uri || block.onlineUrl) as string }}
+                    style={{ width: '100%', height: '100%' }}
+                    resizeMode="cover"
+                  />
+                ) : null}
+              </View>
+              <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, flex: 1 }} numberOfLines={1}>
+                {block.onlineUrl
+                  ? `Stock photo${block.photographer ? ` · ${block.photographer}` : ''}`
+                  : block.uri ? 'Device photo' : 'No image source'}
+              </Text>
+            </View>
+          )}
           {block.type === 'chart'       && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>📊 {block.chart.title}</Text>}
           {block.type === 'quote_block' && <Text numberOfLines={2} style={{ color: COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontStyle: 'italic' }}>"{block.text}"</Text>}
           {block.type === 'divider'     && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.style} divider</Text>}
           {block.type === 'spacer'      && <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.height}dp spacer</Text>}
-          {block.type === 'icon'        && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><Ionicons name={(block.iconName as any) || 'shapes-outline'} size={22} color={col} /><Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{(block as any).iconifyId ?? block.iconName}</Text></View>}
+          {block.type === 'icon'        && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><Ionicons name={(block.iconName as any) || 'shapes-outline'} size={22} color={col} /><Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs }}>{block.iconifyId ?? block.iconName}</Text></View>}
           {isOverlay && (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
               <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>
@@ -798,23 +925,20 @@ function OverlayBlockCard({
               </View>
             </View>
           )}
-          {/* Inline/overlay placement toggle */}
-          {!editPos && (
-            <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: 2, borderWidth: 1, borderColor: COLORS.border, marginTop: SPACING.sm }}>
-              {([
-                { t: 'inline',  label: '⬇ Below' },
-                { t: 'overlay', label: '🎯 On Slide' },
-              ] as const).map(opt => (
-                <Pressable
-                  key={opt.t}
-                  onPress={() => onUpdateBlock(block.id, { position: { ...pos, type: opt.t } } as any)}
-                  style={{ flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: RADIUS.md, backgroundColor: pos.type === opt.t ? `${col}20` : 'transparent' }}
-                >
-                  <Text style={{ color: pos.type === opt.t ? col : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
-                </Pressable>
-              ))}
-            </View>
-          )}
+          <View style={{ flexDirection: 'row', backgroundColor: COLORS.backgroundElevated, borderRadius: RADIUS.lg, padding: 2, borderWidth: 1, borderColor: COLORS.border, marginTop: SPACING.sm }}>
+            {([
+              { t: 'inline',  label: '⬇ Below' },
+              { t: 'overlay', label: '🎯 On Slide' },
+            ] as const).map(opt => (
+              <Pressable
+                key={opt.t}
+                onPress={() => onUpdateBlock(block.id, { position: { ...pos, type: opt.t } } as any)}
+                style={{ flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: RADIUS.md, backgroundColor: pos.type === opt.t ? `${col}20` : 'transparent' }}
+              >
+                <Text style={{ color: pos.type === opt.t ? col : COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '700' }}>{opt.label}</Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
       )}
     </View>
@@ -824,33 +948,102 @@ function OverlayBlockCard({
 // ─── InlineBlockInserterModal ─────────────────────────────────────────────────
 
 function InlineBlockInserterModal({
-  visible, infographicData, accentColor, slide,
-  onInsertBlock, onOpenOnlineImageSearch, onOpenIconifyPicker, onClose,
+  visible, infographicData, accentColor, slide, onInsertBlock, onClose,
 }: {
-  visible:                 boolean;
-  infographicData?:        InfographicData | null;
-  accentColor:             string;
-  slide:                   EditableSlide;
-  onInsertBlock:           (block: AdditionalBlock) => void;
-  onOpenOnlineImageSearch: () => void;
-  onOpenIconifyPicker:     () => void;
-  onClose:                 () => void;
+  visible:          boolean;
+  infographicData?: InfographicData | null;
+  accentColor:      string;
+  slide:            EditableSlide;
+  onInsertBlock:    (block: AdditionalBlock) => void;
+  onClose:          () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const [activeTab, setActiveTab] = useState<BlockTabId>('stat');
-  const [position,  setPosition]  = useState<InlineBlockPosition>({ type: 'overlay', xFrac: 0.05, yFrac: 0.5, wFrac: 0.9 });
+  const [activeTab,        setActiveTab]        = useState<BlockTabId>('stat');
+  const [position,         setPosition]         = useState<InlineBlockPosition>({ type: 'overlay', xFrac: 0.05, yFrac: 0.5, wFrac: 0.9 });
+  const [showOnlineSearch, setShowOnlineSearch] = useState(false);
+  const [showIconPicker,   setShowIconPicker]   = useState(false);
+  const [searchPosition,   setSearchPosition]   = useState<InlineBlockPosition | null>(null);
+
+  const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Reset transient state whenever the sheet opens
+  useEffect(() => {
+    if (!visible) return;
+    setShowOnlineSearch(false);
+    setShowIconPicker(false);
+    setSearchPosition(null);
+  }, [visible]);
+
+  useEffect(() => () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+  }, []);
 
   const handleInsert = useCallback((block: AdditionalBlock) => {
-    if ((block as any).id === '__OPEN_ONLINE_SEARCH__') { onClose(); setTimeout(onOpenOnlineImageSearch, 150); return; }
     onInsertBlock(block);
     onClose();
-  }, [onInsertBlock, onClose, onOpenOnlineImageSearch]);
+  }, [onInsertBlock, onClose]);
+
+  const handleOpenOnlineSearch = useCallback((pos: InlineBlockPosition) => {
+    setSearchPosition(pos);
+    setShowOnlineSearch(true);
+  }, []);
+
+  /**
+   * The photo panel is an in-tree overlay, not a Modal — hiding it is a plain
+   * state change with no native lifecycle, so we can insert and close in the
+   * same tick safely.
+   */
+  const handleOnlineInsert = useCallback((block: ImageBlock) => {
+    setShowOnlineSearch(false);
+    onInsertBlock(block);
+    onClose();
+  }, [onInsertBlock, onClose]);
+
+  /**
+   * IconifyIconPicker owns its own Modal, so its dismissal MUST finish before
+   * this sheet unmounts. Closing both together leaves an orphaned view
+   * controller on iOS that swallows every touch — the "frozen screen" bug.
+   */
+  const handleIconInsert = useCallback((block: IconBlock) => {
+    setShowIconPicker(false);
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    dismissTimer.current = setTimeout(() => {
+      onInsertBlock(block);
+      onClose();
+    }, CHILD_MODAL_DISMISS_MS);
+  }, [onInsertBlock, onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }} onPress={onClose}>
-        <Pressable onPress={e => e.stopPropagation()} style={{ backgroundColor: COLORS.backgroundCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: SPACING.sm, paddingBottom: insets.bottom + SPACING.md, maxHeight: SCREEN_H * 0.92, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+        {/* Backdrop sits BEHIND the sheet as a sibling, so it never intercepts
+            touches meant for the scroll area. */}
+        <Pressable
+          style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)' }]}
+          onPress={onClose}
+        />
+
+        <View
+          style={{
+            height:               SHEET_H,
+            backgroundColor:      COLORS.backgroundCard,
+            borderTopLeftRadius:  24,
+            borderTopRightRadius: 24,
+            paddingTop:           SPACING.sm,
+            borderTopWidth:       1,
+            borderTopColor:       COLORS.border,
+            overflow:             'hidden',
+          }}
+        >
           <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginBottom: SPACING.sm }} />
+
+          {/* Header (fixed) */}
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
             <LinearGradient colors={['#6C63FF', '#8B5CF6']} style={{ width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm }}>
               <Ionicons name="add" size={19} color="#FFF" />
@@ -863,36 +1056,92 @@ function InlineBlockInserterModal({
               <Ionicons name="close" size={22} color={COLORS.textMuted} />
             </Pressable>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: SPACING.sm, marginBottom: SPACING.md, alignItems: 'center' }} style={{ flexGrow: 0, flexShrink: 0 }}>
+
+          {/* Type tabs (fixed) */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: SPACING.lg, gap: SPACING.sm, alignItems: 'center' }}
+            style={{ flexGrow: 0, flexShrink: 0, marginBottom: SPACING.md }}
+          >
             {BLOCK_TABS.map(tab => {
-              const active = activeTab === tab.id;
+              const active    = activeTab === tab.id;
               const isIconTab = tab.id === 'icon';
               return (
-                <Pressable key={tab.id} onPress={() => { if (isIconTab) { onClose(); setTimeout(onOpenIconifyPicker, 150); return; } setActiveTab(tab.id); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: active ? `${tab.color}18` : COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 9, borderWidth: 1, borderColor: active ? tab.color : COLORS.border, flexShrink: 0 }}>
+                <Pressable
+                  key={tab.id}
+                  onPress={() => {
+                    if (isIconTab) { setShowIconPicker(true); return; }
+                    setActiveTab(tab.id);
+                  }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: active ? `${tab.color}18` : COLORS.backgroundElevated, borderRadius: RADIUS.full, paddingHorizontal: 14, paddingVertical: 9, borderWidth: 1, borderColor: active ? tab.color : COLORS.border, flexShrink: 0 }}
+                >
                   <Ionicons name={tab.icon as any} size={14} color={active ? tab.color : COLORS.textMuted} />
                   <Text style={{ color: active ? tab.color : COLORS.textSecondary, fontSize: FONTS.sizes.xs, fontWeight: active ? '700' : '500' }}>{tab.label}{isIconTab ? ' ✦' : ''}</Text>
                 </Pressable>
               );
             })}
           </ScrollView>
-          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg, gap: SPACING.lg }}>
+
+          {/* Body — flex:1 inside a fixed-height sheet so it always scrolls */}
+          <ScrollView
+            style={{ flex: 1 }}
+            showsVerticalScrollIndicator
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            nestedScrollEnabled
+            scrollEventThrottle={16}
+            contentContainerStyle={{
+              paddingHorizontal: SPACING.lg,
+              paddingBottom:     insets.bottom + SPACING.xl,
+              gap:               SPACING.lg,
+            }}
+          >
             <View style={{ gap: SPACING.sm }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Ionicons name="layers-outline" size={13} color={COLORS.textMuted} />
-                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 }}>Placement</Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, flex: 1 }}>Placement</Text>
+                <Text style={{ color: COLORS.textMuted, fontSize: 9 }}>drag inside the pad</Text>
               </View>
-              <JoystickPositionControl position={position} onChange={setPosition} supportsHeight={activeTab === 'image' || activeTab === 'stat'} accentColor={accentColor} />
+              <JoystickPositionControl
+                position={position}
+                onChange={setPosition}
+                supportsHeight={activeTab === 'image' || activeTab === 'stat'}
+                accentColor={accentColor}
+              />
             </View>
+
             <View style={{ height: 1, backgroundColor: COLORS.border }} />
-            {activeTab === 'image'       && <ImagePanel position={position} slideTitle={slide.title} slideLayout={slide.layout} onInsert={handleInsert} />}
+
+            {activeTab === 'image'       && <ImagePanel position={position} onInsert={handleInsert} onOpenOnlineSearch={handleOpenOnlineSearch} />}
             {activeTab === 'stat'        && <StatPanel  position={position} onInsert={handleInsert} infographicData={infographicData} />}
             {activeTab === 'chart'       && <ChartPanel position={position} onInsert={handleInsert} infographicData={infographicData} />}
             {activeTab === 'quote_block' && <QuotePanel position={position} onInsert={handleInsert} />}
             {activeTab === 'divider'     && <DividerPanel position={position} onInsert={handleInsert} accentColor={accentColor} />}
             {activeTab === 'spacer'      && <SpacerPanel  position={position} onInsert={handleInsert} />}
           </ScrollView>
-        </Pressable>
-      </Pressable>
+        </View>
+
+        {/* Photo picker — an in-tree overlay, NOT a nested Modal, so there is
+            never a second native modal to dismiss. */}
+        <OnlineImageSearchPanel
+          visible={showOnlineSearch}
+          slideTitle={slide.title}
+          slideLayout={slide.layout}
+          initialPosition={searchPosition ?? position}
+          onInsert={handleOnlineInsert}
+          onClose={() => setShowOnlineSearch(false)}
+        />
+
+        {/* Icon picker owns its own Modal — its dismissal is sequenced in
+            handleIconInsert before this sheet unmounts. */}
+        <IconifyIconPicker
+          visible={showIconPicker}
+          iconColor={accentColor}
+          onInsert={handleIconInsert}
+          onClose={() => setShowIconPicker(false)}
+        />
+      </View>
     </Modal>
   );
 }
@@ -923,11 +1172,16 @@ interface SlideEditorCanvasProps {
   onUpdateStat?:       (index: number, patch: Partial<StatItem>) => void;
   onDeleteStat?:       (index: number) => void;
   onAddStatToSlide?:   (stat: StatItem) => void;
-  onOpenOnlineImageSearch?: () => void;
-  onOpenIconifyPicker?: () => void;
-  /** FIX 2: New props for z-order reordering */
   onMoveBlockUp?:      (blockId: string) => void;
   onMoveBlockDown?:    (blockId: string) => void;
+  /**
+   * @deprecated Part 58.5.1 — the photo search and icon picker now live inside
+   * the "Add Element" sheet. Accepted so existing callers keep compiling, but
+   * never invoked.
+   */
+  onOpenOnlineImageSearch?: (position: InlineBlockPosition) => void;
+  /** @deprecated see onOpenOnlineImageSearch */
+  onOpenIconifyPicker?: () => void;
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -938,7 +1192,6 @@ export function SlideEditorCanvas({
   onUpdateBullet, onAddBullet, onRemoveBullet,
   onDeleteBlock, onUpdateBlock, onAddBlock,
   onUpdateStat, onDeleteStat, onAddStatToSlide,
-  onOpenOnlineImageSearch, onOpenIconifyPicker,
   onMoveBlockUp, onMoveBlockDown,
 }: SlideEditorCanvasProps) {
   const accentColor    = slide.accentColor ?? tokens.primary;
@@ -953,16 +1206,15 @@ export function SlideEditorCanvas({
 
   const [showBlockInserter, setShowBlockInserter] = useState(false);
 
-  // Find or create the chart placeholder block
   const chartRefPlaceholderBlock = isChartRef
     ? blocks.find(b => b.id === CHART_REF_PLACEHOLDER_ID) ?? null
     : null;
 
   const handleAddChartPlaceholder = useCallback(() => {
     onAddBlock({
-      type:     'chart' as any,
-      id:       CHART_REF_PLACEHOLDER_ID,
-      chart:    {
+      type:  'chart' as any,
+      id:    CHART_REF_PLACEHOLDER_ID,
+      chart: {
         id:       '__placeholder__',
         type:     'bar',
         title:    'Chart Placeholder',
@@ -973,9 +1225,7 @@ export function SlideEditorCanvas({
     } as ChartBlock);
   }, [onAddBlock]);
 
-  // All blocks excluding the chart placeholder, for the z-order list
-  const userBlocks = blocks.filter(b => b.id !== CHART_REF_PLACEHOLDER_ID);
-  // Overlay blocks sorted by zIndex for the "N elements on slide" badge
+  const userBlocks   = blocks.filter(b => b.id !== CHART_REF_PLACEHOLDER_ID);
   const overlayCount = blocks.filter(b => b.position?.type === 'overlay').length;
 
   return (
@@ -984,7 +1234,6 @@ export function SlideEditorCanvas({
       {/* ── SLIDE PREVIEW ── */}
       <View style={{ marginHorizontal: SPACING.lg, marginTop: SPACING.md }}>
         <View style={{ borderRadius: 14, overflow: 'hidden', borderWidth: 2, borderColor: `${accentColor}50`, shadowColor: accentColor, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 18, elevation: 10, backgroundColor: bgOverride ?? tokens.background }}>
-          {/* Editor canvas always shows full content (noTruncate default = true) */}
           <SlideCard slide={slide} tokens={tokens} scale={CANVAS_SC} fontFamily={fontFamily} />
         </View>
 
@@ -1170,15 +1419,13 @@ export function SlideEditorCanvas({
         onClose={() => selectedField && onCommitField(selectedField, editingText)}
       />
 
-      {/* Block inserter modal */}
+      {/* Block inserter modal (owns the photo overlay + icon picker) */}
       <InlineBlockInserterModal
         visible={showBlockInserter}
         infographicData={infographicData}
         accentColor={accentColor}
         slide={slide}
-        onInsertBlock={block => { onAddBlock(block); setShowBlockInserter(false); }}
-        onOpenOnlineImageSearch={() => { setShowBlockInserter(false); onOpenOnlineImageSearch?.(); }}
-        onOpenIconifyPicker={() => { setShowBlockInserter(false); onOpenIconifyPicker?.(); }}
+        onInsertBlock={onAddBlock}
         onClose={() => setShowBlockInserter(false)}
       />
     </ScrollView>
