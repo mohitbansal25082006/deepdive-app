@@ -34,6 +34,15 @@
 //   at 75–90% off. Agents in Part 56 put the big STATIC instructions in the
 //   `system` message and the VARIABLE data in the `user` message, so repeated
 //   calls with the same system prompt get the cache discount for free.
+//
+// ── Part 59.1 ADDITION ───────────────────────────────────────────────────────
+//   `reportComparison` is new here, and its absence was itself the bug. The
+//   Compare Reports screen was calling api.openai.com directly with a
+//   hardcoded 'gpt-4o' and its own inline fetch, so it was invisible to Part 56
+//   (never re-tiered, still paying 4o rates) AND invisible to Part 59 (still
+//   carrying a key in the app bundle). Routing it through openaiClient fixes
+//   both at once: it now goes through ai-gateway, and it reads its model from
+//   here like every other call site.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type OpenAIModel =
@@ -70,6 +79,11 @@ export const MODEL_FOR = {
   reportSections:     AI_TIER.STANDARD,  // streaming report prose
   reportMetadata:     AI_TIER.NANO,      // title + summary + findings JSON
   bulletExtraction:   AI_TIER.NANO,      // section prose → 4 bullets
+
+  // Part 59.1: was a hardcoded gpt-4o inline fetch in compare-reports.tsx.
+  // Structured JSON verdict over two short report digests — comfortably a
+  // STANDARD task, and now ~6x cheaper than it was.
+  reportComparison:   AI_TIER.STANDARD,  // A vs B verdict + strengths JSON
 
   // ── Visual intelligence ──────────────────────────────────────────────────
   knowledgeGraph:     AI_TIER.NANO,      // report → nodes/edges (structured)

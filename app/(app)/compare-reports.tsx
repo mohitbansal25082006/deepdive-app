@@ -2,6 +2,39 @@
 // Advanced AI-powered report comparison screen.
 // Tabs: Metrics · Summaries · Findings · AI Analysis
 // AI Analysis calls GPT to produce verdict, strengths, differences, recommendation.
+//
+// ── Part 59.1 FIX: this screen was still calling OpenAI directly ─────────────
+//
+//   Found by the new source scan in scripts/verify-no-secrets.js, which flagged
+//   two things four lines apart:
+//
+//       const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;   // line 164
+//       await fetch('https://api.openai.com/v1/chat/completions' // line 167
+//
+//   This was a genuine key path that both Part 56 and Part 59 missed, because
+//   it lived in a screen rather than in src/services/agents/ where every other
+//   LLM call lives. The consequences compounded:
+//
+//     • Part 59 (security) — the OpenAI key was still being read on-device and
+//       sent to OpenAI from the phone. Every other call had moved behind
+//       ai-gateway; this one hadn't, so the "zero secret keys in the bundle"
+//       claim was false for as long as this file compiled.
+//
+//     • Part 56 (cost) — the model was hardcoded 'gpt-4o'. The registry sweep
+//       never touched it, so this one feature kept paying $2.50/$10 per 1M
+//       while the rest of the app moved to gpt-4.1-mini at $0.40/$1.60.
+//
+//     • Part 53 (cancellation) — no AbortSignal, no shared error handling.
+//
+//   The fix is to use chatCompletionJSON() like every other call site, which
+//   resolves all three at once: it routes through ai-gateway, reads its model
+//   from MODEL_FOR.reportComparison, translates gateway errors into messages
+//   worth showing a person, and repairs truncated JSON. The prompt, the
+//   AIComparison shape and every pixel of UI below are unchanged.
+//
+//   Behaviour note: after Part 59 the old code would have failed outright —
+//   `apiKey` was undefined, so it threw 'OpenAI API key not configured.' and the
+//   AI Analysis tab showed "Analysis Failed". If you saw that, this is why.
 
 import React, { useEffect, useState, useCallback } from 'react';
 import {
@@ -20,6 +53,9 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../src/lib/supabase';
 import { ResearchReport } from '../../src/types';
 import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
+// ── Part 59.1: gateway-routed LLM access, replacing the inline fetch ──
+import { chatCompletionJSON } from '../../src/services/openaiClient';
+import { modelFor } from '../../src/constants/aiModels';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -128,11 +164,12 @@ function buildMetrics(L: ResearchReport, R: ResearchReport): MetricPoint[] {
   ];
 }
 
-// ─── AI Analysis (direct OpenAI fetch) ───────────────────────────────────────
+// ─── AI Analysis (Part 59.1: via ai-gateway, no key on device) ────────────────
 
 async function runAIComparison(
   L: ResearchReport,
   R: ResearchReport,
+  signal?: AbortSignal,
 ): Promise<AIComparison> {
   const summarise = (r: ResearchReport) =>
     `TITLE: ${r.title}
@@ -161,32 +198,31 @@ Return ONLY valid JSON — no markdown, no code fences — in this exact shape:
   "combinedInsight": "What unique value a reader gains by studying both reports together"
 }`;
 
-  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key not configured.');
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o',
+  // chatCompletionJSON handles: gateway auth, JSON mode, fence stripping,
+  // truncation repair, and turning provider errors into human messages.
+  const raw = await chatCompletionJSON<AIComparison>(
+    [{ role: 'user', content: prompt }],
+    {
       temperature: 0.4,
-      max_tokens: 900,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+      maxTokens:   900,
+      signal,
+      model:       modelFor('reportComparison'),
+    },
+  );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any)?.error?.message ?? `OpenAI error ${res.status}`);
-  }
+  // Defensive shaping — the UI maps over these arrays unconditionally, and a
+  // model occasionally returns a string where a list was asked for.
+  const asList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : [];
 
-  const json = await res.json();
-  const raw  = json.choices?.[0]?.message?.content ?? '{}';
-  return JSON.parse(raw) as AIComparison;
+  return {
+    verdict:         typeof raw?.verdict === 'string' ? raw.verdict : '',
+    leftStrengths:   asList(raw?.leftStrengths),
+    rightStrengths:  asList(raw?.rightStrengths),
+    recommendation:  typeof raw?.recommendation === 'string' ? raw.recommendation : '',
+    keyDifferences:  asList(raw?.keyDifferences),
+    combinedInsight: typeof raw?.combinedInsight === 'string' ? raw.combinedInsight : '',
+  };
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -694,6 +730,10 @@ export default function CompareReportsScreen() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError,   setAiError]   = useState<string | null>(null);
 
+  // Part 59.1: abort the gateway call if the screen unmounts mid-analysis, so a
+  // backgrounded comparison stops spending tokens instead of finishing unseen.
+  const [aiController, setAiController] = useState<AbortController | null>(null);
+
   // ── Load reports ────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -714,19 +754,31 @@ export default function CompareReportsScreen() {
     })();
   }, [leftId, rightId]);
 
+  // Cancel any in-flight analysis on unmount.
+  useEffect(() => {
+    return () => { try { aiController?.abort(); } catch { /* ignore */ } };
+  }, [aiController]);
+
   // ── AI analysis ─────────────────────────────────────────────────────────────
 
   const handleRunAI = useCallback(async () => {
     if (!leftReport || !rightReport) return;
+
+    const controller = new AbortController();
+    setAiController(controller);
     setAiLoading(true);
     setAiError(null);
+
     try {
-      const result = await runAIComparison(leftReport, rightReport);
+      const result = await runAIComparison(leftReport, rightReport, controller.signal);
       setAiResult(result);
     } catch (err) {
+      // A user-triggered abort is not a failure worth showing.
+      if ((err as { name?: string })?.name === 'AbortError') return;
       setAiError(err instanceof Error ? err.message : 'AI analysis failed. Please try again.');
     } finally {
       setAiLoading(false);
+      setAiController(null);
     }
   }, [leftReport, rightReport]);
 

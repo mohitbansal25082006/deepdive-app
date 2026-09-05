@@ -3,14 +3,44 @@
 // Part 53G — AbortSignal threaded so cancelling a podcast stops script + audio
 //   generation immediately (no further OpenAI / TTS token spend).
 // Part 57 — FIXES:
-//   • v2Input now matches ScriptAgentV2Input exactly. Previously it passed
-//     `targetDurationMinutes`, `speakerCount`, `presetStyleV2` as top-level
-//     fields that the agent didn't read, so 3-speaker podcasts produced nothing
-//     and the duration target was ignored. Duration now comes from
-//     config.targetDurationMinutes (which the agent reads), and presetStyleV2 is
-//     passed via the field the agent actually consumes.
-//   • getSpeakerVoiceForV2Turn keeps routing host/guest1/guest2 → the agent now
-//     emits those exact roles, so the 3rd speaker gets its own voice.
+//   • v2Input now matches ScriptAgentV2Input exactly.
+//   • getSpeakerVoiceForV2Turn keeps routing host/guest1/guest2.
+//
+// ── Part 59.1 FIX: "Generation failed — OpenAI API key is missing" ───────────
+//
+//   Part 59 moved every key server-side. openaiClient.ts now talks to the
+//   `ai-gateway` Edge Function, podcastTTSService.ts talks to
+//   `ai-audio-gateway`, and neither one reads process.env any more.
+//
+//   What Part 59 missed was this pre-flight check, which survived at the top of
+//   runPodcastPipeline():
+//
+//       const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+//       if (!openaiKey?.trim()) { callbacks.onError('OpenAI API key is missing…'); return; }
+//
+//   That variable was deleted from .env in Part 59, so the guard now fires on
+//   every single run and the pipeline returns before doing anything. The key was
+//   fine the whole time; the app was refusing to ask for it.
+//
+//   This is exactly why reports, presentations and academic papers kept working
+//   while podcasts, debates and voice debates did not: researchOrchestrator.ts
+//   had its equivalent check removed in Part 59, and these three did not.
+//
+//   The guard is gone. Nothing replaces it, and nothing should:
+//     • There is no key in the app to check. Checking a variable that cannot
+//       exist is not a safety net, it is a tripwire.
+//     • A missing SERVER key now surfaces as a GatewayError with
+//       `isNotConfigured`, which openaiClient and podcastTTSService already
+//       translate into "temporarily unavailable, please try again later" —
+//       an accurate message, produced by an actual failed call rather than a
+//       guess made before any call happened.
+//     • The old check also passed happily on a present-but-revoked key, so it
+//       never caught the failure it was written for.
+//
+//   The session check below stays, and matters MORE than it used to: every
+//   gateway call is authenticated with that session, so starting a podcast
+//   without one would fail on the first script call anyway. Failing here is
+//   faster and the message is clearer.
 
 import { supabase }                    from '../lib/supabase';
 import type {
@@ -161,15 +191,19 @@ export async function runPodcastPipeline(
 
   const aborted = () => signal?.aborted === true;
 
-  const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!openaiKey?.trim()) {
-    callbacks.onError('OpenAI API key is missing.\n\nAdd EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart.');
+  // ── Pre-flight ────────────────────────────────────────────────────────────
+  //
+  // Part 59.1: the EXPO_PUBLIC_OPENAI_API_KEY check that used to sit here is
+  // gone. See the file header for the full reasoning. The session check stays
+  // because every gateway call authenticates with it.
+
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !sessionData?.session) {
+    callbacks.onError('Your session has expired. Please sign out and sign back in.');
     return;
   }
-
-  const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData?.session || sessionData.session.user.id !== userId) {
-    callbacks.onError('Session expired. Please sign out and sign back in.');
+  if (sessionData.session.user.id !== userId) {
+    callbacks.onError('Session mismatch. Please sign out and sign back in.');
     return;
   }
 
@@ -334,9 +368,12 @@ export async function runPodcastPipeline(
       status: 'failed',
       error_message: `Only ${successCount}/${script.turns.length} audio segments generated.`,
     }).eq('id', podcastId);
+    // Part 59.1: the old message told the user to "check your OpenAI API key",
+    // which they no longer have and could not check. The realistic causes now
+    // are a dropped connection or provider throttling.
     callbacks.onError(
       `Not enough audio segments generated (${successCount}/${script.turns.length}). ` +
-      'Check your OpenAI API key and rate limits.'
+      'This is usually a network drop or a temporary rate limit — please try again.'
     );
     return;
   }

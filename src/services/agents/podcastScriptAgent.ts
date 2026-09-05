@@ -1,9 +1,39 @@
 // src/services/agents/podcastScriptAgent.ts
-// Part 58.2 — SERPAPI → TAVILY MIGRATION
-// All web search calls now use tavilySearchBatch
+// Part 58.2 — SERPAPI → TAVILY MIGRATION. All web search uses tavilySearchBatch.
+//
+// ── Part 59.1 FIX: web research silently switched itself off ─────────────────
+//
+//   This agent used to decide whether to search like this:
+//
+//       const tavilyKey = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
+//       if (tavilyKey && tavilyKey !== 'your_tavily_api_key_here') { …search… }
+//
+//   Part 59 removed that variable, so the branch stopped executing. Podcasts
+//   kept generating — the block is wrapped in a try/catch and search is
+//   optional — but with zero live sources, `webSearchUsed: false`, and an empty
+//   `searchQueries` array. Nothing surfaced the change; the episodes just
+//   quietly got less current.
+//
+//   Now it always searches. tavilyClient routes through the `search-gateway`
+//   Edge Function and degrades to mock results when no Tavily key is
+//   configured, so an unconfigured project still generates rather than throws.
+//
+//   The second half of the fix matters more than the first. Those mock results
+//   are convincing: reuters.com and bloomberg.com URLs, invented market sizes,
+//   plausible dates. Fed to this agent they would become spoken lines like
+//   "According to Bloomberg, the market hit $47.3 billion" — a fabricated
+//   statistic delivered in a real outlet's name, in audio, to a listener with
+//   no way to check it. The old guard against this was:
+//
+//       const hasReal = batches.some(b => b.results.some(r => !r.url.includes('example.com')));
+//
+//   which matched nothing, because no mock URL contains example.com. It had been
+//   a no-op since the mock set was rewritten. stripMockBatches / hasRealResults
+//   from searchAvailability.ts replace it with a check that actually fires.
 
 import { chatCompletionJSON } from '../openaiClient';
 import { tavilySearchBatch } from '../tavilyClient';
+import { stripMockBatches, hasRealResults } from '../searchAvailability';
 import { modelFor } from '../../constants/aiModels';
 import {
   ResearchReport,
@@ -137,7 +167,7 @@ function splitLongTurns(turns: RawTurn[], maxWords: number): RawTurn[] {
   return out;
 }
 
-// ─── SerpAPI ──────────────────────────────────────────────────────────────────
+// ─── Web search (Tavily via search-gateway) ───────────────────────────────────
 
 function buildSearchQueries(topic: string): string[] {
   return [
@@ -473,25 +503,34 @@ export async function runPodcastScriptAgent(
   let webSearchUsed = false;
   const searchQueriesUsed: string[] = [];
 
-  // ── Part 58.2: Tavily replaces SerpAPI ──
+  // ── Part 59.1: always search; discard the mock fallback ──────────────────
+  //
+  // No env check. tavilyClient talks to search-gateway, which holds the key,
+  // and returns mock results if no key is configured. Those mocks carry real
+  // outlet names and invented figures, so they must never reach the prompt —
+  // stripMockBatches removes them and hasRealResults decides honestly whether
+  // this episode was grounded in live research.
   try {
-    const tavilyKey = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
-    if (tavilyKey && tavilyKey.trim() && tavilyKey !== 'your_tavily_api_key_here') {
-      const queries = buildSearchQueries(topic);
-      searchQueriesUsed.push(...queries);
-      const batches = await tavilySearchBatch(
-        queries,
-        undefined,
-        8,
-        'advanced',
+    const queries = buildSearchQueries(topic);
+    searchQueriesUsed.push(...queries);
+
+    const rawBatches = await tavilySearchBatch(
+      queries,
+      undefined,
+      8,
+      'advanced',
+    );
+
+    const batches = stripMockBatches(rawBatches);
+
+    if (hasRealResults(batches)) {
+      searchContext = formatSearchResults(batches);
+      webSearchUsed = true;
+    } else {
+      console.warn(
+        '[PodcastScriptAgent] No live web results (Tavily key may be unset) — ' +
+        'writing from report context and model knowledge only.'
       );
-      const hasReal = batches.some(b =>
-        b.results.some(r => !r.url.includes('example.com'))
-      );
-      if (hasReal) {
-        searchContext = formatSearchResults(batches);
-        webSearchUsed = true;
-      }
     }
   } catch (err) {
     console.warn('[PodcastScriptAgent] Tavily search failed, continuing:', err);

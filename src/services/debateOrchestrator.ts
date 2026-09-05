@@ -1,9 +1,27 @@
 // src/services/debateOrchestrator.ts
 // Part 20 — passes DebateReportContext to every debate agent.
 // Part 53G — AbortSignal support at the pipeline level.
-// Part 56 — Cost: the only direct LLM call here (refineTopicToQuestion: topic →
-//   debatable question) is routed to NANO. All agent/moderator model routing is
-//   handled inside debateAgent.ts / moderatorAgent.ts.
+// Part 56 — Cost: the only direct LLM call here (refineTopicToQuestion) is
+//   routed to NANO. Agent/moderator routing lives in their own files.
+//
+// ── Part 59.1 FIX: "Generation failed — OpenAI API key is missing" ───────────
+//
+//   Same bug as podcastOrchestrator and voiceDebateOrchestrator. Part 59 moved
+//   the OpenAI key into the `ai-gateway` Edge Function and deleted
+//   EXPO_PUBLIC_OPENAI_API_KEY from .env, but this pre-flight check survived:
+//
+//       const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+//       if (!openaiKey?.trim()) { callbacks.onError('OpenAI API key is missing…'); return; }
+//
+//   With the variable gone the condition is always true, so every debate failed
+//   before the first agent ran — while reports and slides, whose orchestrators
+//   had the equivalent check removed in Part 59, kept working normally.
+//
+//   Removed, not replaced. There is no client-side key left to validate, and a
+//   missing SERVER key already produces a precise, human-readable error from
+//   openaiClient ("The AI service is temporarily unavailable") the moment a real
+//   call fails. The session check below stays: gateway calls authenticate with
+//   it, so an expired session is a genuine, checkable pre-condition.
 
 import { supabase }           from '../lib/supabase';
 import { chatCompletionJSON } from './openaiClient';
@@ -74,15 +92,20 @@ export async function runDebatePipeline(
   const roles         = config.agentRoles?.length ? config.agentRoles : DEFAULT_ROLES;
   const reportContext = config.reportContext ?? null;
 
-  const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!openaiKey?.trim()) {
-    callbacks.onError('OpenAI API key is missing.\n\nAdd EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart: npx expo start --clear');
+  // ── Pre-flight ────────────────────────────────────────────────────────────
+  // Part 59.1: the EXPO_PUBLIC_OPENAI_API_KEY check that used to sit here is
+  // gone. See the file header. The session check remains — every gateway call
+  // is authenticated with it.
+
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !sessionData?.session) {
+    callbacks.onError('Your session has expired. Please sign out and sign back in.');
     return;
   }
-
-  const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData?.session) { callbacks.onError('Your session has expired. Please sign out and sign back in.'); return; }
-  if (sessionData.session.user.id !== userId) { callbacks.onError('Session mismatch. Please sign out and sign back in.'); return; }
+  if (sessionData.session.user.id !== userId) {
+    callbacks.onError('Session mismatch. Please sign out and sign back in.');
+    return;
+  }
 
   if (aborted()) return;
 
@@ -217,7 +240,13 @@ async function runPipelineCore(
     if (aborted()) { await updateStatus('cancelled'); return; }
 
     if (collectedPerspectives.length === 0) {
-      throw new Error('All debate agents failed to generate perspectives. Check your API keys and network connection.');
+      // Part 59.1: the old text said "Check your API keys" — there are no keys
+      // in the app any more, so that advice was unactionable. If every agent
+      // failed it is a connection problem or a service outage.
+      throw new Error(
+        'All debate agents failed to generate perspectives. ' +
+        'Check your connection and try again in a moment.'
+      );
     }
 
     const orderedPerspectives = roles

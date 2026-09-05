@@ -1,6 +1,25 @@
 // app/(app)/(tabs)/podcast.tsx
 // Part 58.2 — TAVILY API MIGRATION
-// Web search detection now uses EXPO_PUBLIC_TAVILY_API_KEY
+//
+// ── Part 59.1 FIX: the TAVILY badge and web-search step were stuck off ───────
+//
+//   This screen decided whether web search was available by reading the env var:
+//
+//       const hasTavilyKey = !!(
+//         process.env.EXPO_PUBLIC_TAVILY_API_KEY?.trim() &&
+//         process.env.EXPO_PUBLIC_TAVILY_API_KEY !== 'your_tavily_api_key_here'
+//       );
+//
+//   Part 59 deleted that variable, so `hasTavilyKey` became permanently false.
+//   Two things went quiet: the green "TAVILY" pill in the header stopped
+//   appearing, and `webSearchActive={false}` was passed to
+//   PodcastGenerationProgress, so the progress UI dropped its web-research step
+//   even while the script agent was searching.
+//
+//   Replaced with useProviderStatus(), which reads Part 59's
+//   get_ai_provider_status() RPC — booleans only, no key material ever reaches
+//   the app. It is optimistic while loading and on failure, so a slow status
+//   ping can never hide a working feature.
 
 import React, {
   useState, useEffect, useCallback, useRef, useMemo,
@@ -26,6 +45,8 @@ import { usePodcast } from '../../../src/hooks/usePodcast';
 import { usePodcastHistory } from '../../../src/hooks/usePodcastHistory';
 import { usePodcastSeries } from '../../../src/hooks/usePodcastSeries';
 import { useSeriesTopicSuggestions } from '../../../src/hooks/usePodcastSeries';
+// ── Part 59.1: provider availability without reading any key ──
+import { useProviderStatus } from '../../../src/hooks/useProviderStatus';
 import { PodcastGenerationProgress } from '../../../src/components/podcast/PodcastGenerationProgress';
 import { PodcastCard } from '../../../src/components/podcast/PodcastCard';
 import { WaveformVisualizer } from '../../../src/components/podcast/WaveformVisualizer';
@@ -346,11 +367,11 @@ export default function PodcastScreen() {
 
   const { balance, guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  // Part 58.2: Check Tavily API key availability
-  const hasTavilyKey = !!(
-    process.env.EXPO_PUBLIC_TAVILY_API_KEY?.trim() &&
-    process.env.EXPO_PUBLIC_TAVILY_API_KEY !== 'your_tavily_api_key_here'
-  );
+  // ── Part 59.1: web-search availability, keys stay server-side ──
+  // Was: process.env.EXPO_PUBLIC_TAVILY_API_KEY (deleted in Part 59, so this
+  // was permanently false). Now reads get_ai_provider_status(), which returns
+  // booleans only.
+  const { tavily: hasWebSearch } = useProviderStatus();
 
   const openShareSheet  = useCallback((podcast: Podcast) => { setShareTarget(podcast); setShareSheetOpen(true); }, []);
   const closeShareSheet = useCallback(() => { setShareSheetOpen(false); setTimeout(() => setShareTarget(null), 400); }, []);
@@ -493,11 +514,11 @@ export default function PodcastScreen() {
                       ? `${completedPodcasts.length} episode${completedPodcasts.length !== 1 ? 's' : ''} · ${totalMinutes} min total`
                       : 'Turn research into audio episodes'}
                   </Text>
-                  {/* Part 58.2: Tavily badge */}
-                  {hasTavilyKey && (
+                  {/* Part 59.1: driven by provider status, not an env var */}
+                  {hasWebSearch && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: `${COLORS.success}12`, borderRadius: RADIUS.full, paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderColor: `${COLORS.success}25` }}>
                       <Ionicons name="globe-outline" size={10} color={COLORS.success} />
-                      <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>TAVILY</Text>
+                      <Text style={{ color: COLORS.success, fontSize: 9, fontWeight: '700' }}>LIVE WEB</Text>
                     </View>
                   )}
                 </View>
@@ -524,7 +545,7 @@ export default function PodcastScreen() {
                 isGeneratingScript={genState.isGeneratingScript} isGeneratingAudio={genState.isGeneratingAudio}
                 scriptGenerated={genState.scriptGenerated} audioProgress={genState.audioProgress}
                 progressMessage={genState.progressMessage} targetDurationMins={selectedDuration}
-                webSearchActive={hasTavilyKey && !importedReport} onCancel={handleCancel}
+                webSearchActive={hasWebSearch && !importedReport} onCancel={handleCancel}
               />
             )}
 

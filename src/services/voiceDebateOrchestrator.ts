@@ -1,11 +1,32 @@
 // src/services/voiceDebateOrchestrator.ts
 // Part 40 + Part 41.2 UPDATE
 //
-// FIX: DOMException is not available in React Native's Hermes JS engine.
-// Every `throw new DOMException(...)` and `instanceof DOMException` check
-// is replaced with a lightweight plain-class AbortError that works everywhere.
+// FIX (41.2): DOMException is not available in React Native's Hermes JS engine.
+// Every `throw new DOMException(...)` and `instanceof DOMException` check is
+// replaced with a lightweight plain-class AbortError that works everywhere.
 //
-// All other logic (retry, timeout, script gen, TTS, upload) is unchanged.
+// ── Part 59.1 FIX: "Generation failed — OpenAI API key is missing" ───────────
+//
+//   The last of the three orchestrators carrying a dead pre-flight check:
+//
+//       const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+//       if (!openaiKey?.trim()) { callbacks.onError('OpenAI API key is missing…'); return; }
+//
+//   Part 59 deleted that variable when it moved every key into the encrypted
+//   vault behind the Edge Functions. The guard has been failing on every run
+//   since — and because a voice debate costs 70 credits, this one had teeth:
+//   the check ran BEFORE the pipeline but AFTER useVoiceDebate.ts had already
+//   deducted the credits, so each attempt burned 70 credits and produced
+//   nothing. (The deduction happens in checkAndConsumeCredits() inside the
+//   hook, which calls runVoiceDebatePipeline only after the debit succeeds.)
+//
+//   Anyone who tried to generate a voice debate between Part 59 and now should
+//   be refunded — see PART59_1_SETUP.md for the admin-dashboard steps.
+//
+//   The guard is removed, not replaced. Script generation goes through
+//   openaiClient → ai-gateway; TTS goes through voiceDebateTTSService →
+//   ai-audio-gateway. Both already translate a missing or rejected server key
+//   into a clear user-facing message when a real call fails.
 
 import { supabase }                        from '../lib/supabase';
 import { generateVoiceDebateScript }       from './agents/voiceDebateScriptAgent';
@@ -28,9 +49,7 @@ import type {
 // ─── Derive the key type from VOICE_PERSONAS ──────────────────────────────────
 type VoicePersonaKey = keyof typeof VOICE_PERSONAS;
 
-// ─── FIX: React Native / Hermes does not have DOMException ───────────────────
-// Replace every `new DOMException('...', 'AbortError')` with this class.
-// `instanceof AbortError` works because it's a plain JS class.
+// ─── React Native / Hermes does not have DOMException ────────────────────────
 
 class AbortError extends Error {
   public readonly name = 'AbortError';
@@ -174,7 +193,6 @@ export async function runVoiceDebatePipeline(
   signal?:   AbortSignal,
 ): Promise<void> {
 
-  // ── FIX: use plain boolean + AbortError instead of DOMException ───────────
   const isAborted = () => signal?.aborted ?? false;
 
   const checkAbort = () => {
@@ -184,17 +202,15 @@ export async function runVoiceDebatePipeline(
   };
 
   // ── Pre-flight checks ──────────────────────────────────────────────────────
-
-  const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!openaiKey?.trim()) {
-    callbacks.onError('OpenAI API key is missing.\n\nAdd EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart.');
-    return;
-  }
+  //
+  // Part 59.1: the EXPO_PUBLIC_OPENAI_API_KEY check that used to open this
+  // block is gone. See the file header. Everything below is a real
+  // pre-condition that can actually be false at this point.
 
   checkAbort();
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData?.session || sessionData.session.user.id !== userId) {
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !sessionData?.session || sessionData.session.user.id !== userId) {
     callbacks.onError('Session expired. Please sign out and sign back in.');
     return;
   }
@@ -309,7 +325,6 @@ export async function runVoiceDebatePipeline(
         },
       });
     } catch (err) {
-      // ── FIX: check instanceof AbortError instead of DOMException ─────────
       if (err instanceof AbortError) throw err;
       const msg = err instanceof Error ? err.message : 'Script generation failed';
       await updateStatus('failed', { error_message: msg });
@@ -372,10 +387,11 @@ export async function runVoiceDebatePipeline(
             callbacks.onPhaseUpdate('audio', message, 80);
           },
         },
+        signal,          // ── Part 59.1: was never forwarded; cancel now reaches TTS ──
       );
     } catch (err) {
-      // ── FIX: check instanceof AbortError instead of DOMException ─────────
       if (err instanceof AbortError) throw err;
+      if ((err as { name?: string })?.name === 'AbortError') throw new AbortError();
       const msg = err instanceof Error ? err.message : 'Audio generation failed';
       await updateStatus('failed', { error_message: msg });
       callbacks.onError(`Audio generation failed: ${msg}`);
@@ -483,8 +499,7 @@ export async function runVoiceDebatePipeline(
     uploadVoiceDebateAudioBackground(voiceDebateId, audioPaths);
 
   } catch (error) {
-    // ── FIX: catch AbortError instead of DOMException ─────────────────────
-    if (error instanceof AbortError) {
+    if (error instanceof AbortError || (error as { name?: string })?.name === 'AbortError') {
       if (voiceDebateId) {
         supabase
           .from('voice_debates')

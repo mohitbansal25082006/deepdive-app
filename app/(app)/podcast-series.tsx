@@ -1,6 +1,22 @@
 // app/(app)/podcast-series.tsx
 // Part 58.2 — TAVILY API MIGRATION
-// Web search detection now uses EXPO_PUBLIC_TAVILY_API_KEY
+//
+// ── Part 59.1 FIX: web-search detection read a deleted env var ───────────────
+//
+//   InlineEpisodeGenerator computed:
+//
+//       const hasTavilyKey = !!(
+//         process.env.EXPO_PUBLIC_TAVILY_API_KEY?.trim() &&
+//         process.env.EXPO_PUBLIC_TAVILY_API_KEY !== 'your_tavily_api_key_here'
+//       );
+//
+//   Part 59 deleted that variable, so the value was permanently false and
+//   `webSearchActive={false}` was passed to PodcastGenerationProgress — the
+//   progress UI stopped showing the web-research step even though the script
+//   agent was searching.
+//
+//   Now uses useProviderStatus(), backed by Part 59's get_ai_provider_status()
+//   RPC, which returns booleans and never key material.
 
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import {
@@ -20,6 +36,8 @@ import {
 } from '../../src/hooks/usePodcastSeries';
 import { usePodcast }                   from '../../src/hooks/usePodcast';
 import { usePodcastHistory }            from '../../src/hooks/usePodcastHistory';
+// ── Part 59.1: provider availability without reading any key ──
+import { useProviderStatus }            from '../../src/hooks/useProviderStatus';
 import { SeriesCreatorModal }           from '../../src/components/podcast/SeriesCreatorModal';
 import { EpisodeArtwork }              from '../../src/components/podcast/EpisodeArtwork';
 import { VoiceStyleSelector }           from '../../src/components/podcast/VoiceStyleSelector';
@@ -441,7 +459,7 @@ function AdvancedRecommendationPanel({
 }
 
 // ─── Inline Episode Generator ──────────────────────────────────────────────────
-// Part 58.2: webSearchActive now reads EXPO_PUBLIC_TAVILY_API_KEY
+// Part 59.1: webSearchActive now comes from provider status, not an env var.
 
 interface InlineGeneratorProps {
   seriesId:      string;
@@ -464,11 +482,8 @@ function InlineEpisodeGenerator({
   const { upsertPodcast, refresh: refreshHistory } = usePodcastHistory();
   const { guardedConsumeTotal, insufficientInfo, clearInsufficient, isConsuming } = useCreditGate();
 
-  // Part 58.2: Check Tavily API key availability
-  const hasTavilyKey = !!(
-    process.env.EXPO_PUBLIC_TAVILY_API_KEY?.trim() &&
-    process.env.EXPO_PUBLIC_TAVILY_API_KEY !== 'your_tavily_api_key_here'
-  );
+  // ── Part 59.1: was process.env.EXPO_PUBLIC_TAVILY_API_KEY (deleted) ──
+  const { tavily: hasWebSearch } = useProviderStatus();
 
   useEffect(() => {
     if (prefillTopic) setTopic(prefillTopic);
@@ -582,7 +597,7 @@ function InlineEpisodeGenerator({
               audioProgress={genState.audioProgress}
               progressMessage={genState.progressMessage}
               targetDurationMins={selectedDuration}
-              webSearchActive={hasTavilyKey}
+              webSearchActive={hasWebSearch}
               onCancel={handleCancel}
             />
           </View>

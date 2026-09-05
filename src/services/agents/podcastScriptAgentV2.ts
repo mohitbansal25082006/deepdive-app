@@ -1,9 +1,26 @@
 // src/services/agents/podcastScriptAgentV2.ts
-// Part 58.2 — SERPAPI → TAVILY MIGRATION
-// All web search calls now use tavilySearchBatch
+// Part 58.2 — SERPAPI → TAVILY MIGRATION. All web search uses tavilySearchBatch.
+//
+// ── Part 59.1 FIX: web research silently switched itself off ─────────────────
+//
+//   Identical to podcastScriptAgent.ts, and this is the one that actually runs
+//   for most users — the V1 agent is only reached through the legacy wrapper at
+//   the bottom of this file, so almost every podcast in the app came through
+//   here with its search block dead.
+//
+//   The old gate read EXPO_PUBLIC_TAVILY_API_KEY, which Part 59 deleted. The
+//   branch stopped executing, and the `onProgress('Searching the web for the
+//   latest information...')` line above it kept firing regardless — the UI
+//   announced a search that never happened.
+//
+//   Now: always search through the gateway, then strip the mock fallback before
+//   anything reaches the prompt. The mock set uses reuters.com / bloomberg.com
+//   URLs with invented figures; in a podcast those become spoken, attributed,
+//   fabricated statistics. See searchAvailability.ts for the full reasoning.
 
 import { chatCompletionJSON } from '../openaiClient';
 import { tavilySearchBatch } from '../tavilyClient';
+import { stripMockBatches, hasRealResults } from '../searchAvailability';
 import { modelFor } from '../../constants/aiModels';
 import {
   ResearchReport,
@@ -599,7 +616,7 @@ export async function runPodcastScriptAgentV2(
     throw new Error('Podcast V2 requires at least 2 speakers.');
   }
 
-  // ── Tavily Web research ──────────────────────────────────────────────────────
+  // ── Web research ─────────────────────────────────────────────────────────
 
   let searchContext = '';
   let webSearchUsed = false;
@@ -607,23 +624,35 @@ export async function runPodcastScriptAgentV2(
 
   input.onProgress?.('Searching the web for the latest information...');
 
-  // ── Part 58.2: Tavily replaces SerpAPI ──
+  // ── Part 59.1: always search; discard the mock fallback ──────────────────
+  //
+  // The old EXPO_PUBLIC_TAVILY_API_KEY gate is gone (the variable was deleted
+  // in Part 59, which made this whole block unreachable). tavilyClient routes
+  // through search-gateway; if no Tavily key is configured server-side it
+  // returns realistic mock results, which stripMockBatches removes so they can
+  // never become spoken, attributed, invented statistics.
   try {
-    const tavilyKey = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
-    if (tavilyKey && tavilyKey.trim() && tavilyKey !== 'your_tavily_api_key_here') {
-      const queries = buildSearchQueries(topic);
-      searchQueriesUsed.push(...queries);
-      const batches = await tavilySearchBatch(
-        queries,
-        undefined,
-        8,
-        'advanced',
+    const queries = buildSearchQueries(topic);
+    searchQueriesUsed.push(...queries);
+
+    const rawBatches = await tavilySearchBatch(
+      queries,
+      undefined,
+      8,
+      'advanced',
+    );
+
+    const batches = stripMockBatches(rawBatches);
+
+    if (hasRealResults(batches)) {
+      searchContext = formatSearchResults(batches);
+      webSearchUsed = true;
+    } else {
+      console.warn(
+        '[PodcastScriptAgentV2] No live web results (Tavily key may be unset) — ' +
+        'writing from report context and model knowledge only.'
       );
-      const hasReal = batches.some(b => b.results.some(r => !r.url.includes('example.com')));
-      if (hasReal) {
-        searchContext = formatSearchResults(batches);
-        webSearchUsed = true;
-      }
+      input.onProgress?.('No live sources available — using report context...');
     }
   } catch (err) {
     console.warn('[PodcastScriptAgentV2] Tavily search failed, continuing:', err);

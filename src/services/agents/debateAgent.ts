@@ -1,9 +1,29 @@
 // src/services/agents/debateAgent.ts
-// Part 58.2 — SERPAPI → TAVILY MIGRATION
-// All web search calls now use tavilySearchBatch
+// Part 58.2 — SERPAPI → TAVILY MIGRATION. All web search uses tavilySearchBatch.
+//
+// ── Part 59.1 FIX: mock search results were becoming real citations ──────────
+//
+//   This agent never had the env-var gate that broke podcasts — it always
+//   called Tavily. But Part 59 changed what a failed search returns: instead of
+//   throwing, tavilyClient now falls back to eight fabricated results carrying
+//   reuters.com, bloomberg.com, nature.com and ft.com URLs with invented
+//   statistics.
+//
+//   Those results flowed straight into `sourcesUsed`, which is what the Debate
+//   Detail screen renders as the agent's citation list, and into the prompt as
+//   "[Web Source 1] Title / Excerpt / URL". An unconfigured Tavily key would
+//   therefore produce a debate where every agent cites Reuters and Bloomberg
+//   for numbers neither outlet ever published — and the confidence rubric would
+//   score that evidence as plentiful, because `allResults.length` was 8.
+//
+//   stripMockBatches removes them before any of that happens. With no live
+//   sources the agent falls back to the imported report context (if any) and
+//   its own knowledge, and — because `allResults.length` is now honestly 0 —
+//   the rubric correctly scores its confidence at the low end.
 
 import { chatCompletionJSON } from '../openaiClient';
 import { tavilySearchBatch } from '../tavilyClient';
+import { stripMockBatches } from '../searchAvailability';
 import { modelFor } from '../../constants/aiModels';
 import {
   DebateAgentRole,
@@ -335,16 +355,30 @@ export async function runDebateAgent(
   const searchQueries = await generateSearchQueries(topic, role, roleDef, reportContext);
 
   onProgress?.(`${roleDef.label}: Searching for latest evidence (Tavily)...`);
-  // ── Part 58.2: Tavily replaces SerpAPI ──
-  const searchBatches = await tavilySearchBatch(
+
+  const rawBatches = await tavilySearchBatch(
     searchQueries,
     undefined, // no progress callback needed
     8, // results per query
     'advanced', // use advanced depth for debate agents
   );
+
+  // ── Part 59.1: drop the mock fallback before it becomes a citation ────────
+  // See the file header. Fabricated Reuters/Bloomberg sources are worse than
+  // no sources, and leaving them in also inflated `allResults.length`, which
+  // the confidence rubric reads as "plenty of evidence".
+  const searchBatches = stripMockBatches(rawBatches);
+
   const allResults = searchBatches.flatMap(b =>
     Array.isArray(b?.results) ? b.results : [],
   );
+
+  if (allResults.length === 0) {
+    console.warn(
+      `[DebateAgent:${role}] No live web results — arguing from report context ` +
+      'and model knowledge. Confidence will be scored accordingly.'
+    );
+  }
 
   const searchContext = allResults
     .slice(0, 14)

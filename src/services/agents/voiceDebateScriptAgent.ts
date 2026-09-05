@@ -1,9 +1,29 @@
 // src/services/agents/voiceDebateScriptAgent.ts
-// Part 58.2 — SERPAPI → TAVILY MIGRATION
-// Voice debate script agent uses Tavily for web search grounding
+// Part 58.2 — SERPAPI → TAVILY MIGRATION. Uses Tavily for web grounding.
+//
+// ── Part 59.1 FIX: mock search results were being read aloud ─────────────────
+//
+//   Same root cause as debateAgent.ts, with a sharper edge. When no Tavily key
+//   is configured, tavilyClient returns eight fabricated results on real
+//   mastheads — reuters.com, bloomberg.com, nature.com — with invented figures
+//   like "$47.3 billion" and "a CAGR of 24.7%".
+//
+//   This agent feeds that context into Phase 1 openings and Phase 2 rebuttals,
+//   which are then sent to gpt-4o-mini-tts and played back as speech. A
+//   fabricated statistic in a text report is a bad citation someone can click
+//   and check. The same statistic spoken confidently by a synthetic economist,
+//   attributed to Bloomberg, is something a listener has no way to verify at
+//   all.
+//
+//   stripMockBatches removes them per role before formatSearchContext runs. The
+//   prompts already handle an empty search context — every Phase 1 and Phase 2
+//   template includes a "(No web search available — use existing knowledge)"
+//   branch — so the agents fall back cleanly to the completed debate's
+//   perspectives, which is what a voice debate is built on anyway.
 
 import { chatCompletionJSON } from '../openaiClient';
 import { tavilySearchBatch } from '../tavilyClient';
+import { stripMockBatches, countRealResults } from '../searchAvailability';
 import { modelFor } from '../../constants/aiModels';
 import {
   VOICE_PERSONAS,
@@ -552,22 +572,38 @@ export async function generateVoiceDebateScript(
   // ── Gather web search context for each agent ─────────────────────────────
 
   const searchContexts: Record<DebateAgentRole, string> = {} as Record<DebateAgentRole, string>;
+  let totalLiveSources = 0;
 
   for (const role of agentRoles) {
     try {
       const queries = buildDebateSearchQueries(topic, role);
-      // ── Part 58.2: Tavily replaces SerpAPI ──
-      const batches = await tavilySearchBatch(
+      const rawBatches = await tavilySearchBatch(
         queries,
         undefined,
         8,
         'advanced',
       );
-      searchContexts[role] = formatSearchContext(batches);
+
+      // ── Part 59.1: drop the mock fallback before it reaches TTS ──────────
+      // Fabricated statistics attributed to Reuters or Bloomberg would be
+      // spoken aloud by a synthetic debater with no way for the listener to
+      // check them. See the file header.
+      const batches = stripMockBatches(rawBatches);
+      const realCount = countRealResults(batches);
+      totalLiveSources += realCount;
+
+      searchContexts[role] = realCount > 0 ? formatSearchContext(batches) : '';
     } catch (err) {
       console.warn(`[VoiceDebateScriptAgent] Tavily search failed for ${role}:`, err);
       searchContexts[role] = '';
     }
+  }
+
+  if (totalLiveSources === 0) {
+    console.warn(
+      '[VoiceDebateScriptAgent] No live web sources across any role — the script ' +
+      'will be built from the completed debate perspectives alone.'
+    );
   }
 
   // ── PHASE 1 ──────────────────────────────────────────────────────────────
