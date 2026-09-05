@@ -6,6 +6,12 @@
 //            in src/constants/aiModels.ts. Mirrors the deepdive-bot change so the
 //            two endpoints stay identical.
 //
+// Part 59  — SECURE SERVER-SIDE API KEYS
+//            The OpenAI key comes from getApiKey('openai') — the encrypted
+//            app_api_keys vault, with the OPENAI_API_KEY env secret as a
+//            fallback. Rotating in the admin dashboard now updates this
+//            function too, with no redeploy.
+//
 // This is the SAME AI as the @deepdive team-chat bot (deepdive-bot), exposed as
 // a direct request/response endpoint for the per-member "Ask DeepDive AI" screen:
 //
@@ -25,6 +31,8 @@
 // (We verify the user's JWT + workspace membership manually inside the handler.)
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+// Part 59: resolves the OpenAI key from the encrypted vault, with an env fallback.
+import { getApiKey }    from '../_shared/keyStore.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
@@ -87,7 +95,6 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl     = Deno.env.get('SUPABASE_URL')!;
     const anonKey         = Deno.env.get('SUPABASE_ANON_KEY')!;
     const serviceKey      = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const openaiKey       = Deno.env.get('OPENAI_API_KEY')!;
 
     // ── 1. Authenticate the caller ──────────────────────────────────────────
     const authHeader = req.headers.get('Authorization') ?? '';
@@ -107,6 +114,26 @@ Deno.serve(async (req: Request) => {
       return json(
         { answer: 'Your session has expired. Please sign in again.', sources: [], reportCount: 0, mode: 'none', error: 'invalid_jwt' },
         401,
+      );
+    }
+
+    // ── 1b. Part 59: resolve the OpenAI key AFTER authenticating ────────────
+    // Order matters. Looking up the key first would let an unauthenticated
+    // request cost us a vault read and a decrypt on every probe.
+    let openaiKey: string;
+    try {
+      openaiKey = await getApiKey('openai');
+    } catch (keyErr) {
+      console.error('[assistant] No OpenAI key available:', keyErr);
+      return json(
+        {
+          answer:      'The assistant is temporarily unavailable. Please try again later.',
+          sources:     [],
+          reportCount: 0,
+          mode:        'none',
+          error:       'provider_not_configured',
+        },
+        503,
       );
     }
 

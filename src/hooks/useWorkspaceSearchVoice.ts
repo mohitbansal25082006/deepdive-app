@@ -1,14 +1,16 @@
 // src/hooks/useWorkspaceSearchVoice.ts
 // Part 53 — Feature 3: Voice input for workspace search.
-// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
-// expo-av native module entirely — see GlobalAudioEngine.ts header for the
-// full rationale).
+// Part 59 — Whisper transcription moved to transcriptionService.ts, which
+//   routes through the `ai-audio-gateway` Edge Function. The local
+//   transcribeWithWhisper() copy (and its OpenAI key) is gone.
 //
-//   A self-contained voice-to-text hook for the WorkspaceSearchModal search
-//   bar. It mirrors useDebateVoice.ts (Part 21) exactly — record via
-//   expo-audio, transcribe via OpenAI Whisper, hand the text back to the
-//   caller — but is tuned for short search queries (20s max) rather than
-//   long debate topics.
+// A self-contained voice-to-text hook for the WorkspaceSearchModal search bar.
+// Mirrors useDebateVoice.ts exactly — record via expo-audio, transcribe, hand
+// the text back — but tuned for short search queries (20s max) rather than long
+// debate topics.
+//
+// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
+// expo-av native module entirely — see GlobalAudioEngine.ts for the rationale).
 //
 //   Usage:
 //     const { voiceState, startVoice, stopVoice, cancelVoice, clearError } =
@@ -16,7 +18,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { AudioModule, RecordingPresets, setAudioModeAsync, type AudioRecorder } from 'expo-audio';
-import * as FileSystem                    from 'expo-file-system/legacy';
+import { transcribeAudioFile } from '../services/transcriptionService';
 
 // NOTE: `AudioRecorder` is exported as a TYPE only from 'expo-audio' — there
 // is no public top-level constructor. The real constructible class lives on
@@ -93,6 +95,42 @@ export function useWorkspaceSearchVoice({
     return granted;
   }, [patch]);
 
+  // ── Stop + transcribe ──────────────────────────────────────────────────────
+  const stopVoice = useCallback(async () => {
+    clearTimers();
+    if (!recorderRef.current) return;
+
+    const rec = recorderRef.current;
+    recorderRef.current = null;
+
+    patch({ isRecording: false, isTranscribing: true });
+
+    try {
+      await rec.stop();
+      await setAudioModeAsync({ allowsRecording: false });
+
+      if (isCancelledRef.current) {
+        patch({ isTranscribing: false });
+        return;
+      }
+
+      const uri = rec.uri;
+      if (!uri) throw new Error('No audio was captured. Please try again.');
+
+      // Part 59: goes through the audio gateway — no key in the app.
+      const text = await transcribeAudioFile(uri, { language: 'en' });
+
+      if (!isCancelledRef.current && text.trim()) {
+        onTranscribed(text.trim());
+      }
+      patch({ isTranscribing: false, durationMs: 0 });
+    } catch (err) {
+      console.error('[WorkspaceSearchVoice] Stop/transcribe error:', err);
+      const msg = err instanceof Error ? err.message : 'Transcription failed.';
+      patch({ isTranscribing: false, error: msg });
+    }
+  }, [clearTimers, onTranscribed, patch]);
+
   // ── Start ────────────────────────────────────────────────────────────────
   const startVoice = useCallback(async () => {
     isCancelledRef.current = false;
@@ -122,44 +160,9 @@ export function useWorkspaceSearchVoice({
       autoStopRef.current = setTimeout(() => { stopVoice(); }, maxDurationMs);
     } catch (err) {
       console.error('[WorkspaceSearchVoice] Start error:', err);
-      patch({ isRecording: false, error: 'Failed to start recording. Please try again.' });
+      patch({ isRecording: false, error: 'Could not start recording. Please try again.' });
     }
-  }, [ensurePermission, maxDurationMs, patch]);
-
-  // ── Stop + transcribe ──────────────────────────────────────────────────────
-  const stopVoice = useCallback(async () => {
-    clearTimers();
-    if (!recorderRef.current) return;
-
-    const rec = recorderRef.current;
-    recorderRef.current = null;
-
-    patch({ isRecording: false, isTranscribing: true });
-
-    try {
-      await rec.stop();
-      await setAudioModeAsync({ allowsRecording: false });
-
-      if (isCancelledRef.current) {
-        patch({ isTranscribing: false });
-        return;
-      }
-
-      const uri = rec.uri;
-      if (!uri) throw new Error('No audio URI returned from recording.');
-
-      const text = await transcribeWithWhisper(uri);
-
-      if (!isCancelledRef.current && text.trim()) {
-        onTranscribed(text.trim());
-      }
-      patch({ isTranscribing: false, durationMs: 0 });
-    } catch (err) {
-      console.error('[WorkspaceSearchVoice] Stop/transcribe error:', err);
-      const msg = err instanceof Error ? err.message : 'Transcription failed.';
-      patch({ isTranscribing: false, error: msg });
-    }
-  }, [clearTimers, onTranscribed, patch]);
+  }, [ensurePermission, maxDurationMs, patch, stopVoice]);
 
   // ── Cancel ────────────────────────────────────────────────────────────────
   const cancelVoice = useCallback(async () => {
@@ -176,37 +179,4 @@ export function useWorkspaceSearchVoice({
   const clearError = useCallback(() => patch({ error: null }), [patch]);
 
   return { voiceState, startVoice, stopVoice, cancelVoice, clearError };
-}
-
-// ─── Whisper transcription ─────────────────────────────────────────────────────
-// Uses expo-file-system uploadAsync (most reliable on both iOS & Android).
-
-async function transcribeWithWhisper(audioUri: string): Promise<string> {
-  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key is not configured.');
-
-  const response = await FileSystem.uploadAsync(
-    'https://api.openai.com/v1/audio/transcriptions',
-    audioUri,
-    {
-      headers:    { Authorization: `Bearer ${apiKey}` },
-      httpMethod: 'POST',
-      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName:  'file',
-      mimeType:   'audio/m4a',
-      parameters: { model: 'whisper-1', language: 'en' },
-    },
-  );
-
-  if (response.status !== 200) {
-    let errMsg = `HTTP ${response.status}`;
-    try {
-      const body = JSON.parse(response.body);
-      errMsg = body?.error?.message ?? errMsg;
-    } catch { /* ignore */ }
-    throw new Error(`Whisper API error: ${errMsg}`);
-  }
-
-  const data = JSON.parse(response.body);
-  return (data.text ?? '').trim();
 }

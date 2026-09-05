@@ -1,32 +1,27 @@
 // src/services/pexelsClient.ts
-// Part 58.3 — NEW: Pexels API client for presentation image search
+// Part 58.3 — Pexels API client for presentation image search.
+// Part 59 — Routed through the `search-gateway` Edge Function. No key here.
 //
-// Pexels is a curated, royalty-free stock photo library — a much better fit
-// for presentation/slide imagery than a general-purpose web search engine.
-// All photos are free for commercial use with no attribution required
-// (attribution is still encouraged and shown in the UI).
+// Pexels is a curated, royalty-free stock photo library — a much better fit for
+// presentation imagery than a general-purpose web search engine. All photos are
+// free for commercial use; attribution is optional but we show it anyway.
+//
+// The gateway returns Pexels' raw JSON, so PexelsPhoto and its eight pre-sized
+// `src` URLs arrive exactly as before and mapPexelsPhoto() in
+// imageSearchService.ts is unchanged.
+//
+// ONE BREAKING CHANGE: hasPexelsApiKey() is now async, because the answer lives
+// on the server. Its only caller (imageSearchService.searchOnlineImages) was
+// already async, so it just needed an `await`.
 //
 // API Reference: https://www.pexels.com/api/documentation/
-// Endpoint:      https://api.pexels.com/v1/search
-// Endpoint:      https://api.pexels.com/v1/curated
-// Auth:          Authorization: <API_KEY>   (no "Bearer " prefix)
-// Rate limit:    200 requests/hour, 20,000 requests/month (default free tier)
-//
-// Response shape (per photo), `src` includes 8 pre-sized URLs:
-//   original, large2x, large, medium, small, portrait, landscape, tiny
-// ─────────────────────────────────────────────────────────────────────────────
+// Rate limit:    200 requests/hour, 20,000/month on the free tier — now shared
+//                across all users, since the calls come from one server key.
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+import { callGateway, GatewayError } from './apiGateway';
+import { isProviderConfigured }      from './aiProviderStatus';
 
-const PEXELS_API_KEY = process.env.EXPO_PUBLIC_PEXELS_API_KEY ?? '';
-const PEXELS_BASE = 'https://api.pexels.com/v1';
-const PEXELS_SEARCH_ENDPOINT = `${PEXELS_BASE}/search`;
-const PEXELS_CURATED_ENDPOINT = `${PEXELS_BASE}/curated`;
-
-/** Max results Pexels allows per page */
-const MAX_PER_PAGE = 80;
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types (unchanged — this is Pexels' own response shape) ───────────────────
 
 export interface PexelsPhotoSource {
   original:  string;
@@ -75,16 +70,20 @@ export interface PexelsSearchOptions {
   locale?:      string;
 }
 
-// ─── API Key Helper ───────────────────────────────────────────────────────────
+/** Envelope returned by the search-gateway. */
+interface GatewayEnvelope<T> { data: T; }
 
-function getApiKey(): string | null {
-  const key = PEXELS_API_KEY;
-  if (!key || key === 'your_pexels_api_key_here' || key.trim() === '') return null;
-  return key.trim();
-}
+/** Max results Pexels allows per page */
+const MAX_PER_PAGE = 80;
 
-export function hasPexelsApiKey(): boolean {
-  return getApiKey() !== null;
+// ─── Availability ─────────────────────────────────────────────────────────────
+
+/**
+ * Part 59: now async. Asks the server whether a Pexels key is configured,
+ * without ever learning what it is. Cached for 10 minutes by aiProviderStatus.
+ */
+export async function hasPexelsApiKey(): Promise<boolean> {
+  return isProviderConfigured('pexels');
 }
 
 // ─── Core Search ──────────────────────────────────────────────────────────────
@@ -96,38 +95,34 @@ export function hasPexelsApiKey(): boolean {
 export async function pexelsSearchPhotos(
   options: PexelsSearchOptions,
 ): Promise<PexelsPhoto[]> {
-  const apiKey = getApiKey();
-  if (!apiKey || !options.query.trim()) return [];
-
-  const params = new URLSearchParams({
-    query:    options.query.trim(),
-    page:     String(options.page ?? 1),
-    per_page: String(Math.min(options.perPage ?? 24, MAX_PER_PAGE)),
-  });
-  if (options.orientation) params.set('orientation', options.orientation);
-  if (options.size)        params.set('size', options.size);
-  if (options.color)       params.set('color', options.color);
-  if (options.locale)      params.set('locale', options.locale);
+  if (!options.query.trim()) return [];
 
   try {
-    const response = await fetch(`${PEXELS_SEARCH_ENDPOINT}?${params.toString()}`, {
-      method:  'GET',
-      headers: {
-        // Pexels expects the raw API key, NOT a "Bearer " prefix
-        Authorization: apiKey,
+    const envelope = await callGateway<GatewayEnvelope<PexelsSearchResponse>>(
+      'search-gateway',
+      {
+        provider: 'pexels',
+        op:       'search',
+        params: {
+          query:       options.query.trim(),
+          page:        options.page ?? 1,
+          perPage:     Math.min(options.perPage ?? 24, MAX_PER_PAGE),
+          orientation: options.orientation,
+          size:        options.size,
+          color:       options.color,
+          locale:      options.locale,
+        },
       },
-    });
+    );
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.warn('[pexelsClient] HTTP error:', response.status, text.slice(0, 200));
-      return [];
-    }
-
-    const data: PexelsSearchResponse = await response.json();
-    return Array.isArray(data.photos) ? data.photos : [];
+    const photos = envelope?.data?.photos;
+    return Array.isArray(photos) ? photos : [];
 
   } catch (err) {
+    if (err instanceof GatewayError && err.isNotConfigured) {
+      console.warn('[pexelsClient] No Pexels key configured — stock photo search is off.');
+      return [];
+    }
     console.error('[pexelsClient] pexelsSearchPhotos error:', err);
     return [];
   }
@@ -141,26 +136,21 @@ export async function pexelsCuratedPhotos(
   page = 1,
   perPage = 24,
 ): Promise<PexelsPhoto[]> {
-  const apiKey = getApiKey();
-  if (!apiKey) return [];
-
-  const params = new URLSearchParams({
-    page:     String(page),
-    per_page: String(Math.min(perPage, MAX_PER_PAGE)),
-  });
-
   try {
-    const response = await fetch(`${PEXELS_CURATED_ENDPOINT}?${params.toString()}`, {
-      method:  'GET',
-      headers: { Authorization: apiKey },
-    });
+    const envelope = await callGateway<GatewayEnvelope<PexelsSearchResponse>>(
+      'search-gateway',
+      {
+        provider: 'pexels',
+        op:       'curated',
+        params:   { page, perPage: Math.min(perPage, MAX_PER_PAGE) },
+      },
+    );
 
-    if (!response.ok) return [];
-
-    const data: PexelsSearchResponse = await response.json();
-    return Array.isArray(data.photos) ? data.photos : [];
+    const photos = envelope?.data?.photos;
+    return Array.isArray(photos) ? photos : [];
 
   } catch (err) {
+    if (err instanceof GatewayError && err.isNotConfigured) return [];
     console.error('[pexelsClient] pexelsCuratedPhotos error:', err);
     return [];
   }
@@ -170,17 +160,18 @@ export async function pexelsCuratedPhotos(
  * Retrieve a single photo by its Pexels ID.
  */
 export async function pexelsGetPhoto(id: number): Promise<PexelsPhoto | null> {
-  const apiKey = getApiKey();
-  if (!apiKey) return null;
-
   try {
-    const response = await fetch(`${PEXELS_BASE}/photos/${id}`, {
-      method:  'GET',
-      headers: { Authorization: apiKey },
-    });
-    if (!response.ok) return null;
-    return await response.json() as PexelsPhoto;
+    const envelope = await callGateway<GatewayEnvelope<PexelsPhoto>>(
+      'search-gateway',
+      {
+        provider: 'pexels',
+        op:       'photo',
+        params:   { id },
+      },
+    );
+    return envelope?.data ?? null;
   } catch (err) {
+    if (err instanceof GatewayError && err.isNotConfigured) return null;
     console.error('[pexelsClient] pexelsGetPhoto error:', err);
     return null;
   }

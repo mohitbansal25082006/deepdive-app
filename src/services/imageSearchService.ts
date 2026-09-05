@@ -1,15 +1,20 @@
 // src/services/imageSearchService.ts
 // Part 58.5 — ONLINE IMAGE INSERT FIX
-//   1. `mediumUrl` (Pexels `src.large`) is now mapped through, giving the
-//      renderer a three-rung fallback chain: large2x → large → medium.
-//      Previously a failed large2x fetch left the block blank on the canvas.
+//   1. `mediumUrl` (Pexels `src.large`) is mapped through, giving the renderer a
+//      three-rung fallback chain: large2x → large → medium. Previously a failed
+//      large2x fetch left the block blank on the canvas.
 //   2. Results are requested with `orientation: 'landscape'` by default, since
 //      the slide canvas is 16:9 — portrait photos inserted at the default 90%
 //      width could not fit vertically and were clipped away.
-//   3. `searchOnlineImages` now returns dimension data unconditionally, so the
+//   3. `searchOnlineImages` returns dimension data unconditionally, so the
 //      inserter can always compute a real aspect ratio (an undefined ratio
 //      produced NaN heights and an invisible image).
-// Part 58.3 — TAVILY → PEXELS MIGRATION
+//
+// Part 59 — ONE LINE CHANGED: `hasPexelsApiKey()` is now async, because the key
+//   moved to the server and availability is answered by an RPC rather than by
+//   reading process.env. Everything else in this file is untouched — the Pexels
+//   response shape is identical through the gateway, so mapPexelsPhoto and the
+//   whole fallback chain still work exactly as before.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { pexelsSearchPhotos, pexelsCuratedPhotos, hasPexelsApiKey } from './pexelsClient';
@@ -68,9 +73,9 @@ export interface SearchOnlineImagesOptions {
 /**
  * Search for presentation-ready images via the Pexels API.
  *
- * Falls back twice: first to an unfiltered search (in case the landscape
- * filter was too strict for a narrow query), then to the curated feed. The
- * picker is therefore never empty for a valid API key.
+ * Falls back twice: first to an unfiltered search (in case the landscape filter
+ * was too strict for a narrow query), then to the curated feed. The picker is
+ * therefore never empty for a configured project.
  */
 export async function searchOnlineImages(
   query: string,
@@ -79,8 +84,9 @@ export async function searchOnlineImages(
 ): Promise<OnlineImageResult[]> {
   if (!query.trim()) return [];
 
-  if (!hasPexelsApiKey()) {
-    console.warn('[imageSearchService] EXPO_PUBLIC_PEXELS_API_KEY not set');
+  // Part 59: now an await — availability is a server fact, not an env var.
+  if (!(await hasPexelsApiKey())) {
+    console.warn('[imageSearchService] Pexels is not configured on the server');
     return [];
   }
 

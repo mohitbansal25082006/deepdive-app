@@ -2,17 +2,22 @@
 // Voice-to-text for research queries using expo-audio recording
 // and OpenAI Whisper transcription.
 //
-// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
-// expo-av native module entirely — see GlobalAudioEngine.ts header for the
-// full rationale).
+// Part 59 — The Whisper call moved to transcriptionService.ts, which goes
+// through the `ai-audio-gateway` Edge Function. There is no OpenAI key in this
+// file, and no hand-rolled FormData either — uploadAsync streams the recording
+// from disk instead of loading it into memory first.
+//
+// Recording behaviour is untouched. Migrated from deprecated `expo-av` to
+// `expo-audio` (SDK 57 removed the expo-av native module entirely — see
+// GlobalAudioEngine.ts for the full rationale).
 
 import { AudioModule, RecordingPresets, setAudioModeAsync, type AudioRecorder } from 'expo-audio';
+import { transcribeAudioFile } from './transcriptionService';
 
 // NOTE: `AudioRecorder` is exported as a TYPE only from 'expo-audio' — there
 // is no public top-level constructor. The real constructible class lives on
 // the `AudioModule` namespace object (AudioModule.AudioRecorder). The type
-// import above is used purely for annotating the module-level singleton
-// below.
+// import above is used purely for annotating the module-level singleton below.
 
 export interface VoiceRecordingState {
   isRecording: boolean;
@@ -96,37 +101,12 @@ export function cancelRecording(): void {
   }
 }
 
-// ─── Transcription via OpenAI Whisper ────────────────────────────────────────
+// ─── Transcription ────────────────────────────────────────────────────────────
+// Part 59: delegated to the shared service so all three voice entry points
+// (research, debate, workspace search) share one implementation and one key.
 
 export async function transcribeAudio(audioUri: string): Promise<string> {
-  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key not set');
-
-  // Pass the file URI directly — no base64 read needed
-  const formData = new FormData();
-  formData.append('file', {
-    uri: audioUri,
-    name: 'audio.m4a',
-    type: 'audio/m4a',
-  } as any);
-  formData.append('model', 'whisper-1');
-  formData.append('language', 'en');
-
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(`Whisper error: ${err?.error?.message ?? response.status}`);
-  }
-
-  const data = await response.json();
-  return (data.text ?? '').trim();
+  return transcribeAudioFile(audioUri, { language: 'en' });
 }
 
 export function formatDuration(ms: number): string {

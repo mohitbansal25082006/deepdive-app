@@ -1,17 +1,22 @@
 // src/services/voiceDebateTTSService.ts
 // Part 40 — Voice Debate Engine
+// Part 59 — Routed through the `ai-audio-gateway` Edge Function. No key here.
 //
-// Generates audio for each VoiceDebateTurn using gpt-4o-mini-tts
-// with per-agent `instructions` field for distinct vocal personalities.
+// Generates audio for each VoiceDebateTurn using gpt-4o-mini-tts with a
+// per-agent `instructions` field so every debater has a distinct voice.
 //
-// KEY DIFFERENCE from podcastTTSService.ts:
-//   • Uses gpt-4o-mini-tts (NOT tts-1) so `instructions` field works
-//   • `instructions` field sets per-agent speaking style/personality
-//   • Speed is injected via the instructions rather than the `speed` param
-//     (speed param still used as a secondary lever)
+// KEY DIFFERENCE from podcastTTSService.ts (unchanged by Part 59):
+//   • Uses gpt-4o-mini-tts (NOT tts-1) so the `instructions` field works
+//   • `instructions` sets per-agent speaking style/personality
+//   • Speed is injected via the instructions, with the `speed` param as a
+//     secondary lever
 //   • Directory: deepdive_voice_debates/ (separate from podcast audio)
 //
-// CONCURRENCY: 2 at a time (conservative for rate limits on gpt-4o-mini-tts)
+// The gateway allow-lists gpt-4o-mini-tts and forwards `instructions`, so the
+// vocal personalities survive the migration intact. If a debate suddenly sounds
+// flat and uniform, check that the gateway is still passing that field through.
+//
+// CONCURRENCY: 2 at a time (conservative for gpt-4o-mini-tts rate limits)
 
 import {
   documentDirectory,
@@ -25,36 +30,14 @@ import {
 import { VOICE_PERSONAS, TTS_CONCURRENCY } from '../constants/voiceDebate';
 import type { VoiceDebateTurn }            from '../types/voiceDebate';
 import type { DebateAgentRole }            from '../types';
+import { callGateway, GatewayError, isAbortError } from './apiGateway';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const OPENAI_TTS_URL        = 'https://api.openai.com/v1/audio/speech';
 const VOICE_DEBATE_BASE_DIR = (documentDirectory ?? '') + 'deepdive_voice_debates/';
 const TTS_MODEL             = 'gpt-4o-mini-tts';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function getApiKey(): string {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key?.trim()) {
-    throw new Error('EXPO_PUBLIC_OPENAI_API_KEY is not set. Add it to your .env and restart.');
-  }
-  return key.trim();
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes  = new Uint8Array(buffer);
-  const CHUNK  = 8192;
-  let   binary = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const end   = Math.min(i + CHUNK, bytes.length);
-    const slice = bytes.subarray(i, end);
-    binary += String.fromCharCode(...Array.from(slice));
-  }
-  return btoa(binary);
-}
-
-// ─── Directory Management ─────────────────────────────────────────────────────
+// ─── Directory Management (unchanged) ─────────────────────────────────────────
 
 export function getVoiceDebateDir(voiceDebateId: string): string {
   return VOICE_DEBATE_BASE_DIR + voiceDebateId + '/';
@@ -95,12 +78,18 @@ export async function deleteVoiceDebateAudio(voiceDebateId: string): Promise<voi
 
 // ─── Single Turn TTS ──────────────────────────────────────────────────────────
 
+interface TTSResponse {
+  audio:  string;   // base64
+  format: string;
+  bytes:  number;
+}
+
 export async function generateTurnAudio(
   turn:        VoiceDebateTurn,
   outputPath:  string,
   retries    = 2,
+  signal?:     AbortSignal,
 ): Promise<string> {
-  const apiKey  = getApiKey();
   const speaker = turn.speaker;
   const persona = VOICE_PERSONAS[speaker as DebateAgentRole | 'moderator'] ?? VOICE_PERSONAS['moderator'];
 
@@ -112,51 +101,44 @@ export async function generateTurnAudio(
   const instructions = baseInstructions + emotionAddendum;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) {
+      const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+    }
+
     try {
-      const response = await fetch(OPENAI_TTS_URL, {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
+      const result = await callGateway<TTSResponse>(
+        'ai-audio-gateway',
+        {
+          op:              'tts',
           model:           TTS_MODEL,
           input:           turn.text,
           voice:           persona.voice,
           instructions,                    // ← key: per-agent personality
           response_format: 'mp3',
           speed:           persona.speedFactor,
-        }),
-      });
+        },
+        { signal },
+      );
 
-      if (!response.ok) {
-        let errMsg = `HTTP ${response.status}`;
-        try {
-          const errBody = await response.json() as any;
-          errMsg = errBody?.error?.message ?? errMsg;
-        } catch { /* ignore */ }
-
-        if (response.status === 429 && attempt < retries) {
-          await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
-          continue;
-        }
-        if (response.status === 401) {
-          throw new Error('Invalid OpenAI API key. Check EXPO_PUBLIC_OPENAI_API_KEY.');
-        }
-        throw new Error(`TTS API error: ${errMsg}`);
+      if (!result?.audio || result.bytes < 100) {
+        throw new Error('The audio service returned an empty clip');
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength < 100) {
-        throw new Error('TTS returned an empty audio buffer');
-      }
-
-      const base64 = arrayBufferToBase64(arrayBuffer);
-      await writeAsStringAsync(outputPath, base64, { encoding: EncodingType.Base64 });
-
+      await writeAsStringAsync(outputPath, result.audio, { encoding: EncodingType.Base64 });
       return outputPath;
 
     } catch (err) {
+      if (isAbortError(err)) throw err;
+
+      if (err instanceof GatewayError && err.isRateLimited && attempt < retries) {
+        await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+        continue;
+      }
+
+      if (err instanceof GatewayError && err.isNotConfigured) {
+        throw new Error('Voice generation is temporarily unavailable. Please try again later.');
+      }
+
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
@@ -165,7 +147,7 @@ export async function generateTurnAudio(
   throw new Error(`Failed to generate audio after ${retries + 1} attempts`);
 }
 
-// ─── Batch TTS Generation ─────────────────────────────────────────────────────
+// ─── Batch TTS Generation (unchanged logic) ───────────────────────────────────
 
 export interface VoiceDebateTTSCallbacks {
   onSegmentComplete: (turnIndex: number, total: number, audioPath: string, succeeded: boolean) => void;
@@ -176,6 +158,7 @@ export async function generateAllTurnAudio(
   turns:         VoiceDebateTurn[],
   voiceDebateId: string,
   callbacks:     VoiceDebateTTSCallbacks,
+  signal?:       AbortSignal,
 ): Promise<string[]> {
   await ensureVoiceDebateDirectory(voiceDebateId);
 
@@ -183,6 +166,10 @@ export async function generateAllTurnAudio(
   let   completedCount        = 0;
 
   for (let batchStart = 0; batchStart < turns.length; batchStart += TTS_CONCURRENCY) {
+    if (signal?.aborted) {
+      const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
+    }
+
     const batch = turns.slice(batchStart, batchStart + TTS_CONCURRENCY);
 
     callbacks.onProgress?.(
@@ -194,11 +181,12 @@ export async function generateAllTurnAudio(
         const outputPath = getSegmentPath(voiceDebateId, turn.turnIndex);
 
         try {
-          await generateTurnAudio(turn, outputPath);
+          await generateTurnAudio(turn, outputPath, 2, signal);
           audioPaths[turn.turnIndex] = outputPath;
           completedCount++;
           callbacks.onSegmentComplete(turn.turnIndex, turns.length, outputPath, true);
         } catch (err) {
+          if (isAbortError(err)) { completedCount++; return; }
           console.warn(
             `[VoiceDebateTTS] Turn ${turn.turnIndex} (${turn.speaker}) failed:`,
             err instanceof Error ? err.message : err,

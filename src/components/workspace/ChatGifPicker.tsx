@@ -2,7 +2,17 @@
 // Part 50.2 — GIPHY GIF Picker for Stream Chat
 // Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
 //             COLORS from the theme system. Uses getModalBackdrop for backdrop.
-//             No dark-only assumptions.
+// Part 59 — GIPHY key moved server-side.
+//
+//   GIPHY passes its key as a URL query parameter, which makes it the worst
+//   offender of the four: anyone watching the device's network traffic — or
+//   just running `strings` on the bundle — had the credential. All requests now
+//   go through the `search-gateway` Edge Function.
+//
+//   `giphyApiKey` is kept as an OPTIONAL, IGNORED prop so workspace-chat.tsx
+//   compiles without edits. Remove the prop from the call site when convenient
+//   (see PART59_SETUP.md); leaving it does no harm beyond inlining an empty
+//   string.
 
 import React, {
   useCallback,
@@ -28,6 +38,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACING, RADIUS, getModalBackdrop } from '../../constants/theme';
+import { callGateway, GatewayError } from '../../services/apiGateway';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,13 +62,25 @@ interface GiphyGif {
   };
 }
 
+interface GiphyResponse {
+  data:       GiphyGif[];
+  pagination: { total_count: number; count: number; offset: number };
+}
+
+/** Envelope returned by the search-gateway. */
+interface GatewayEnvelope<T> { data: T; }
+
 type ContentTab = 'gifs' | 'stickers';
 
 export interface ChatGifPickerProps {
   visible:     boolean;
   onClose:     () => void;
   onSelect:    (url: string, title: string, isSticker: boolean) => void;
-  giphyApiKey: string;
+  /**
+   * @deprecated Part 59 — the key lives on the server now. Accepted and ignored
+   * so existing call sites keep compiling.
+   */
+  giphyApiKey?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -67,7 +90,6 @@ const NUM_COLS      = 2;
 const COL_GAP       = 6;
 const H_PAD         = 12;
 const COL_WIDTH     = (SCREEN_WIDTH - H_PAD * 2 - COL_GAP * (NUM_COLS - 1)) / NUM_COLS;
-const GIPHY_BASE    = 'https://api.giphy.com/v1';
 const DEBOUNCE_MS   = 300;
 const PAGE_LIMIT    = 24;
 
@@ -161,7 +183,6 @@ export function ChatGifPicker({
   visible,
   onClose,
   onSelect,
-  giphyApiKey,
 }: ChatGifPickerProps) {
   const insets = useSafeAreaInsets();
 
@@ -179,6 +200,60 @@ export function ChatGifPicker({
   const inputRef      = useRef<TextInput>(null);
   const isMounted     = useRef(false);
 
+  // ── Part 59: fetch through the gateway ──────────────────────────────────────
+  const fetchGifs = useCallback(async (
+    term:  string,
+    off:   number,
+    reset: boolean,
+    tab:   ContentTab,
+  ) => {
+    if (!isMounted.current) return;
+
+    try {
+      if (reset) { setLoading(true); setError(null); }
+      else        { setLoadingMore(true); }
+
+      const trimmed = term.trim();
+
+      const envelope = await callGateway<GatewayEnvelope<GiphyResponse>>(
+        'search-gateway',
+        {
+          provider: 'giphy',
+          op:       trimmed ? 'search' : 'trending',
+          params: {
+            kind:   tab === 'stickers' ? 'stickers' : 'gifs',
+            q:      trimmed,
+            limit:  PAGE_LIMIT,
+            offset: off,
+          },
+        },
+      );
+
+      if (!isMounted.current) return;
+
+      const json    = envelope?.data;
+      const newGifs = json?.data ?? [];
+      const total   = json?.pagination?.total_count ?? 0;
+      const newOff  = off + newGifs.length;
+
+      setGifs(prev => reset ? newGifs : [...prev, ...newGifs]);
+      setOffset(newOff);
+      setHasMore(newOff < total && newGifs.length === PAGE_LIMIT);
+    } catch (err) {
+      if (!isMounted.current) return;
+
+      if (err instanceof GatewayError && err.isNotConfigured) {
+        setError('GIFs are turned off for this workspace.');
+      } else if (err instanceof GatewayError && err.isRateLimited) {
+        setError('Too many requests. Give it a second and try again.');
+      } else {
+        setError('Could not load GIFs. Check your connection.');
+      }
+    } finally {
+      if (isMounted.current) { setLoading(false); setLoadingMore(false); }
+    }
+  }, []);
+
   useEffect(() => {
     if (visible) {
       isMounted.current = true;
@@ -189,6 +264,7 @@ export function ChatGifPicker({
       isMounted.current = false;
     }
     return () => { isMounted.current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   useEffect(() => {
@@ -210,50 +286,8 @@ export function ChatGifPicker({
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, visible]);
-
-  const fetchGifs = useCallback(async (
-    term:  string,
-    off:   number,
-    reset: boolean,
-    tab:   ContentTab,
-  ) => {
-    if (!isMounted.current) return;
-    if (!giphyApiKey) {
-      setError('GIPHY API key not configured.');
-      return;
-    }
-
-    try {
-      if (reset) { setLoading(true); setError(null); }
-      else        { setLoadingMore(true); }
-
-      const category = tab === 'stickers' ? 'stickers' : 'gifs';
-      const endpoint = term.trim()
-        ? `${GIPHY_BASE}/${category}/search?api_key=${giphyApiKey}&q=${encodeURIComponent(term.trim())}&limit=${PAGE_LIMIT}&offset=${off}&rating=g`
-        : `${GIPHY_BASE}/${category}/trending?api_key=${giphyApiKey}&limit=${PAGE_LIMIT}&offset=${off}&rating=g`;
-
-      const res  = await fetch(endpoint);
-      const json = await res.json() as {
-        data:       GiphyGif[];
-        pagination: { total_count: number; count: number; offset: number };
-      };
-
-      if (!isMounted.current) return;
-
-      const newGifs = json.data ?? [];
-      const total   = json.pagination?.total_count ?? 0;
-      const newOff  = off + newGifs.length;
-
-      setGifs(prev => reset ? newGifs : [...prev, ...newGifs]);
-      setOffset(newOff);
-      setHasMore(newOff < total && newGifs.length === PAGE_LIMIT);
-    } catch {
-      if (isMounted.current) setError('Failed to load. Check your connection.');
-    } finally {
-      if (isMounted.current) { setLoading(false); setLoadingMore(false); }
-    }
-  }, [giphyApiKey]);
 
   const handleLoadMore = useCallback(() => {
     if (!loadingMore && !loading && hasMore) {
@@ -328,7 +362,7 @@ export function ChatGifPicker({
             <Ionicons name="alert-circle-outline" size={36} color={COLORS.error} />
             <Text style={[gridStyles.emptyText, { color: COLORS.textSecondary }]}>{error}</Text>
             <TouchableOpacity style={[gridStyles.retryBtn, { backgroundColor: COLORS.primary }]} onPress={() => fetchGifs(query, 0, true, activeTab)}>
-              <Text style={[gridStyles.retryText, { color: '#FFF' }]}>Retry</Text>
+              <Text style={[gridStyles.retryText, { color: '#FFF' }]}>Try again</Text>
             </TouchableOpacity>
           </>
         ) : (
@@ -345,8 +379,6 @@ export function ChatGifPicker({
   const currentSuggested = activeTab === 'stickers' ? SUGGESTED_STICKERS : SUGGESTED_GIFS;
 
   if (!visible) return null;
-
-  const backdropColor = getModalBackdrop(0.5);
 
   return (
     <Modal
@@ -366,20 +398,20 @@ export function ChatGifPicker({
           <View style={styles.headerCenter}>
             <View style={[styles.tabRow, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }]}>
               <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'gifs' && styles.tabBtnActive, activeTab === 'gifs' && { backgroundColor: COLORS.primary }]}
+                style={[styles.tabBtn, activeTab === 'gifs' && { backgroundColor: COLORS.primary }]}
                 onPress={() => handleTabChange('gifs')}
                 activeOpacity={0.75}
               >
-                <Text style={[styles.tabBtnText, { color: activeTab === 'gifs' ? '#FFFFFF' : COLORS.textSecondary }, activeTab === 'gifs' && styles.tabBtnTextActive]}>
+                <Text style={[styles.tabBtnText, { color: activeTab === 'gifs' ? '#FFFFFF' : COLORS.textSecondary }]}>
                   GIF
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'stickers' && styles.tabBtnActive, activeTab === 'stickers' && { backgroundColor: COLORS.primary }]}
+                style={[styles.tabBtn, activeTab === 'stickers' && { backgroundColor: COLORS.primary }]}
                 onPress={() => handleTabChange('stickers')}
                 activeOpacity={0.75}
               >
-                <Text style={[styles.tabBtnText, { color: activeTab === 'stickers' ? '#FFFFFF' : COLORS.textSecondary }, activeTab === 'stickers' && styles.tabBtnTextActive]}>
+                <Text style={[styles.tabBtnText, { color: activeTab === 'stickers' ? '#FFFFFF' : COLORS.textSecondary }]}>
                   Stickers
                 </Text>
               </TouchableOpacity>
@@ -424,7 +456,11 @@ export function ChatGifPicker({
             contentContainerStyle={styles.chipsContent}
             renderItem={({ item }) => (
               <TouchableOpacity
-                style={[styles.chip, activeChip === item && styles.chipActive, { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border }, activeChip === item && { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}60` }]}
+                style={[
+                  styles.chip,
+                  { backgroundColor: COLORS.backgroundElevated, borderColor: COLORS.border },
+                  activeChip === item && { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}60` },
+                ]}
                 onPress={() => handleChipPress(item)}
                 activeOpacity={0.7}
               >
@@ -482,7 +518,7 @@ export function ChatGifPicker({
   );
 }
 
-// ─── GIPHY Logo ───────────────────────────────────────────────────────────────
+// ─── GIPHY Logo (attribution is required by their TOS) ────────────────────────
 
 function GiphyLogo() {
   const letters = [
@@ -529,9 +565,7 @@ const styles = StyleSheet.create({
     padding: 3, gap: 2,
   },
   tabBtn:            { paddingHorizontal: 16, paddingVertical: 6, borderRadius: RADIUS.full },
-  tabBtnActive:      { backgroundColor: COLORS.primary },
   tabBtnText:        { fontSize: FONTS.sizes.sm, fontWeight: '700', letterSpacing: 0.3 },
-  tabBtnTextActive:  { color: '#FFFFFF' },
   poweredByRow:      { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
   poweredByText:     { fontSize: FONTS.sizes.xs },
   searchRow: {
@@ -550,7 +584,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6,
     borderRadius: RADIUS.full, borderWidth: 1,
   },
-  chipActive:        { backgroundColor: `${COLORS.primary}20`, borderColor: `${COLORS.primary}60` },
   chipText:          { fontSize: FONTS.sizes.sm, fontWeight: '600' },
   stickerHint: {
     flexDirection: 'row', alignItems: 'center', gap: 5,

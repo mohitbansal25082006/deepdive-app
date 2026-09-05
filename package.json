@@ -9,7 +9,11 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "verify:secrets": "node scripts/verify-no-secrets.js",
+    "verify:secrets:keep": "node scripts/verify-no-secrets.js --keep",
+    "typecheck": "tsc --noEmit",
+    "preflight": "npm run typecheck && npm run verify:secrets"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

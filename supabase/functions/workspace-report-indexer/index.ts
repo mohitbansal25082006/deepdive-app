@@ -1,6 +1,11 @@
 // supabase/functions/workspace-report-indexer/index.ts
 //
 // Part 50.5 — Workspace Report Auto-Indexer
+// Part 59  — SECURE SERVER-SIDE API KEYS
+//            The OpenAI key comes from getApiKey('openai') — the encrypted
+//            app_api_keys vault, falling back to the OPENAI_API_KEY env secret.
+//            Resolved lazily, only on the branch that actually embeds, so the
+//            common "already indexed" path does no vault work at all.
 //
 // PURPOSE:
 //   When a report is shared into a workspace (workspace_reports INSERT),
@@ -32,8 +37,13 @@
 //   The function must return HTTP 200 quickly (< 30s for Supabase Edge).
 //   For large reports, embedding ~8 chunks takes ~3-5 seconds total.
 //   This is well within limits.
+//
+// Deploy:
+//   supabase functions deploy workspace-report-indexer
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+// Part 59: resolves the OpenAI key from the encrypted vault, with an env fallback.
+import { getApiKey }    from '../_shared/keyStore.ts';
 
 const OPENAI_EMBED_URL  = 'https://api.openai.com/v1/embeddings';
 const EMBEDDING_MODEL   = 'text-embedding-3-small';
@@ -71,7 +81,6 @@ Deno.serve(async (req: Request) => {
 
   const supabaseUrl     = Deno.env.get('SUPABASE_URL')!;
   const supabaseService = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  const openaiKey       = Deno.env.get('OPENAI_API_KEY')!;
 
   const supabase = createClient(supabaseUrl, supabaseService);
 
@@ -105,7 +114,10 @@ Deno.serve(async (req: Request) => {
     const hasEmbeddings = (embeddingRows ?? []).length > 0;
 
     if (hasEmbeddings) {
-      // Embeddings exist — just mark as indexed for this workspace
+      // Embeddings exist — just mark as indexed for this workspace.
+      // Part 59 note: this branch never touches OpenAI, so it never resolves
+      // a key. It is also the overwhelmingly common path, since reports are
+      // usually embedded before they're shared.
       console.log('[indexer] Embeddings exist, marking workspace as indexed');
       const { data: countData } = await supabase
         .from('report_embeddings')
@@ -127,6 +139,20 @@ Deno.serve(async (req: Request) => {
 
     // ── Step 3: No embeddings — fetch report and create them ───────────────
     console.log('[indexer] No embeddings found, fetching report and embedding...');
+
+    // Part 59: only now do we need a key.
+    let openaiKey: string;
+    try {
+      openaiKey = await getApiKey('openai');
+    } catch (keyErr) {
+      console.error('[indexer] No OpenAI key available:', keyErr);
+      // 503 rather than 500: this is a configuration state, not a crash, and
+      // the caller (a Postgres trigger via pg_net, or the catch-up hook) should
+      // treat it as retryable once a key is configured.
+      return new Response(JSON.stringify({ error: 'provider_not_configured' }), {
+        status: 503, headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
 
     const { data: reportRows, error: reportErr } = await supabase.rpc(
       'get_workspace_report_full_for_indexer',

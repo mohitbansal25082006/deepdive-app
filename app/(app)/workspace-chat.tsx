@@ -14,6 +14,12 @@
 // Part 55.2 — Fully theme-integrated: all hardcoded colors replaced with live
 //             COLORS from the theme system. Uses getModalBackdrop for backdrops.
 //             No dark-only assumptions.
+// Part 59 — SECURE SERVER-SIDE API KEYS
+//             The `giphyApiKey` prop is gone from <ChatGifPicker>. The picker
+//             now fetches through the `search-gateway` Edge Function, which
+//             holds the key. GIPHY passes its credential as a URL query
+//             parameter, so shipping it in the bundle meant anyone watching the
+//             device's network traffic had it.
 
 import React, {
   useCallback, useEffect, useRef, useState, useMemo,
@@ -189,7 +195,7 @@ function AttachPickerSheet({
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
       <Animated.View entering={FadeIn.duration(200)} style={[pickerStyles.backdrop, { backgroundColor: backdropColor }]}>
-        <Pressable style={StyleSheet.absoluteFillObject} onPress={onClose} />
+        <Pressable style={pickerStyles.backdrop} onPress={onClose} />
       </Animated.View>
       <Animated.View
         entering={SHEET_ENTER}
@@ -228,7 +234,12 @@ function AttachPickerSheet({
 }
 
 const pickerStyles = StyleSheet.create({
-  backdrop: { ...StyleSheet.absoluteFillObject },
+  // RN 0.86 removed StyleSheet.absoluteFillObject from the type definitions.
+  // Written out explicitly rather than spreading StyleSheet.absoluteFill —
+  // that constant is a registered style ID (a number), so spreading it into a
+  // StyleSheet.create object yields an empty style and a backdrop that silently
+  // stops covering the screen.
+  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   sheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
@@ -812,11 +823,12 @@ export default function WorkspaceChatScreen() {
         />
       )}
 
+      {/* Part 59: no giphyApiKey prop — the picker calls the search-gateway,
+          which holds the key server-side. */}
       <ChatGifPicker
         visible={showGifPicker}
         onClose={() => setShowGifPicker(false)}
         onSelect={handleGifSelect}
-        giphyApiKey={process.env.EXPO_PUBLIC_GIPHY_API_KEY ?? ''}
       />
     </View>
   );

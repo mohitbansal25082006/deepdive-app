@@ -1,8 +1,18 @@
 // src/services/podcastTTSService.ts
-// Part 39 FIX — Audio Quality now actually changes the OpenAI TTS model & format.
-// Part 53G — AbortSignal support: generateTurnAudio passes the signal to fetch,
-//   and generateAllTurnAudio checks signal.aborted between batches so a cancelled
-//   podcast stops generating audio immediately (no further TTS token spend).
+// Part 39 FIX — Audio Quality actually changes the OpenAI TTS model & format.
+// Part 53G — AbortSignal support: a cancelled podcast stops generating audio
+//   immediately, with no further TTS spend.
+// Part 59 — Routed through the `ai-audio-gateway` Edge Function.
+//
+//   The gateway returns base64 rather than binary. That is not a compromise —
+//   base64 is exactly what writeAsStringAsync(EncodingType.Base64) wants, so
+//   this version actually does LESS work than the old one, which fetched an
+//   ArrayBuffer and hand-rolled a chunked base64 encoder to convert it. That
+//   encoder is gone.
+//
+// Everything else — directory layout, file naming, concurrency, retry policy,
+// the exported surface — is unchanged, so podcastOrchestrator, the cache layer
+// and the players need no edits.
 
 import {
   documentDirectory,
@@ -16,22 +26,14 @@ import {
 import { PodcastTurn, PodcastVoice } from '../types';
 import { AUDIO_QUALITY_CONFIG }      from '../types/podcast_v2';
 import type { AudioQuality }         from '../types/podcast_v2';
+import { callGateway, GatewayError, isAbortError as isGatewayAbort } from './apiGateway';
 
-const OPENAI_TTS_URL   = 'https://api.openai.com/v1/audio/speech';
 const PODCAST_BASE_DIR = (documentDirectory ?? '') + 'deepdive_podcasts/';
 const CONCURRENCY      = 3;
 
-function getApiKey(): string {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key?.trim()) {
-    throw new Error('EXPO_PUBLIC_OPENAI_API_KEY is not set. Add it to your .env and restart.');
-  }
-  return key.trim();
-}
-
 /** True if an error is an AbortError (user cancelled). */
 function isAbortError(err: unknown): boolean {
-  return !!err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError';
+  return isGatewayAbort(err);
 }
 
 function resolveQualityParams(quality: AudioQuality = 'standard'): {
@@ -42,24 +44,12 @@ function resolveQualityParams(quality: AudioQuality = 'standard'): {
   return { model: cfg.model, format: cfg.format };
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes  = new Uint8Array(buffer);
-  const CHUNK  = 8192;
-  let   binary = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const end   = Math.min(i + CHUNK, bytes.length);
-    const slice = bytes.subarray(i, end);
-    binary += String.fromCharCode(...Array.from(slice));
-  }
-  return btoa(binary);
-}
-
 export function estimateSegmentDurationMs(text: string): number {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   return Math.round((words / 150) * 60 * 1000);
 }
 
-// ─── Directory Management ─────────────────────────────────────────────────────
+// ─── Directory Management (unchanged) ─────────────────────────────────────────
 
 export function getPodcastDir(podcastId: string): string {
   return PODCAST_BASE_DIR + podcastId + '/';
@@ -118,6 +108,12 @@ export async function deletePodcastAudio(podcastId: string): Promise<void> {
 
 // ─── Single-Segment TTS ───────────────────────────────────────────────────────
 
+interface TTSResponse {
+  audio:  string;   // base64
+  format: string;
+  bytes:  number;
+}
+
 export async function generateTurnAudio(
   text:       string,
   voice:      PodcastVoice,
@@ -126,58 +122,50 @@ export async function generateTurnAudio(
   quality:    AudioQuality = 'standard',
   signal?:    AbortSignal,          // ── Part 53G ──
 ): Promise<string> {
-  const apiKey = getApiKey();
   const { model, format } = resolveQualityParams(quality);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (signal?.aborted) {           // ── Part 53G: stop before each attempt ──
       const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
     }
+
     try {
-      const response = await fetch(OPENAI_TTS_URL, {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
+      const result = await callGateway<TTSResponse>(
+        'ai-audio-gateway',
+        {
+          op:              'tts',
           model,
           input:           text,
           voice,
           response_format: format,
           speed:           1.0,
-        }),
-        signal,                       // ── Part 53G: abort the TTS fetch ──
-      });
+        },
+        { signal },                   // ── Part 53G: abort the TTS call ──
+      );
 
-      if (!response.ok) {
-        let errMsg = `HTTP ${response.status}`;
-        try {
-          const errBody = await response.json() as any;
-          errMsg = errBody?.error?.message ?? errMsg;
-        } catch { /* ignore */ }
-
-        if (response.status === 429 && attempt < retries) {
-          await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
-          continue;
-        }
-        if (response.status === 401) {
-          throw new Error('Invalid OpenAI API key. Check EXPO_PUBLIC_OPENAI_API_KEY.');
-        }
-        throw new Error(`TTS API error: ${errMsg}`);
+      if (!result?.audio || result.bytes < 100) {
+        throw new Error('The audio service returned an empty clip');
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength < 100) {
-        throw new Error('TTS returned an empty audio buffer');
-      }
-
-      const base64 = arrayBufferToBase64(arrayBuffer);
-      await writeAsStringAsync(outputPath, base64, { encoding: EncodingType.Base64 });
+      // The gateway already gave us base64 — write it straight to disk.
+      await writeAsStringAsync(outputPath, result.audio, { encoding: EncodingType.Base64 });
       return outputPath;
 
     } catch (err) {
       if (isAbortError(err)) throw err;   // ── Part 53G: propagate cancellation ──
+
+      // Back off on throttling, exactly as before.
+      if (err instanceof GatewayError && err.isRateLimited && attempt < retries) {
+        await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+        continue;
+      }
+
+      // A missing/invalid key will fail identically on every retry — stop now
+      // so a 42-segment podcast doesn't take three minutes to report it.
+      if (err instanceof GatewayError && err.isNotConfigured) {
+        throw new Error('Audio generation is temporarily unavailable. Please try again later.');
+      }
+
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
@@ -186,7 +174,7 @@ export async function generateTurnAudio(
   throw new Error(`Failed to generate audio after ${retries + 1} attempts`);
 }
 
-// ─── Batch TTS Generation ─────────────────────────────────────────────────────
+// ─── Batch TTS Generation (unchanged logic) ───────────────────────────────────
 
 export interface BatchProgressCallback {
   onSegmentComplete: (

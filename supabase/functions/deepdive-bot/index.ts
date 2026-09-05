@@ -6,6 +6,22 @@
 //            in src/constants/aiModels.ts. All chat answers here are short
 //            RAG/summary responses, which is exactly the nano tier's sweet spot.
 //
+// Part 59  — SECURE SERVER-SIDE API KEYS
+//            The OpenAI key now comes from getApiKey('openai') instead of
+//            Deno.env.get('OPENAI_API_KEY'). That reads the encrypted vault
+//            (app_api_keys), falling back to the env secret if the vault has no
+//            active key — so this deploy is safe before you've entered anything
+//            in the admin dashboard.
+//
+//            Why bother, when this function was already server-side? Because a
+//            key you can only rotate by running `supabase secrets set` and
+//            redeploying is a key that doesn't get rotated. One dashboard field
+//            now controls every consumer, app and Edge Function alike.
+//
+//            STREAM_API_KEY / STREAM_API_SECRET stay on env: they're Stream
+//            infrastructure credentials rather than a rotatable third-party API
+//            key, and the vault is scoped to the latter.
+//
 // BUGS FIXED IN THE 50.5 PATCH (unchanged):
 //
 //   BUG 1: System prompt confused GPT into thinking report content needs to be
@@ -32,9 +48,14 @@
 //   1. Read raw body bytes immediately (~1ms)
 //   2. Return 200 immediately
 //   3. Do ALL processing inside EdgeRuntime.waitUntil()
+//
+// Deploy:
+//   supabase functions deploy deepdive-bot --no-verify-jwt
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { StreamChat }   from 'npm:stream-chat@8';
+// Part 59: resolves the OpenAI key from the encrypted vault, with an env fallback.
+import { getApiKey }    from '../_shared/keyStore.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
@@ -141,9 +162,31 @@ async function handleWebhook(rawBytes: Uint8Array): Promise<void> {
 async function processAndReply(payload: any, msgText: string, senderId: string): Promise<void> {
   const apiKey          = Deno.env.get('STREAM_API_KEY')!;
   const apiSecret       = Deno.env.get('STREAM_API_SECRET')!;
-  const openaiKey       = Deno.env.get('OPENAI_API_KEY')!;
   const supabaseUrl     = Deno.env.get('SUPABASE_URL')!;
   const supabaseService = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+  // Part 59: vault first, env second. Resolved once per invocation and passed
+  // down, so a single webhook never does more than one vault lookup.
+  let openaiKey: string;
+  try {
+    openaiKey = await getApiKey('openai');
+  } catch (keyErr) {
+    console.error('[bot] No OpenAI key available:', keyErr);
+    // Fail visibly in the channel rather than silently doing nothing — a bot
+    // that ignores you looks broken in a way nobody knows how to report.
+    try {
+      const client  = new StreamChat(apiKey, apiSecret, { disableCache: true });
+      const channel = client.channel(
+        payload.channel?.type ?? 'messaging',
+        payload.channel?.id ?? '',
+      );
+      await sendBotReply(
+        channel,
+        "I'm not available right now — my AI service isn't configured. Please let an admin know.",
+      );
+    } catch { /* nothing more we can do */ }
+    return;
+  }
 
   let query = msgText.replace(/@deepdive\b/gi, '').replace(/^\/ai\b/i, '').trim();
   if (!query) query = 'Give me a summary of the most relevant research shared in this workspace.';

@@ -3,6 +3,14 @@
 // All web search calls now use tavilySearchDeep / tavilySearchBatch
 // The external API is identical — the orchestrator doesn't need changes
 // beyond replacing the import and function calls.
+//
+// Part 59 — SECURE SERVER-SIDE API KEYS
+// The env-var pre-flight checks are gone. There is no OpenAI or Tavily key in
+// the app to check for any more: openaiClient and tavilyClient both call
+// Supabase Edge Functions, which hold the keys. Failure is now reported by the
+// first real call rather than guessed at up front, which is both more accurate
+// (a present-but-revoked key used to pass the old check) and more graceful
+// (Tavily degrades to mock results instead of blocking the whole run).
 
 import { supabase } from '../lib/supabase';
 import {
@@ -124,23 +132,12 @@ export async function runResearchPipeline(
   };
 
   // ── Pre-flight checks ─────────────────────────────────────────────────────
-
-  const openaiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!openaiKey?.trim()) {
-    callbacks.onError(
-      'OpenAI API key is missing.\n\nAdd EXPO_PUBLIC_OPENAI_API_KEY to your .env file and restart with: npx expo start --clear',
-    );
-    return;
-  }
-
-  // ── Check Tavily API key ──────────────────────────────────────────────────
-  const tavilyKey = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
-  if (!tavilyKey?.trim()) {
-    callbacks.onError(
-      'Tavily API key is missing.\n\nAdd EXPO_PUBLIC_TAVILY_API_KEY to your .env file and restart with: npx expo start --clear',
-    );
-    return;
-  }
+  //
+  // Part 59: the API-key checks that used to live here are gone. The keys are
+  // server-side now, so there is nothing in process.env to inspect. What
+  // remains is the session check — which matters MORE than it used to, because
+  // every gateway call is authenticated with this session. Starting a report
+  // without a valid session would now fail on the very first agent call.
 
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   if (sessionError || !sessionData?.session) {

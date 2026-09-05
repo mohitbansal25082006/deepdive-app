@@ -1,34 +1,37 @@
 // src/services/openaiClient.ts
-// FIXED: Reads EXPO_PUBLIC_OPENAI_API_KEY (required for Expo client bundle).
 //
-// ── Part 56: Cost reduction ───────────────────────────────────────────────────
-// The hardcoded `MODEL = 'gpt-4o'` default is GONE. chatCompletion /
-// chatCompletionJSON now accept an optional `model` and default to the central
-// STANDARD tier (gpt-4.1-mini, ~6x cheaper than gpt-4o). Callers that want
-// nano/standard/max pass `model: modelFor('<feature>')`. Nothing in the app
-// hits gpt-4o anymore unless explicitly asked.
+// ── Part 59: keys moved server-side ──────────────────────────────────────────
+// The OpenAI key is GONE from this file and from the app bundle. Every call now
+// goes to the `ai-gateway` Edge Function, which holds the key, checks the
+// caller's session, and forwards to OpenAI.
 //
-// ── Part 53G: AbortSignal support ────────────────────────────────────────────
-// rawCreate/chatCompletion/chatCompletionJSON accept an optional AbortSignal.
-// When the caller aborts (user cancels generation), the in-flight fetch is
-// cancelled so NO further tokens are spent and the request stops immediately.
+// The public API is deliberately unchanged — `openaiClient`, `chatCompletion`,
+// `chatCompletionJSON` and `isAbortError` keep the same signatures and the same
+// behaviour, so none of the ~20 agent files needed edits. Only the transport
+// underneath rawCreate() moved.
+//
+// ── Part 56: cost reduction (unchanged) ──────────────────────────────────────
+// Defaults to the STANDARD tier (gpt-4.1-mini). Callers pass
+// `model: modelFor('<feature>')` to pick nano/standard/max.
+//
+// ── Part 53G: AbortSignal support (unchanged, and still real) ────────────────
+// The signal now travels: caller -> callGateway -> HTTP connection -> Edge
+// Function req.signal -> upstream OpenAI fetch. Cancelling still stops token
+// spend rather than merely hiding the UI.
 
 import { AI_TIER, type OpenAIModel } from '../constants/aiModels';
+import {
+  callGateway,
+  GatewayError,
+  isAbortError as isGatewayAbortError,
+} from './apiGateway';
 
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
-
-// Part 56: default model is now the cheap STANDARD tier, not gpt-4o.
-// Any call that doesn't pass a model gets gpt-4.1-mini.
+// Part 56: default model is the cheap STANDARD tier, not gpt-4o.
 const DEFAULT_MODEL: OpenAIModel = AI_TIER.STANDARD;
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
-}
-
-interface OpenAIResponse {
-  choices: { message: { content: string } }[];
-  error?: { message: string; type: string };
 }
 
 // ─── Shim types mirroring the OpenAI SDK surface used in the app ─────────────
@@ -49,74 +52,63 @@ interface CreateChatCompletionResponse {
   }>;
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-function getApiKey(): string {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key || key.trim() === '') {
-    throw new Error(
-      'EXPO_PUBLIC_OPENAI_API_KEY is not set.\n' +
-      'Add it to your .env file and restart with: npx expo start --clear'
-    );
-  }
-  return key.trim();
+/** Shape returned by the gateway (OpenAI's own response, passed through). */
+interface GatewayChatResponse {
+  choices?: { message?: { content?: string | null } }[];
 }
+
+// ─── Abort detection ──────────────────────────────────────────────────────────
 
 /** True if an error is an AbortError (user cancelled). */
 export function isAbortError(err: unknown): boolean {
-  return !!err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError';
+  return isGatewayAbortError(err);
 }
+
+// ─── Core call ────────────────────────────────────────────────────────────────
 
 async function rawCreate(
   params: CreateChatCompletionParams & { jsonMode?: boolean; signal?: AbortSignal },
 ): Promise<CreateChatCompletionResponse> {
-  const apiKey = getApiKey();
-
   // Part 53G: if already aborted before we even start, bail immediately.
   if (params.signal?.aborted) {
     const e = new Error('Aborted'); e.name = 'AbortError'; throw e;
   }
 
-  const body: Record<string, unknown> = {
-    model:       params.model,
-    messages:    params.messages,
-    temperature: params.temperature ?? 0.3,
-    max_tokens:  params.max_tokens  ?? 4096,
-  };
+  let data: GatewayChatResponse;
 
-  if (params.jsonMode) {
-    body.response_format = { type: 'json_object' };
-  }
-
-  let response: Response;
   try {
-    response = await fetch(OPENAI_API_URL, {
-      method:  'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization:  `Bearer ${apiKey}`,
+    data = await callGateway<GatewayChatResponse>(
+      'ai-gateway',
+      {
+        op:          'chat',
+        model:       params.model,
+        messages:    params.messages,
+        temperature: params.temperature ?? 0.3,
+        max_tokens:  params.max_tokens  ?? 4096,
+        json_mode:   params.jsonMode === true,
       },
-      body: JSON.stringify(body),
-      // Part 53G: pass the abort signal so cancel kills the request.
-      signal: params.signal,
-    });
-  } catch (networkErr) {
+      { signal: params.signal },
+    );
+  } catch (err) {
     // Part 53G: rethrow aborts as-is so callers can detect cancellation.
-    if (isAbortError(networkErr)) throw networkErr;
-    throw new Error(`Network error reaching OpenAI: ${String(networkErr)}`);
-  }
+    if (isAbortError(err)) throw err;
 
-  const data: OpenAIResponse = await response.json();
-
-  if (!response.ok || data.error) {
-    const errMsg = data.error?.message ?? `HTTP ${response.status}`;
-    if (response.status === 401) {
-      throw new Error('Invalid OpenAI API key. Check EXPO_PUBLIC_OPENAI_API_KEY in your .env file.');
+    if (err instanceof GatewayError) {
+      // These messages surface directly in the UI, so keep them human.
+      if (err.isNotConfigured) {
+        throw new Error(
+          'The AI service is temporarily unavailable. Please try again later.',
+        );
+      }
+      if (err.isRateLimited) {
+        throw new Error('The AI service is busy right now. Please try again in a moment.');
+      }
+      if (err.isAuthError) {
+        throw new Error('Your session has expired. Please sign out and sign back in.');
+      }
+      throw new Error(err.message);
     }
-    if (response.status === 429) {
-      throw new Error('OpenAI rate limit or quota exceeded. Check your OpenAI billing at platform.openai.com.');
-    }
-    throw new Error(`OpenAI API error: ${errMsg}`);
+    throw err;
   }
 
   return {
@@ -158,7 +150,7 @@ export async function chatCompletion(
   options: ChatCompletionOptions = {},
 ): Promise<string> {
   const result = await rawCreate({
-    model:       options.model ?? DEFAULT_MODEL,   // ← Part 56: no more gpt-4o default
+    model:       options.model ?? DEFAULT_MODEL,   // Part 56: no gpt-4o default
     messages,
     temperature: options.temperature,
     max_tokens:  options.maxTokens,
@@ -167,7 +159,7 @@ export async function chatCompletion(
   });
 
   const content = result.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Empty response from OpenAI');
+  if (!content) throw new Error('Empty response from the AI service');
   return content;
 }
 
@@ -200,14 +192,14 @@ export async function chatCompletionJSON<T>(
       }
     }
     throw new Error(
-      `Failed to parse OpenAI JSON. Raw response: ${cleaned.slice(0, 300)}`,
+      `Failed to parse AI JSON response. Raw response: ${cleaned.slice(0, 300)}`,
     );
   }
 }
 
 /**
  * Part 57: best-effort repair for JSON that was cut off mid-output (the #1 cause
- * of "Failed to parse OpenAI JSON" on long academic-paper generations).
+ * of "Failed to parse JSON" on long academic-paper generations).
  *
  * Strategy: walk the string tracking string/escape state and the stack of open
  * `{`/`[`. Drop any trailing partial token, close an unterminated string, remove
@@ -259,7 +251,6 @@ function repairTruncatedJSON(input: string): string | null {
   if (inString) {
     if (lastSafeIndex < 0) return null;
     body = input.slice(0, lastSafeIndex + 1);
-    // Recompute the open-structure stack for the trimmed body.
     return closeStructures(body);
   }
 

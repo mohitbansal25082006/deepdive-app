@@ -1,11 +1,12 @@
 // src/hooks/useDebateVoice.ts
 // Part 21 — Voice input hook for the Debate tab.
-// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
-// expo-av native module entirely — see GlobalAudioEngine.ts header for the
-// full rationale).
+// Part 59 — Whisper transcription moved to transcriptionService.ts, which
+//   routes through the `ai-audio-gateway` Edge Function. The local
+//   transcribeWithWhisper() copy (and the OpenAI key it carried) is gone.
 //
-// Mirrors the pattern in voiceResearch.ts but as a self-contained hook so
-// the Debate screen doesn't need to manage recording state manually.
+// Migrated from deprecated `expo-av` to `expo-audio` (SDK 57 removed the
+// expo-av native module entirely — see GlobalAudioEngine.ts for the full
+// rationale).
 //
 // Usage:
 //   const { voiceState, startVoice, stopVoice, cancelVoice } = useDebateVoice({
@@ -14,7 +15,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { AudioModule, RecordingPresets, setAudioModeAsync, type AudioRecorder } from 'expo-audio';
-import * as FileSystem                    from 'expo-file-system/legacy';
+import { transcribeAudioFile }            from '../services/transcriptionService';
 import type { DebateVoiceState }          from '../types';
 
 // NOTE: `AudioRecorder` is exported as a TYPE only from 'expo-audio' — there
@@ -77,6 +78,46 @@ export function useDebateVoice({
     return granted;
   }, [patch]);
 
+  // ── Stop recording & transcribe ────────────────────────────────────────────
+
+  const stopVoice = useCallback(async () => {
+    clearTimers();
+
+    if (!recorderRef.current) return;
+
+    const rec = recorderRef.current;
+    recorderRef.current = null;
+
+    patch({ isRecording: false, isTranscribing: true });
+
+    try {
+      await rec.stop();
+      await setAudioModeAsync({ allowsRecording: false });
+
+      if (isCancelledRef.current) {
+        patch({ isTranscribing: false });
+        return;
+      }
+
+      const uri = rec.uri;
+      if (!uri) throw new Error('No audio was captured. Please try again.');
+
+      // Part 59: goes through the audio gateway — no key in the app.
+      const text = await transcribeAudioFile(uri, { language: 'en' });
+
+      if (!isCancelledRef.current && text.trim()) {
+        onTranscribed(text.trim());
+      }
+
+      patch({ isTranscribing: false, durationMs: 0 });
+
+    } catch (err) {
+      console.error('[DebateVoice] Stop/transcribe error:', err);
+      const msg = err instanceof Error ? err.message : 'Transcription failed.';
+      patch({ isTranscribing: false, error: msg });
+    }
+  }, [clearTimers, onTranscribed, patch]);
+
   // ── Start recording ────────────────────────────────────────────────────────
 
   const startVoice = useCallback(async () => {
@@ -114,49 +155,10 @@ export function useDebateVoice({
       console.error('[DebateVoice] Start error:', err);
       patch({
         isRecording: false,
-        error: 'Failed to start recording. Please try again.',
+        error: 'Could not start recording. Please try again.',
       });
     }
-  }, [ensurePermission, maxDurationMs, patch]);
-
-  // ── Stop recording & transcribe ────────────────────────────────────────────
-
-  const stopVoice = useCallback(async () => {
-    clearTimers();
-
-    if (!recorderRef.current) return;
-
-    const rec = recorderRef.current;
-    recorderRef.current = null;
-
-    patch({ isRecording: false, isTranscribing: true });
-
-    try {
-      await rec.stop();
-      await setAudioModeAsync({ allowsRecording: false });
-
-      if (isCancelledRef.current) {
-        patch({ isTranscribing: false });
-        return;
-      }
-
-      const uri = rec.uri;
-      if (!uri) throw new Error('No audio URI returned from recording.');
-
-      const text = await transcribeWithWhisper(uri);
-
-      if (!isCancelledRef.current && text.trim()) {
-        onTranscribed(text.trim());
-      }
-
-      patch({ isTranscribing: false, durationMs: 0 });
-
-    } catch (err) {
-      console.error('[DebateVoice] Stop/transcribe error:', err);
-      const msg = err instanceof Error ? err.message : 'Transcription failed.';
-      patch({ isTranscribing: false, error: msg });
-    }
-  }, [clearTimers, onTranscribed, patch]);
+  }, [ensurePermission, maxDurationMs, patch, stopVoice]);
 
   // ── Cancel ────────────────────────────────────────────────────────────────
 
@@ -188,43 +190,4 @@ export function useDebateVoice({
     cancelVoice,
     clearError,
   };
-}
-
-// ─── Whisper transcription ─────────────────────────────────────────────────────
-// Uses expo-file-system uploadAsync (most reliable on both iOS & Android).
-
-async function transcribeWithWhisper(audioUri: string): Promise<string> {
-  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key is not configured.');
-
-  // expo-file-system uploadAsync handles the multipart form correctly on both platforms
-  const response = await FileSystem.uploadAsync(
-    'https://api.openai.com/v1/audio/transcriptions',
-    audioUri,
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      httpMethod:   'POST',
-      uploadType:   FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName:    'file',
-      mimeType:     'audio/m4a',
-      parameters: {
-        model:    'whisper-1',
-        language: 'en',
-      },
-    },
-  );
-
-  if (response.status !== 200) {
-    let errMsg = `HTTP ${response.status}`;
-    try {
-      const body = JSON.parse(response.body);
-      errMsg = body?.error?.message ?? errMsg;
-    } catch { /* ignore */ }
-    throw new Error(`Whisper API error: ${errMsg}`);
-  }
-
-  const data = JSON.parse(response.body);
-  return (data.text ?? '').trim();
 }

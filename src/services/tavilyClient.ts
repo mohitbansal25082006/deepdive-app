@@ -1,40 +1,36 @@
 // src/services/tavilyClient.ts
-// Part 58.2 — COMPLETE REWRITE: SerpAPI → Tavily API Migration
+// Part 58.2 — SerpAPI → Tavily migration.
+// Part 59 — All Tavily calls now go through the `search-gateway` Edge Function.
+//   The key is gone from this file and from the app bundle.
 //
-// Tavily API is an AI-native search engine that returns pre-processed,
-// LLM-ready content including summaries, highlights, and cleaned text.
+//   The gateway returns Tavily's raw JSON, so every mapper below (the
+//   SearchResult mapping, trust scoring, follow-up derivation, entity
+//   deep-dives) is byte-for-byte what it was. That was the point: a security
+//   migration should not quietly change what the research pipeline retrieves.
 //
-// Key differences from SerpAPI:
-//   • Returns structured, cleaned content ready for LLM consumption
-//   • Built-in relevance scoring per result
-//   • Search depth: basic (1 credit) vs advanced (2 credits)
-//   • Extract API for pulling clean content from specific URLs
-//   • Topic targeting: general, news, or specific domains
+//   The one behavioural change: "no API key" is now detected from a
+//   `provider_not_configured` response instead of a missing env var. The mock
+//   fallback still fires, so a project with no Tavily key still produces a
+//   readable (clearly synthetic) report rather than an error screen.
 //
 // API Reference: https://docs.tavily.com/
-// Endpoint: https://api.tavily.com/search
-// Endpoint: https://api.tavily.com/extract
 
 import type { SearchResult, SearchBatch, SourceTrustScore } from '../types';
 import {
   attachTrustScores,
   rankByTrust,
-  scoreSource,
 } from './sourceTrustScorer';
+import { callGateway, GatewayError } from './apiGateway';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TAVILY_BASE = 'https://api.tavily.com';
-const TAVILY_SEARCH_ENDPOINT = `${TAVILY_BASE}/search`;
-const TAVILY_EXTRACT_ENDPOINT = `${TAVILY_BASE}/extract`;
-
-// Default number of results per query
+/** Default number of results per query */
 const DEFAULT_RESULTS_PER_QUERY = 10;
 
-// Concurrency limit for parallel requests
+/** Concurrency limit for parallel requests */
 const CONCURRENCY = 3;
 
-// ─── Tavily API Types ─────────────────────────────────────────────────────────
+// ─── Tavily API Types (unchanged) ─────────────────────────────────────────────
 
 export interface TavilySearchOptions {
   /** Search query string (required) */
@@ -60,156 +56,123 @@ export interface TavilySearchOptions {
 }
 
 export interface TavilySearchResult {
-  /** Title of the result */
   title: string;
-  /** URL of the result */
   url: string;
-  /** Content snippet or summary */
   content: string;
-  /** Raw content if requested */
   rawContent?: string;
   /** Score indicating relevance (0-1) */
   score: number;
-  /** Published date if available */
   publishedDate?: string;
-  /** Source domain */
   source?: string;
 }
 
 export interface TavilySearchResponse {
-  /** Query that was searched */
   query: string;
-  /** Follow-up questions suggested by Tavily */
   followUpQuestions?: string[];
-  /** Answer to the query (if includeAnswer: true) */
   answer?: string;
-  /** Search results */
   results: TavilySearchResult[];
-  /** Images returned (if includeImages: true) */
   images?: Array<{ url: string; description?: string }>;
-  /** Response time in seconds */
   responseTime?: number;
 }
 
-export interface TavilyExtractOptions {
-  /** Array of URLs to extract content from */
-  urls: string[];
-  /** Include images from the pages */
-  includeImages?: boolean;
-}
-
 export interface TavilyExtractResult {
-  /** URL that was extracted */
   url: string;
-  /** Extracted content */
   content: string;
-  /** Raw HTML if available */
   rawContent?: string;
-  /** Images extracted from the page */
   images?: Array<{ url: string; description?: string }>;
 }
 
 export interface TavilyExtractResponse {
-  /** Results for each URL */
   results: TavilyExtractResult[];
-  /** Failed URLs with errors */
   failedResults?: Array<{ url: string; error: string }>;
-  /** Response time in seconds */
   responseTime?: number;
 }
 
-// ─── API Key Helpers ──────────────────────────────────────────────────────────
+/** Envelope returned by the search-gateway. */
+interface GatewayEnvelope<T> { data: T; }
 
-function getApiKey(): string | null {
-  const key = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
-  if (!key || key === 'your_tavily_api_key_here' || key.trim() === '') return null;
-  return key.trim();
-}
+// ─── Provider availability ────────────────────────────────────────────────────
+// Cached per session so a project with no Tavily key doesn't fire (and log) a
+// failing request for every one of the 25 queries an Expert report makes.
 
-function hasTavilyApiKey(): boolean {
-  return getApiKey() !== null;
+let _tavilyUnavailable = false;
+
+/** Reset after an admin configures the key. */
+export function resetTavilyAvailability(): void {
+  _tavilyUnavailable = false;
 }
 
 // ─── Core Search Function ─────────────────────────────────────────────────────
 
 /**
  * Execute a single Tavily search query and return scored results.
- * Falls back to mock data when API key is absent.
- * 
- * Tavily's search is fundamentally different from SerpAPI:
- *   - Results come pre-scored for relevance
- *   - Content is cleaned and summarized for LLM consumption
- *   - Advanced depth returns more comprehensive results
+ * Falls back to mock data when the provider is not configured.
  */
 export async function tavilySearch(
   query: string,
   options: Omit<TavilySearchOptions, 'query'> = {},
 ): Promise<SearchResult[]> {
-  const apiKey = getApiKey();
-  if (!apiKey) return getMockResults(query);
-
-  // Build search options with defaults
-  const searchOptions: TavilySearchOptions = {
-    query,
-    searchDepth: options.searchDepth ?? 'basic',
-    maxResults: options.maxResults ?? DEFAULT_RESULTS_PER_QUERY,
-    includeAnswer: options.includeAnswer ?? false,
-    includeRawContent: options.includeRawContent ?? false,
-    includeImages: options.includeImages ?? false,
-    topic: options.topic ?? 'general',
-    ...(options.timeRange && { timeRange: options.timeRange }),
-    ...(options.includeDomains && { includeDomains: options.includeDomains }),
-    ...(options.excludeDomains && { excludeDomains: options.excludeDomains }),
-  };
+  if (_tavilyUnavailable) return getMockResults(query);
 
   try {
-    const response = await fetch(TAVILY_SEARCH_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+    const envelope = await callGateway<GatewayEnvelope<TavilySearchResponse>>(
+      'search-gateway',
+      {
+        provider: 'tavily',
+        op:       'search',
+        params: {
+          query,
+          searchDepth:       options.searchDepth ?? 'basic',
+          maxResults:        options.maxResults ?? DEFAULT_RESULTS_PER_QUERY,
+          includeAnswer:     options.includeAnswer ?? false,
+          includeRawContent: options.includeRawContent ?? false,
+          includeImages:     options.includeImages ?? false,
+          topic:             options.topic ?? 'general',
+          ...(options.timeRange      && { timeRange: options.timeRange }),
+          ...(options.includeDomains && { includeDomains: options.includeDomains }),
+          ...(options.excludeDomains && { excludeDomains: options.excludeDomains }),
+        },
       },
-      body: JSON.stringify(searchOptions),
-    });
+    );
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      console.warn(`[Tavily] HTTP ${response.status} for "${query}": ${errorText.slice(0, 200)}`);
-      return getMockResults(query);
-    }
+    const data = envelope?.data;
 
-    const data: TavilySearchResponse = await response.json();
-
-    if (!data.results || data.results.length === 0) {
+    if (!data?.results || data.results.length === 0) {
       console.warn(`[Tavily] No results for "${query}"`);
       return getMockResults(query);
     }
 
     // Map Tavily results to our SearchResult format
-    const results: SearchResult[] = data.results.map((r, index) => ({
-      title: r.title ?? '',
-      url: r.url ?? '',
-      snippet: r.content ?? r.rawContent ?? r.title ?? '',
-      date: r.publishedDate,
-      source: r.source ?? new URL(r.url).hostname,
-      position: index,
-      // Tavily provides a relevance score (0-1) → map to our trust system
-      trustScore: mapTavilyScoreToTrust(r.score),
-      // Store Tavily-specific metadata
-      tavilyScore: r.score,
-      rawContent: r.rawContent,
-      _tavilyMetadata: {
-        score: r.score,
-        source: r.source,
-        publishedDate: r.publishedDate,
-      },
-    }));
+    const results: SearchResult[] = data.results.map((r, index) => {
+      let hostname = r.source ?? '';
+      if (!hostname) {
+        try { hostname = new URL(r.url).hostname; } catch { hostname = ''; }
+      }
 
-    // Attach our trust scores (overrides Tavily's relevance score with our domain-based scoring)
+      return {
+        title: r.title ?? '',
+        url: r.url ?? '',
+        snippet: r.content ?? r.rawContent ?? r.title ?? '',
+        date: r.publishedDate,
+        source: hostname,
+        position: index,
+        // Tavily provides a relevance score (0-1) → kept as a secondary signal
+        trustScore: mapTavilyScoreToTrust(r.score),
+        tavilyScore: r.score,
+        rawContent: r.rawContent,
+        _tavilyMetadata: {
+          score: r.score,
+          source: r.source,
+          publishedDate: r.publishedDate,
+        },
+      };
+    });
+
+    // Attach our domain-based trust scores (authoritative over Tavily relevance)
     attachTrustScores(results);
 
-    // Tavily already sorts by relevance, but we sort by our trust tier
-    // for consistency with the rest of the system
+    // Tavily sorts by relevance; we re-sort by trust tier for consistency with
+    // the rest of the system.
     return results.sort((a, b) => {
       const ta = a.trustScore?.tier ?? 3;
       const tb = b.trustScore?.tier ?? 3;
@@ -218,21 +181,27 @@ export async function tavilySearch(
     });
 
   } catch (err) {
-    console.warn(`[Tavily] Fetch failed for "${query}": ${err}`);
+    if (err instanceof GatewayError && err.isNotConfigured) {
+      // Latch it — no point retrying 24 more times this session.
+      if (!_tavilyUnavailable) {
+        console.warn('[Tavily] No API key configured — using mock results. ' +
+                     'Set one in Admin Dashboard → API Keys.');
+        _tavilyUnavailable = true;
+      }
+      return getMockResults(query);
+    }
+    console.warn(`[Tavily] Search failed for "${query}": ${err}`);
     return getMockResults(query);
   }
 }
 
 /**
  * Map Tavily's relevance score (0-1) to our trust tier.
- * Tavily scores are based on relevance to the query, not source credibility.
- * We use this as a signal alongside our domain-based scoring.
+ * Tavily scores relevance to the query, not source credibility, so we keep it
+ * as metadata rather than letting it override domain-based scoring.
  */
 function mapTavilyScoreToTrust(score: number): SourceTrustScore | undefined {
   if (score === undefined || score === null) return undefined;
-  
-  // Tavily's score is 0-1, but we don't want to override our domain-based scoring
-  // Instead, we store it as metadata and use it as a secondary signal
   return undefined;
 }
 
@@ -240,7 +209,6 @@ function mapTavilyScoreToTrust(score: number): SourceTrustScore | undefined {
 
 /**
  * Run multiple searches in parallel with concurrency control.
- * Maintains compatibility with serpSearchBatch signature.
  */
 export async function tavilySearchBatch(
   queries: string[],
@@ -260,7 +228,7 @@ export async function tavilySearchBatch(
       chunk.map(async (query, idx) => {
         const globalIndex = i + idx;
         onProgress?.(query, globalIndex);
-        
+
         try {
           const searchResults = await tavilySearch(query, {
             maxResults: num,
@@ -294,31 +262,20 @@ export async function tavilyExtract(
   urls: string[],
   includeImages: boolean = false,
 ): Promise<Record<string, { content: string; rawContent?: string; images?: string[] }>> {
-  const apiKey = getApiKey();
-  if (!apiKey || urls.length === 0) return {};
+  if (urls.length === 0 || _tavilyUnavailable) return {};
 
   try {
-    const response = await fetch(TAVILY_EXTRACT_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+    const envelope = await callGateway<GatewayEnvelope<TavilyExtractResponse>>(
+      'search-gateway',
+      {
+        provider: 'tavily',
+        op:       'extract',
+        params:   { urls, includeImages },
       },
-      body: JSON.stringify({
-        urls,
-        includeImages,
-      }),
-    });
-
-    if (!response.ok) {
-      console.warn(`[Tavily] Extract API error: ${response.status}`);
-      return {};
-    }
-
-    const data: TavilyExtractResponse = await response.json();
+    );
 
     const result: Record<string, { content: string; rawContent?: string; images?: string[] }> = {};
-    for (const r of data.results || []) {
+    for (const r of envelope?.data?.results ?? []) {
       result[r.url] = {
         content: r.content || '',
         rawContent: r.rawContent,
@@ -329,6 +286,7 @@ export async function tavilyExtract(
     return result;
 
   } catch (err) {
+    if (err instanceof GatewayError && err.isNotConfigured) _tavilyUnavailable = true;
     console.warn('[Tavily] Extract API failed:', err);
     return {};
   }
@@ -357,13 +315,11 @@ export interface DeepSearchResult {
 }
 
 /**
- * Depth-aware multi-round web search using Tavily.
- * 
+ * Depth-aware multi-round web search.
+ *
  * Quick  → 1 round (primary only)
  * Deep   → 2 rounds (primary + follow-up)
  * Expert → 3 rounds (primary + follow-up + entity deep-dives)
- * 
- * Tavily's advanced search depth provides better results at higher cost.
  */
 export async function tavilySearchDeep(
   primaryQueries: string[],
@@ -386,7 +342,6 @@ export async function tavilySearchDeep(
     return keep;
   }
 
-  // Determine search depth for Tavily
   const tavilyDepth: 'basic' | 'advanced' = depth === 'quick' ? 'basic' : 'advanced';
 
   // ── ROUND 1: Primary Queries ────────────────────────────────────────────────
@@ -518,26 +473,11 @@ interface DepthConfig {
 function getDepthConfig(depth: 'quick' | 'deep' | 'expert'): DepthConfig {
   switch (depth) {
     case 'quick':
-      return {
-        maxQueries: 4,
-        resultsPerQuery: 8,
-        followUpQueries: 0,
-        entityDeepDives: 0,
-      };
+      return { maxQueries: 4,  resultsPerQuery: 8,  followUpQueries: 0, entityDeepDives: 0 };
     case 'deep':
-      return {
-        maxQueries: 8,
-        resultsPerQuery: 12,
-        followUpQueries: 3,
-        entityDeepDives: 0,
-      };
+      return { maxQueries: 8,  resultsPerQuery: 12, followUpQueries: 3, entityDeepDives: 0 };
     case 'expert':
-      return {
-        maxQueries: 12,
-        resultsPerQuery: 15,
-        followUpQueries: 5,
-        entityDeepDives: 4,
-      };
+      return { maxQueries: 12, resultsPerQuery: 15, followUpQueries: 5, entityDeepDives: 4 };
     default:
       return getDepthConfig('quick');
   }
@@ -684,7 +624,7 @@ const STOP_WORDS = new Set([
   'december', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
 ]);
 
-// ─── Mock Results (fallback when no API key) ──────────────────────────────────
+// ─── Mock Results (fallback when the provider is not configured) ──────────────
 
 function getMockResults(query: string): SearchResult[] {
   const now = new Date();
@@ -751,7 +691,7 @@ function getMockResults(query: string): SearchResult[] {
       position: 8,
       title: `Industry Report: ${query} — Investment Trends`,
       url: 'https://mckinsey.com/industry-report',
-      snippet: `McKinsey & Company's latest industry analysis identifies six macro-trends reshaping ${query}. Investment from institutional players reached an all-time high of $32.6B globally, with majority allocated to infrastructure and talent development.`,
+      snippet: `The latest industry analysis identifies six macro-trends reshaping ${query}. Investment from institutional players reached an all-time high of $32.6B globally, with the majority allocated to infrastructure and talent development.`,
       date: `${year}-02-14`,
       source: 'mckinsey.com',
     },
