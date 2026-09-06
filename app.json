@@ -29,7 +29,6 @@
       ]
     },
     "android": {
-      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
@@ -143,8 +142,8 @@
         {
           "android": {
             "usesCleartextTraffic": false,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36
           },
           "ios": {
             "deploymentTarget": "16.4"

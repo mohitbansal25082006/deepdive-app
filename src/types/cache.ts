@@ -1,14 +1,24 @@
 // src/types/cache.ts
-// Part 45 — Updated: added 'voice_debate' to CachedContentType.
+// Part 59.2 — portable path fields.
+// Part 59.3 — the two audio toggles are gone. Audio is part of the item.
 //
-// CHANGES from Part 23:
-//   • CachedContentType now includes 'voice_debate'
-//   • CacheSettings now includes `cacheVoiceDebate: boolean`
-//   • CacheStats now includes voiceDebatesWithAudio / voiceDebateAudioBytes
-//   • CacheFilterType updated to include 'voice_debate'
-//   • VoiceDebateAudioCacheEntry re-exported alias for OfflineVoiceDebateViewer
+// WHY THE TOGGLES WERE REMOVED
 //
-// All other types are identical to Part 23.
+//   "Cache Podcast Audio" and "Cache Voice Debate Audio" shipped OFF, which
+//   meant the default behaviour of caching a podcast was to save a transcript
+//   and silently drop the thing the user actually wanted. Worse, after the
+//   Part 59.2 path fix the toggles made no observable difference in most
+//   sessions: the offline viewer resolves audio straight out of the generation
+//   directory whether or not a cache copy exists, so ON and OFF looked
+//   identical right up until the OS reclaimed that directory — at which point
+//   OFF lost the audio permanently and ON did not. A setting whose effect is
+//   invisible until the day it costs you your data is worse than no setting.
+//
+//   A cached podcast now means the episode: script AND audio. One toggle,
+//   "Auto-Cache Content", still governs whether caching happens automatically.
+//
+//   Both fields stay on the interface as optional and deprecated so a settings
+//   object persisted by an older build still deserialises. Nothing reads them.
 
 // ─── Content type discriminator ───────────────────────────────────────────────
 
@@ -18,7 +28,14 @@ export type CachedContentType =
   | 'debate'
   | 'academic_paper'
   | 'presentation'
-  | 'voice_debate';  // Part 45: added
+  | 'voice_debate';
+
+/** Types that carry audio alongside their JSON. */
+export const AUDIO_CONTENT_TYPES: CachedContentType[] = ['podcast', 'voice_debate'];
+
+export function hasAudioTrack(type: CachedContentType): boolean {
+  return type === 'podcast' || type === 'voice_debate';
+}
 
 // ─── Cache entry (stored in the index) ───────────────────────────────────────
 
@@ -35,35 +52,41 @@ export interface CacheEntry {
   cachedAt: number;
   /** Unix ms timestamp when this entry expires (auto-evict) */
   expiresAt: number;
-  /** File path on device where the JSON data is stored */
+  /**
+   * Absolute path at the time of writing.
+   *
+   * Part 59.2: DO NOT read this directly. It contains a container prefix that
+   * goes stale on app update, reinstall, and the Expo Go → standalone move.
+   * Use buildFilePath(type, id) in cacheStorage.ts, which rebuilds it against
+   * the current documentDirectory. Kept for diagnostics and legacy indexes.
+   */
   filePath: string;
-  /** Approximate file size in bytes (set after write) */
+  /** Part 59.2: app-relative path, e.g. "deepdive_cache/reports/abc.json". */
+  portablePath?: string;
+  /** Total size in bytes: JSON + audio. */
   sizeBytes: number;
   /** Optional icon name for display in cache manager */
   icon?: string;
   /** Optional accent color for display */
   color?: string;
-  /**
-   * Part 23: For podcasts only — whether audio has been downloaded locally.
-   * If true, the podcast can be fully played offline (not just transcript view).
-   */
+  /** Audio downloaded locally (podcast / voice_debate). */
   hasAudio?: boolean;
-  /**
-   * Part 23: Total audio size in bytes (sum of all cached segment files).
-   * Included in sizeBytes for storage limit purposes.
-   */
+  /** Bytes used by audio files alone. Included in sizeBytes. */
   audioSizeBytes?: number;
+  /**
+   * Part 59.3: audio is expected for this type but is not on disk yet.
+   * Lets the Cache Manager show "audio pending" rather than implying the item
+   * is complete when only its transcript was saved.
+   */
+  audioPending?: boolean;
 }
 
-// ─── Cache index (the root index stored in AsyncStorage) ──────────────────────
+// ─── Cache index ──────────────────────────────────────────────────────────────
 
 export interface CacheIndex {
   entries:     CacheEntry[];
-  /** Total bytes used across all cached files (JSON data + audio) */
   totalBytes:  number;
-  /** User-configured limit in bytes (default 100 MB) */
   limitBytes:  number;
-  /** Version stamp for migration */
   version:     number;
 }
 
@@ -72,20 +95,27 @@ export interface CacheIndex {
 export interface CacheSettings {
   /** User-configured storage limit in bytes */
   limitBytes: number;
-  /** Whether auto-cache is enabled after generation */
+  /**
+   * Cache new content automatically as it is generated.
+   *
+   * Part 59.3: this governs the AUTOMATIC path only. Manual caching — the
+   * selective picker, "Cache Now", and the Download Audio buttons — always
+   * works regardless of this setting. Previously every manual path also
+   * short-circuited on it, so turning auto-cache off silently disabled the
+   * buttons whose entire purpose is to cache things by hand.
+   */
   autoCache:  boolean;
   /** Days before a cached item expires (default 30) */
   expiryDays: number;
   /**
-   * Part 23: Whether to also cache podcast audio segments for offline playback.
-   * Audio files can be large (~1-5 MB per minute). Default: false (transcript only).
+   * @deprecated Part 59.3 — audio is always cached with its item.
+   * Retained only so settings written by older builds still parse.
    */
-  cacheAudio: boolean;
+  cacheAudio?: boolean;
   /**
-   * Part 45: Whether to auto-cache voice debate audio when generated.
-   * Each voice debate audio can be 10–80 MB. Default: false.
+   * @deprecated Part 59.3 — audio is always cached with its item.
    */
-  cacheVoiceDebate: boolean;
+  cacheVoiceDebate?: boolean;
 }
 
 // ─── Cache stats ──────────────────────────────────────────────────────────────
@@ -96,14 +126,12 @@ export interface CacheStats {
   limitBytes:    number;
   percentUsed:   number;
   byType:        Record<CachedContentType, { count: number; bytes: number }>;
-  /** Part 23: How many podcasts have audio cached */
   podcastsWithAudio?: number;
-  /** Part 23: Total bytes used just by podcast audio files */
   audioBytesTotal?: number;
-  /** Part 45: How many voice debates have audio cached */
   voiceDebatesWithAudio?: number;
-  /** Part 45: Total bytes used by voice debate audio */
   voiceDebateAudioBytes?: number;
+  /** Part 59.3: audio-bearing items still waiting for their audio. */
+  itemsAwaitingAudio?: number;
 }
 
 // ─── Filter type for offline screen ──────────────────────────────────────────
@@ -120,46 +148,34 @@ export interface CacheDownloadState {
   error?:   string;
 }
 
-// ─── Part 23: Audio Cache ─────────────────────────────────────────────────────
+// ─── Audio cache ──────────────────────────────────────────────────────────────
 
-/**
- * Tracks a single locally cached audio segment file for a podcast turn.
- */
+export type AudioSegmentOrigin = 'cache' | 'generation' | 'stored' | 'cloud' | 'unknown';
+
 export interface AudioCacheSegment {
-  /** Turn index within the podcast script */
   turnIndex:     number;
-  /** Local file:/// path on device */
+  /** Absolute at write time. Derived on read — see podcastAudioCache.ts. */
   localPath:     string;
-  /** File size in bytes */
+  /** Part 59.2: file name only ("segment_3.mp3"). Stable across installs. */
+  fileName?:     string;
   sizeBytes:     number;
-  /** Whether this segment was successfully downloaded */
   isAvailable:   boolean;
+  origin?:       AudioSegmentOrigin;
 }
 
-/**
- * Full audio cache record for one podcast episode.
- * Stored in AsyncStorage under key `deepdive:audio:cache:<podcastId>`.
- */
 export interface AudioCacheEntry {
-  podcastId:   string;
+  podcastId:    string;
   podcastTitle: string;
-  segments:    AudioCacheSegment[];
-  /** Total bytes used by audio files */
-  totalBytes:  number;
-  /** Unix ms when audio was cached */
-  cachedAt:    number;
-  /** Unix ms when audio expires (matches podcast JSON expiry) */
-  expiresAt:   number;
-  /** How many segments were successfully downloaded */
+  segments:     AudioCacheSegment[];
+  totalBytes:   number;
+  cachedAt:     number;
+  expiresAt:    number;
   successCount: number;
-  /** Total segments attempted */
-  totalCount:  number;
+  totalCount:   number;
+  /** Part 59.2: 2 = portable paths. Absent/1 = legacy absolute paths. */
+  version?:     number;
 }
 
-/**
- * Index of all podcasts that have audio cached.
- * Stored in AsyncStorage under key `deepdive:audio:index:v23`.
- */
 export interface AudioCacheIndex {
   entries: Array<{
     podcastId:  string;
@@ -170,9 +186,14 @@ export interface AudioCacheIndex {
   version: number;
 }
 
-/**
- * Progress callback for audio download operations.
- */
+export type AudioDownloadPhase =
+  | 'idle'
+  | 'resolving'
+  | 'copying'
+  | 'downloading'
+  | 'done'
+  | 'error';
+
 export interface AudioDownloadProgress {
   podcastId:        string;
   segmentsComplete: number;
@@ -180,26 +201,46 @@ export interface AudioDownloadProgress {
   bytesDownloaded:  number;
   isComplete:       boolean;
   error?:           string;
+  phase?:           AudioDownloadPhase;
+  /** True when every segment came from local disk (no network). */
+  offlineOnly?:     boolean;
 }
 
-// ─── Part 23: Offline viewer discriminator ────────────────────────────────────
+// ─── Part 59.3: audio reconciliation ──────────────────────────────────────────
 
 /**
- * Which full-screen viewer component to render for a cached item.
- * Each type gets its own rich viewer matching the online experience.
- * Part 45: 'voice_debate' added.
+ * Result of sweeping the cache index and making every audio-bearing entry's
+ * on-disk reality match what the index claims.
  */
+export interface AudioReconcileResult {
+  /** Entries examined. */
+  scanned:    number;
+  /** Entries whose audio was newly downloaded or copied. */
+  repaired:   number;
+  /** Entries whose recorded size was corrected. */
+  resized:    number;
+  /** Entries that still have no audio (source genuinely unavailable). */
+  unresolved: number;
+  /** Bytes added to the index total as a result. */
+  bytesAdded: number;
+}
+
+export interface AudioReconcileProgress {
+  done:  number;
+  total: number;
+  title: string;
+}
+
+// ─── Offline viewer discriminator ─────────────────────────────────────────────
+
 export type OfflineViewerType =
-  | 'report'         // ResearchReport — 3-tab viewer
-  | 'podcast'        // Podcast — transcript + audio player (if audio cached)
-  | 'debate'         // DebateSession — 3-tab viewer (overview/perspectives/moderator)
-  | 'academic_paper' // AcademicPaper — section navigator
-  | 'presentation'   // GeneratedPresentation — slide previewer
-  | 'voice_debate';  // VoiceDebate — cinematic player (Part 45)
+  | 'report'
+  | 'podcast'
+  | 'debate'
+  | 'academic_paper'
+  | 'presentation'
+  | 'voice_debate';
 
-/**
- * State for the offline viewer modal/overlay.
- */
 export interface OfflineViewerState {
   isOpen:   boolean;
   entry:    CacheEntry | null;
@@ -208,22 +249,19 @@ export interface OfflineViewerState {
   error:    string | null;
 }
 
-// ─── Part 45: Selective cache item (for SelectiveCacheSheet) ──────────────────
+// ─── Selective cache ──────────────────────────────────────────────────────────
 
-/**
- * A content item returned by get_user_content_for_selective_cache RPC.
- * Used in the SelectiveCacheSheet to let users pick what to cache.
- */
 export interface SelectiveCacheItem {
   contentType: CachedContentType;
   id:          string;
   title:       string;
   subtitle:    string;
   createdAt:   string | null;
-  /** Estimated size in KB (server-side hint) */
+  /** Estimated size in KB for uncached items; real on-disk size once cached. */
   sizeHintKb:  number;
-  /** Whether this item is already cached on device */
   isCached:    boolean;
+  /** Part 59.3: true once the item's audio is on disk. */
+  hasAudio?:   boolean;
 }
 
 export interface SelectiveCacheState {

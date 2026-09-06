@@ -1,13 +1,12 @@
 // src/lib/cacheSettings.ts
-// Part 45 — Updated: added cacheVoiceDebate setting helpers.
+// Part 59.3 — the two audio toggles are gone.
 //
-// CHANGES from Part 23:
-//   • setVoiceDebateCache() helper added
-//   • isVoiceDebateCacheEnabled() helper added
-//   • getCacheSummary() includes voice debate audio info
-//   • DEFAULT_CACHE_SETTINGS includes cacheVoiceDebate: false
+// setAudioCache() / setVoiceDebateCache() / isAudioCacheEnabled() /
+// isVoiceDebateCacheEnabled() are kept as deprecated shims so any screen not
+// yet updated still compiles and behaves sensibly: the setters do nothing, the
+// getters answer true, because audio is now always cached with its item.
 //
-// All other code is identical to Part 23.
+// DEFAULT_CACHE_SETTINGS no longer carries the audio flags.
 
 import {
   loadSettings as _load,
@@ -15,16 +14,14 @@ import {
   getCacheStats,
   formatBytes,
 } from './cacheStorage';
-import { CacheSettings, CacheStats } from '../types/cache';
+import { CacheSettings } from '../types/cache';
 
 // ─── Default settings ─────────────────────────────────────────────────────────
 
 export const DEFAULT_CACHE_SETTINGS: CacheSettings = {
-  limitBytes:       100 * 1024 * 1024, // 100 MB
-  autoCache:        true,
-  expiryDays:       30,
-  cacheAudio:       false,             // Part 23: off by default
-  cacheVoiceDebate: false,             // Part 45: off by default
+  limitBytes: 100 * 1024 * 1024, // 100 MB
+  autoCache:  true,
+  expiryDays: 30,
 };
 
 // ─── Preset limit options shown in UI ────────────────────────────────────────
@@ -51,7 +48,7 @@ export async function getSettings(): Promise<CacheSettings> {
 
 export async function updateSettings(partial: Partial<CacheSettings>): Promise<CacheSettings> {
   const current = await _load();
-  const updated  = { ...current, ...partial };
+  const updated = { ...current, ...partial };
   await _save(updated);
   return updated;
 }
@@ -71,16 +68,29 @@ export async function setExpiryDays(days: number): Promise<void> {
   await _save({ ...current, expiryDays: days });
 }
 
-/** Part 23: toggle audio caching for podcasts */
-export async function setAudioCache(enabled: boolean): Promise<void> {
-  const current = await _load();
-  await _save({ ...current, cacheAudio: enabled });
+// ─── Deprecated audio toggles (Part 59.3) ─────────────────────────────────────
+
+/**
+ * @deprecated Audio is always cached with its item. This is a no-op.
+ * Kept so an un-migrated caller compiles rather than silently changing meaning.
+ */
+export async function setAudioCache(_enabled: boolean): Promise<void> {
+  // Intentionally does nothing.
 }
 
-/** Part 45: toggle audio caching for voice debates */
-export async function setVoiceDebateCache(enabled: boolean): Promise<void> {
-  const current = await _load();
-  await _save({ ...current, cacheVoiceDebate: enabled });
+/** @deprecated Audio is always cached with its item. This is a no-op. */
+export async function setVoiceDebateCache(_enabled: boolean): Promise<void> {
+  // Intentionally does nothing.
+}
+
+/** @deprecated Always true — audio caching is not optional. */
+export async function isAudioCacheEnabled(): Promise<boolean> {
+  return true;
+}
+
+/** @deprecated Always true — audio caching is not optional. */
+export async function isVoiceDebateCacheEnabled(): Promise<boolean> {
+  return true;
 }
 
 // ─── Stats helpers ────────────────────────────────────────────────────────────
@@ -88,45 +98,36 @@ export async function setVoiceDebateCache(enabled: boolean): Promise<void> {
 export { getCacheStats, formatBytes };
 
 /**
- * Returns a human-readable summary string.
- * Part 45: includes voice debate audio info if any are cached.
+ * Human-readable one-liner for the Cache Manager header.
+ * Part 59.3: audio is folded into the item counts rather than called out as a
+ * separate opt-in feature, and pending audio is surfaced because a podcast
+ * without its audio is an incomplete cache, not a complete one.
  */
 export async function getCacheSummary(): Promise<string> {
   const stats = await getCacheStats();
   const used  = formatBytes(stats.totalBytes);
   const limit = formatBytes(stats.limitBytes);
   const pct   = Math.round(stats.percentUsed);
-  let base    = `${stats.totalItems} items · ${used} / ${limit} (${pct}%)`;
 
-  if ((stats.podcastsWithAudio ?? 0) > 0) {
-    base += ` · ${stats.podcastsWithAudio} podcast${stats.podcastsWithAudio === 1 ? '' : 's'} with audio`;
+  let base = `${stats.totalItems} items · ${used} / ${limit} (${pct}%)`;
+
+  const withAudio =
+    (stats.podcastsWithAudio ?? 0) + (stats.voiceDebatesWithAudio ?? 0);
+  if (withAudio > 0) {
+    const audioBytes =
+      (stats.audioBytesTotal ?? 0) + (stats.voiceDebateAudioBytes ?? 0);
+    base += ` · ${withAudio} with audio (${formatBytes(audioBytes)})`;
   }
-  if ((stats.voiceDebatesWithAudio ?? 0) > 0) {
-    base += ` · ${stats.voiceDebatesWithAudio} voice debate${stats.voiceDebatesWithAudio === 1 ? '' : 's'} with audio`;
+
+  if ((stats.itemsAwaitingAudio ?? 0) > 0) {
+    base += ` · ${stats.itemsAwaitingAudio} awaiting audio`;
   }
+
   return base;
 }
 
-/**
- * Returns whether auto-caching is currently enabled.
- */
+/** Is automatic caching of new content enabled? */
 export async function isAutoCacheEnabled(): Promise<boolean> {
   const settings = await _load();
   return settings.autoCache;
-}
-
-/**
- * Returns whether podcast audio caching is currently enabled.
- */
-export async function isAudioCacheEnabled(): Promise<boolean> {
-  const settings = await _load();
-  return settings.cacheAudio ?? false;
-}
-
-/**
- * Part 45: Returns whether voice debate audio caching is currently enabled.
- */
-export async function isVoiceDebateCacheEnabled(): Promise<boolean> {
-  const settings = await _load();
-  return settings.cacheVoiceDebate ?? false;
 }

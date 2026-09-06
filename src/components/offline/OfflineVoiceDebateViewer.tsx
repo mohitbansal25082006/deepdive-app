@@ -1,11 +1,28 @@
 // src/components/offline/OfflineVoiceDebateViewer.tsx
-// ─────────────────────────────────────────────────────────────────────────────
-// Part 55 — FULL THEME SYSTEM integration
-//   All colors now derive from the active theme via COLORS object.
-//   Uses useTheme() for light/dark mode awareness.
-//   All hardcoded hex values replaced with theme-aware colors.
-//   Module-level StyleSheet replaced with factory pattern.
-// ─────────────────────────────────────────────────────────────────────────────
+// Part 55 — Full theme system integration.
+// Part 59.2 — Audio detection fixed + a real "Download Audio" button.
+//
+// WHAT CHANGED
+//
+// The inline audio check is gone. It used to do:
+//
+//   Tier 1: audioFileExists(voiceDebate.audioSegmentPaths[0])
+//   Tier 2: getLocalVoiceDebateAudioPaths(voiceDebate.id)
+//
+// Both read stored absolute paths, so in a preview/production build both
+// returned nothing and this screen showed "Audio not available offline" —
+// with a notice telling the user to go back online and enable a setting, and
+// no button to do anything about it. Meanwhile the mp3s were on the device.
+//
+// Detection now lives in useCachedVoiceDebatePlayer, which searches the offline
+// cache, then the generation directory rebuilt against the current
+// documentDirectory, then every rebased variant of the stored path, and only
+// then the cloud. NoAudioNotice becomes an actionable card: when local files
+// exist it offers a one-tap copy that needs no internet; when they genuinely
+// don't, it says so plainly instead of blaming a setting.
+//
+// Everything else — the cinematic player, segment bar, transcript sheet, share
+// sheet, theming — is unchanged.
 
 import React, {
   useEffect, useState, useCallback, useMemo, useRef,
@@ -43,26 +60,39 @@ import {
   SEGMENT_ICONS,
 } from '../../constants/voiceDebate';
 import { useVoiceDebatePlayer } from '../../hooks/useVoiceDebatePlayer';
+// ── Part 59.2: audio detection + download live here now ──────────────────────
+import {
+  useCachedVoiceDebatePlayer,
+  type VDDownloadState,
+} from '../../hooks/useCachedVoiceDebatePlayer';
 import { VoiceDebateEngine } from '../../services/VoiceDebateAudioEngine';
 import {
   exportVoiceDebateAsPDF,
   exportVoiceDebateAsMP3,
 } from '../../services/voiceDebateExport';
-import { audioFileExists } from '../../services/voiceDebateTTSService';
 import { WaveformVisualizer } from '../podcast/WaveformVisualizer';
 import { DebateTranscriptSheet } from '../debate/DebateTranscriptSheet';
 import { DebateConfidenceArc } from '../debate/DebateConfidenceArc';
-import { getLocalVoiceDebateAudioPaths } from '../../lib/voiceDebateAudioCache';
-import { formatBytes } from '../../lib/cacheStorage';
-import type { VoiceDebate, DebateSegmentType } from '../../types/voiceDebate';
+import type { VoiceDebate } from '../../types/voiceDebate';
 import type { CacheEntry } from '../../types/cache';
 import type { DebateAgentRole } from '../../types';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const RATE_OPTIONS = [0.75, 1.0, 1.25, 1.5, 2.0];
 
-// Fixed foreground for text on accent backgrounds
 const ON_ACCENT_TEXT = '#FFFFFF';
+
+// React Native's current typings expose `StyleSheet.absoluteFill` (a registered
+// style ID) but not `absoluteFillObject`. The object form is what we want here,
+// since these styles are spread into arrays alongside other objects, so it is
+// declared locally rather than reached for on StyleSheet.
+const ABSOLUTE_FILL = {
+  position: 'absolute',
+  top:      0,
+  left:     0,
+  right:    0,
+  bottom:   0,
+} as const;
 
 type SegmentKey = keyof typeof SEGMENT_COLORS;
 
@@ -122,9 +152,52 @@ function Orb({ x, y, size, color, duration }: {
 
 // ─── Agent avatar strip ────────────────────────────────────────────────────────
 
+function AgentAvatar({ role, isActive }: { role: string; isActive: boolean }) {
+  const persona = VOICE_PERSONAS[role as DebateAgentRole | 'moderator'] ?? VOICE_PERSONAS['moderator'];
+  const scale = useSharedValue(isActive ? 1.15 : 1.0);
+
+  useEffect(() => {
+    scale.value = withSpring(isActive ? 1.15 : 1.0, { damping: 12, stiffness: 180 });
+  }, [isActive]);
+
+  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  return (
+    <Animated.View style={animStyle}>
+      <View style={{
+        width: isActive ? 46 : 34,
+        height: isActive ? 46 : 34,
+        borderRadius: isActive ? 14 : 10,
+        backgroundColor: `${persona.color}${isActive ? '28' : '12'}`,
+        borderWidth: isActive ? 2 : 1,
+        borderColor: isActive ? persona.color : `${persona.color}35`,
+        alignItems: 'center', justifyContent: 'center',
+        shadowColor: isActive ? persona.color : 'transparent',
+        shadowOpacity: isActive ? 0.7 : 0,
+        shadowRadius: isActive ? 10 : 0,
+        elevation: isActive ? 6 : 0,
+      }}>
+        <Ionicons name={persona.icon as never} size={isActive ? 20 : 15} color={persona.color} />
+      </View>
+      {isActive && (
+        <View style={{
+          position: 'absolute', bottom: -5, left: '50%' as never,
+          transform: [{ translateX: -11 }],
+          backgroundColor: persona.color,
+          borderRadius: RADIUS.full, paddingHorizontal: 4, paddingVertical: 1,
+        }}>
+          <Text style={{ color: ON_ACCENT_TEXT, fontSize: 7, fontWeight: '800' }}>NOW</Text>
+        </View>
+      )}
+    </Animated.View>
+  );
+}
+
 function AgentAvatarStrip({ voiceDebate, activeSpeaker }: {
   voiceDebate: VoiceDebate; activeSpeaker: string;
 }) {
+  // Hooks must not be called inside a map body — AgentAvatar is its own
+  // component so each avatar owns its animation hooks legally.
   const agentRoles = useMemo(() => {
     const seen = new Set<string>();
     const roles: string[] = [];
@@ -136,49 +209,9 @@ function AgentAvatarStrip({ voiceDebate, activeSpeaker }: {
 
   return (
     <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
-      {agentRoles.map(role => {
-        const persona = VOICE_PERSONAS[role as DebateAgentRole | 'moderator'] ?? VOICE_PERSONAS['moderator'];
-        const isActive = role === activeSpeaker;
-        const scale = useSharedValue(isActive ? 1.15 : 1.0);
-
-        useEffect(() => {
-          scale.value = withSpring(isActive ? 1.15 : 1.0, { damping: 12, stiffness: 180 });
-        }, [isActive]);
-
-        const animStyle = useAnimatedStyle(() => ({
-          transform: [{ scale: scale.value }],
-        }));
-
-        return (
-          <Animated.View key={role} style={animStyle}>
-            <View style={{
-              width: isActive ? 46 : 34,
-              height: isActive ? 46 : 34,
-              borderRadius: isActive ? 14 : 10,
-              backgroundColor: `${persona.color}${isActive ? '28' : '12'}`,
-              borderWidth: isActive ? 2 : 1,
-              borderColor: isActive ? persona.color : `${persona.color}35`,
-              alignItems: 'center', justifyContent: 'center',
-              shadowColor: isActive ? persona.color : 'transparent',
-              shadowOpacity: isActive ? 0.7 : 0,
-              shadowRadius: isActive ? 10 : 0,
-              elevation: isActive ? 6 : 0,
-            }}>
-              <Ionicons name={persona.icon as any} size={isActive ? 20 : 15} color={persona.color} />
-            </View>
-            {isActive && (
-              <View style={{
-                position: 'absolute', bottom: -5, left: '50%' as any,
-                transform: [{ translateX: -11 }],
-                backgroundColor: persona.color,
-                borderRadius: RADIUS.full, paddingHorizontal: 4, paddingVertical: 1,
-              }}>
-                <Text style={{ color: ON_ACCENT_TEXT, fontSize: 7, fontWeight: '800' }}>NOW</Text>
-              </View>
-            )}
-          </Animated.View>
-        );
-      })}
+      {agentRoles.map(role => (
+        <AgentAvatar key={role} role={role} isActive={role === activeSpeaker} />
+      ))}
     </View>
   );
 }
@@ -201,15 +234,15 @@ function SegmentProgressBar({
     fill.value = withTiming(Math.min(1, Math.max(0, progress)), { duration: 150 });
   }, [progress]);
 
-  const fillStyle = useAnimatedStyle(() => ({ width: `${fill.value * 100}%` as any }));
+  const fillStyle  = useAnimatedStyle(() => ({ width: `${fill.value * 100}%` as never }));
   const thumbStyle = useAnimatedStyle(() => ({
-    left: `${fill.value * 100}%` as any, transform: [{ translateX: -8 }],
+    left: `${fill.value * 100}%` as never, transform: [{ translateX: -8 }],
   }));
 
   const segments = voiceDebate.script?.segments ?? [];
-  const turns = voiceDebate.script?.turns ?? [];
+  const turns    = voiceDebate.script?.turns ?? [];
   const totalDur = turns.reduce((s, t) => s + (t.durationMs ?? 0), 0) || totalDurationMs;
-  const segKey = asSegmentKey(currentSegmentType);
+  const segKey   = asSegmentKey(currentSegmentType);
   const segColor = SEGMENT_COLORS[segKey] ?? COLORS.primary;
 
   return (
@@ -268,7 +301,7 @@ function SegmentProgressBar({
           return (
             <View key={seg.id} style={{ alignItems: 'center', gap: 1 }}>
               <Ionicons
-                name={SEGMENT_ICONS[sk] as any}
+                name={SEGMENT_ICONS[sk] as never}
                 size={9}
                 color={isCurrentSeg ? sColor : COLORS.textMuted}
               />
@@ -348,25 +381,103 @@ function CollapsibleArc({ voiceDebate, accentColor }: {
   );
 }
 
-// ─── No-audio notice ──────────────────────────────────────────────────────────
+// ─── Part 59.2: actionable audio card ─────────────────────────────────────────
+//
+// Replaces the old dead-end NoAudioNotice. Three states:
+//
+//   downloading  → progress bar, and it says whether it is copying (no network)
+//                  or downloading (network), because a local copy of a 40 MB
+//                  debate finishing in two seconds otherwise looks broken.
+//   can download → a button. Works offline when the generation files are on
+//                  this device, which is the common case and the whole point.
+//   cannot       → an honest explanation. No instruction to change a setting
+//                  that would not have helped.
 
-function NoAudioNotice() {
+function AudioDownloadCard({
+  downloadState,
+  onDownload,
+}: {
+  downloadState: VDDownloadState;
+  onDownload:    () => void;
+}) {
+  const { isDownloading, progress, segmentsComplete, segmentsTotal,
+          error, phase, canDownload, offlineCapable } = downloadState;
+
+  if (isDownloading) {
+    const label = phase === 'downloading' ? 'Downloading audio' : 'Saving audio for offline';
+    return (
+      <View style={{
+        backgroundColor: `${COLORS.primary}12`,
+        borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
+        borderWidth: 1, borderColor: `${COLORS.primary}30`,
+      }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: SPACING.sm }}>
+          <ActivityIndicator size="small" color={COLORS.primary} />
+          <Text style={{ color: COLORS.primary, fontSize: FONTS.sizes.sm, fontWeight: '700', flex: 1 }}>
+            {label}… {segmentsComplete}/{segmentsTotal}
+          </Text>
+        </View>
+        <View style={{ height: 4, backgroundColor: COLORS.backgroundElevated, borderRadius: 2, overflow: 'hidden' }}>
+          <View style={{
+            width: `${Math.round(Math.min(1, progress) * 100)}%` as never,
+            height: '100%', backgroundColor: COLORS.primary, borderRadius: 2,
+          }} />
+        </View>
+      </View>
+    );
+  }
+
+  const accent = canDownload ? COLORS.secondary : COLORS.warning;
+
   return (
     <View style={{
       flexDirection: 'row', alignItems: 'flex-start', gap: 10,
-      backgroundColor: `${COLORS.warning}10`,
+      backgroundColor: `${accent}10`,
       borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.md,
-      borderWidth: 1, borderColor: `${COLORS.warning}25`,
+      borderWidth: 1, borderColor: `${accent}25`,
     }}>
-      <Ionicons name="headset-outline" size={16} color={COLORS.warning} style={{ marginTop: 1, flexShrink: 0 }} />
+      <Ionicons
+        name="headset-outline"
+        size={16}
+        color={accent}
+        style={{ marginTop: 1, flexShrink: 0 }}
+      />
       <View style={{ flex: 1 }}>
-        <Text style={{ color: COLORS.warning, fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 3 }}>
-          Audio not available offline
+        <Text style={{ color: accent, fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 3 }}>
+          {canDownload ? 'Audio not saved offline yet' : 'Audio not available on this device'}
         </Text>
-        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16 }}>
-          Audio segments were not cached for this voice debate.
-          Go online and open the Voice Debate player, or enable "Cache Voice Debate Audio" in Cache Manager Settings to download audio for offline use.
+
+        <Text style={{ color: COLORS.textMuted, fontSize: FONTS.sizes.xs, lineHeight: 16, marginBottom: SPACING.sm }}>
+          {canDownload
+            ? (offlineCapable
+                ? 'The audio files are on this device. Save them for offline playback — no internet needed.'
+                : 'Save the audio for offline playback and MP3 export.')
+            : 'The audio for this debate is not stored on this device. Open it once while connected to the internet and it will be saved here.'}
         </Text>
+
+        {error ? (
+          <Text style={{ color: COLORS.error, fontSize: FONTS.sizes.xs, marginBottom: SPACING.sm }}>
+            {error}
+          </Text>
+        ) : null}
+
+        {canDownload && (
+          <TouchableOpacity
+            onPress={onDownload}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 6,
+              backgroundColor: COLORS.secondary,
+              borderRadius: RADIUS.full,
+              paddingVertical: 8, paddingHorizontal: 16,
+              alignSelf: 'flex-start',
+            }}
+          >
+            <Ionicons name="download-outline" size={13} color="#FFF" />
+            <Text style={{ color: '#FFF', fontSize: FONTS.sizes.xs, fontWeight: '700' }}>
+              {offlineCapable ? 'Save Audio Offline' : 'Download Audio'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -374,7 +485,13 @@ function NoAudioNotice() {
 
 // ─── Transcript-only view ─────────────────────────────────────────────────────
 
-function TranscriptOnlyView({ voiceDebate }: { voiceDebate: VoiceDebate }) {
+function TranscriptOnlyView({
+  voiceDebate, downloadState, onDownload,
+}: {
+  voiceDebate:   VoiceDebate;
+  downloadState: VDDownloadState;
+  onDownload:    () => void;
+}) {
   const turns = voiceDebate.script?.turns ?? [];
   return (
     <ScrollView
@@ -382,7 +499,8 @@ function TranscriptOnlyView({ voiceDebate }: { voiceDebate: VoiceDebate }) {
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16 }}
       showsVerticalScrollIndicator={false}
     >
-      <NoAudioNotice />
+      <AudioDownloadCard downloadState={downloadState} onDownload={onDownload} />
+
       <Text style={{
         color: COLORS.textMuted, fontSize: 11, textAlign: 'center',
         marginBottom: 16, fontWeight: '500',
@@ -408,7 +526,7 @@ function TranscriptOnlyView({ voiceDebate }: { voiceDebate: VoiceDebate }) {
                 alignItems: 'center', justifyContent: 'center',
                 borderWidth: 1, borderColor: `${persona.color}40`,
               }}>
-                <Ionicons name={persona.icon as any} size={11} color={persona.color} />
+                <Ionicons name={persona.icon as never} size={11} color={persona.color} />
               </View>
               <Text style={{ color: persona.color, fontSize: 11, fontWeight: '800', letterSpacing: 0.5, flex: 1 }}>
                 {getSpeakerDisplayName(turn.speaker).toUpperCase()}
@@ -436,8 +554,8 @@ function TranscriptOnlyView({ voiceDebate }: { voiceDebate: VoiceDebate }) {
 
 // ─── Share sheet ──────────────────────────────────────────────────────────────
 
-function ShareSheet({ voiceDebate, hasAudio, accentColor, bottomInset, onClose }: {
-  voiceDebate: VoiceDebate; hasAudio: boolean; accentColor: string;
+function ShareSheet({ voiceDebate, hasAudio, bottomInset, onClose }: {
+  voiceDebate: VoiceDebate; hasAudio: boolean;
   bottomInset: number; onClose: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -500,7 +618,7 @@ function ShareSheet({ voiceDebate, hasAudio, accentColor, bottomInset, onClose }
       icon: 'musical-notes-outline',
       color: COLORS.secondary,
       label: 'Export Audio (MP3)',
-      sub: 'Full debate as single audio file',
+      sub: 'Full debate as a single audio file',
       onPress: handleMP3,
       show: hasAudio,
     },
@@ -517,7 +635,7 @@ function ShareSheet({ voiceDebate, hasAudio, accentColor, bottomInset, onClose }
 
   return (
     <TouchableWithoutFeedback onPress={onClose}>
-      <View style={[StyleSheet.absoluteFillObject, {
+      <View style={[ABSOLUTE_FILL, {
         backgroundColor: getModalBackdrop(0.6), justifyContent: 'flex-end',
       }]}>
         <TouchableWithoutFeedback>
@@ -540,7 +658,11 @@ function ShareSheet({ voiceDebate, hasAudio, accentColor, bottomInset, onClose }
               Export Voice Debate
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 18 }}>
-              <View style={{ backgroundColor: `${COLORS.info}20`, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: `${COLORS.info}40` }}>
+              <View style={{
+                backgroundColor: `${COLORS.info}20`, borderRadius: 12,
+                paddingHorizontal: 8, paddingVertical: 3,
+                borderWidth: 1, borderColor: `${COLORS.info}40`,
+              }}>
                 <Text style={{ color: COLORS.info, fontSize: 9, fontWeight: '800' }}>OFFLINE</Text>
               </View>
               <Text style={{ color: COLORS.textMuted, fontSize: 13 }} numberOfLines={1}>
@@ -567,7 +689,7 @@ function ShareSheet({ voiceDebate, hasAudio, accentColor, bottomInset, onClose }
                 }}>
                   {busy === opt.id
                     ? <ActivityIndicator size="small" color={opt.color} />
-                    : <Ionicons name={opt.icon as any} size={21} color={opt.color} />}
+                    : <Ionicons name={opt.icon as never} size={21} color={opt.color} />}
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: COLORS.textPrimary, fontSize: 14, fontWeight: '600' }}>{opt.label}</Text>
@@ -604,67 +726,27 @@ export function OfflineVoiceDebateViewer({
 }: OfflineVoiceDebateViewerProps) {
   const insets = useSafeAreaInsets();
   const { isLight, version } = useTheme();
-  const topInset = Math.max(insets.top, Platform.OS === 'android' ? 28 : 0);
+  const topInset    = Math.max(insets.top, Platform.OS === 'android' ? 28 : 0);
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 12 : 0);
 
-  // Rebuild styles on theme change
   const styles = useMemo(() => createStyles(isLight), [version, isLight]);
 
-  const [hasAudio, setHasAudio] = useState(false);
-  const [audioChecked, setAudioChecked] = useState(false);
-  const [patchedDebate, setPatchedDebate] = useState<VoiceDebate>(voiceDebate);
   const [showTranscript, setShowTranscript] = useState(false);
-  const [showShare, setShowShare] = useState(false);
+  const [showShare, setShowShare]           = useState(false);
   const hasStartedRef = useRef(false);
 
-  // ── Check for local audio ─────────────────────────────────────────────────
+  // ── Part 59.2: all audio detection lives in the hook ──────────────────────
+  const {
+    mode,
+    voiceDebateWithLocal,
+    hasLocalAudio,
+    downloadState,
+    downloadAudio,
+  } = useCachedVoiceDebatePlayer(voiceDebate);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const checkAudio = async () => {
-      const localPaths = voiceDebate.audioSegmentPaths ?? [];
-      let audioAvailable = false;
-
-      // Tier 1: Check original generation paths (local file:// paths)
-      if (localPaths.length > 0 && localPaths[0] && !localPaths[0].startsWith('http')) {
-        try {
-          const firstExists = await audioFileExists(localPaths[0]);
-          if (firstExists) {
-            audioAvailable = true;
-            if (!cancelled) setPatchedDebate(voiceDebate);
-          }
-        } catch {
-          // audioFileExists can throw if FileSystem isn't ready — treat as not found
-        }
-      }
-
-      // Tier 2: Check local audio cache (downloaded copy)
-      if (!audioAvailable) {
-        try {
-          const cachedPaths = await getLocalVoiceDebateAudioPaths(voiceDebate.id);
-          if (cachedPaths && cachedPaths.length > 0) {
-            const patched: VoiceDebate = {
-              ...voiceDebate,
-              audioSegmentPaths: cachedPaths,
-            };
-            audioAvailable = true;
-            if (!cancelled) setPatchedDebate(patched);
-          }
-        } catch {
-          // getLocalVoiceDebateAudioPaths can throw — treat as not cached
-        }
-      }
-
-      if (!cancelled) {
-        setHasAudio(audioAvailable);
-        setAudioChecked(true);
-      }
-    };
-
-    checkAudio();
-    return () => { cancelled = true; };
-  }, [voiceDebate.id]);
+  const patchedDebate = voiceDebateWithLocal ?? voiceDebate;
+  const audioChecked  = mode !== 'loading';
+  const hasAudio      = hasLocalAudio;
 
   // ── Player hook ───────────────────────────────────────────────────────────
 
@@ -675,7 +757,6 @@ export function OfflineVoiceDebateViewer({
     seekToPercent, formatTime,
   } = useVoiceDebatePlayer(hasAudio ? patchedDebate : null);
 
-  // Start playback once audio confirmed available
   useEffect(() => {
     if (!hasAudio || !audioChecked || hasStartedRef.current) return;
     if (!VoiceDebateEngine.isActiveFor(patchedDebate.id)) {
@@ -684,19 +765,24 @@ export function OfflineVoiceDebateViewer({
     }
   }, [hasAudio, audioChecked, patchedDebate.id]);
 
+  // A fresh download replaces the audio paths, so allow one more auto-start.
+  useEffect(() => {
+    if (downloadState.phase === 'done') hasStartedRef.current = false;
+  }, [downloadState.phase]);
+
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const activeSpeaker = currentTurn?.speaker ?? 'moderator';
-  const accentColor = getSpeakerColor(activeSpeaker);
+  const accentColor   = getSpeakerColor(activeSpeaker);
   const bgColors: [string, string, string] = [
     COLORS.background,
     `${accentColor}14`,
     COLORS.background,
   ];
-  const turns = patchedDebate.script?.turns ?? [];
+  const turns          = patchedDebate.script?.turns ?? [];
   const displayMinutes = computeDisplayMinutes(patchedDebate);
 
-  const handleSeek = useCallback((p: number) => seekToPercent(p), [seekToPercent]);
+  const handleSeek     = useCallback((p: number) => seekToPercent(p), [seekToPercent]);
   const handleTurnJump = useCallback((i: number) => skipToTurn(i), [skipToTurn]);
 
   const headerSegKey = asSegmentKey(playerState.currentSegmentType);
@@ -722,7 +808,7 @@ export function OfflineVoiceDebateViewer({
       <LinearGradient
         colors={bgColors}
         start={{ x: 0.3, y: 0 }} end={{ x: 0.7, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
+        style={ABSOLUTE_FILL}
       />
 
       <Orb x={SCREEN_W * 0.15} y={SCREEN_H * 0.22} size={150} color={accentColor} duration={3200} />
@@ -756,7 +842,7 @@ export function OfflineVoiceDebateViewer({
               borderWidth: 1, borderColor: COLORS.border,
             }}>
               <Ionicons
-                name={(SEGMENT_ICONS[headerSegKey] ?? 'mic-outline') as any}
+                name={(SEGMENT_ICONS[headerSegKey] ?? 'mic-outline') as never}
                 size={10}
                 color={SEGMENT_COLORS[headerSegKey] ?? COLORS.primary}
               />
@@ -768,6 +854,17 @@ export function OfflineVoiceDebateViewer({
         </View>
 
         <View style={{ flexDirection: 'row', gap: 8 }}>
+          {/* Part 59.2: save-offline action, visible whenever it can help. */}
+          {hasAudio && downloadState.canDownload && !downloadState.isDownloading && (
+            <TouchableOpacity onPress={downloadAudio} style={styles.headerBtn}>
+              <Ionicons name="download-outline" size={19} color={COLORS.textPrimary} />
+            </TouchableOpacity>
+          )}
+          {hasAudio && downloadState.isDownloading && (
+            <View style={styles.headerBtn}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            </View>
+          )}
           {hasAudio && (
             <TouchableOpacity
               onPress={() => setShowTranscript(true)}
@@ -782,8 +879,14 @@ export function OfflineVoiceDebateViewer({
         </View>
       </View>
 
-      {/* ── NO AUDIO: transcript only ──────────────────────────────────────── */}
-      {!hasAudio && <TranscriptOnlyView voiceDebate={patchedDebate} />}
+      {/* ── NO AUDIO: transcript + download card ───────────────────────────── */}
+      {!hasAudio && (
+        <TranscriptOnlyView
+          voiceDebate={patchedDebate}
+          downloadState={downloadState}
+          onDownload={downloadAudio}
+        />
+      )}
 
       {/* ── HAS AUDIO: cinematic player ────────────────────────────────────── */}
       {hasAudio && (
@@ -793,6 +896,12 @@ export function OfflineVoiceDebateViewer({
             contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}
             showsVerticalScrollIndicator={false}
           >
+            {/* Inline progress while a save is running — the player keeps
+                playing throughout, since the copy reads the same files. */}
+            {downloadState.isDownloading && (
+              <AudioDownloadCard downloadState={downloadState} onDownload={downloadAudio} />
+            )}
+
             <Text style={{
               color: COLORS.textMuted, fontSize: 11, textAlign: 'center',
               marginBottom: 16, fontWeight: '500', paddingHorizontal: 16,
@@ -932,7 +1041,6 @@ export function OfflineVoiceDebateViewer({
         <ShareSheet
           voiceDebate={patchedDebate}
           hasAudio={hasAudio}
-          accentColor={accentColor}
           bottomInset={bottomInset}
           onClose={() => setShowShare(false)}
         />
@@ -942,7 +1050,6 @@ export function OfflineVoiceDebateViewer({
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-// Factory pattern to support theme changes
 
 function createStyles(isLight: boolean) {
   return StyleSheet.create({

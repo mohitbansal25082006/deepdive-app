@@ -1,67 +1,120 @@
 // src/lib/cacheStorage.ts
-// Part 45 — Updated: added 'voice_debate' to TYPE_META and all helpers.
+// Part 59.2 — derived paths + static imports (see the two bug notes below).
+// Part 59.3 — audio is part of an item's size, not an optional extra.
 //
-// CHANGES from Part 41.7:
-//   • voice_debate added to TYPE_META with icon, color, dir
-//   • evictItemById / evictByType / clearAllCache handle voice_debate eviction
-//     (calls evictVoiceDebateJson + evictVoiceDebateAudio)
-//   • getCacheStats includes voiceDebatesWithAudio / voiceDebateAudioBytes
-//   • markVoiceDebateAudioCached helper added (mirrors markPodcastAudioCached)
-//   • cacheVoiceDebate / getCachedVoiceDebate convenience wrappers added
-//   • INDEX_VERSION bumped to 45 (migration: existing v22 entries are read
-//     as-is; version mismatch triggers a clean index which forces re-cache)
+// ─── BUG 1 (59.2): stale absolute filePath ──────────────────────────────────
 //
-// All other code is byte-for-byte identical to Part 41.7.
+// Every CacheEntry stored an absolute filePath and getCachedItem() read that
+// exact string. After an app update, a reinstall, or the Expo Go → standalone
+// move the container prefix changes and every one of those paths points
+// nowhere. Users saw "Cache Miss — this item is no longer in the cache",
+// followed by the entry being deleted, while the JSON sat on disk untouched.
+//
+// Fix: buildFilePath(type, id) is the single source of truth and is called on
+// every read. entry.filePath is diagnostic only. The derivation is
+// deterministic from (type, id), so entries written by any previous version
+// resolve with no migration — the index stays at version 45 so nobody loses
+// their cache on upgrade.
+//
+// ─── BUG 2 (59.2): dynamic import() in a release bundle ─────────────────────
+//
+// Eviction used `await import('./podcastAudioCache')` in five places. Under
+// Hermes in a release build that can reject, and because these sit inside
+// fire-and-forget cleanup the rejection surfaced as a black screen or a
+// half-eviction — files left on disk, index rows removed, storage never
+// reclaimed. All five are now static. There is no cycle: the audio and asset
+// caches import filePaths and types only, never cacheStorage.
+//
+// ─── PART 59.3 CHANGES ──────────────────────────────────────────────────────
+//
+//   • loadSettings() no longer reads or writes cacheAudio / cacheVoiceDebate.
+//     Audio is not optional any more, so a flag saying otherwise is a lie the
+//     rest of the code would have to keep honouring.
+//   • markAudioCached(type, id, bytes) replaces the two near-identical
+//     mark*AudioCached functions (both kept as thin wrappers).
+//   • cacheItem() sets audioPending for podcasts and voice debates so the UI
+//     can distinguish "transcript only, audio on the way" from "complete".
+//   • getCacheStats() reports itemsAwaitingAudio.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+
 import {
   CacheEntry,
   CacheIndex,
   CacheSettings,
   CacheStats,
   CachedContentType,
+  hasAudioTrack,
 } from '../types/cache';
+
+import {
+  docDir,
+  safeId,
+  ensureDir,
+  deleteQuietly,
+  fileExists,
+  fileSize,
+} from './filePaths';
+
+// ── Part 59.2: static, not dynamic. See BUG 2 above. ─────────────────────────
+import { evictPodcastAudio, clearAllPodcastAudio }      from './podcastAudioCache';
+import { evictPresentationAssets }                       from './presentationAssetCache';
+import { evictVoiceDebateJson, clearAllVoiceDebateJsonCache }   from './voiceDebateCache';
+import { evictVoiceDebateAudio, clearAllVoiceDebateAudioCache } from './voiceDebateAudioCache';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const INDEX_KEY        = 'deepdive:cache:index:v45';
 const SETTINGS_KEY     = 'deepdive:cache:settings:v45';
-const CACHE_DIR        = `${FileSystem.documentDirectory}deepdive_cache/`;
-const INDEX_VERSION    = 45;
+const INDEX_VERSION    = 45;   // deliberately NOT bumped — see header
 const DEFAULT_LIMIT_MB = 100;
 const DEFAULT_EXPIRY_D = 30;
 
+/** Rebuilt live so it always reflects the current container. */
+function cacheRoot(): string {
+  return `${docDir()}deepdive_cache/`;
+}
+
 // ─── Type metadata ────────────────────────────────────────────────────────────
-// Part 45: voice_debate added
 
 const TYPE_META: Record<CachedContentType, { icon: string; color: string; dir: string }> = {
-  report:         { icon: 'document-text-outline',   color: '#6C63FF', dir: 'reports'        },
-  podcast:        { icon: 'radio-outline',            color: '#FF6584', dir: 'podcasts'       },
-  debate:         { icon: 'chatbox-ellipses-outline', color: '#F97316', dir: 'debates'        },
-  academic_paper: { icon: 'school-outline',           color: '#43E97B', dir: 'papers'         },
-  presentation:   { icon: 'easel-outline',            color: '#29B6F6', dir: 'presentations'  },
-  voice_debate:   { icon: 'mic-circle-outline',       color: '#8B5CF6', dir: 'voice_debates'  },
+  report:         { icon: 'document-text-outline',    color: '#6C63FF', dir: 'reports'       },
+  podcast:        { icon: 'radio-outline',            color: '#FF6584', dir: 'podcasts'      },
+  debate:         { icon: 'chatbox-ellipses-outline', color: '#F97316', dir: 'debates'       },
+  academic_paper: { icon: 'school-outline',           color: '#43E97B', dir: 'papers'        },
+  presentation:   { icon: 'easel-outline',            color: '#29B6F6', dir: 'presentations' },
+  voice_debate:   { icon: 'mic-circle-outline',       color: '#8B5CF6', dir: 'voice_debates' },
 };
 
-// ─── Ensure cache directories exist ──────────────────────────────────────────
+// ─── Directories ──────────────────────────────────────────────────────────────
 
 async function ensureDirs(): Promise<void> {
-  try {
-    const rootInfo = await FileSystem.getInfoAsync(CACHE_DIR);
-    if (!rootInfo.exists) {
-      await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
-    }
-    for (const meta of Object.values(TYPE_META)) {
-      const dir  = `${CACHE_DIR}${meta.dir}/`;
-      const info = await FileSystem.getInfoAsync(dir);
-      if (!info.exists) {
-        await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-      }
-    }
-  } catch (err) {
-    console.warn('[CacheStorage] ensureDirs error:', err);
+  const root = cacheRoot();
+  if (!root) return;
+  await ensureDir(root);
+  for (const meta of Object.values(TYPE_META)) {
+    await ensureDir(`${root}${meta.dir}/`);
   }
+}
+
+// ─── Path derivation (the fix for BUG 1) ─────────────────────────────────────
+
+function portablePathFor(type: CachedContentType, id: string): string {
+  return `deepdive_cache/${TYPE_META[type].dir}/${safeId(id, 80)}.json`;
+}
+
+/**
+ * The authoritative on-disk location for a cached item.
+ * Deterministic from (type, id) and always built against the current
+ * documentDirectory, which is what makes a cache survive an app update.
+ */
+function buildFilePath(type: CachedContentType, id: string): string {
+  return `${cacheRoot()}${TYPE_META[type].dir}/${safeId(id, 80)}.json`;
+}
+
+function readPathFor(entry: CacheEntry): string {
+  return buildFilePath(entry.type, entry.id);
 }
 
 // ─── Index helpers ────────────────────────────────────────────────────────────
@@ -73,11 +126,10 @@ async function loadIndex(): Promise<CacheIndex> {
       const parsed = JSON.parse(raw) as CacheIndex;
       if (parsed.version === INDEX_VERSION) return parsed;
     }
-    // Try reading old v22 index and migrate entries
+    // Migrate a v22 index without discarding anything.
     const oldRaw = await AsyncStorage.getItem('deepdive:cache:index:v22');
     if (oldRaw) {
       const oldParsed = JSON.parse(oldRaw) as CacheIndex;
-      // Migrate: keep existing entries but bump version
       const migrated: CacheIndex = {
         entries:    oldParsed.entries ?? [],
         totalBytes: oldParsed.totalBytes ?? 0,
@@ -87,7 +139,8 @@ async function loadIndex(): Promise<CacheIndex> {
       await saveIndex(migrated);
       return migrated;
     }
-  } catch {}
+  } catch { /* fall through to empty */ }
+
   return {
     entries:    [],
     totalBytes: 0,
@@ -105,89 +158,76 @@ async function saveIndex(index: CacheIndex): Promise<void> {
   }
 }
 
-// ─── Settings helpers ─────────────────────────────────────────────────────────
+// ─── Settings ─────────────────────────────────────────────────────────────────
 
+/**
+ * Part 59.3: cacheAudio / cacheVoiceDebate are no longer read or written.
+ * A settings blob from an older build still parses — the deprecated keys are
+ * simply ignored and dropped the next time settings are saved.
+ */
 export async function loadSettings(): Promise<CacheSettings> {
   try {
-    // Try new key first
     const raw = await AsyncStorage.getItem(SETTINGS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as CacheSettings;
-      if (typeof parsed.cacheAudio === 'undefined') parsed.cacheAudio = false;
-      if (typeof parsed.cacheVoiceDebate === 'undefined') parsed.cacheVoiceDebate = false;
-      return parsed;
+      const parsed = JSON.parse(raw) as Partial<CacheSettings>;
+      return {
+        limitBytes: parsed.limitBytes ?? DEFAULT_LIMIT_MB * 1024 * 1024,
+        autoCache:  parsed.autoCache  ?? true,
+        expiryDays: parsed.expiryDays ?? DEFAULT_EXPIRY_D,
+      };
     }
-    // Try migrating old settings key
     const oldRaw = await AsyncStorage.getItem('deepdive:cache:settings:v22');
     if (oldRaw) {
       const oldParsed = JSON.parse(oldRaw) as Partial<CacheSettings>;
       return {
-        limitBytes:       oldParsed.limitBytes       ?? DEFAULT_LIMIT_MB * 1024 * 1024,
-        autoCache:        oldParsed.autoCache        ?? true,
-        expiryDays:       oldParsed.expiryDays       ?? DEFAULT_EXPIRY_D,
-        cacheAudio:       oldParsed.cacheAudio       ?? false,
-        cacheVoiceDebate: false,
+        limitBytes: oldParsed.limitBytes ?? DEFAULT_LIMIT_MB * 1024 * 1024,
+        autoCache:  oldParsed.autoCache  ?? true,
+        expiryDays: oldParsed.expiryDays ?? DEFAULT_EXPIRY_D,
       };
     }
-  } catch {}
+  } catch { /* fall through to defaults */ }
+
   return {
-    limitBytes:       DEFAULT_LIMIT_MB * 1024 * 1024,
-    autoCache:        true,
-    expiryDays:       DEFAULT_EXPIRY_D,
-    cacheAudio:       false,
-    cacheVoiceDebate: false,
+    limitBytes: DEFAULT_LIMIT_MB * 1024 * 1024,
+    autoCache:  true,
+    expiryDays: DEFAULT_EXPIRY_D,
   };
 }
 
 export async function saveSettings(settings: CacheSettings): Promise<void> {
   try {
-    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    // Write only the live fields; the deprecated audio flags are dropped here.
+    const clean: CacheSettings = {
+      limitBytes: settings.limitBytes,
+      autoCache:  settings.autoCache,
+      expiryDays: settings.expiryDays,
+    };
+    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
     const index      = await loadIndex();
-    index.limitBytes = settings.limitBytes;
+    index.limitBytes = clean.limitBytes;
     await saveIndex(index);
   } catch (err) {
     console.warn('[CacheStorage] saveSettings error:', err);
   }
 }
 
-// ─── File path builder ────────────────────────────────────────────────────────
+// ─── Side-car eviction (static imports — see BUG 2) ──────────────────────────
 
-function buildFilePath(type: CachedContentType, id: string): string {
-  const dir    = TYPE_META[type].dir;
-  const safeId = id.replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 80);
-  return `${CACHE_DIR}${dir}/${safeId}.json`;
-}
-
-// ─── Eviction helpers ─────────────────────────────────────────────────────────
-
-/** Clean up podcast audio for an evicted podcast entry. */
-async function evictPodcastAudioFor(id: string): Promise<void> {
+async function evictSideCars(type: CachedContentType, id: string): Promise<void> {
   try {
-    const { evictPodcastAudio } = await import('./podcastAudioCache');
-    await evictPodcastAudio(id);
-  } catch {}
-}
-
-/** Clean up downloaded image/SVG assets for an evicted presentation entry. */
-async function evictPresentationAssetsFor(id: string): Promise<void> {
-  try {
-    const { evictPresentationAssets } = await import('./presentationAssetCache');
-    await evictPresentationAssets(id);
-  } catch {}
-}
-
-/**
- * Part 45: Clean up voice debate JSON + audio for an evicted voice_debate entry.
- */
-async function evictVoiceDebateFor(id: string): Promise<void> {
-  try {
-    const { evictVoiceDebateJson }   = await import('./voiceDebateCache');
-    const { evictVoiceDebateAudio }  = await import('./voiceDebateAudioCache');
-    await Promise.allSettled([
-      evictVoiceDebateJson(id),
-      evictVoiceDebateAudio(id),
-    ]);
-  } catch {}
+    if (type === 'podcast') {
+      await evictPodcastAudio(id);
+    } else if (type === 'presentation') {
+      await evictPresentationAssets(id);
+    } else if (type === 'voice_debate') {
+      await Promise.allSettled([
+        evictVoiceDebateJson(id),
+        evictVoiceDebateAudio(id),
+      ]);
+    }
+  } catch (err) {
+    console.warn(`[CacheStorage] evictSideCars(${type}, ${id}) error:`, err);
+  }
 }
 
 // ─── Eviction ─────────────────────────────────────────────────────────────────
@@ -196,10 +236,9 @@ async function evictExpired(index: CacheIndex): Promise<void> {
   const now     = Date.now();
   const expired = index.entries.filter(e => e.expiresAt < now);
   for (const entry of expired) {
-    try { await FileSystem.deleteAsync(entry.filePath, { idempotent: true }); } catch {}
-    if (entry.type === 'podcast')      await evictPodcastAudioFor(entry.id);
-    if (entry.type === 'presentation') await evictPresentationAssetsFor(entry.id);
-    if (entry.type === 'voice_debate') await evictVoiceDebateFor(entry.id);
+    await deleteQuietly(readPathFor(entry));
+    await deleteQuietly(entry.filePath);
+    await evictSideCars(entry.type, entry.id);
   }
   index.entries = index.entries.filter(e => e.expiresAt >= now);
 }
@@ -209,20 +248,19 @@ async function evictToFitLimit(index: CacheIndex): Promise<void> {
   while (index.totalBytes > index.limitBytes && index.entries.length > 0) {
     const victim = index.entries.shift()!;
     index.totalBytes -= victim.sizeBytes;
-    try { await FileSystem.deleteAsync(victim.filePath, { idempotent: true }); } catch {}
-    if (victim.type === 'podcast')      await evictPodcastAudioFor(victim.id);
-    if (victim.type === 'presentation') await evictPresentationAssetsFor(victim.id);
-    if (victim.type === 'voice_debate') await evictVoiceDebateFor(victim.id);
+    await deleteQuietly(readPathFor(victim));
+    await deleteQuietly(victim.filePath);
+    await evictSideCars(victim.type, victim.id);
   }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function cacheItem(
-  type:    CachedContentType,
-  id:      string,
-  title:   string,
-  data:    unknown,
+  type:  CachedContentType,
+  id:    string,
+  title: string,
+  data:  unknown,
   options?: {
     subtitle?:       string;
     expiryDays?:     number;
@@ -231,6 +269,10 @@ export async function cacheItem(
   },
 ): Promise<void> {
   try {
+    if (!docDir()) {
+      console.warn('[CacheStorage] documentDirectory unavailable — skipping cache write');
+      return;
+    }
     await ensureDirs();
 
     const settings   = await loadSettings();
@@ -243,10 +285,9 @@ export async function cacheItem(
       encoding: FileSystem.EncodingType.UTF8,
     });
 
-    const fileInfo   = await FileSystem.getInfoAsync(filePath);
-    const jsonBytes  = (fileInfo as any).size ?? serialized.length;
+    const onDisk     = await fileSize(filePath);
+    const jsonBytes  = onDisk > 0 ? onDisk : serialized.length;
     const audioBytes = options?.audioSizeBytes ?? 0;
-    const sizeBytes  = jsonBytes + audioBytes;
 
     const entry: CacheEntry = {
       id,
@@ -256,11 +297,15 @@ export async function cacheItem(
       cachedAt:       now,
       expiresAt:      now + expiryDays * 24 * 60 * 60 * 1000,
       filePath,
-      sizeBytes,
+      portablePath:   portablePathFor(type, id),
+      sizeBytes:      jsonBytes + audioBytes,
       icon:           TYPE_META[type].icon,
       color:          TYPE_META[type].color,
       hasAudio:       options?.hasAudio ?? false,
       audioSizeBytes: audioBytes,
+      // Part 59.3: audio-bearing types start "pending" and are cleared by
+      // markAudioCached once the files land.
+      audioPending:   hasAudioTrack(type) && !(options?.hasAudio ?? false),
     };
 
     const index    = await loadIndex();
@@ -268,10 +313,19 @@ export async function cacheItem(
     if (existing) {
       index.entries    = index.entries.filter(e => !(e.id === id && e.type === type));
       index.totalBytes -= existing.sizeBytes;
+      // Preserve audio accounting across a JSON re-cache. Without this,
+      // re-caching a podcast whose audio is already downloaded silently zeroed
+      // its audio size and made the Cache Manager under-report by megabytes.
+      if (existing.hasAudio && !(options?.hasAudio ?? false)) {
+        entry.hasAudio       = true;
+        entry.audioSizeBytes = existing.audioSizeBytes ?? 0;
+        entry.sizeBytes      = jsonBytes + (existing.audioSizeBytes ?? 0);
+        entry.audioPending   = false;
+      }
     }
 
     index.entries.unshift(entry);
-    index.totalBytes += sizeBytes;
+    index.totalBytes += entry.sizeBytes;
 
     await evictExpired(index);
     if (index.totalBytes > index.limitBytes) {
@@ -292,11 +346,25 @@ export async function getCachedItem<T>(
     const index = await loadIndex();
     const entry = index.entries.find(e => e.id === id && e.type === type);
     if (!entry) return null;
+
     if (Date.now() > entry.expiresAt) {
       await evictItemById(type, id);
       return null;
     }
-    const raw = await FileSystem.readAsStringAsync(entry.filePath, {
+
+    // Part 59.2: derived path first. Only fall back to the stored absolute
+    // path when the derived one is missing (covers an odd legacy layout).
+    let path: string | null = buildFilePath(type, id);
+    if (!(await fileExists(path))) {
+      path = (entry.filePath && await fileExists(entry.filePath)) ? entry.filePath : null;
+    }
+
+    if (!path) {
+      await evictItemById(type, id);
+      return null;
+    }
+
+    const raw = await FileSystem.readAsStringAsync(path, {
       encoding: FileSystem.EncodingType.UTF8,
     });
     return JSON.parse(raw) as T;
@@ -305,10 +373,13 @@ export async function getCachedItem<T>(
   }
 }
 
+/** Index says cached AND the file is really there. */
 export async function isCached(type: CachedContentType, id: string): Promise<boolean> {
   const index = await loadIndex();
   const now   = Date.now();
-  return index.entries.some(e => e.id === id && e.type === type && now < e.expiresAt);
+  const entry = index.entries.find(e => e.id === id && e.type === type && now < e.expiresAt);
+  if (!entry) return false;
+  return fileExists(buildFilePath(type, id));
 }
 
 export async function getCacheIndex(): Promise<CacheEntry[]> {
@@ -317,92 +388,77 @@ export async function getCacheIndex(): Promise<CacheEntry[]> {
   return index.entries.filter(e => now < e.expiresAt);
 }
 
-/**
- * Evict a single item by id + type.
- * Part 45: also evicts voice_debate audio+JSON for 'voice_debate' type.
- */
+/** Part 59.3: one entry, for callers that need its audio state. */
+export async function getCacheEntry(
+  type: CachedContentType,
+  id:   string,
+): Promise<CacheEntry | null> {
+  const index = await loadIndex();
+  return index.entries.find(e => e.id === id && e.type === type) ?? null;
+}
+
 export async function evictItemById(type: CachedContentType, id: string): Promise<void> {
   try {
     const index = await loadIndex();
     const entry = index.entries.find(e => e.id === id && e.type === type);
-    if (entry) {
-      try { await FileSystem.deleteAsync(entry.filePath, { idempotent: true }); } catch {}
-      index.entries = index.entries.filter(e => !(e.id === id && e.type === type));
-    }
+
+    await deleteQuietly(buildFilePath(type, id));
+    if (entry?.filePath) await deleteQuietly(entry.filePath);
+
+    index.entries = index.entries.filter(e => !(e.id === id && e.type === type));
     await saveIndex(index);
 
-    if (type === 'podcast')      await evictPodcastAudioFor(id);
-    if (type === 'presentation') await evictPresentationAssetsFor(id);
-    if (type === 'voice_debate') await evictVoiceDebateFor(id);
+    await evictSideCars(type, id);
   } catch (err) {
     console.warn('[CacheStorage] evictItemById error:', err);
   }
 }
 
-/**
- * Evict all items of a given type.
- * Part 45: also clears all voice_debate audio+JSON when type === 'voice_debate'.
- */
 export async function evictByType(type: CachedContentType): Promise<void> {
   try {
     const index   = await loadIndex();
     const victims = index.entries.filter(e => e.type === type);
+
     for (const v of victims) {
-      try { await FileSystem.deleteAsync(v.filePath, { idempotent: true }); } catch {}
-      if (v.type === 'presentation') await evictPresentationAssetsFor(v.id);
+      await deleteQuietly(buildFilePath(v.type, v.id));
+      await deleteQuietly(v.filePath);
+      if (v.type === 'presentation') await evictPresentationAssets(v.id);
     }
+
     index.entries = index.entries.filter(e => e.type !== type);
     await saveIndex(index);
 
     if (type === 'podcast') {
-      try {
-        const { clearAllPodcastAudio } = await import('./podcastAudioCache');
-        await clearAllPodcastAudio();
-      } catch {}
+      await clearAllPodcastAudio();
     }
     if (type === 'voice_debate') {
-      try {
-        const { clearAllVoiceDebateJsonCache } = await import('./voiceDebateCache');
-        const { clearAllVoiceDebateAudioCache } = await import('./voiceDebateAudioCache');
-        await Promise.allSettled([
-          clearAllVoiceDebateJsonCache(),
-          clearAllVoiceDebateAudioCache(),
-        ]);
-      } catch {}
+      await Promise.allSettled([
+        clearAllVoiceDebateJsonCache(),
+        clearAllVoiceDebateAudioCache(),
+      ]);
     }
   } catch (err) {
     console.warn('[CacheStorage] evictByType error:', err);
   }
 }
 
-/**
- * Clear the entire cache (all types).
- * Part 45: also clears all voice_debate audio+JSON.
- */
 export async function clearAllCache(): Promise<void> {
   try {
     const index = await loadIndex();
+
     for (const entry of index.entries) {
-      try { await FileSystem.deleteAsync(entry.filePath, { idempotent: true }); } catch {}
-      if (entry.type === 'presentation') await evictPresentationAssetsFor(entry.id);
+      await deleteQuietly(buildFilePath(entry.type, entry.id));
+      await deleteQuietly(entry.filePath);
+      if (entry.type === 'presentation') await evictPresentationAssets(entry.id);
     }
-    try {
-      await FileSystem.deleteAsync(CACHE_DIR, { idempotent: true });
-    } catch {}
 
-    try {
-      const { clearAllPodcastAudio } = await import('./podcastAudioCache');
-      await clearAllPodcastAudio();
-    } catch {}
+    await deleteQuietly(cacheRoot());
 
-    try {
-      const { clearAllVoiceDebateJsonCache }  = await import('./voiceDebateCache');
-      const { clearAllVoiceDebateAudioCache } = await import('./voiceDebateAudioCache');
-      await Promise.allSettled([
-        clearAllVoiceDebateJsonCache(),
-        clearAllVoiceDebateAudioCache(),
-      ]);
-    } catch {}
+    await Promise.allSettled([
+      clearAllPodcastAudio(),
+      clearAllVoiceDebateJsonCache(),
+      clearAllVoiceDebateAudioCache(),
+    ]);
 
     await saveIndex({
       entries:    [],
@@ -429,11 +485,12 @@ export async function getCacheStats(): Promise<CacheStats> {
     voice_debate:   { count: 0, bytes: 0 },
   } as Record<CachedContentType, { count: number; bytes: number }>;
 
-  let totalBytes             = 0;
-  let podcastsWithAudio      = 0;
-  let audioBytesTotal        = 0;
-  let voiceDebatesWithAudio  = 0;
-  let voiceDebateAudioBytes  = 0;
+  let totalBytes            = 0;
+  let podcastsWithAudio     = 0;
+  let audioBytesTotal       = 0;
+  let voiceDebatesWithAudio = 0;
+  let voiceDebateAudioBytes = 0;
+  let itemsAwaitingAudio    = 0;
 
   for (const e of valid) {
     byType[e.type].count++;
@@ -448,18 +505,22 @@ export async function getCacheStats(): Promise<CacheStats> {
       voiceDebatesWithAudio++;
       voiceDebateAudioBytes += e.audioSizeBytes ?? 0;
     }
+    if (hasAudioTrack(e.type) && !e.hasAudio) {
+      itemsAwaitingAudio++;
+    }
   }
 
   return {
-    totalItems:           valid.length,
+    totalItems:  valid.length,
     totalBytes,
-    limitBytes:           index.limitBytes,
-    percentUsed:          index.limitBytes > 0 ? (totalBytes / index.limitBytes) * 100 : 0,
+    limitBytes:  index.limitBytes,
+    percentUsed: index.limitBytes > 0 ? (totalBytes / index.limitBytes) * 100 : 0,
     byType,
     podcastsWithAudio,
     audioBytesTotal,
     voiceDebatesWithAudio,
     voiceDebateAudioBytes,
+    itemsAwaitingAudio,
   };
 }
 
@@ -469,94 +530,119 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export async function markPodcastAudioCached(
-  podcastId:      string,
+// ─── Audio accounting ─────────────────────────────────────────────────────────
+
+/**
+ * Part 59.3 — record that an item's audio is on disk, with its real size.
+ *
+ * Replaces markPodcastAudioCached / markVoiceDebateAudioCached, which were the
+ * same twelve lines twice and had drifted: one of them recomputed sizeBytes
+ * before capturing the old audio value in an early revision, so the addition
+ * and subtraction cancelled and the size never grew.
+ *
+ * Returns the byte delta applied to the index, so a caller reconciling many
+ * entries can report how much the total moved.
+ */
+export async function markAudioCached(
+  type:           CachedContentType,
+  id:             string,
   audioSizeBytes: number,
-): Promise<void> {
+): Promise<number> {
   try {
     const index = await loadIndex();
-    const entry = index.entries.find(e => e.id === podcastId && e.type === 'podcast');
-    if (entry) {
-      // Capture the OLD audio size BEFORE overwriting — otherwise the subtraction
-      // cancels the addition and sizeBytes never increases.
-      const oldAudioBytes    = entry.audioSizeBytes ?? 0;
-      entry.hasAudio         = true;
-      entry.audioSizeBytes   = audioSizeBytes;
-      entry.sizeBytes        = (entry.sizeBytes - oldAudioBytes) + audioSizeBytes;
+    const entry = index.entries.find(e => e.id === id && e.type === type);
+    if (!entry) {
+      console.warn(`[CacheStorage] markAudioCached: no index entry for ${type}:${id}`);
+      return 0;
     }
+
+    const oldAudioBytes = entry.audioSizeBytes ?? 0;
+    entry.hasAudio       = audioSizeBytes > 0;
+    entry.audioSizeBytes = audioSizeBytes;
+    entry.audioPending   = audioSizeBytes <= 0 && hasAudioTrack(type);
+    entry.sizeBytes      = Math.max(0, entry.sizeBytes - oldAudioBytes) + audioSizeBytes;
+
     await saveIndex(index);
+    return audioSizeBytes - oldAudioBytes;
   } catch (err) {
-    console.warn('[CacheStorage] markPodcastAudioCached error:', err);
+    console.warn('[CacheStorage] markAudioCached error:', err);
+    return 0;
   }
 }
 
-/**
- * Part 45: Mark voice debate as having audio cached (updates index entry).
- */
-export async function markVoiceDebateAudioCached(
-  voiceDebateId:  string,
+/** @deprecated Part 59.3 — use markAudioCached('podcast', …). */
+export async function markPodcastAudioCached(
+  podcastId: string,
   audioSizeBytes: number,
+): Promise<void> {
+  await markAudioCached('podcast', podcastId, audioSizeBytes);
+}
+
+/** @deprecated Part 59.3 — use markAudioCached('voice_debate', …). */
+export async function markVoiceDebateAudioCached(
+  voiceDebateId: string,
+  audioSizeBytes: number,
+): Promise<void> {
+  await markAudioCached('voice_debate', voiceDebateId, audioSizeBytes);
+}
+
+/** Clear the audio flag when audio is evicted but the JSON is kept. */
+export async function clearAudioFlag(
+  type: CachedContentType,
+  id:   string,
 ): Promise<void> {
   try {
     const index = await loadIndex();
-    const entry = index.entries.find(e => e.id === voiceDebateId && e.type === 'voice_debate');
-    if (entry) {
-      // Capture the OLD audio size BEFORE overwriting — same fix as markPodcastAudioCached.
-      const oldAudioBytes    = entry.audioSizeBytes ?? 0;
-      entry.hasAudio         = true;
-      entry.audioSizeBytes   = audioSizeBytes;
-      entry.sizeBytes        = (entry.sizeBytes - oldAudioBytes) + audioSizeBytes;
-    }
+    const entry = index.entries.find(e => e.id === id && e.type === type);
+    if (!entry) return;
+    entry.sizeBytes      = Math.max(0, entry.sizeBytes - (entry.audioSizeBytes ?? 0));
+    entry.hasAudio       = false;
+    entry.audioSizeBytes = 0;
+    entry.audioPending   = hasAudioTrack(type);
     await saveIndex(index);
-  } catch (err) {
-    console.warn('[CacheStorage] markVoiceDebateAudioCached error:', err);
-  }
+  } catch { /* non-fatal */ }
 }
 
 // ─── Convenience wrappers ─────────────────────────────────────────────────────
 
-export async function cacheReport(report: { id: string; title: string; [key: string]: unknown }): Promise<void> {
+export async function cacheReport(report: { id: string; title: string; [k: string]: unknown }): Promise<void> {
   await cacheItem('report', report.id, report.title, report, { subtitle: 'Research Report' });
 }
 export async function getCachedReport<T = unknown>(id: string): Promise<T | null> {
   return getCachedItem<T>('report', id);
 }
 
-export async function cachePodcast(podcast: { id: string; title: string; [key: string]: unknown }): Promise<void> {
+export async function cachePodcast(podcast: { id: string; title: string; [k: string]: unknown }): Promise<void> {
   await cacheItem('podcast', podcast.id, podcast.title, podcast, { subtitle: 'Podcast Episode' });
 }
 export async function getCachedPodcast<T = unknown>(id: string): Promise<T | null> {
   return getCachedItem<T>('podcast', id);
 }
 
-export async function cacheDebate(debate: { id: string; topic: string; [key: string]: unknown }): Promise<void> {
+export async function cacheDebate(debate: { id: string; topic: string; [k: string]: unknown }): Promise<void> {
   await cacheItem('debate', debate.id, debate.topic, debate, { subtitle: 'AI Debate' });
 }
 export async function getCachedDebate<T = unknown>(id: string): Promise<T | null> {
   return getCachedItem<T>('debate', id);
 }
 
-export async function cacheAcademicPaper(paper: { id: string; title: string; [key: string]: unknown }): Promise<void> {
+export async function cacheAcademicPaper(paper: { id: string; title: string; [k: string]: unknown }): Promise<void> {
   await cacheItem('academic_paper', paper.id, paper.title, paper, { subtitle: 'Academic Paper' });
 }
 export async function getCachedAcademicPaper<T = unknown>(id: string): Promise<T | null> {
   return getCachedItem<T>('academic_paper', id);
 }
 
-export async function cachePresentation(pres: { id: string; title: string; [key: string]: unknown }): Promise<void> {
+export async function cachePresentation(pres: { id: string; title: string; [k: string]: unknown }): Promise<void> {
   await cacheItem('presentation', pres.id, pres.title, pres, { subtitle: 'Presentation' });
 }
 export async function getCachedPresentation<T = unknown>(id: string): Promise<T | null> {
   return getCachedItem<T>('presentation', id);
 }
 
-/**
- * Part 45: Cache a voice debate object in the main index.
- * Also see voiceDebateCache.ts for the separate JSON cache (used by OfflineVoiceDebateViewer).
- */
-export async function cacheVoiceDebate(vd: { id: string; topic: string; [key: string]: unknown }): Promise<void> {
-  const turns    = (vd as any).totalTurns ?? 0;
-  const durMin   = Math.round(((vd as any).durationSeconds ?? 0) / 60);
+export async function cacheVoiceDebate(vd: { id: string; topic: string; [k: string]: unknown }): Promise<void> {
+  const turns    = (vd as { totalTurns?: number }).totalTurns ?? 0;
+  const durMin   = Math.round(((vd as { durationSeconds?: number }).durationSeconds ?? 0) / 60);
   const subtitle = `${turns} turns · ${durMin} min`;
   await cacheItem('voice_debate', vd.id, vd.topic as string, vd, { subtitle });
 }
@@ -574,3 +660,5 @@ export async function getCacheSize(): Promise<number> {
   const now   = Date.now();
   return index.entries.filter(e => now < e.expiresAt).length;
 }
+
+export { buildFilePath as buildCacheFilePath };

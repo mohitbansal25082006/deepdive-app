@@ -1,22 +1,33 @@
 // src/lib/autoCacheMiddleware.ts
-// Part 45 FIX 2 — Voice debate audio size fix:
+// Part 59.2 — portable paths, real disk sizes, static imports.
+// Part 59.3 — audio always cached; manual caching no longer gated on autoCache.
 //
-// ROOT CAUSE of voice debate not showing audio size:
-//   _downloadVoiceDebateAudioAsync imported getVoiceDebateAudioEntry from
-//   voiceDebateAudioCache — but that function does NOT exist in the original
-//   Part 41.2 file (it was only a patch instruction that may not have been applied).
-//   When the import resolves to undefined, the call throws silently and
-//   markVoiceDebateAudioCached is never called with real bytes.
+// ─── THE autoCache GATE BUG ─────────────────────────────────────────────────
 //
-// FIX:
-//   Removed the dependency on getVoiceDebateAudioEntry entirely.
-//   Instead, after downloadVoiceDebateAudio succeeds, we sum the actual
-//   .mp3 file sizes on disk using getLocalVoiceDebateAudioPaths +
-//   FileSystem.getInfoAsync. This uses only functions that ARE exported
-//   from voiceDebateAudioCache.ts (Part 41.2) with zero new dependencies.
+// Every function here opened with:
 //
-// All other fixes (static imports, real podcast size via getPodcastAudioEntry)
-// are preserved unchanged from the previous version.
+//     if (!(await isAutoCacheEnabled())) return;
+//
+// These functions are called from two very different places: the generation
+// screens (automatic — the gate is correct) and the manual paths, meaning the
+// selective-cache picker and "Cache Now" in the Cache Manager. The manual paths
+// hit the same gate, so turning "Auto-Cache Content" off disabled the buttons
+// whose only purpose is to cache things by hand. The picker would run, report
+// "3 changes saved", and cache nothing — the most confusing possible failure,
+// because it looked like it worked.
+//
+// Every entry point now takes `{ force }`. Automatic callers omit it and the
+// gate applies. Manual callers pass force:true and the gate is skipped. The
+// setting keeps its stated meaning — "cache new content automatically" — rather
+// than quietly meaning "allow caching at all".
+//
+// ─── AUDIO IS NO LONGER OPTIONAL ────────────────────────────────────────────
+//
+// The cacheAudio / cacheVoiceDebate checks are gone. Caching a podcast caches
+// the episode. Audio is awaited rather than fired-and-forgotten so the index
+// carries a true size by the time the caller refreshes its stats — the old
+// fire-and-forget is why the Cache Manager showed a 40 MB voice debate as
+// 380 KB until you closed and reopened it.
 
 import { isAutoCacheEnabled } from './cacheSettings';
 import {
@@ -26,20 +37,24 @@ import {
   cacheAcademicPaper,
   cachePresentation,
   cacheVoiceDebate,
-  markPodcastAudioCached,
-  markVoiceDebateAudioCached,
+  markAudioCached,
+  getCacheIndex,
+  getCachedItem,
   loadSettings,
 } from './cacheStorage';
-import * as FileSystem from 'expo-file-system/legacy';
 
-// Static imports — no dynamic await import() to prevent Hermes crashes
-import { downloadPodcastAudio, getPodcastAudioEntry } from './podcastAudioCache';
+import {
+  downloadPodcastAudio,
+  getPodcastAudioDiskBytes,
+  isPodcastAudioCached,
+} from './podcastAudioCache';
 import {
   downloadVoiceDebateAudio,
+  getVoiceDebateAudioDiskBytes,
   isVoiceDebateAudioCached,
-  getLocalVoiceDebateAudioPaths,  // FIX: use this instead of getVoiceDebateAudioEntry
 } from './voiceDebateAudioCache';
-import { cacheVoiceDebateJson }  from './voiceDebateCache';
+import { cacheVoiceDebateJson } from './voiceDebateCache';
+import { cachePresentationAssets } from './presentationAssetCache';
 
 import type {
   ResearchReport,
@@ -49,17 +64,42 @@ import type {
   GeneratedPresentation,
 } from '../types';
 import type { VoiceDebate } from '../types/voiceDebate';
+import type {
+  AudioReconcileResult,
+  AudioReconcileProgress,
+} from '../types/cache';
+
+// ─── Shared options ───────────────────────────────────────────────────────────
+
+export interface CacheOptions {
+  /**
+   * Skip the "Auto-Cache Content" gate.
+   *
+   * Pass true from anything the user initiated by tapping something. Omit it
+   * from generation-completion hooks, where the gate is the whole point.
+   */
+  force?: boolean;
+  /** Allow pulling audio from Supabase Storage. Pass false when offline. */
+  allowRemote?: boolean;
+}
+
+async function shouldCache(options?: CacheOptions): Promise<boolean> {
+  if (options?.force) return true;
+  return isAutoCacheEnabled();
+}
 
 // ─── Report ───────────────────────────────────────────────────────────────────
 
-export async function autoCacheReport(report: ResearchReport): Promise<void> {
+export async function autoCacheReport(
+  report:   ResearchReport,
+  options?: CacheOptions,
+): Promise<void> {
   try {
-    const enabled = await isAutoCacheEnabled();
-    if (!enabled) return;
+    if (!(await shouldCache(options))) return;
     await cacheReport({
       ...report,
       title: report.title ?? report.query,
-    } as any);
+    } as unknown as { id: string; title: string });
   } catch (err) {
     console.warn('[AutoCache] report cache error:', err);
   }
@@ -67,49 +107,77 @@ export async function autoCacheReport(report: ResearchReport): Promise<void> {
 
 // ─── Podcast ──────────────────────────────────────────────────────────────────
 
-export async function autoCachePodcast(podcast: Podcast): Promise<void> {
+export async function autoCachePodcast(
+  podcast:  Podcast,
+  options?: CacheOptions,
+): Promise<void> {
   try {
-    const enabled = await isAutoCacheEnabled();
-    if (!enabled) return;
+    if (!(await shouldCache(options))) return;
     if (podcast.status !== 'completed') return;
 
-    await cachePodcast(podcast as any);
+    await cachePodcast(podcast as unknown as { id: string; title: string });
 
-    const settings = await loadSettings();
-    if (settings.cacheAudio) {
-      _downloadAudioAsync(podcast);
-    }
+    // Part 59.3: no toggle, and awaited so the size is right immediately.
+    await cachePodcastAudio(podcast, { allowRemote: options?.allowRemote });
   } catch (err) {
     console.warn('[AutoCache] podcast cache error:', err);
   }
 }
 
-async function _downloadAudioAsync(podcast: Podcast): Promise<void> {
+/**
+ * Cache a podcast's audio and record its true size.
+ *
+ * Exported because the offline viewer's Download button, the selective-cache
+ * sheet and the reconciler all need exactly this. Duplicating it is how the
+ * size accounting drifted apart in the first place.
+ */
+export async function cachePodcastAudio(
+  podcast:  Podcast,
+  options?: { allowRemote?: boolean },
+): Promise<boolean> {
   try {
-    const settings = await loadSettings();
-    const success  = await downloadPodcastAudio(podcast, undefined, settings.expiryDays);
-    if (success) {
-      const audioEntry = await getPodcastAudioEntry(podcast.id);
-      if (audioEntry) {
-        await markPodcastAudioCached(podcast.id, audioEntry.totalBytes);
-      }
+    if (await isPodcastAudioCached(podcast.id)) {
+      const existing = await getPodcastAudioDiskBytes(podcast.id);
+      if (existing > 0) await markAudioCached('podcast', podcast.id, existing);
+      return true;
     }
+
+    const settings = await loadSettings();
+    const success  = await downloadPodcastAudio(podcast, undefined, {
+      expiryDays:  settings.expiryDays,
+      allowRemote: options?.allowRemote !== false,
+    });
+
+    if (!success) return false;
+
+    const realBytes = await getPodcastAudioDiskBytes(podcast.id);
+    if (realBytes > 0) {
+      await markAudioCached('podcast', podcast.id, realBytes);
+      console.log(
+        `[AutoCache] Podcast audio cached for ${podcast.id} ` +
+        `(${(realBytes / 1024 / 1024).toFixed(1)} MB)`,
+      );
+    }
+    return true;
   } catch (err) {
-    console.warn('[AutoCache] podcast audio download error:', err);
+    console.warn('[AutoCache] podcast audio cache error:', err);
+    return false;
   }
 }
 
 // ─── Debate ───────────────────────────────────────────────────────────────────
 
-export async function autoCacheDebate(session: DebateSession): Promise<void> {
+export async function autoCacheDebate(
+  session:  DebateSession,
+  options?: CacheOptions,
+): Promise<void> {
   try {
-    const enabled = await isAutoCacheEnabled();
-    if (!enabled) return;
+    if (!(await shouldCache(options))) return;
     if (session.status !== 'completed') return;
     await cacheDebate({
       ...session,
       topic: session.topic,
-    } as any);
+    } as unknown as { id: string; topic: string });
   } catch (err) {
     console.warn('[AutoCache] debate cache error:', err);
   }
@@ -117,11 +185,13 @@ export async function autoCacheDebate(session: DebateSession): Promise<void> {
 
 // ─── Academic Paper ───────────────────────────────────────────────────────────
 
-export async function autoCacheAcademicPaper(paper: AcademicPaper): Promise<void> {
+export async function autoCacheAcademicPaper(
+  paper:    AcademicPaper,
+  options?: CacheOptions,
+): Promise<void> {
   try {
-    const enabled = await isAutoCacheEnabled();
-    if (!enabled) return;
-    await cacheAcademicPaper(paper as any);
+    if (!(await shouldCache(options))) return;
+    await cacheAcademicPaper(paper as unknown as { id: string; title: string });
   } catch (err) {
     console.warn('[AutoCache] academic paper cache error:', err);
   }
@@ -131,12 +201,12 @@ export async function autoCacheAcademicPaper(paper: AcademicPaper): Promise<void
 
 export async function autoCachePresentation(
   presentation: GeneratedPresentation,
+  options?:     CacheOptions,
 ): Promise<void> {
   try {
-    const enabled = await isAutoCacheEnabled();
-    if (!enabled) return;
+    if (!(await shouldCache(options))) return;
 
-    let presentationToCache: GeneratedPresentation = presentation;
+    let toCache: GeneratedPresentation = presentation;
 
     if (presentation.id) {
       try {
@@ -150,126 +220,234 @@ export async function autoCachePresentation(
           .single();
 
         if (!error && data) {
-          const editorDataArr: any[] = Array.isArray(data.editor_data)
-            ? data.editor_data
-            : [];
+          // `editor_data` is a jsonb column: `any` at runtime, and neither
+          // `unknown[]` nor an invented cast would be more truthful here.
+          const editorDataArr: any[] = Array.isArray(data.editor_data) ? data.editor_data : [];
           const fontFamily: string = data.font_family ?? 'system';
 
-          const mergedSlides = mergeEditorData(
-            presentation.slides as any[],
-            editorDataArr,
-          );
-
-          presentationToCache = {
+          toCache = {
             ...presentation,
-            slides:     mergedSlides,
+            slides: mergeEditorData(presentation.slides as any[], editorDataArr),
             fontFamily,
           } as GeneratedPresentation & { fontFamily?: string };
         }
       } catch (fetchErr) {
+        // Degrade to the unmerged slides rather than skipping the cache.
         console.warn('[AutoCache] presentation editor_data fetch error:', fetchErr);
       }
     }
 
-    await cachePresentation(presentationToCache as any);
+    await cachePresentation(toCache as unknown as { id: string; title: string });
 
     if (presentation.id) {
-      _cacheAssetsAsync(presentationToCache);
+      void cachePresentationAssets(toCache).catch(err =>
+        console.warn('[AutoCache] presentation asset download error:', err),
+      );
     }
   } catch (err) {
     console.warn('[AutoCache] presentation cache error:', err);
   }
 }
 
-async function _cacheAssetsAsync(
-  presentation: GeneratedPresentation,
-): Promise<void> {
-  try {
-    const { cachePresentationAssets } = await import('./presentationAssetCache');
-    await cachePresentationAssets(presentation);
-  } catch (err) {
-    console.warn('[AutoCache] presentation asset download error:', err);
-  }
-}
-
 // ─── Voice Debate ─────────────────────────────────────────────────────────────
 
-export async function autoCacheVoiceDebate(voiceDebate: VoiceDebate): Promise<void> {
+export async function autoCacheVoiceDebate(
+  voiceDebate: VoiceDebate,
+  options?:    CacheOptions,
+): Promise<void> {
   try {
-    const enabled = await isAutoCacheEnabled();
-    if (!enabled) return;
+    if (!(await shouldCache(options))) return;
     if (voiceDebate.status !== 'completed') return;
 
-    // 1. Store in main cacheStorage index FIRST so the entry exists
-    //    before markVoiceDebateAudioCached is called below
-    await cacheVoiceDebate(voiceDebate as any);
+    // 1. Index entry first, so markAudioCached has something to annotate.
+    await cacheVoiceDebate(voiceDebate as unknown as { id: string; topic: string });
 
-    // 2. Cache full JSON via voiceDebateCache (for OfflineVoiceDebateViewer)
+    // 2. Full JSON for the offline viewer.
     const settings = await loadSettings();
     await cacheVoiceDebateJson(voiceDebate, { expiryDays: settings.expiryDays });
 
-    // 3. Download audio if setting is ON — awaited so the index is accurate
-    //    when the caller refreshes the cache stats
-    if (settings.cacheVoiceDebate) {
-      await _downloadVoiceDebateAudioAsync(voiceDebate);
-    }
+    // 3. Audio — always, and awaited.
+    await cacheVoiceDebateAudio(voiceDebate, { allowRemote: options?.allowRemote });
   } catch (err) {
     console.warn('[AutoCache] voice debate cache error:', err);
   }
 }
 
-async function _downloadVoiceDebateAudioAsync(voiceDebate: VoiceDebate): Promise<void> {
+/** Same shape as cachePodcastAudio, for voice debates. */
+export async function cacheVoiceDebateAudio(
+  voiceDebate: VoiceDebate,
+  options?:    { allowRemote?: boolean },
+): Promise<boolean> {
   try {
-    const alreadyCached = await isVoiceDebateAudioCached(voiceDebate.id);
-    if (alreadyCached) return;
-
-    // Build source paths: prefer local file paths, fall back to cloud URLs
-    const audioPaths = (voiceDebate.audioSegmentPaths ?? []).map((local, i) => {
-      if (local && !local.startsWith('http')) return local;
-      const cloud = (voiceDebate.audioStorageUrls as any)?.[i] ?? null;
-      return cloud ?? local;
-    }).filter(Boolean) as string[];
-
-    if (audioPaths.length === 0) return;
+    if (await isVoiceDebateAudioCached(voiceDebate.id)) {
+      const existing = await getVoiceDebateAudioDiskBytes(voiceDebate.id);
+      if (existing > 0) await markAudioCached('voice_debate', voiceDebate.id, existing);
+      return true;
+    }
 
     const settings = await loadSettings();
 
-    console.log(`[AutoCache] 💾  Downloading voice debate audio: ${audioPaths.length} turns`);
     const success = await downloadVoiceDebateAudio(
       voiceDebate.id,
       voiceDebate.topic,
-      audioPaths,
+      voiceDebate.audioSegmentPaths ?? [],
       undefined,
-      settings.expiryDays,
+      {
+        expiryDays:  settings.expiryDays,
+        allowRemote: options?.allowRemote !== false,
+        cloudUrls:   voiceDebate.audioStorageUrls ?? [],
+        turnCount:   voiceDebate.totalTurns,
+      },
     );
 
-    if (success) {
-      // Sum real .mp3 file sizes from disk and update the cache index entry
-      const localPaths = await getLocalVoiceDebateAudioPaths(voiceDebate.id);
-      let realAudioBytes = 0;
-      if (localPaths && localPaths.length > 0) {
-        const sizeChecks = await Promise.allSettled(
-          localPaths
-            .filter(p => Boolean(p))
-            .map(p => FileSystem.getInfoAsync(p))
-        );
-        for (const check of sizeChecks) {
-          if (check.status === 'fulfilled' && check.value.exists) {
-            realAudioBytes += (check.value as any).size ?? 0;
+    if (!success) return false;
+
+    const realBytes = await getVoiceDebateAudioDiskBytes(voiceDebate.id);
+    if (realBytes > 0) {
+      await markAudioCached('voice_debate', voiceDebate.id, realBytes);
+      console.log(
+        `[AutoCache] Voice debate audio cached for ${voiceDebate.id} ` +
+        `(${(realBytes / 1024 / 1024).toFixed(1)} MB)`,
+      );
+    }
+    return true;
+  } catch (err) {
+    console.warn('[AutoCache] voice debate audio cache error:', err);
+    return false;
+  }
+}
+
+// ─── Part 59.3: audio reconciliation ──────────────────────────────────────────
+
+/**
+ * Walk the cache index and make every podcast / voice debate's audio state
+ * true on disk.
+ *
+ * WHY THIS EXISTS
+ *
+ *   Users upgrading into 59.3 have a cache full of items saved while the audio
+ *   toggles were off: transcript-only entries with hasAudio:false and a size of
+ *   a few hundred KB. Nothing would ever fix those on its own — the item is
+ *   already "cached", so no code path revisits it. The Cache Manager would keep
+ *   reporting 380 KB for a 40 MB episode, and the green "Audio cached" badge
+ *   would keep not appearing, forever.
+ *
+ *   This sweep reads each entry's cached JSON — which is the Podcast /
+ *   VoiceDebate object itself, so no network round-trip is needed to identify
+ *   the audio — copies or downloads whatever is missing, and rewrites the size.
+ *
+ *   It is idempotent and cheap on a healthy cache: an entry whose audio is
+ *   already present costs one directory read.
+ *
+ * Safe to call while offline. Segments that live only in the cloud stay
+ * unresolved and are reported as such rather than throwing.
+ */
+export async function reconcileCachedAudio(
+  onProgress?: (p: AudioReconcileProgress) => void,
+  options?:    { allowRemote?: boolean },
+): Promise<AudioReconcileResult> {
+
+  const result: AudioReconcileResult = {
+    scanned: 0, repaired: 0, resized: 0, unresolved: 0, bytesAdded: 0,
+  };
+
+  try {
+    const entries = await getCacheIndex();
+    const audioEntries = entries.filter(
+      e => e.type === 'podcast' || e.type === 'voice_debate',
+    );
+
+    if (audioEntries.length === 0) return result;
+
+    for (let i = 0; i < audioEntries.length; i++) {
+      const entry = audioEntries[i];
+      result.scanned += 1;
+
+      onProgress?.({ done: i, total: audioEntries.length, title: entry.title });
+
+      try {
+        if (entry.type === 'podcast') {
+          const alreadyOnDisk = await getPodcastAudioDiskBytes(entry.id);
+
+          if (alreadyOnDisk > 0) {
+            if (alreadyOnDisk !== (entry.audioSizeBytes ?? 0)) {
+              result.bytesAdded += await markAudioCached('podcast', entry.id, alreadyOnDisk);
+              result.resized += 1;
+            }
+            continue;
+          }
+
+          const podcast = await getCachedItem<Podcast>('podcast', entry.id);
+          if (!podcast) { result.unresolved += 1; continue; }
+
+          const ok = await cachePodcastAudio(podcast, {
+            allowRemote: options?.allowRemote,
+          });
+
+          if (ok) {
+            const bytes = await getPodcastAudioDiskBytes(entry.id);
+            if (bytes > 0) {
+              result.repaired += 1;
+              result.bytesAdded += bytes - (entry.audioSizeBytes ?? 0);
+            } else {
+              result.unresolved += 1;
+            }
+          } else {
+            result.unresolved += 1;
+          }
+
+        } else {
+          const alreadyOnDisk = await getVoiceDebateAudioDiskBytes(entry.id);
+
+          if (alreadyOnDisk > 0) {
+            if (alreadyOnDisk !== (entry.audioSizeBytes ?? 0)) {
+              result.bytesAdded += await markAudioCached('voice_debate', entry.id, alreadyOnDisk);
+              result.resized += 1;
+            }
+            continue;
+          }
+
+          const vd = await getCachedItem<VoiceDebate>('voice_debate', entry.id);
+          if (!vd) { result.unresolved += 1; continue; }
+
+          const ok = await cacheVoiceDebateAudio(vd, {
+            allowRemote: options?.allowRemote,
+          });
+
+          if (ok) {
+            const bytes = await getVoiceDebateAudioDiskBytes(entry.id);
+            if (bytes > 0) {
+              result.repaired += 1;
+              result.bytesAdded += bytes - (entry.audioSizeBytes ?? 0);
+            } else {
+              result.unresolved += 1;
+            }
+          } else {
+            result.unresolved += 1;
           }
         }
+      } catch (err) {
+        console.warn(`[AutoCache] reconcile error for ${entry.type}:${entry.id}`, err);
+        result.unresolved += 1;
       }
-      // Fallback: estimate from turn count if filesystem read failed
-      if (realAudioBytes === 0 && audioPaths.length > 0) {
-        realAudioBytes = audioPaths.length * 400_000;
-      }
-      await markVoiceDebateAudioCached(voiceDebate.id, realAudioBytes);
+    }
+
+    onProgress?.({
+      done:  audioEntries.length,
+      total: audioEntries.length,
+      title: '',
+    });
+
+    if (result.repaired > 0 || result.resized > 0) {
       console.log(
-        `[AutoCache] ✅  Voice debate audio cached for ${voiceDebate.id}` +
-        ` (${(realAudioBytes / 1024 / 1024).toFixed(1)} MB)`,
+        `[AutoCache] Audio reconcile: ${result.repaired} repaired, ` +
+        `${result.resized} resized, ${result.unresolved} unresolved ` +
+        `(${(result.bytesAdded / 1024 / 1024).toFixed(1)} MB accounted)`,
       );
     }
   } catch (err) {
-    console.warn('[AutoCache] voice debate audio download error:', err);
+    console.warn('[AutoCache] reconcileCachedAudio error:', err);
   }
+
+  return result;
 }

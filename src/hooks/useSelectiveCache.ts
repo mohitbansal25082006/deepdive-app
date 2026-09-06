@@ -1,75 +1,66 @@
 // src/hooks/useSelectiveCache.ts
-// Part 45 FIX 2 — BUG 2 fix: all dynamic await import() replaced with static imports.
+// Part 45  — selective picker.
+// Part 59.2 — portable paths, real on-disk sizes.
+// Part 59.3 — manual caching no longer blocked by the auto-cache toggle, and
+//             audio is always included.
 //
-// Dynamic imports in Hermes (React Native production JS engine) can throw
-// LoadBundleFromServerRequestError or unhandled promise rejections that crash
-// the component and navigate to the home screen. Converting to static imports
-// fixes the black-screen crash when "Cache Now" or "Save Changes" is tapped.
+// ─── THE BUG ────────────────────────────────────────────────────────────────
 //
-// BUG 1 + BUG 2 fixes from the previous version are preserved unchanged.
+// cacheOneItem() called autoCacheReport / autoCachePodcast / etc., each of
+// which opened with `if (!(await isAutoCacheEnabled())) return;`. So with
+// "Auto-Cache Content" off, this picker — a screen whose entire job is manual
+// caching — ran its full progress animation, reported "3 changes", and wrote
+// nothing to disk. Every call site here now passes `{ force: true }`.
+//
+// The voice-debate branch also hand-rolled its own three-step cache sequence
+// (JSON, index entry, audio) that had to be kept in sync with
+// autoCacheVoiceDebate by hand. It drifted: the middleware learned to record
+// real audio bytes and this copy did not. It now calls the same function
+// everything else does.
+//
+// Size display: cached items show their true on-disk size including audio, so
+// a 40 MB podcast reads as 40 MB rather than the SQL estimate or the JSON-only
+// figure.
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { supabase }             from '../lib/supabase';
-import { useAuth }              from '../context/AuthContext';
+
+import { supabase } from '../lib/supabase';
+import { useAuth }   from '../context/AuthContext';
 import {
-  isCached, cacheItem, evictItemById, loadSettings, getCacheIndex,
-  markVoiceDebateAudioCached,
-}                               from '../lib/cacheStorage';
-import * as FileSystem from 'expo-file-system/legacy';
+  isCached,
+  evictItemById,
+  loadSettings,
+  getCacheIndex,
+}                    from '../lib/cacheStorage';
 import {
-  isVoiceDebateAudioCached,
-  downloadVoiceDebateAudio,
+  getPodcastAudioDiskBytes,
+}                    from '../lib/podcastAudioCache';
+import {
   evictVoiceDebateAudio,
-  getLocalVoiceDebateAudioPaths,
-}                               from '../lib/voiceDebateAudioCache';
+  getVoiceDebateAudioDiskBytes,
+}                    from '../lib/voiceDebateAudioCache';
 import {
-  cacheVoiceDebateJson,
   isVoiceDebateJsonCached,
   evictVoiceDebateJson,
-}                               from '../lib/voiceDebateCache';
-// BUG 2 FIX: static imports — no more dynamic await import() inside async functions
+}                    from '../lib/voiceDebateCache';
 import {
   autoCacheReport,
   autoCachePodcast,
   autoCacheDebate,
   autoCacheAcademicPaper,
   autoCachePresentation,
-}                               from '../lib/autoCacheMiddleware';
-import { mapRowToPodcast }      from '../services/podcastOrchestrator';
-import { mapRowToVoiceDebate }  from '../services/voiceDebateOrchestrator';
+  autoCacheVoiceDebate,
+}                    from '../lib/autoCacheMiddleware';
+import { mapRowToPodcast }     from '../services/podcastOrchestrator';
+import { mapRowToVoiceDebate } from '../services/voiceDebateOrchestrator';
 import type {
   CachedContentType,
   CacheFilterType,
   SelectiveCacheItem,
   SelectiveCacheState,
-}                               from '../types/cache';
+}                    from '../types/cache';
 
-// ─── Helper: fetch all cacheable items for this user ────────────────────────
-
-/**
- * Sum the actual .mp3 file sizes on disk for a cached voice debate.
- * Returns 0 if no audio is cached. Used to show accurate storage in the picker.
- */
-async function getVoiceDebateAudioDiskBytes(voiceDebateId: string): Promise<number> {
-  try {
-    const localPaths = await getLocalVoiceDebateAudioPaths(voiceDebateId);
-    if (!localPaths || localPaths.length === 0) return 0;
-
-    const sizeChecks = await Promise.allSettled(
-      localPaths.filter(Boolean).map(p => FileSystem.getInfoAsync(p))
-    );
-
-    let total = 0;
-    for (const check of sizeChecks) {
-      if (check.status === 'fulfilled' && check.value.exists) {
-        total += (check.value as any).size ?? 0;
-      }
-    }
-    return total;
-  } catch {
-    return 0;
-  }
-}
+// ─── Fetch the user's cacheable content ──────────────────────────────────────
 
 async function fetchSelectableItems(userId: string): Promise<SelectiveCacheItem[]> {
   try {
@@ -100,59 +91,55 @@ async function fetchSelectableItems(userId: string): Promise<SelectiveCacheItem[
       createdAt:   row.created_at,
       sizeHintKb:  row.size_hint_kb ?? 0,
       isCached:    false,
+      hasAudio:    false,
     }));
 
-    // Load the main cache index once for real sizes of cached items
+    // One index read, then per-item resolution in batches.
     const cacheIndex = await getCacheIndex();
     const indexById  = new Map(cacheIndex.map(e => [`${e.type}:${e.id}`, e]));
 
-    // Resolve cached state + real sizes in parallel (batched)
     const BATCH = 10;
     for (let i = 0; i < items.length; i += BATCH) {
       const batch = items.slice(i, i + BATCH);
+
       const checks = await Promise.allSettled(
         batch.map(async item => {
           if (item.contentType === 'voice_debate') {
             return isVoiceDebateJsonCached(item.id);
           }
-          return isCached(item.contentType as CachedContentType, item.id);
-        })
+          return isCached(item.contentType, item.id);
+        }),
       );
 
-      // Process each item: set isCached, then set accurate size
       await Promise.allSettled(
         batch.map(async (item, bi) => {
           const check = checks[bi];
-          if (check.status === 'fulfilled') {
-            item.isCached = check.value;
-          }
+          if (check.status === 'fulfilled') item.isCached = check.value;
 
-          if (!item.isCached) return; // keep SQL estimate for uncached items
+          if (!item.isCached) return;   // keep the SQL estimate
 
-          if (item.contentType === 'voice_debate') {
-            // For cached voice debates, combine:
-            //   JSON bytes from the main cache index
-            //   + actual audio .mp3 file sizes from disk
-            // This gives the real total storage used on device.
-            const indexEntry = indexById.get(`voice_debate:${item.id}`);
-            const jsonBytes  = indexEntry?.sizeBytes ?? 0;
+          const entry     = indexById.get(`${item.contentType}:${item.id}`);
+          const jsonBytes = entry?.sizeBytes ?? 0;
 
-            // Read audio from disk (same method as autoCacheMiddleware)
+          if (item.contentType === 'podcast') {
+            const audioBytes = await getPodcastAudioDiskBytes(item.id);
+            item.hasAudio = audioBytes > 0;
+            // entry.sizeBytes already includes audio once markAudioCached has
+            // run; take the larger of the two so a stale index never
+            // under-reports what is actually on disk.
+            const total = Math.max(jsonBytes, audioBytes);
+            if (total > 0) item.sizeHintKb = Math.round(total / 1024);
+
+          } else if (item.contentType === 'voice_debate') {
             const audioBytes = await getVoiceDebateAudioDiskBytes(item.id);
+            item.hasAudio = audioBytes > 0;
+            const total = Math.max(jsonBytes, audioBytes);
+            if (total > 0) item.sizeHintKb = Math.round(total / 1024);
 
-            const totalKb = Math.round((jsonBytes + audioBytes) / 1024);
-            if (totalKb > 0) {
-              item.sizeHintKb = totalKb;
-            }
-          } else {
-            // For all other types, use real sizeBytes from cache index
-            const key   = `${item.contentType}:${item.id}`;
-            const entry = indexById.get(key);
-            if (entry && entry.sizeBytes > 0) {
-              item.sizeHintKb = Math.round(entry.sizeBytes / 1024);
-            }
+          } else if (jsonBytes > 0) {
+            item.sizeHintKb = Math.round(jsonBytes / 1024);
           }
-        })
+        }),
       );
     }
 
@@ -163,152 +150,90 @@ async function fetchSelectableItems(userId: string): Promise<SelectiveCacheItem[
   }
 }
 
-// ─── Helper: fetch raw DB row and cache it ────────────────────────────────────
+// ─── Cache one item ───────────────────────────────────────────────────────────
+//
+// Every branch passes force:true. This is a user-initiated action; the
+// auto-cache setting has no business gating it.
 
-async function cacheOneItem(
-  userId:      string,
-  item:        SelectiveCacheItem,
-  expiryDays:  number,
-): Promise<boolean> {
+async function cacheOneItem(item: SelectiveCacheItem): Promise<boolean> {
+  const force = { force: true } as const;
+
   try {
-    if (item.contentType === 'voice_debate') {
-      const { data, error } = await supabase
-        .from('voice_debates')
-        .select('*')
-        .eq('id', item.id)
-        .single();
-
-      if (error || !data) {
-        console.warn(`[useSelectiveCache] Failed to fetch voice_debate ${item.id}:`, error?.message);
-        return false;
-      }
-
-      const vd = mapRowToVoiceDebate(data as any);
-
-      // 1. Cache JSON in voiceDebateCache (for OfflineVoiceDebateViewer)
-      const jsonOk = await cacheVoiceDebateJson(vd, { expiryDays });
-
-      // 2. Store in main cacheStorage index FIRST so the entry exists
-      //    before we call markVoiceDebateAudioCached below
-      await cacheItem(
-        'voice_debate',
-        vd.id,
-        vd.topic,
-        vd,
-        {
-          subtitle:   `${vd.totalTurns} turns · ${Math.round(vd.durationSeconds / 60)} min`,
-          expiryDays,
-        },
-      );
-
-      // 3. If audio caching is enabled, download audio AND mark real size
-      //    Awaited (not fire-and-forget) so cache index is accurate before
-      //    cacheSelected() finishes and the cache manager refreshes.
-      const settings = await loadSettings();
-      if (settings.cacheVoiceDebate) {
-        const audioPaths = (vd.audioSegmentPaths ?? []).map((local, i) => {
-          if (local && !local.startsWith('http')) return local;
-          const cloud = (vd.audioStorageUrls as any)?.[i] ?? null;
-          return cloud ?? local;
-        }).filter(Boolean) as string[];
-
-        if (audioPaths.length > 0) {
-          const success = await downloadVoiceDebateAudio(
-            vd.id, vd.topic, audioPaths, undefined, expiryDays,
-          ).catch(() => false);
-
-          if (success) {
-            // Sum real .mp3 file sizes from disk and update cache index entry
-            const realAudioBytes = await getVoiceDebateAudioDiskBytes(vd.id);
-            if (realAudioBytes > 0) {
-              await markVoiceDebateAudioCached(vd.id, realAudioBytes);
-            }
-          }
-        }
-      }
-
-      return jsonOk;
-    }
-
-    // BUG 2 FIX: All cache functions are now static imports
     switch (item.contentType) {
+      case 'voice_debate': {
+        const { data, error } = await supabase
+          .from('voice_debates').select('*').eq('id', item.id).single();
+        if (error || !data) {
+          console.warn(`[useSelectiveCache] voice_debate ${item.id}:`, error?.message);
+          return false;
+        }
+        // Part 59.3: one code path for voice debates — index entry, JSON and
+        // audio, exactly as generation does it.
+        await autoCacheVoiceDebate(mapRowToVoiceDebate(data as Record<string, unknown>), force);
+        return true;
+      }
+
       case 'report': {
         const { data, error } = await supabase
-          .from('research_reports')
-          .select('*')
-          .eq('id', item.id)
-          .single();
+          .from('research_reports').select('*').eq('id', item.id).single();
         if (error || !data) return false;
         await autoCacheReport({
-          id:               data.id,
-          userId:           data.user_id,
-          query:            data.query,
-          depth:            data.depth,
-          focusAreas:       data.focus_areas ?? [],
-          title:            data.title ?? data.query,
-          executiveSummary: data.executive_summary ?? '',
-          sections:         data.sections ?? [],
-          keyFindings:      data.key_findings ?? [],
-          futurePredictions:data.future_predictions ?? [],
-          citations:        data.citations ?? [],
-          statistics:       data.statistics ?? [],
-          searchQueries:    data.search_queries ?? [],
-          sourcesCount:     data.sources_count ?? 0,
-          reliabilityScore: data.reliability_score ?? 0,
-          status:           data.status,
-          agentLogs:        data.agent_logs ?? [],
-          knowledgeGraph:   data.knowledge_graph ?? undefined,
-          infographicData:  data.infographic_data ?? undefined,
-          sourceImages:     data.source_images ?? [],
-          researchMode:     data.research_mode ?? 'standard',
-          createdAt:        data.created_at,
-          completedAt:      data.completed_at,
-        } as any);
+          id:                data.id,
+          userId:            data.user_id,
+          query:             data.query,
+          depth:             data.depth,
+          focusAreas:        data.focus_areas ?? [],
+          title:             data.title ?? data.query,
+          executiveSummary:  data.executive_summary ?? '',
+          sections:          data.sections ?? [],
+          keyFindings:       data.key_findings ?? [],
+          futurePredictions: data.future_predictions ?? [],
+          citations:         data.citations ?? [],
+          statistics:        data.statistics ?? [],
+          searchQueries:     data.search_queries ?? [],
+          sourcesCount:      data.sources_count ?? 0,
+          reliabilityScore:  data.reliability_score ?? 0,
+          status:            data.status,
+          agentLogs:         data.agent_logs ?? [],
+          knowledgeGraph:    data.knowledge_graph ?? undefined,
+          infographicData:   data.infographic_data ?? undefined,
+          sourceImages:      data.source_images ?? [],
+          researchMode:      data.research_mode ?? 'standard',
+          createdAt:         data.created_at,
+          completedAt:       data.completed_at,
+        } as never, force);
         return true;
       }
 
       case 'podcast': {
         const { data, error } = await supabase
-          .from('podcasts')
-          .select('*')
-          .eq('id', item.id)
-          .single();
+          .from('podcasts').select('*').eq('id', item.id).single();
         if (error || !data) return false;
-        // BUG 2 FIX: mapRowToPodcast is now a static import
-        await autoCachePodcast(mapRowToPodcast(data));
+        await autoCachePodcast(mapRowToPodcast(data), force);
         return true;
       }
 
       case 'debate': {
         const { data, error } = await supabase
-          .from('debate_sessions')
-          .select('*')
-          .eq('id', item.id)
-          .single();
+          .from('debate_sessions').select('*').eq('id', item.id).single();
         if (error || !data) return false;
-        await autoCacheDebate(data as any);
+        await autoCacheDebate(data as never, force);
         return true;
       }
 
       case 'academic_paper': {
         const { data, error } = await supabase
-          .from('academic_papers')
-          .select('*')
-          .eq('id', item.id)
-          .single();
+          .from('academic_papers').select('*').eq('id', item.id).single();
         if (error || !data) return false;
-        await autoCacheAcademicPaper(data as any);
+        await autoCacheAcademicPaper(data as never, force);
         return true;
       }
 
       case 'presentation': {
         const { data, error } = await supabase
-          .from('presentations')
-          .select('*')
-          .eq('id', item.id)
-          .single();
+          .from('presentations').select('*').eq('id', item.id).single();
         if (error || !data) return false;
-        await autoCachePresentation(data as any);
+        await autoCachePresentation(data as never, force);
         return true;
       }
 
@@ -321,17 +246,17 @@ async function cacheOneItem(
   }
 }
 
-// ─── Helper: remove one item from cache ────────────────────────────────────────
+// ─── Remove one item ──────────────────────────────────────────────────────────
 
 async function uncacheOneItem(item: SelectiveCacheItem): Promise<void> {
   try {
     if (item.contentType === 'voice_debate') {
-      // BUG 2 FIX: static imports — no dynamic await import()
       await evictVoiceDebateJson(item.id);
       await evictVoiceDebateAudio(item.id);
     }
-    await evictItemById(item.contentType as CachedContentType, item.id);
-  } catch {}
+    // evictItemById also clears audio/asset side-cars for its type.
+    await evictItemById(item.contentType, item.id);
+  } catch { /* non-fatal */ }
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -357,38 +282,30 @@ export function useSelectiveCache(visible: boolean) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  useEffect(() => {
-    if (!visible || !user) return;
-    loadItems();
-  }, [visible, user?.id]);
-
   const loadItems = useCallback(async () => {
     if (!user) return;
     setState(prev => ({ ...prev, isLoading: true, error: null }));
     try {
       const items = await fetchSelectableItems(user.id);
-      if (mountedRef.current) {
-        // Pre-populate selectedIds with already-cached items (BUG 1 FIX)
-        const preSelected = new Set(
-          items.filter(i => i.isCached).map(i => i.id)
-        );
-        setState(prev => ({
-          ...prev,
-          items,
-          isLoading:   false,
-          selectedIds: preSelected,
-        }));
-      }
+      if (!mountedRef.current) return;
+      // Pre-tick everything already cached, so the sheet shows current state
+      // and un-ticking becomes the way to remove.
+      const preSelected = new Set(items.filter(i => i.isCached).map(i => i.id));
+      setState(prev => ({ ...prev, items, isLoading: false, selectedIds: preSelected }));
     } catch (err) {
-      if (mountedRef.current) {
-        setState(prev => ({
-          ...prev,
-          isLoading: false,
-          error: err instanceof Error ? err.message : 'Failed to load content',
-        }));
-      }
+      if (!mountedRef.current) return;
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: err instanceof Error ? err.message : 'Failed to load content',
+      }));
     }
   }, [user]);
+
+  useEffect(() => {
+    if (!visible || !user) return;
+    void loadItems();
+  }, [visible, user?.id]);
 
   const toggleSelected = useCallback((id: string) => {
     setState(prev => {
@@ -406,9 +323,10 @@ export function useSelectiveCache(visible: boolean) {
         prev.items
           .filter(item =>
             (prev.filter === 'all' || item.contentType === prev.filter) &&
-            (!prev.searchQuery || item.title.toLowerCase().includes(prev.searchQuery.toLowerCase()))
+            (!prev.searchQuery ||
+              item.title.toLowerCase().includes(prev.searchQuery.toLowerCase()))
           )
-          .map(i => i.id)
+          .map(i => i.id),
       ),
     }));
   }, []);
@@ -426,15 +344,16 @@ export function useSelectiveCache(visible: boolean) {
   }, []);
 
   const filteredItems = state.items.filter(item => {
-    const matchType   = state.filter === 'all' || item.contentType === state.filter;
-    const q           = state.searchQuery.toLowerCase().trim();
+    const matchType = state.filter === 'all' || item.contentType === state.filter;
+    const q         = state.searchQuery.toLowerCase().trim();
     const matchSearch = !q
       || item.title.toLowerCase().includes(q)
       || item.subtitle.toLowerCase().includes(q);
     return matchType && matchSearch;
   });
 
-  // BUG 1 FIX: correct delta logic
+  // ── Apply the delta ────────────────────────────────────────────────────────
+
   const cacheSelected = useCallback(async () => {
     if (!user) return;
 
@@ -452,11 +371,11 @@ export function useSelectiveCache(visible: boolean) {
     }));
 
     let done = 0;
-    const settings   = await loadSettings();
-    const expiryDays = settings.expiryDays;
+    // Read once so the loop does not hit AsyncStorage per item.
+    await loadSettings();
 
     for (const item of toCache) {
-      await cacheOneItem(user.id, item, expiryDays);
+      await cacheOneItem(item);
       done++;
       if (mountedRef.current) {
         setState(prev => ({ ...prev, progress: { done, total: totalWork } }));
@@ -485,10 +404,12 @@ export function useSelectiveCache(visible: boolean) {
     }
   }, [user, state.items, state.selectedIds]);
 
-  const selectedItems    = state.items.filter(i => state.selectedIds.has(i.id));
-  const selectedTotalKb  = selectedItems.reduce((s, i) => s + i.sizeHintKb, 0);
-  const selectedNewItems = selectedItems.filter(i => !i.isCached);
-  const itemsToRemove    = state.items.filter(i => i.isCached && !state.selectedIds.has(i.id));
+  // ── Derived ────────────────────────────────────────────────────────────────
+
+  const selectedItems      = state.items.filter(i => state.selectedIds.has(i.id));
+  const selectedTotalKb    = selectedItems.reduce((s, i) => s + i.sizeHintKb, 0);
+  const selectedNewItems   = selectedItems.filter(i => !i.isCached);
+  const itemsToRemove      = state.items.filter(i => i.isCached && !state.selectedIds.has(i.id));
   const currentlyCachedIds = new Set(state.items.filter(i => i.isCached).map(i => i.id));
 
   return {
